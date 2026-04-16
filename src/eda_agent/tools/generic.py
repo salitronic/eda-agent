@@ -1,0 +1,889 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba
+"""Generic primitive tools for Altium Designer MCP Server.
+
+These primitives provide a thin, generic interface to Altium objects.
+All intelligence lives in the Python/MCP side — the DelphiScript is just
+a pass-through layer for object iteration, property access, and process execution.
+"""
+
+from typing import Any
+from ..bridge import get_bridge
+
+
+def register_generic_tools(mcp):
+    """Register generic primitive tools with the MCP server."""
+
+    @mcp.tool()
+    async def query_objects(
+        object_type: str,
+        properties: str,
+        scope: str = "active_doc",
+        filter: str = "",
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """Query schematic objects and read their properties.
+
+        Iterates objects of the given type, optionally filtering by property values,
+        and returns the requested properties for each matching object.
+
+        Args:
+            object_type: Altium object type constant.
+                Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
+                "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
+                "eLabel", "eLine", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
+                PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
+                "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject"
+            properties: Comma-separated property names to return, e.g.:
+                "Text,Location.X,Location.Y" for net labels
+                "Designator.Text,Comment.Text,LibReference" for components
+            scope: Document scope:
+                "active_doc" — current sheet only (default)
+                "project" — all SCH sheets in focused project
+                "doc:C:\\path\\to\\Sheet.SchDoc" — specific sheet by path (no focus change)
+                "project:C:\\path\\to\\Project.PrjPcb" — specific project by path
+            filter: Pipe-separated property=value conditions (AND logic), e.g.:
+                "Text=VCC" — match net labels with Text equal to VCC
+                "Designator.Text=R1" — match component with designator R1
+                "" (empty) — match all objects of the type
+            limit: Maximum number of objects to return (0 = unlimited)
+
+        Returns:
+            Dictionary with "objects" array and "count"
+        """
+        bridge = get_bridge()
+        params = {
+            "scope": scope,
+            "object_type": object_type,
+            "filter": filter,
+            "properties": properties,
+        }
+        if limit > 0:
+            params["limit"] = str(limit)
+        result = await bridge.send_command_async(
+            "generic.query_objects",
+            params,
+        )
+        return result
+
+    @mcp.tool()
+    async def modify_objects(
+        object_type: str,
+        set: str,
+        scope: str = "active_doc",
+        filter: str = "",
+    ) -> dict[str, Any]:
+        """Find and modify schematic objects.
+
+        Iterates objects of the given type, filters by property values,
+        and sets new property values on matching objects.
+
+        Args:
+            object_type: Altium object type constant (see query_objects)
+            set: Pipe-separated property=value assignments to apply, e.g.:
+                "Text=NEW_NAME" — set Text property
+                "Location.X=100|Location.Y=200" — set multiple properties
+            scope: Document scope:
+                "active_doc" — current sheet only (default)
+                "project" — all SCH sheets in focused project
+                "doc:C:\\path\\to\\Sheet.SchDoc" — specific sheet by path (no focus change)
+            filter: Pipe-separated property=value conditions (AND logic)
+
+        Returns:
+            Dictionary with "matched" count and "sheets_processed"
+
+        Example - rename a net across all sheets:
+            modify_objects(
+                object_type="eNetLabel",
+                scope="project",
+                filter="Text=OLD_NET",
+                set="Text=NEW_NET"
+            )
+        Example - modify a specific sheet without switching:
+            modify_objects(
+                object_type="eParameter",
+                scope="doc:C:\\path\\USB_LANBridge.SchDoc",
+                filter="Name=Title",
+                set="Text=USB-Ethernet Bridge"
+            )
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.modify_objects",
+            {
+                "scope": scope,
+                "object_type": object_type,
+                "filter": filter,
+                "set": set,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def create_object(
+        object_type: str,
+        properties: str,
+        container: str = "document",
+    ) -> dict[str, Any]:
+        """Create and place a schematic object.
+
+        Args:
+            object_type: Altium object type constant (see query_objects)
+            properties: Pipe-separated property=value assignments, e.g.:
+                "Text=MY_NET|Location.X=100|Location.Y=200"
+            container: "document" (place on active schematic) or
+                      "component" (add to current library component)
+
+        Returns:
+            Dictionary confirming creation
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.create_object",
+            {
+                "object_type": object_type,
+                "properties": properties,
+                "container": container,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def delete_objects(
+        object_type: str,
+        scope: str = "active_doc",
+        filter: str = "",
+        confirm_delete_all: bool = False,
+    ) -> dict[str, Any]:
+        """Find and delete schematic objects.
+
+        Args:
+            object_type: Altium object type constant (see query_objects)
+            scope: "active_doc" or "project"
+            filter: Pipe-separated property=value conditions (AND logic).
+                    WARNING: empty filter deletes ALL objects of the type.
+            confirm_delete_all: Must be True to delete all objects when filter is empty.
+
+        Returns:
+            Dictionary with "matched" count (number deleted)
+        """
+        if not filter and not confirm_delete_all:
+            return {
+                "error": "Safety guard: empty filter would delete ALL objects of type "
+                f"'{object_type}'. Provide a filter to select specific objects, "
+                "or set confirm_delete_all=True to delete all.",
+                "matched": 0,
+            }
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.delete_objects",
+            {
+                "scope": scope,
+                "object_type": object_type,
+                "filter": filter,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def get_font_spec(
+        font_id: int,
+    ) -> dict[str, Any]:
+        """Get font properties for a given font ID.
+
+        Reads the Altium font table to retrieve the full font specification
+        (size, name, bold, italic, etc.) for a font ID obtained from an object's
+        FontId property.
+
+        Args:
+            font_id: Font ID from an object's FontId property
+
+        Returns:
+            Dictionary with font_id, size, rotation, bold, italic, underline,
+            strikeout, font_name
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.get_font_spec",
+            {"font_id": str(font_id)},
+        )
+        return result
+
+    @mcp.tool()
+    async def get_font_id(
+        size: int,
+        font_name: str = "Arial",
+        bold: bool = False,
+        italic: bool = False,
+        rotation: int = 0,
+        underline: bool = False,
+        strikeout: bool = False,
+    ) -> dict[str, Any]:
+        """Get or create a font ID for the given font properties.
+
+        Looks up (or creates) an entry in the Altium font table matching the
+        specified properties and returns its font ID. Use the returned font_id
+        to set an object's FontId property via modify_objects.
+
+        Args:
+            size: Font size in points (e.g., 8, 10, 12)
+            font_name: Font family name (default "Arial")
+            bold: Whether the font is bold
+            italic: Whether the font is italic
+            rotation: Text rotation in degrees (0, 90, 180, 270)
+            underline: Whether the font is underlined
+            strikeout: Whether the font has strikeout
+
+        Returns:
+            Dictionary with font_id
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.get_font_id",
+            {
+                "size": str(size),
+                "font_name": font_name,
+                "bold": "true" if bold else "false",
+                "italic": "true" if italic else "false",
+                "rotation": str(rotation),
+                "underline": "true" if underline else "false",
+                "strikeout": "true" if strikeout else "false",
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def select_objects(
+        object_type: str,
+        filter: str = "",
+    ) -> dict[str, Any]:
+        """Select objects matching a filter on the active document.
+
+        Sets the selection state on matching schematic or PCB objects for
+        visual highlighting. Use deselect_all to clear.
+
+        Args:
+            object_type: Altium object type (schematic or PCB)
+            filter: Pipe-separated property=value conditions (AND logic)
+
+        Returns:
+            Dictionary with count of selected objects
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.select_objects",
+            {"object_type": object_type, "filter": filter},
+        )
+        return result
+
+    @mcp.tool()
+    async def deselect_all() -> dict[str, Any]:
+        """Clear all object selection on the active document.
+
+        Returns:
+            Dictionary confirming deselection
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.deselect_all", {})
+        return result
+
+    @mcp.tool()
+    async def zoom(action: str = "fit") -> dict[str, Any]:
+        """Control the viewport zoom level.
+
+        Args:
+            action: "fit" (zoom to show all), "selection" (zoom to selected objects)
+
+        Returns:
+            Dictionary confirming the zoom action
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.zoom", {"action": action}
+        )
+        return result
+
+    @mcp.tool()
+    async def batch_modify(
+        operations: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Execute multiple modify operations in a single IPC call.
+
+        Much more efficient than calling modify_objects multiple times,
+        especially for multi-sheet edits. All operations are executed
+        on the Altium side in one round-trip.
+
+        Args:
+            operations: List of operation dicts, each with:
+                - scope: "active_doc", "project", or "doc:C:\\path\\to\\file.SchDoc"
+                - object_type: Altium object type (e.g., "eParameter")
+                - filter: Pipe-separated filter conditions
+                - set: Pipe-separated property=value assignments
+
+        Returns:
+            Dictionary with operations_processed count
+
+        Example - update 4 parameters across all project sheets in ONE call:
+            batch_modify(operations=[
+                {"scope": "project", "object_type": "eParameter",
+                 "filter": "Name=Engineer", "set": "Text=John Smith"},
+                {"scope": "project", "object_type": "eParameter",
+                 "filter": "Name=Revision", "set": "Text=2.0"},
+                {"scope": "project", "object_type": "eParameter",
+                 "filter": "Name=Organization", "set": "Text=Acme Corp"},
+                {"scope": "project", "object_type": "eParameter",
+                 "filter": "Name=CompanyName", "set": "Text=Acme Corp"},
+            ])
+
+        Example - set different titles on specific sheets in ONE call:
+            batch_modify(operations=[
+                {"scope": "doc:C:\\path\\TopLevel.SchDoc", "object_type": "eParameter",
+                 "filter": "Name=Title", "set": "Text=Top Level"},
+                {"scope": "doc:C:\\path\\PSU.SchDoc", "object_type": "eParameter",
+                 "filter": "Name=Title", "set": "Text=Power Supply"},
+                {"scope": "doc:C:\\path\\MCU.SchDoc", "object_type": "eParameter",
+                 "filter": "Name=Title", "set": "Text=Microcontroller"},
+            ])
+        """
+        # Build pipe-separated operations string: scope;type;filter;set|scope;type;filter;set|...
+        op_strings = []
+        for op in operations:
+            scope = op.get("scope", "active_doc")
+            obj_type = op.get("object_type", "")
+            filt = op.get("filter", "")
+            set_str = op.get("set", "")
+            if not obj_type or not set_str:
+                continue
+            op_strings.append(f"{scope};{obj_type};{filt};{set_str}")
+
+        if not op_strings:
+            return {"error": "No valid operations provided", "operations_processed": 0}
+
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.batch_modify",
+            {"operations": "|".join(op_strings)},
+        )
+        return result
+
+    @mcp.tool()
+    async def generic_run_process(
+        process_name: str,
+        parameters: str = "",
+    ) -> dict[str, Any]:
+        """Run an Altium process command via the generic primitive layer.
+
+        Wraps any Altium RunProcess call with structured pipe-separated parameters.
+
+        Args:
+            process_name: The Altium process identifier (e.g., "Sch:Compile",
+                "WorkspaceManager:OpenObject", "PCB:Zoom")
+            parameters: Optional pipe-separated key=value parameter pairs, e.g.:
+                "ObjectKind=Document|FileName=C:\\path\\to\\file.SchDoc"
+
+        Returns:
+            Dictionary with execution result
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.run_process",
+            {
+                "process": process_name,
+                "params": parameters,
+            },
+        )
+        if isinstance(result, dict):
+            return {"success": True, **result}
+        elif result:
+            return {"success": True, "data": result}
+        else:
+            return {"success": True, "process": process_name}
+
+    @mcp.tool()
+    async def run_erc() -> dict[str, Any]:
+        """Run Electrical Rules Check on the focused project.
+
+        Compiles the project first (required), then runs ERC.
+        Use get_erc_violations() afterward to retrieve any violations found.
+
+        Returns:
+            Dictionary confirming ERC execution
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.run_erc", {})
+        return result
+
+    @mcp.tool()
+    async def highlight_net(
+        net_name: str,
+        clear_existing: bool = True,
+    ) -> dict[str, Any]:
+        """Highlight a net by name in the active schematic or PCB document.
+
+        Args:
+            net_name: The net name to highlight (e.g., "VCC", "GND", "NET_D0")
+            clear_existing: Whether to clear existing highlights first (default True)
+
+        Returns:
+            Dictionary with the highlighted net name and document context
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.highlight_net",
+            {
+                "net_name": net_name,
+                "clear_existing": "true" if clear_existing else "false",
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def clear_highlights() -> dict[str, Any]:
+        """Clear all net highlights in the active schematic or PCB document.
+
+        Returns:
+            Dictionary confirming highlights were cleared
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.clear_highlights", {})
+        return result
+
+    @mcp.tool()
+    async def add_sheet(
+        name: str = "NewSheet",
+    ) -> dict[str, Any]:
+        """Create a new schematic sheet and add it to the focused project.
+
+        The sheet is created in the same directory as the project file.
+
+        Args:
+            name: Name for the new sheet (without .SchDoc extension).
+                  Default "NewSheet".
+
+        Returns:
+            Dictionary with the path of the newly created sheet
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.add_sheet",
+            {"name": name},
+        )
+        return result
+
+    @mcp.tool()
+    async def delete_sheet(
+        file_path: str,
+    ) -> dict[str, Any]:
+        """Remove a schematic sheet from the focused project.
+
+        Safety check: refuses to remove the last remaining schematic sheet.
+        The file is closed and removed from the project but not deleted from disk.
+
+        Args:
+            file_path: Full path to the .SchDoc file to remove
+
+        Returns:
+            Dictionary confirming removal
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.delete_sheet",
+            {"file_path": file_path},
+        )
+        return result
+
+    @mcp.tool()
+    async def switch_view(
+        mode: str = "3d",
+    ) -> dict[str, Any]:
+        """Toggle between 2D and 3D view for PCB documents.
+
+        Args:
+            mode: Target view mode — "3d" or "2d" (default "3d")
+
+        Returns:
+            Dictionary confirming the view switch
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.switch_view",
+            {"mode": mode},
+        )
+        return result
+
+    @mcp.tool()
+    async def refresh_document() -> dict[str, Any]:
+        """Force a redraw/refresh of the current document.
+
+        For schematics, calls GraphicallyInvalidate. For PCB, sends a
+        PCB:Zoom Redraw command.
+
+        Returns:
+            Dictionary confirming the refresh
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.refresh_document", {})
+        return result
+
+    @mcp.tool()
+    async def get_unconnected_pins() -> dict[str, Any]:
+        """Find unconnected/floating pins in the focused project.
+
+        Compiles the project first (required for connectivity data), then
+        iterates all components via the DM API to check pin connection status.
+
+        Returns:
+            Dictionary with "count" and "unconnected_pins" array, each entry
+            having designator, pin_number, pin_name, and sheet path
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.get_unconnected_pins", {}, timeout=60.0
+        )
+        return result
+
+    @mcp.tool()
+    async def place_wire(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Place a wire segment between two XY coordinates on the active schematic.
+
+        Args:
+            x1: Start X coordinate in mils
+            y1: Start Y coordinate in mils
+            x2: End X coordinate in mils
+            y2: End Y coordinate in mils
+
+        Returns:
+            Dictionary confirming wire placement with coordinates
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_wire",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
+        return result
+
+    @mcp.tool()
+    async def place_net_label(
+        text: str,
+        x: int,
+        y: int,
+        orientation: int = 0,
+    ) -> dict[str, Any]:
+        """Place a net label at coordinates on the active schematic.
+
+        Args:
+            text: Net name for the label (e.g., "VCC", "GND", "SDA")
+            x: X coordinate in mils
+            y: Y coordinate in mils
+            orientation: Label rotation (0=0deg, 1=90deg, 2=180deg, 3=270deg)
+
+        Returns:
+            Dictionary confirming placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_net_label",
+            {
+                "text": text,
+                "x": str(x),
+                "y": str(y),
+                "orientation": str(orientation),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_port(
+        name: str,
+        x: int,
+        y: int,
+        style: str = "right",
+        io_type: str = "bidirectional",
+    ) -> dict[str, Any]:
+        """Place a port on the active schematic for inter-sheet connectivity.
+
+        Args:
+            name: Port name (maps to net name)
+            x: X coordinate in mils
+            y: Y coordinate in mils
+            style: Arrow style — "none", "left", "right", "left_right"
+            io_type: I/O direction — "unspecified", "output", "input", "bidirectional"
+
+        Returns:
+            Dictionary confirming placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_port",
+            {
+                "name": name,
+                "x": str(x),
+                "y": str(y),
+                "style": style,
+                "io_type": io_type,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_power_port(
+        text: str,
+        x: int,
+        y: int,
+        style: str = "circle",
+    ) -> dict[str, Any]:
+        """Place a power port symbol (VCC, GND, etc.) on the active schematic.
+
+        Args:
+            text: Net name for the power port (e.g., "VCC", "GND", "+3V3")
+            x: X coordinate in mils
+            y: Y coordinate in mils
+            style: Symbol style:
+                "circle" — circle symbol (default, typical for VCC)
+                "arrow" — arrow symbol
+                "bar" — bar/line symbol
+                "wave" — wave symbol
+                "gnd_power" — power ground symbol
+                "gnd_signal" — signal ground symbol
+                "gnd_earth" — earth ground symbol
+
+        Returns:
+            Dictionary confirming placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_power_port",
+            {
+                "text": text,
+                "x": str(x),
+                "y": str(y),
+                "style": style,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def get_sheet_parameters(
+        file_path: str = "",
+    ) -> dict[str, Any]:
+        """Get title block parameters (title, revision, date, etc.) from a schematic sheet.
+
+        Reads all parameters from the sheet without modifying anything.
+
+        Args:
+            file_path: Full path to a specific .SchDoc file. If empty, reads
+                       from the active document.
+
+        Returns:
+            Dictionary with "count" and "parameters" array, each having
+            "name" and "value"
+        """
+        bridge = get_bridge()
+        params = {}
+        if file_path:
+            params["file_path"] = file_path
+        result = await bridge.send_command_async(
+            "generic.get_sheet_parameters", params
+        )
+        return result
+
+    @mcp.tool()
+    async def copy_objects(
+        object_type: str,
+        filter: str = "",
+    ) -> dict[str, Any]:
+        """Copy matching schematic objects to the clipboard.
+
+        Selects objects matching the filter, copies them to the system
+        clipboard, then clears selection.
+
+        Args:
+            object_type: Altium schematic object type (see query_objects)
+            filter: Pipe-separated property=value conditions (AND logic)
+
+        Returns:
+            Dictionary with count of copied objects
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.copy_objects",
+            {"object_type": object_type, "filter": filter},
+        )
+        return result
+
+    @mcp.tool()
+    async def get_object_count(
+        object_type: str,
+        scope: str = "active_doc",
+        filter: str = "",
+    ) -> dict[str, Any]:
+        """Quick count of objects by type — faster than query_objects when you only need the count.
+
+        Args:
+            object_type: Altium object type constant (see query_objects for options)
+            scope: "active_doc" (default) or "project"
+            filter: Pipe-separated property=value conditions (AND logic)
+
+        Returns:
+            Dictionary with "count" (and "sheets_processed" for project scope)
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.get_object_count",
+            {"object_type": object_type, "scope": scope, "filter": filter},
+        )
+        return result
+
+    @mcp.tool()
+    async def place_no_erc(
+        x: int,
+        y: int,
+    ) -> dict[str, Any]:
+        """Place a No-ERC marker at coordinates to suppress specific ERC violations.
+
+        Use this after running ERC to suppress known-good violations at specific
+        pin or wire locations.
+
+        Args:
+            x: X coordinate in mils
+            y: Y coordinate in mils
+
+        Returns:
+            Dictionary confirming placement with coordinates
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_no_erc",
+            {"x": str(x), "y": str(y)},
+        )
+        return result
+
+    @mcp.tool()
+    async def place_junction(
+        x: int,
+        y: int,
+    ) -> dict[str, Any]:
+        """Place a wire junction at coordinates on the active schematic.
+
+        Junctions are needed where wires cross and should connect (T or + intersections).
+
+        Args:
+            x: X coordinate in mils
+            y: Y coordinate in mils
+
+        Returns:
+            Dictionary confirming placement with coordinates
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_junction",
+            {"x": str(x), "y": str(y)},
+        )
+        return result
+
+    @mcp.tool()
+    async def get_document_info() -> dict[str, Any]:
+        """Get comprehensive info about the active document.
+
+        For schematics: file path, kind, sheet size, title block visibility,
+        snap grid, visible grid, unit system, and custom dimensions.
+        For PCB: file path, kind, origin, snap grid.
+
+        Returns:
+            Dictionary with document properties
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.get_document_info", {})
+        return result
+
+    @mcp.tool()
+    async def set_grid(
+        snap_grid: int = 0,
+        visible_grid: int = 0,
+    ) -> dict[str, Any]:
+        """Set the snap grid and/or visible grid size for the active schematic.
+
+        Args:
+            snap_grid: Snap grid size in mils (0 = don't change)
+            visible_grid: Visible grid size in mils (0 = don't change)
+
+        Returns:
+            Dictionary with the resulting grid sizes
+        """
+        bridge = get_bridge()
+        params: dict[str, str] = {}
+        if snap_grid > 0:
+            params["snap_grid"] = str(snap_grid)
+        if visible_grid > 0:
+            params["visible_grid"] = str(visible_grid)
+        result = await bridge.send_command_async("generic.set_grid", params)
+        return result
+
+    @mcp.tool()
+    async def place_image(
+        image_path: str,
+        x: int,
+        y: int,
+        width: int = 500,
+        height: int = 500,
+    ) -> dict[str, Any]:
+        """Place an image/logo on the active schematic.
+
+        Args:
+            image_path: Full path to the image file (BMP, JPG, PNG, etc.)
+            x: X coordinate in mils (bottom-left corner)
+            y: Y coordinate in mils (bottom-left corner)
+            width: Image width in mils (default 500)
+            height: Image height in mils (default 500)
+
+        Returns:
+            Dictionary confirming placement with path and dimensions
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_image",
+            {
+                "image_path": image_path,
+                "x": str(x),
+                "y": str(y),
+                "width": str(width),
+                "height": str(height),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def replace_component(
+        designator: str,
+        new_lib_ref: str,
+        new_library: str = "",
+    ) -> dict[str, Any]:
+        """Replace a component with a different library part.
+
+        Keeps existing connections and designator, swaps the symbol and library
+        reference. The component must exist on the active schematic sheet.
+
+        Args:
+            designator: Component designator to replace (e.g., "U1", "R3")
+            new_lib_ref: New library reference / component name
+            new_library: New source library name (optional, keeps current if empty)
+
+        Returns:
+            Dictionary confirming the replacement
+        """
+        bridge = get_bridge()
+        params = {
+            "designator": designator,
+            "new_lib_ref": new_lib_ref,
+        }
+        if new_library:
+            params["new_library"] = new_library
+        result = await bridge.send_command_async(
+            "generic.replace_component", params
+        )
+        return result
