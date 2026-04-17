@@ -4,6 +4,12 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
+## Demo
+
+Claude Code reviewing a buck converter through eda-agent. The feedback resistor divider on this schematic is intentionally wrong — Claude catches it among other recommendations.
+
+[![eda-agent demo: Claude Code reviewing a buck converter](https://img.youtube.com/vi/snRyCx3OlxM/maxresdefault.jpg)](https://youtu.be/snRyCx3OlxM)
+
 ## How it works
 
 - Altium Designer stays open and in full control of your design
