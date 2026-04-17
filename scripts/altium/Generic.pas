@@ -323,7 +323,7 @@ Begin
     Result := '';
     First := (TotalMatched = 0);
 
-    // Delete mode: one-at-a-time to avoid iterator invalidation
+    // Delete mode: one-at-a-time to avoid iterator invalidation.
     If Mode = 'delete' Then
     Begin
         SchServer.ProcessControl.PreProcess(SchDoc, '');
@@ -353,7 +353,7 @@ Begin
         Exit;
     End;
 
-    // Modify mode: wrap in PreProcess/PostProcess for undo support
+    // Modify mode: wrap in PreProcess/PostProcess for undo support.
     If Mode = 'modify' Then
         SchServer.ProcessControl.PreProcess(SchDoc, '');
 
@@ -380,9 +380,14 @@ Begin
             End
             Else If Mode = 'modify' Then
             Begin
-                // Document-level PreProcess/PostProcess wraps the whole loop (lines above/below).
-                // Per-object PreProcess(SchDoc, Obj) does NOT work — second param must be a string.
+                // Bracket the property writes in SCHM_BeginModify /
+                // SCHM_EndModify so the editor sub-systems and the undo
+                // stack observe the edit. Without these the property is
+                // updated in memory but the UI never re-renders and
+                // SaveAll may skip the doc.
+                SchBeginModify(Obj);
                 ApplySetProperties(Obj, SetStr);
+                SchEndModify(Obj);
             End;
 
             Inc(TotalMatched);
@@ -463,15 +468,18 @@ Begin
         If IsMutating Then
         Begin
             Try SchDoc.GraphicallyInvalidate; Except End;
-            // IServerDocument.Modified IS writable (unlike ISch_Document
-            // or IDocument). Setting it marks the sheet dirty so the
-            // caller's trailing save_all flushes it. No per-doc save
-            // here — SaveObject with an explicit FileName is Save-As.
+            // IServerDocument.DoFileSave writes to disk directly,
+            // independent of focus and WorkspaceManager:SaveAll. SetModified
+            // first, then save. Both calls are reliable per the IServerDocument
+            // docs; no Save-As dialog, no focus change.
             ServerDoc := Client.GetDocumentByPath(FilePath);
             If ServerDoc <> Nil Then
             Begin
-                ServerDoc.Modified := True;
-                Inc(SheetsSaved);
+                ServerDoc.SetModified(True);
+                Try
+                    ServerDoc.DoFileSave('');
+                    Inc(SheetsSaved);
+                Except End;
             End;
         End;
 
@@ -525,8 +533,11 @@ Begin
         ServerDoc := Client.GetDocumentByPath(DocPath);
         If ServerDoc <> Nil Then
         Begin
-            ServerDoc.Modified := True;
-            Saved := True;
+            ServerDoc.SetModified(True);
+            Try
+                ServerDoc.DoFileSave('');
+                Saved := True;
+            Except End;
         End;
     End;
 
@@ -537,7 +548,7 @@ Begin
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + ',"dirty":' + SavedStr + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr + '}');
     End;
 End;
 
@@ -582,8 +593,11 @@ Begin
         ServerDoc := Client.GetDocumentByPath(DocPath);
         If ServerDoc <> Nil Then
         Begin
-            ServerDoc.Modified := True;
-            Saved := True;
+            ServerDoc.SetModified(True);
+            Try
+                ServerDoc.DoFileSave('');
+                Saved := True;
+            Except End;
         End;
     End;
 
@@ -594,7 +608,7 @@ Begin
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + ',"dirty":' + SavedStr + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr + '}');
     End;
 End;
 
@@ -769,6 +783,7 @@ Begin
         End;
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(NewObj);
+        SchRegisterObject(Component, NewObj);
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End
     Else
@@ -783,6 +798,7 @@ Begin
         End;
         SchServer.ProcessControl.PreProcess(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(NewObj);
+        SchRegisterObject(SchDoc, NewObj);
         SchServer.ProcessControl.PostProcess(SchDoc, '');
         SchDoc.GraphicallyInvalidate;
     End;
@@ -1710,6 +1726,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Wire);
+    SchRegisterObject(SchDoc, Wire);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -1762,6 +1779,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NetLabel);
+    SchRegisterObject(SchDoc, NetLabel);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -1825,6 +1843,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(SchPort);
+    SchRegisterObject(SchDoc, SchPort);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -1885,6 +1904,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(PowerObj);
+    SchRegisterObject(SchDoc, PowerObj);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -2166,6 +2186,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NoERC);
+    SchRegisterObject(SchDoc, NoERC);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -2205,6 +2226,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Junction);
+    SchRegisterObject(SchDoc, Junction);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 
@@ -2412,6 +2434,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Img);
+    SchRegisterObject(SchDoc, Img);
     SchServer.ProcessControl.PostProcess(SchDoc, '');
     SchDoc.GraphicallyInvalidate;
 

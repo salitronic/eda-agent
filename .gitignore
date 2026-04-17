@@ -77,3 +77,6 @@ tests/test_real_pascal.exe
 # Runtime / scratch
 workspace/
 *.log
+
+# Local Altium SDK reference material (not redistributable)
+reference/

@@ -1028,7 +1028,9 @@ Begin
                             Comp := Obj;
                             If Not Comp.Designator.IsLocked Then
                             Begin
+                                SchBeginModify(Comp);
                                 Comp.Designator.Text := ExtractDesignatorPrefix(Comp.Designator.Text) + '?';
+                                SchEndModify(Comp);
                                 Inc(ResetCount);
                             End
                             Else
@@ -1158,7 +1160,9 @@ Begin
                 Comp := CompList.Items[I];
                 If Comp <> Nil Then
                 Begin
+                    SchBeginModify(Comp);
                     Comp.Designator.Text := NewDesText;
+                    SchEndModify(Comp);
                     Inc(RenameCount);
                 End;
             Except
@@ -2189,13 +2193,9 @@ Begin
             Begin
                 If Parameter.Name = ParamName Then
                 Begin
-                    { Modify pattern: broadcast SCHM_BeginModify, write
-                      the property, broadcast SCHM_EndModify. }
-                    SchServer.RobotManager.SendMessage(
-                        Parameter.I_ObjectAddress, Nil, SCHM_BeginModify, Nil);
+                    SchBeginModify(Parameter);
                     Parameter.Text := ParamValue;
-                    SchServer.RobotManager.SendMessage(
-                        Parameter.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+                    SchEndModify(Parameter);
                     Found := True;
                     Break;
                 End;
@@ -2216,25 +2216,24 @@ Begin
             Parameter.Name := ParamName;
             Parameter.Text := ParamValue;
             SchDoc.RegisterSchObjectInContainer(Parameter);
-            SchServer.RobotManager.SendMessage(
-                SchDoc.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
-                Parameter.I_ObjectAddress);
+            SchRegisterObject(SchDoc, Parameter);
         End;
     Finally
         SchServer.ProcessControl.PostProcess(SchDoc, '');
     End;
 
-    { IServerDocument.Modified := True is the dirty flag that
-      WorkspaceManager:SaveAll checks. SCHM_BeginModify/EndModify
-      should dirty the doc through the editor sub-systems, but we've
-      seen that path not fire reliably, so set Modified explicitly. }
-    ServerDoc.Modified := True;
+    { Persist directly via the IServerDocument API. SetModified flags
+      the doc; DoFileSave('') writes it to disk regardless of focus or
+      dirty-tracking propagation. WorkspaceManager:SaveAll doesn't reach
+      non-active sheets in our tests, so we don't rely on it. }
+    ServerDoc.SetModified(True);
+    Try ServerDoc.DoFileSave(''); Except End;
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"action":"' + Action + '"' +
-        ',"dirty":true,"note":"call save_all to persist"' +
+        ',"saved":true' +
         ',"file_path":"' + EscapeJsonString(FilePath) +
         '","name":"' + EscapeJsonString(ParamName) +
         '","value":"' + EscapeJsonString(ParamValue) + '"}');

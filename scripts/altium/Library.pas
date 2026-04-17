@@ -101,6 +101,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(Pin);
+        SchRegisterObject(Component, Pin);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
         Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"' + EscapeJsonString(Designator) + '"}');
@@ -146,6 +147,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(Rect);
+        SchRegisterObject(Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
@@ -194,6 +196,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(Line);
+        SchRegisterObject(Component, Line);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
@@ -440,6 +443,7 @@ Begin
             Impl.LibraryIdentifier := LibraryName;
         End;
         Component.AddSchObject(Impl);
+        SchRegisterObject(Component, Impl);
 
         Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '"}');
     End
@@ -479,6 +483,7 @@ Begin
         Impl.ModelName := ModelName;
         Impl.ModelType := 'PCB3DModel';
         Component.AddSchObject(Impl);
+        SchRegisterObject(Component, Impl);
 
         Result := BuildSuccessResponse(RequestId, '{"success":true,"model":"' + EscapeJsonString(ModelName) + '"}');
     End
@@ -783,7 +788,9 @@ Begin
 
                 If FoundParam <> Nil Then
                 Begin
+                    SchBeginModify(FoundParam);
                     FoundParam.Text := ParamValue;
+                    SchEndModify(FoundParam);
                     Inc(Updated);
                 End
                 Else
@@ -794,6 +801,7 @@ Begin
                         NewParam.Name := ParamName;
                         NewParam.Text := ParamValue;
                         Component.AddSchObject(NewParam);
+                        SchRegisterObject(Component, NewParam);
                         Inc(Created);
                     End
                     Else
@@ -1079,6 +1087,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(Arc);
+        SchRegisterObject(Component, Arc);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
@@ -1176,6 +1185,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(Polygon);
+        SchRegisterObject(Component, Polygon);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
         Result := BuildSuccessResponse(RequestId,

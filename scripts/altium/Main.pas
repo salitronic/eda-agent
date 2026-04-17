@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.17.12';
+    SCRIPT_VERSION = '2026.04.17.15';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
@@ -37,6 +37,37 @@ Const
 Var
     WorkspaceDir : String;
     Running : Boolean;
+
+{..............................................................................}
+{ ISch_RobotManager.SendMessage helpers.                                        }
+{                                                                               }
+{ Every property write on an existing sch primitive should be bracketed by     }
+{ SchBeginModify / SchEndModify. Every new primitive added via SchObjectFactory }
+{ + AddSchObject / RegisterSchObjectInContainer should be followed by          }
+{ SchRegisterObject. Without these broadcasts the editor sub-systems and the   }
+{ undo stack are not notified, which matches the "writes don't appear" and    }
+{ "save doesn't pick up changes" symptoms we hit.                               }
+{..............................................................................}
+
+Procedure SchBeginModify(Obj : ISch_BasicContainer);
+Begin
+    If (Obj <> Nil) And (SchServer <> Nil) Then
+        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_BeginModify, Nil);
+End;
+
+Procedure SchEndModify(Obj : ISch_BasicContainer);
+Begin
+    If (Obj <> Nil) And (SchServer <> Nil) Then
+        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+End;
+
+Procedure SchRegisterObject(Container, Obj : ISch_BasicContainer);
+Begin
+    If (Container <> Nil) And (Obj <> Nil) And (SchServer <> Nil) Then
+        SchServer.RobotManager.SendMessage(
+            Container.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
+            Obj.I_ObjectAddress);
+End;
 
 {..............................................................................}
 { Resolve workspace directory.                                                  }
