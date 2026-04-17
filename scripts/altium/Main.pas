@@ -11,16 +11,28 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.17.11';
+    SCRIPT_VERSION = '2026.04.17.12';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
     RESPONSE_FILE = 'response.json';
     POLL_INTERVAL_ACTIVE = 50;    // ms between polls right after a command
-    POLL_INTERVAL_IDLE   = 500;   // ms between polls when idle (gives Altium breathing room)
+    POLL_INTERVAL_IDLE   = 500;   // ms between polls when idle (lower CPU load)
     IDLE_THRESHOLD       = 20;    // iterations before switching to idle polling
     AUTO_SHUTDOWN_MS     = 60000;  // 60 sec inactivity auto-shutdown (Python sends keep-alive pings)
     YIELD_ITERATIONS     = 10;    // ProcessMessages calls per sleep cycle in idle mode
+
+    // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
+    // Send SCHM_BeginModify / SCHM_EndModify around property writes on an
+    // existing ISch_BasicContainer primitive so the Undo system and editor
+    // sub-systems are notified. Send SCHM_PrimitiveRegistration after
+    // RegisterSchObjectInContainer so a newly-added primitive is known to
+    // Altium's editor (otherwise the title block / BOM never sees it).
+    // Source and Destination pointers are passed as Nil for broadcast
+    // (documented c_BroadCast = Nil, c_NoEventData = Nil).
+    SCHM_PrimitiveRegistration = 1;
+    SCHM_BeginModify           = 2;
+    SCHM_EndModify             = 3;
 
 Var
     WorkspaceDir : String;

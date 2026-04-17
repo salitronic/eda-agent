@@ -2143,15 +2143,17 @@ Begin
     If FilePath = '' Then Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'file_path is required'); Exit; End;
     If ParamName = '' Then Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'name is required'); Exit; End;
 
-    { Pattern adapted from Hmissa's SheetParameters.pas
-      (github.com/Hmissa/altium-designer-addons) — the iterator/AddSchObject
-      /Modified parts all come from there. One deviation: we do NOT call
-      Client.OpenDocument or Client.ShowDocumentDontFocus to auto-load
-      missing sheets. On this Altium build those calls detach the sheet
-      from its project (shows as "free document" with the absolute path
-      as tab title). Require the caller to have loaded every target sheet
-      beforehand via load_project_sheets — which uses the project-aware
-      path that preserves membership. }
+    { Sheet parameter write. Follows the Altium Schematic API docs:
+      SchIterator + eParameter for existing params, SchObjectFactory +
+      RegisterSchObjectInContainer for new ones, with RobotManager
+      SendMessage notifications around each.
+
+      Does NOT auto-load missing sheets. Client.OpenDocument and
+      Client.ShowDocumentDontFocus both detach the sheet from its
+      project on recent Altium builds (tab title shows the absolute
+      path instead of the filename). Require the caller to load every
+      target sheet beforehand via load_project_sheets, which uses the
+      project-aware open path that preserves membership. }
 
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then
@@ -2170,37 +2172,62 @@ Begin
         Exit;
     End;
 
+    { Wrap all sch-object mutations in PreProcess/PostProcess so the
+      undo system is notified of the edit. Per the docs, the empty
+      message here is fine as long as the inner SCHM_BeginModify /
+      SCHM_EndModify / SCHM_PrimitiveRegistration broadcasts bracket
+      the actual property write and registration. }
     Found := False;
-    Iterator := SchDoc.SchIterator_Create;
-    Iterator.SetState_IterationDepth(eIterateFirstLevel);
-    Iterator.AddFilter_ObjectSet(MkSet(eParameter));
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
-        Parameter := Iterator.FirstSchObject;
-        While Parameter <> Nil Do
-        Begin
-            If Parameter.Name = ParamName Then
+        Iterator := SchDoc.SchIterator_Create;
+        Iterator.SetState_IterationDepth(eIterateFirstLevel);
+        Iterator.AddFilter_ObjectSet(MkSet(eParameter));
+        Try
+            Parameter := Iterator.FirstSchObject;
+            While Parameter <> Nil Do
             Begin
-                Parameter.Text := ParamValue;
-                Found := True;
-                Break;
+                If Parameter.Name = ParamName Then
+                Begin
+                    { Modify pattern: broadcast SCHM_BeginModify, write
+                      the property, broadcast SCHM_EndModify. }
+                    SchServer.RobotManager.SendMessage(
+                        Parameter.I_ObjectAddress, Nil, SCHM_BeginModify, Nil);
+                    Parameter.Text := ParamValue;
+                    SchServer.RobotManager.SendMessage(
+                        Parameter.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+                    Found := True;
+                    Break;
+                End;
+                Parameter := Iterator.NextSchObject;
             End;
-            Parameter := Iterator.NextSchObject;
+        Finally
+            SchDoc.SchIterator_Destroy(Iterator);
+        End;
+
+        If Not Found Then
+        Begin
+            { Add pattern: create via SchObjectFactory, set properties,
+              register in the container, broadcast SCHM_PrimitiveRegistration.
+              SchObjectFactory docs name RegisterSchObjectInContainer as
+              the ISch_Document-level add; the broadcast notifies the
+              editor sub-systems so the new primitive is visible. }
+            Parameter := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+            Parameter.Name := ParamName;
+            Parameter.Text := ParamValue;
+            SchDoc.RegisterSchObjectInContainer(Parameter);
+            SchServer.RobotManager.SendMessage(
+                SchDoc.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
+                Parameter.I_ObjectAddress);
         End;
     Finally
-        SchDoc.SchIterator_Destroy(Iterator);
+        SchServer.ProcessControl.PostProcess(SchDoc, '');
     End;
 
-    If Not Found Then
-    Begin
-        Parameter := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-        Parameter.Name := ParamName;
-        Parameter.Text := ParamValue;
-        SchDoc.AddSchObject(Parameter);
-    End;
-
-    { Mark modified via IServerDocument — this is the writable property
-      that WorkspaceManager:SaveAll checks. ISch_Document and IDocument
-      don't expose a writable Modified property (undeclared in DelphiScript). }
+    { IServerDocument.Modified := True is the dirty flag that
+      WorkspaceManager:SaveAll checks. SCHM_BeginModify/EndModify
+      should dirty the doc through the editor sub-systems, but we've
+      seen that path not fire reliably, so set Modified explicitly. }
     ServerDoc.Modified := True;
     Try SchDoc.GraphicallyInvalidate; Except End;
 
