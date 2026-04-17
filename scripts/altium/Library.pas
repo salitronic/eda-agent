@@ -43,6 +43,7 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
         SchLib.CurrentSchComponent := Component;
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId, '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
     End
     Else
@@ -104,6 +105,7 @@ Begin
         SchRegisterObject(Component, Pin);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"' + EscapeJsonString(Designator) + '"}');
     End
     Else
@@ -150,6 +152,7 @@ Begin
         SchRegisterObject(Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -199,6 +202,7 @@ Begin
         SchRegisterObject(Component, Line);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -294,6 +298,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pad');
 
     PCBServer.PostProcess;
+    SaveDocByPath(PcbLib.Board.FileName);
 End;
 
 Function Lib_AddFootprintTrack(Params : String; RequestId : String) : String;
@@ -349,6 +354,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create track');
 
     PCBServer.PostProcess;
+    SaveDocByPath(PcbLib.Board.FileName);
 End;
 
 Function Lib_AddFootprintArc(Params : String; RequestId : String) : String;
@@ -406,6 +412,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc');
 
     PCBServer.PostProcess;
+    SaveDocByPath(PcbLib.Board.FileName);
 End;
 
 Function Lib_LinkFootprint(Params : String; RequestId : String) : String;
@@ -816,6 +823,7 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End;
 
+    SaveDocByPath(SchLib.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
         ',"created":' + IntToStr(Created) +
@@ -936,12 +944,8 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End;
 
-    // Mark document as modified and save
     SchLib.GraphicallyInvalidate;
-
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'FocusedDocument');
-    RunProcess('WorkspaceManager:SaveObject');
+    SaveDocByPath(SchLib.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"renamed":' + IntToStr(Renamed) +
@@ -1090,6 +1094,7 @@ Begin
         SchRegisterObject(Component, Arc);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -1188,6 +1193,7 @@ Begin
         SchRegisterObject(Component, Polygon);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
+        SaveDocByPath(SchLib.DocumentName);
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"vertices":' + IntToStr(VertexCount) + '}');
     End
@@ -1230,9 +1236,12 @@ Begin
     End;
 
     SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginModify(Component);
     Component.ComponentDescription := Description;
+    SchEndModify(Component);
     SchServer.ProcessControl.PostProcess(SchLib, '');
 
+    SaveDocByPath(SchLib.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"component":"' + EscapeJsonString(CompName) +
         '","description":"' + EscapeJsonString(Description) + '"}');
@@ -1368,6 +1377,7 @@ Begin
 
     SchLib.CurrentSchComponent := NewComp;
 
+    SaveDocByPath(SchLib.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"source":"' + EscapeJsonString(SourceName) +
         '","new_name":"' + EscapeJsonString(NewName) + '"}');

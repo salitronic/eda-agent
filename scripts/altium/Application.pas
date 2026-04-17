@@ -316,6 +316,109 @@ Begin
 End;
 
 {..............................................................................}
+{ Create a new blank document of a given kind (PCB, SCH, PCBLIB, SCHLIB,       }
+{ OUTPUTJOB, ...). Saves it to disk and optionally adds it to the focused      }
+{ project. Uses IClient.OpenNewDocument, the documented API for this.          }
+{                                                                               }
+{ Params: kind (required, e.g. 'PCB' or 'SCH'),                                }
+{         file_path (required, absolute path where the doc should live),       }
+{         name (optional display name — defaults to the filename),             }
+{         add_to_project (optional bool — defaults to true)                    }
+{..............................................................................}
+
+Function App_CreateDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, DocKind, DocName, AddStr : String;
+    ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    AddToProject, Saved, Added : Boolean;
+Begin
+    DocKind := ExtractJsonValue(Params, 'kind');
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    DocName := ExtractJsonValue(Params, 'name');
+    AddStr := ExtractJsonValue(Params, 'add_to_project');
+    AddToProject := (AddStr = '') Or (AddStr = 'true');
+
+    If DocKind = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'kind is required (e.g. PCB, SCH, PCBLIB, SCHLIB)');
+        Exit;
+    End;
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'file_path is required');
+        Exit;
+    End;
+    If DocName = '' Then DocName := ExtractFileName(FilePath);
+
+    { Client.OpenNewDocument creates a blank in-memory IServerDocument of the
+      given kind. Pass False for ReuseExisting so we don't accidentally grab
+      a stale load of the same path. }
+    ServerDoc := Client.OpenNewDocument(DocKind, FilePath, DocName, False);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+            'Client.OpenNewDocument returned Nil for kind=' + DocKind);
+        Exit;
+    End;
+
+    { Persist to disk. For a brand-new in-memory doc Altium sometimes
+      doesn't know the target path from OpenNewDocument's AFileName arg,
+      so DoFileSave('') becomes a no-op. SetFileName forces the path;
+      ensure it's set before the save. If DoFileSave fails for any
+      reason, fall back to WorkspaceManager:SaveObject with an explicit
+      FileName — that path is effectively Save-As, which is what we
+      want for a previously-unsaved document. }
+    Saved := False;
+    Try ServerDoc.SetFileName(FilePath); Except End;
+    Try
+        ServerDoc.SetModified(True);
+        ServerDoc.DoFileSave('');
+        Saved := FileExists(FilePath);
+    Except Saved := False; End;
+    If Not Saved Then
+    Begin
+        Try
+            ServerDoc.Focus;
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Document');
+            AddStringParameter('FileName', FilePath);
+            RunProcess('WorkspaceManager:SaveObject');
+            Saved := FileExists(FilePath);
+        Except Saved := False; End;
+    End;
+
+    { Add to the focused project via WorkspaceManager:AddDocumentToProject.
+      The process reads DocumentPath from parameters and attaches the file
+      to whatever project is currently focused. }
+    Added := False;
+    If AddToProject Then
+    Begin
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            Project := Workspace.DM_FocusedProject;
+            If Project <> Nil Then
+            Begin
+                Try
+                    ResetParameters;
+                    AddStringParameter('DocumentPath', FilePath);
+                    RunProcess('WorkspaceManager:AddDocumentToProject');
+                    Added := True;
+                Except Added := False; End;
+            End;
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"kind":"' + EscapeJsonString(DocKind) + '"' +
+        ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
+        ',"saved":' + BoolToJsonStr(Saved) +
+        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
@@ -331,6 +434,7 @@ Begin
         'get_preferences':     Result := App_GetPreferences(RequestId);
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
+        'create_document':     Result := App_CreateDocument(Params, RequestId);
         'stop_server':         Begin Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);

@@ -468,19 +468,10 @@ Begin
         If IsMutating Then
         Begin
             Try SchDoc.GraphicallyInvalidate; Except End;
-            // IServerDocument.DoFileSave writes to disk directly,
-            // independent of focus and WorkspaceManager:SaveAll. SetModified
-            // first, then save. Both calls are reliable per the IServerDocument
-            // docs; no Save-As dialog, no focus change.
-            ServerDoc := Client.GetDocumentByPath(FilePath);
-            If ServerDoc <> Nil Then
-            Begin
-                ServerDoc.SetModified(True);
-                Try
-                    ServerDoc.DoFileSave('');
-                    Inc(SheetsSaved);
-                Except End;
-            End;
+            // SaveDocByPath does SetModified + DoFileSave, which writes
+            // directly to disk and bypasses SaveAll's non-active-doc blind spot.
+            SaveDocByPath(FilePath);
+            Inc(SheetsSaved);
         End;
 
         Inc(SheetsProcessed);
@@ -530,15 +521,8 @@ Begin
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
-        ServerDoc := Client.GetDocumentByPath(DocPath);
-        If ServerDoc <> Nil Then
-        Begin
-            ServerDoc.SetModified(True);
-            Try
-                ServerDoc.DoFileSave('');
-                Saved := True;
-            Except End;
-        End;
+        SaveDocByPath(DocPath);
+        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -590,15 +574,8 @@ Begin
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
-        ServerDoc := Client.GetDocumentByPath(DocPath);
-        If ServerDoc <> Nil Then
-        Begin
-            ServerDoc.SetModified(True);
-            Try
-                ServerDoc.DoFileSave('');
-                Saved := True;
-            Except End;
-        End;
+        SaveDocByPath(DocPath);
+        Saved := True;
     End;
 
     If Mode = 'query' Then

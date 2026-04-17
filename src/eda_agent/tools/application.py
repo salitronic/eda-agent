@@ -178,6 +178,46 @@ def register_application_tools(mcp):
         }
 
     @mcp.tool()
+    async def create_document(
+        kind: str,
+        file_path: str,
+        name: Optional[str] = None,
+        add_to_project: bool = True,
+    ) -> dict[str, Any]:
+        """Create a new blank document of a given kind and save it to disk.
+
+        Wraps IClient.OpenNewDocument + DoFileSave. The new document is
+        written to `file_path` and, by default, attached to the currently
+        focused project. Use this to create a .PcbDoc before running
+        update_pcb, to spin up a fresh .SchDoc, library, OutJob, etc.
+
+        Args:
+            kind: Document kind — 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
+                'OUTPUTJOB', or any other kind Altium's server module
+                registers under.
+            file_path: Absolute path where the new document should live.
+                Use Windows backslashes.
+            name: Optional display name. Defaults to the filename.
+            add_to_project: Attach the new file to the focused project.
+                Default True. Set False to leave it as a free document.
+
+        Returns:
+            Dictionary with kind, file_path, saved, added_to_project.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "kind": kind,
+            "file_path": file_path,
+            "add_to_project": "true" if add_to_project else "false",
+        }
+        if name:
+            params["name"] = name
+        result = await bridge.send_command_async(
+            "application.create_document", params
+        )
+        return result
+
+    @mcp.tool()
     async def get_open_documents() -> list[dict[str, Any]]:
         """List all documents known to the current Altium workspace.
 

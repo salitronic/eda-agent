@@ -199,6 +199,8 @@ Begin
             End;
             Board.BoardIterator_Destroy(Iterator);
             If FoundObj = Nil Then Break;
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
             Board.RemovePCBObject(FoundObj);
             Inc(TotalMatched);
             Dec(MaxIter);
@@ -256,8 +258,11 @@ Begin
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
         FilterStr, PropsStr, SetStr, Mode, TotalMatched, Limit);
 
-    If (Mode = 'modify') Or (Mode = 'delete') Then
+    If (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create') Then
+    Begin
         Board.GraphicalView_ZoomRedraw;
+        SaveDocByPath(Board.FileName);
+    End;
 
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,

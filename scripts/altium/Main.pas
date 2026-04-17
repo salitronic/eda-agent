@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.17.15';
+    SCRIPT_VERSION = '2026.04.18.1';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
@@ -67,6 +67,25 @@ Begin
         SchServer.RobotManager.SendMessage(
             Container.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
             Obj.I_ObjectAddress);
+End;
+
+{..............................................................................}
+{ Persist a specific document (schematic, PCB, or any server doc) to disk by   }
+{ resolving its IServerDocument via Client.GetDocumentByPath and calling       }
+{ SetModified(True) + DoFileSave(''). DoFileSave writes regardless of focus    }
+{ and doesn't go through WorkspaceManager:SaveAll — so it works on non-active }
+{ docs that SaveAll otherwise silently skips.                                  }
+{..............................................................................}
+
+Procedure SaveDocByPath(FilePath : String);
+Var
+    ServerDoc : IServerDocument;
+Begin
+    If FilePath = '' Then Exit;
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then Exit;
+    ServerDoc.SetModified(True);
+    Try ServerDoc.DoFileSave(''); Except End;
 End;
 
 {..............................................................................}

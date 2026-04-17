@@ -1044,6 +1044,7 @@ Begin
                 End;
                 SchServer.ProcessControl.PostProcess(SchDoc, '');
                 SchDoc.GraphicallyInvalidate;
+                SaveDocByPath(FilePath);
                 Continue;
             End;
 
@@ -1169,7 +1170,7 @@ Begin
             End;
         End;
 
-        { PostProcess + Invalidate every touched doc }
+        { PostProcess + Invalidate + Save every touched doc }
         For I := 0 To TouchedDocs.Count - 1 Do
         Begin
             SchDoc := SchServer.GetSchDocumentByPath(TouchedDocs[I]);
@@ -1178,6 +1179,7 @@ Begin
                 SchServer.ProcessControl.PostProcess(SchDoc, '');
                 SchDoc.GraphicallyInvalidate;
             End;
+            SaveDocByPath(TouchedDocs[I]);
         End;
 
     Finally
@@ -2222,12 +2224,10 @@ Begin
         SchServer.ProcessControl.PostProcess(SchDoc, '');
     End;
 
-    { Persist directly via the IServerDocument API. SetModified flags
-      the doc; DoFileSave('') writes it to disk regardless of focus or
-      dirty-tracking propagation. WorkspaceManager:SaveAll doesn't reach
-      non-active sheets in our tests, so we don't rely on it. }
-    ServerDoc.SetModified(True);
-    Try ServerDoc.DoFileSave(''); Except End;
+    { Persist directly to disk via the IServerDocument API. SaveDocByPath
+      does SetModified + DoFileSave. WorkspaceManager:SaveAll doesn't
+      reach non-active sheets in our tests, so we don't rely on it. }
+    SaveDocByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';

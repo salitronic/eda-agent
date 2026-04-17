@@ -197,6 +197,8 @@ Begin
         NetClass.SuperClass := False;
         NetClass.Name := ClassName;
         Board.AddPCBObject(NetClass);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, NetClass.I_ObjectAddress);
         PCBServer.PostProcess;
     End;
 
@@ -225,6 +227,7 @@ Begin
         End;
     End;
 
+    SaveDocByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"class_name":"' + EscapeJsonString(ClassName) + '",'
         + '"class_created":' + BoolToJsonStr(Not ClassExists) + ','
@@ -294,6 +297,35 @@ End;
 { PCB_RunDRC - Run design rule check, return violation count                  }
 {..............................................................................}
 
+Function BuildViolationJson(Violation : IPCB_Violation) : String;
+Var
+    RuleName, P1Desc, P2Desc, LayerStr : String;
+    X, Y : Integer;
+Begin
+    Result := '{';
+    Try Result := Result + '"name":"' + EscapeJsonString(Violation.Name) + '"'; Except Result := Result + '"name":""'; End;
+    Try Result := Result + ',"description":"' + EscapeJsonString(Violation.Description) + '"'; Except End;
+    RuleName := '';
+    Try If Violation.Rule <> Nil Then RuleName := Violation.Rule.Name; Except End;
+    Result := Result + ',"rule":"' + EscapeJsonString(RuleName) + '"';
+    P1Desc := '';
+    Try If Violation.Primitive1 <> Nil Then P1Desc := Violation.Primitive1.Detail; Except End;
+    Result := Result + ',"primitive1":"' + EscapeJsonString(P1Desc) + '"';
+    P2Desc := '';
+    Try If Violation.Primitive2 <> Nil Then P2Desc := Violation.Primitive2.Detail; Except End;
+    Result := Result + ',"primitive2":"' + EscapeJsonString(P2Desc) + '"';
+    // Violation inherits IPCB_Primitive — surface location so callers can
+    // cross-probe or visually jump to the offending spot.
+    X := 0; Y := 0; LayerStr := '';
+    Try X := CoordToMils(Violation.x); Except End;
+    Try Y := CoordToMils(Violation.y); Except End;
+    Try LayerStr := GetLayerString(Violation.Layer); Except End;
+    Result := Result + ',"x":' + IntToStr(X);
+    Result := Result + ',"y":' + IntToStr(Y);
+    Result := Result + ',"layer":"' + EscapeJsonString(LayerStr) + '"';
+    Result := Result + '}';
+End;
+
 Function PCB_RunDRC(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -332,12 +364,7 @@ Begin
         Begin
             If Not First Then JsonItems := JsonItems + ',';
             First := False;
-            Try
-                JsonItems := JsonItems + '{"description":"' + EscapeJsonString(Violation.Description) + '",'
-                    + '"name":"' + EscapeJsonString(Violation.Name) + '"}';
-            Except
-                JsonItems := JsonItems + '{"description":"(error reading violation)","name":""}';
-            End;
+            JsonItems := JsonItems + BuildViolationJson(Violation);
         End;
         Violation := Iterator.NextPCBObject;
     End;
@@ -357,9 +384,9 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Comp : IPCB_Component;
-    JsonItems, Designator, Footprint, LayerStr : String;
+    JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator : String;
     First : Boolean;
-    Count : Integer;
+    Count, HeightMils : Integer;
 Begin
     Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
@@ -384,15 +411,26 @@ Begin
         First := False;
 
         Try Designator := Comp.Name.Text; Except Designator := ''; End;
+        Try CommentStr := Comp.Comment.Text; Except CommentStr := ''; End;
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
         Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
+        Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
+        Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
+
+        // Note: IPCB_Component.Locked is undeclared in DelphiScript despite
+        // being documented. Try/Except does not catch compile-time undeclared
+        // identifiers — assigning to Comp.Locked crashes the whole script.
+        // Skipped for now; if a future build exposes it, add it back.
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
+            + '"comment":"' + EscapeJsonString(CommentStr) + '",'
             + '"x":' + IntToStr(CoordToMils(Comp.x)) + ','
             + '"y":' + IntToStr(CoordToMils(Comp.y)) + ','
             + '"rotation":' + FloatToStr(Comp.Rotation) + ','
             + '"layer":"' + EscapeJsonString(LayerStr) + '",'
-            + '"footprint":"' + EscapeJsonString(Footprint) + '"}';
+            + '"footprint":"' + EscapeJsonString(Footprint) + '",'
+            + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
+            + '"height_mils":' + IntToStr(HeightMils) + '}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
     End;
@@ -466,7 +504,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -484,6 +522,8 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Obj : IPCB_Primitive;
     NetName, FilterNet : String;
     JsonItems : String;
     First : Boolean;
@@ -492,7 +532,7 @@ Var
     NetNames : Array[0..999] Of String;
     NetLengths : Array[0..999] Of Double;
     NetCount, I, FoundIdx : Integer;
-    TrackLen, DX, DY : Double;
+    SegLen, DX, DY, ArcAngle, RadiusMils : Double;
 Begin
     Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
@@ -504,28 +544,48 @@ Begin
     FilterNet := ExtractJsonValue(Params, 'net');
     NetCount := 0;
 
+    // Include tracks AND arcs — routed nets use both. Arc length =
+    // radius * sweepAngle(radians). AnglesRange is SweepAngle for
+    // IPCB_Arc (StartAngle/EndAngle also available but sweep is the
+    // pre-computed arc extent in degrees).
     Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
+    Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
     Iterator.AddFilter_LayerSet(AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
-    Track := Iterator.FirstPCBObject;
-    While Track <> Nil Do
+    Obj := Iterator.FirstPCBObject;
+    While Obj <> Nil Do
     Begin
         NetName := '';
-        If Track.Net <> Nil Then NetName := Track.Net.Name;
+        Try
+            If Obj.Net <> Nil Then NetName := Obj.Net.Name;
+        Except End;
 
         // Filter by net name if specified
         If (FilterNet <> '') And (NetName <> FilterNet) Then
         Begin
-            Track := Iterator.NextPCBObject;
+            Obj := Iterator.NextPCBObject;
             Continue;
         End;
 
-        // Calculate track length in mils
-        DX := CoordToMils(Track.x2) - CoordToMils(Track.x1);
-        DY := CoordToMils(Track.y2) - CoordToMils(Track.y1);
-        TrackLen := Sqrt(DX * DX + DY * DY);
+        SegLen := 0;
+        If Obj.ObjectId = eTrackObject Then
+        Begin
+            Track := Obj;
+            DX := CoordToMils(Track.x2) - CoordToMils(Track.x1);
+            DY := CoordToMils(Track.y2) - CoordToMils(Track.y1);
+            SegLen := Sqrt(DX * DX + DY * DY);
+        End
+        Else If Obj.ObjectId = eArcObject Then
+        Begin
+            Arc := Obj;
+            Try
+                RadiusMils := CoordToMils(Arc.Radius);
+                ArcAngle := Arc.EndAngle - Arc.StartAngle;
+                If ArcAngle < 0 Then ArcAngle := ArcAngle + 360;
+                SegLen := RadiusMils * ArcAngle * 3.14159265358979 / 180.0;
+            Except SegLen := 0; End;
+        End;
 
         // Find or add net in array
         FoundIdx := -1;
@@ -539,15 +599,15 @@ Begin
         End;
 
         If FoundIdx >= 0 Then
-            NetLengths[FoundIdx] := NetLengths[FoundIdx] + TrackLen
+            NetLengths[FoundIdx] := NetLengths[FoundIdx] + SegLen
         Else If NetCount < 1000 Then
         Begin
             NetNames[NetCount] := NetName;
-            NetLengths[NetCount] := TrackLen;
+            NetLengths[NetCount] := SegLen;
             Inc(NetCount);
         End;
 
-        Track := Iterator.NextPCBObject;
+        Obj := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
 
@@ -908,7 +968,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -994,7 +1054,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -1077,7 +1137,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -1163,7 +1223,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -1249,7 +1309,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -1382,11 +1442,13 @@ Begin
 
         Rule.Enabled := True;
         Board.AddPCBObject(Rule);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Rule.I_ObjectAddress);
     Finally
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,'
@@ -1449,12 +1511,14 @@ Begin
 
     PCBServer.PreProcess;
     Try
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Rule.I_ObjectAddress);
         Board.RemovePCBObject(Rule);
     Finally
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,"name":"' + EscapeJsonString(RuleName) + '"}');
@@ -1587,7 +1651,7 @@ Begin
     End;
 
     Try NewLayer := GetLayerString(Comp.Layer); Except NewLayer := 'Unknown'; End;
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -1704,7 +1768,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"aligned":true,'
@@ -1762,8 +1826,7 @@ Begin
             Begin
                 If Not First Then JsonItems := JsonItems + ',';
                 First := False;
-                JsonItems := JsonItems + '{"description":"' + EscapeJsonString(ViolDesc) + '",'
-                    + '"name":"' + EscapeJsonString(ViolName) + '"}';
+                JsonItems := JsonItems + BuildViolationJson(Violation);
             End;
             Inc(Count);
         End;
@@ -1835,7 +1898,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -2073,12 +2136,14 @@ Begin
 
     PCBServer.PreProcess;
     Try
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
         Board.RemovePCBObject(FoundObj);
     Finally
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,'
@@ -2270,7 +2335,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"modified":true,'
@@ -2538,7 +2603,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"modified":true,'
@@ -2707,11 +2772,13 @@ Begin
         Rule.BoundingRect := CoordRect;
 
         Board.AddPCBObject(Rule);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Rule.I_ObjectAddress);
     Finally
         PCBServer.PostProcess;
     End;
 
-    // Board.ViewManager_FullUpdate;  // removed — expensive on large boards; Altium auto-refreshes on user interaction
+    SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,'
