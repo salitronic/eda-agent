@@ -6,7 +6,12 @@
 
 Function App_Ping(RequestId : String) : String;
 Begin
-    Result := BuildSuccessResponse(RequestId, '"pong"');
+    // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
+    // Altium script cache. The Altium string here comes from whatever was
+    // compiled when the script project was last opened; the Python side
+    // reads the on-disk version and warns on mismatch.
+    Result := BuildSuccessResponse(RequestId,
+        '{"pong":true,"script_version":"' + SCRIPT_VERSION + '"}');
 End;
 
 Function App_GetVersion(RequestId : String) : String;
@@ -32,8 +37,8 @@ Var
     Project : IProject;
     Doc : IDocument;
     I, J : Integer;
-    Data, DocInfo, FileName : String;
-    FirstItem : Boolean;
+    Data, DocInfo, FileName, FullPath, Kind, LoadedStr : String;
+    FirstItem, IsLoaded : Boolean;
 Begin
     Workspace := GetWorkspace;
     Data := '[';
@@ -53,9 +58,31 @@ Begin
                         If Not FirstItem Then Data := Data + ',';
                         FirstItem := False;
                         FileName := Doc.DM_FileName;
+                        Kind := Doc.DM_DocumentKind;
+
+                        // "loaded" means the document is actually resident in
+                        // the editor server (SchServer/PCBServer/Client), not
+                        // just listed as a project member. Project-scope
+                        // queries and modifications only touch loaded sheets;
+                        // callers should call load_project_sheets first if
+                        // they need to hit every sheet in the project.
+                        FullPath := '';
+                        Try FullPath := Doc.DM_FullPath; Except FullPath := FileName; End;
+                        // Client.GetDocumentByPath resolves any resident doc
+                        // (SCH/PCB/OutJob/etc.) to an IServerDocument. nil
+                        // means the file is a project member on disk but
+                        // hasn't been loaded into the editor.
+                        IsLoaded := False;
+                        Try
+                            If Client.GetDocumentByPath(FullPath) <> Nil Then
+                                IsLoaded := True;
+                        Except IsLoaded := False; End;
+                        If IsLoaded Then LoadedStr := 'true' Else LoadedStr := 'false';
+
                         DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
-                        DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-                        DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
+                        DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FullPath) + '"';
+                        DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Kind) + '"';
+                        DocInfo := DocInfo + ',"loaded":' + LoadedStr + '}';
                         Data := Data + DocInfo;
                     End;
                 End;

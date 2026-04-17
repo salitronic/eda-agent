@@ -250,6 +250,40 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def load_project_sheets(
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Load every schematic sheet of a project into the Altium editor.
+
+        Project-scope operations (query_objects, batch_modify, etc. with
+        scope="project") only iterate sheets already resident in SchServer.
+        A sheet listed as a project member via get_open_documents may still
+        show loaded=false — meaning Altium hasn't opened its editor state.
+        Call this tool first to force every sheet to load as a proper
+        project member (no free documents).
+
+        This is a no-op for sheets already loaded. Safe to call repeatedly.
+
+        Args:
+            project_path: Optional project path. If None, uses focused project.
+
+        Returns:
+            Dictionary with:
+            - total_sheets: Total SCH sheets in the project
+            - loaded: Sheets newly loaded by this call
+            - already_loaded: Sheets that were already resident
+            - failed: Sheets that could not be opened
+        """
+        bridge = get_bridge()
+        params = {}
+        if project_path:
+            params["project_path"] = project_path
+        result = await bridge.send_command_async(
+            "project.load_project_sheets", params
+        )
+        return result
+
+    @mcp.tool()
     async def get_bom(
         project_path: Optional[str] = None,
         limit: int = 1000,

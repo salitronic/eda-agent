@@ -2709,6 +2709,92 @@ Begin
 End;
 
 {..............................................................................}
+{ Load all project schematic sheets into the editor.                            }
+{                                                                               }
+{ Project-scope queries (query_objects, batch_modify, etc.) only iterate        }
+{ sheets actually resident in SchServer. A sheet is listed as a project member  }
+{ via DM_LogicalDocuments even when Altium hasn't loaded its editor state yet.  }
+{ This handler walks every project sheet and, for any that aren't loaded, calls }
+{ Client.OpenDocument('SCH', path) — the same API set_document_parameter has    }
+{ used without creating free documents. RunProcess('Client:OpenDocument') would }
+{ strip project membership and produce free docs; do not substitute it.         }
+{..............................................................................}
+
+Function Proj_LoadProjectSheets(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    ProjectPath, FilePath, Data : String;
+    I, TotalSheets, Loaded, AlreadyLoaded, Failed : Integer;
+    WasLoaded : Boolean;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
+        Exit;
+    End;
+
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    ProjectPath := StringReplace(ProjectPath, '\\', '\', -1);
+
+    If ProjectPath <> '' Then
+        Project := FindProjectByPath(Workspace, ProjectPath)
+    Else
+        Project := Workspace.DM_FocusedProject;
+
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found');
+        Exit;
+    End;
+
+    TotalSheets := 0;
+    Loaded := 0;
+    AlreadyLoaded := 0;
+    Failed := 0;
+
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        If Doc.DM_DocumentKind <> 'SCH' Then Continue;
+        Inc(TotalSheets);
+
+        FilePath := Doc.DM_FullPath;
+
+        WasLoaded := False;
+        Try
+            If Client.IsDocumentOpen(FilePath) Then WasLoaded := True;
+        Except WasLoaded := False; End;
+
+        If WasLoaded Then
+        Begin
+            Inc(AlreadyLoaded);
+            Continue;
+        End;
+
+        Try
+            ServerDoc := Client.OpenDocument('SCH', FilePath);
+            If ServerDoc <> Nil Then
+                Inc(Loaded)
+            Else
+                Inc(Failed);
+        Except
+            Inc(Failed);
+        End;
+    End;
+
+    Data := '{"total_sheets":' + IntToStr(TotalSheets);
+    Data := Data + ',"loaded":' + IntToStr(Loaded);
+    Data := Data + ',"already_loaded":' + IntToStr(AlreadyLoaded);
+    Data := Data + ',"failed":' + IntToStr(Failed) + '}';
+    Result := BuildSuccessResponse(RequestId, Data);
+End;
+
+{..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
@@ -2758,6 +2844,7 @@ Begin
         'get_design_differences': Result := Proj_GetDesignDifferences(Params, RequestId);
         'lock_designator':   Result := Proj_LockDesignator(Params, RequestId);
         'get_project_options': Result := Proj_GetProjectOptions(Params, RequestId);
+        'load_project_sheets': Result := Proj_LoadProjectSheets(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown project action: ' + Action);
     End;

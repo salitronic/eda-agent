@@ -315,10 +315,28 @@ class AltiumBridge:
             True if Altium responds to ping within 3 seconds.
         """
         try:
-            result = self.send_command("application.ping", timeout=3.0)
-            return result == "pong"
+            self.send_command("application.ping", timeout=3.0)
+            return True
         except (AltiumTimeoutError, AltiumCommandError, Exception):
             return False
+
+    def ping_with_version(self) -> Optional[dict[str, Any]]:
+        """Ping and return the raw response dict (including script_version).
+
+        Returns:
+            Dict like {"pong": True, "script_version": "..."} on success.
+            None on timeout/error. Legacy scripts that returned the string
+            "pong" are normalised to {"pong": True, "script_version": ""}.
+        """
+        try:
+            result = self.send_command("application.ping", timeout=3.0)
+        except (AltiumTimeoutError, AltiumCommandError, Exception):
+            return None
+        if isinstance(result, dict):
+            return result
+        if result == "pong":
+            return {"pong": True, "script_version": ""}
+        return None
 
 
 # Global bridge instance
