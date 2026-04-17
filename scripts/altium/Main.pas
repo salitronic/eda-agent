@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.17.2';
+    SCRIPT_VERSION = '2026.04.17.11';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
@@ -150,13 +150,48 @@ Begin
 End;
 
 Function UnescapeJsonString(S : String) : String;
+Var
+    I, L : Integer;
+    Ch, NextCh : String;
 Begin
-    Result := S;
-    Result := StringReplace(Result, '\t', #9, -1);
-    Result := StringReplace(Result, '\n', #10, -1);
-    Result := StringReplace(Result, '\r', #13, -1);
-    Result := StringReplace(Result, '\"', '"', -1);
-    Result := StringReplace(Result, '\\', '\', -1);
+    // Char-by-char JSON unescape. The naive StringReplace order
+    // (\t -> tab, \n -> LF, ..., \\ -> \) is broken: a raw JSON sequence
+    // like \\nlc (which should decode to literal \nlc) first gets its
+    // inner \n interpreted as LF, producing \<LF>lc. The bug silently
+    // mangled any Windows path containing \n, \t, \r, \b, \f after an
+    // even number of backslashes — e.g. C:\...\nlc_480.SchDoc, \t1.log,
+    // \reports\... — because Altium's fuzzy path matching obscured the
+    // symptom. Must consume \\ as a single literal \ before evaluating
+    // any other escape on the following character.
+    Result := '';
+    I := 1;
+    L := Length(S);
+    While I <= L Do
+    Begin
+        Ch := Copy(S, I, 1);
+        If (Ch = '\') And (I < L) Then
+        Begin
+            NextCh := Copy(S, I + 1, 1);
+            If NextCh = '\' Then Result := Result + '\'
+            Else If NextCh = 'n' Then Result := Result + #10
+            Else If NextCh = 't' Then Result := Result + #9
+            Else If NextCh = 'r' Then Result := Result + #13
+            Else If NextCh = '"' Then Result := Result + '"'
+            Else If NextCh = '/' Then Result := Result + '/'
+            Else If NextCh = 'b' Then Result := Result + #8
+            Else If NextCh = 'f' Then Result := Result + #12
+            Else
+                // Unknown escape — keep both chars literally. Don't
+                // silently eat characters on malformed input.
+                Result := Result + Ch + NextCh;
+            Inc(I, 2);
+        End
+        Else
+        Begin
+            Result := Result + Ch;
+            Inc(I);
+        End;
+    End;
 End;
 
 Function ExtractJsonValue(Json : String; Key : String) : String;

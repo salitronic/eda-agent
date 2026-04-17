@@ -408,10 +408,11 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
-    ServerDoc : IServerDocument;
     SchDoc : ISch_Document;
-    I, TotalMatched, SheetsProcessed : Integer;
+    ServerDoc : IServerDocument;
+    I, TotalMatched, SheetsProcessed, SheetsSaved : Integer;
     FilePath, JsonItems : String;
+    IsMutating : Boolean;
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -432,7 +433,9 @@ Begin
 
     TotalMatched := 0;
     SheetsProcessed := 0;
+    SheetsSaved := 0;
     JsonItems := '';
+    IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
 
     For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
     Begin
@@ -457,8 +460,20 @@ Begin
         JsonItems := JsonItems + ProcessSchDocObjects(SchDoc, ObjTypeInt,
             FilterStr, PropsStr, SetStr, Mode, FilePath, TotalMatched, Limit);
 
-        If (Mode = 'modify') Or (Mode = 'delete') Then
-            SchDoc.GraphicallyInvalidate;
+        If IsMutating Then
+        Begin
+            Try SchDoc.GraphicallyInvalidate; Except End;
+            // IServerDocument.Modified IS writable (unlike ISch_Document
+            // or IDocument). Setting it marks the sheet dirty so the
+            // caller's trailing save_all flushes it. No per-doc save
+            // here — SaveObject with an explicit FileName is Save-As.
+            ServerDoc := Client.GetDocumentByPath(FilePath);
+            If ServerDoc <> Nil Then
+            Begin
+                ServerDoc.Modified := True;
+                Inc(SheetsSaved);
+            End;
+        End;
 
         Inc(SheetsProcessed);
 
@@ -472,7 +487,8 @@ Begin
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) +
-            ',"sheets_processed":' + IntToStr(SheetsProcessed) + '}');
+            ',"sheets_processed":' + IntToStr(SheetsProcessed) +
+            ',"sheets_saved":' + IntToStr(SheetsSaved) + '}');
 End;
 
 {..............................................................................}
@@ -484,8 +500,10 @@ Function ProcessActiveDoc(ObjTypeInt : Integer;
     Mode : String; RequestId : String; Limit : Integer) : String;
 Var
     SchDoc : ISch_Document;
+    ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems, DocPath : String;
+    JsonItems, DocPath, SavedStr : String;
+    IsMutating, Saved : Boolean;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -499,15 +517,28 @@ Begin
     JsonItems := ProcessSchDocObjects(SchDoc, ObjTypeInt,
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
-    If (Mode = 'modify') Or (Mode = 'delete') Then
-        SchDoc.GraphicallyInvalidate;
+    IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    Saved := False;
+    If IsMutating Then
+    Begin
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        ServerDoc := Client.GetDocumentByPath(DocPath);
+        If ServerDoc <> Nil Then
+        Begin
+            ServerDoc.Modified := True;
+            Saved := True;
+        End;
+    End;
 
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,
             '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) + '}')
     Else
+    Begin
+        If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"dirty":' + SavedStr + '}');
+    End;
 End;
 
 {..............................................................................}
@@ -521,7 +552,8 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems : String;
+    JsonItems, SavedStr : String;
+    IsMutating, Saved : Boolean;
 Begin
     DocPath := StringReplace(DocPath, '\\', '\', -1);
 
@@ -542,15 +574,28 @@ Begin
     JsonItems := ProcessSchDocObjects(SchDoc, ObjTypeInt,
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
-    If (Mode = 'modify') Or (Mode = 'delete') Then
-        SchDoc.GraphicallyInvalidate;
+    IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    Saved := False;
+    If IsMutating Then
+    Begin
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        ServerDoc := Client.GetDocumentByPath(DocPath);
+        If ServerDoc <> Nil Then
+        Begin
+            ServerDoc.Modified := True;
+            Saved := True;
+        End;
+    End;
 
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,
             '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) + '}')
     Else
+    Begin
+        If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"dirty":' + SavedStr + '}');
+    End;
 End;
 
 {..............................................................................}
@@ -1857,7 +1902,6 @@ Function Gen_GetSheetParameters(Params : String; RequestId : String) : String;
 Var
     FilePath : String;
     SchDoc : ISch_Document;
-    ServerDoc : IServerDocument;
     Iterator : ISch_Iterator;
     Param : ISch_Parameter;
     JsonItems : String;
@@ -1865,14 +1909,9 @@ Var
     ParamCount : Integer;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
 
     If FilePath <> '' Then
-    Begin
-        // Do NOT force-open — that creates free documents in the UI.
-        // Require the sheet to already be loaded in Altium.
-        SchDoc := SchServer.GetSchDocumentByPath(FilePath);
-    End
+        SchDoc := SchServer.GetSchDocumentByPath(FilePath)
     Else
         SchDoc := SchServer.GetCurrentSchDocument;
 
@@ -1886,6 +1925,9 @@ Begin
     First := True;
     ParamCount := 0;
 
+    { SchIterator + eParameter at IterationDepth=FirstLevel returns
+      sheet-level parameters that the title block reads from. This
+      matches what set_document_parameter writes to. }
     Iterator := SchDoc.SchIterator_Create;
     Iterator.SetState_IterationDepth(eIterateFirstLevel);
     Iterator.AddFilter_ObjectSet(MkSet(eParameter));

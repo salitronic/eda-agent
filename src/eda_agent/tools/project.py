@@ -873,13 +873,28 @@ def register_project_tools(mcp):
         If the parameter already exists it is updated; otherwise a new hidden
         parameter object is created on the sheet.
 
+        NOTE 1 (preload): the target sheet must already be loaded as a
+        proper project member. Call load_project_sheets once at the start
+        of the batch — auto-opening from inside set_document_parameter
+        risks detaching the sheet and rendering it as a "free document".
+        If the sheet isn't loaded this tool returns NOT_LOADED.
+
+        NOTE 2 (persistence): the write is in-memory and marks the doc
+        dirty but does NOT save to disk. For batch operations across many
+        sheets, call save_all once at the end to flush every modified
+        sheet. Per-call saves were removed because Altium's single-doc
+        save process behaves like Save-As.
+
         Args:
-            file_path: Full path to the schematic document (.SchDoc)
+            file_path: Full path to the schematic document (.SchDoc).
+                Use Windows-style backslashes (e.g. C:\\path\\Sheet.SchDoc),
+                not forward slashes.
             name: Parameter name
             value: Parameter value
 
         Returns:
-            Dictionary confirming the operation with file_path, name, and value
+            Dictionary with file_path, name, value, and dirty=true.
+            Call save_all afterwards to persist to disk.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(

@@ -2129,83 +2129,88 @@ End;
 
 Function Proj_SetDocumentParameter(Params : String; RequestId : String) : String;
 Var
-    FilePath, ParamName, ParamValue : String;
+    FilePath, ParamName, ParamValue, Action : String;
     SchDoc : ISch_Document;
-    Iterator : ISch_Iterator;
-    Obj : ISch_BasicObject;
-    Param : ISch_Parameter;
-    Found : Boolean;
     ServerDoc : IServerDocument;
+    Iterator : ISch_Iterator;
+    Parameter : ISch_Parameter;
+    Found : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
     ParamName := ExtractJsonValue(Params, 'name');
     ParamValue := ExtractJsonValue(Params, 'value');
 
     If FilePath = '' Then Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'file_path is required'); Exit; End;
     If ParamName = '' Then Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'name is required'); Exit; End;
 
-    { Open/focus the document }
-    If Not Client.IsDocumentOpen(FilePath) Then
+    { Pattern adapted from Hmissa's SheetParameters.pas
+      (github.com/Hmissa/altium-designer-addons) — the iterator/AddSchObject
+      /Modified parts all come from there. One deviation: we do NOT call
+      Client.OpenDocument or Client.ShowDocumentDontFocus to auto-load
+      missing sheets. On this Altium build those calls detach the sheet
+      from its project (shows as "free document" with the absolute path
+      as tab title). Require the caller to have loaded every target sheet
+      beforehand via load_project_sheets — which uses the project-aware
+      path that preserves membership. }
+
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then
     Begin
-        ServerDoc := Client.OpenDocument('SCH', FilePath);
-        If ServerDoc <> Nil Then ServerDoc.Focus;
-    End
-    Else
-    Begin
-        ServerDoc := Client.GetDocumentByPath(FilePath);
-        If ServerDoc <> Nil Then ServerDoc.Focus;
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'Document not loaded in editor: ' + FilePath +
+            '. Call load_project_sheets first, or open the sheet in Altium.');
+        Exit;
     End;
 
     SchDoc := SchServer.GetSchDocumentByPath(FilePath);
     If SchDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'DOC_NOT_FOUND', 'Could not open schematic: ' + FilePath);
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'Document loaded but SchServer cannot resolve it: ' + FilePath);
         Exit;
     End;
 
-    { Search for existing parameter and update it }
     Found := False;
     Iterator := SchDoc.SchIterator_Create;
-    If Iterator <> Nil Then
-    Begin
-        Iterator.AddFilter_ObjectSet(MkSet(eParameter));
-        Try
-            Obj := Iterator.FirstSchObject;
-            While Obj <> Nil Do
+    Iterator.SetState_IterationDepth(eIterateFirstLevel);
+    Iterator.AddFilter_ObjectSet(MkSet(eParameter));
+    Try
+        Parameter := Iterator.FirstSchObject;
+        While Parameter <> Nil Do
+        Begin
+            If Parameter.Name = ParamName Then
             Begin
-                Param := Obj;
-                If Param.Name = ParamName Then
-                Begin
-                    SchServer.ProcessControl.PreProcess(SchDoc, '');
-                    Param.Text := ParamValue;
-                    SchServer.ProcessControl.PostProcess(SchDoc, '');
-                    Found := True;
-                    Break;
-                End;
-                Obj := Iterator.NextSchObject;
+                Parameter.Text := ParamValue;
+                Found := True;
+                Break;
             End;
-        Finally
-            SchDoc.SchIterator_Destroy(Iterator);
+            Parameter := Iterator.NextSchObject;
         End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
     End;
 
-    { If not found, create a new parameter }
     If Not Found Then
     Begin
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
-        Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-        If Param <> Nil Then
-        Begin
-            Param.Name := ParamName;
-            Param.Text := ParamValue;
-            Param.IsHidden := True;
-            SchDoc.RegisterSchObjectInContainer(Param);
-        End;
-        SchServer.ProcessControl.PostProcess(SchDoc, '');
+        Parameter := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+        Parameter.Name := ParamName;
+        Parameter.Text := ParamValue;
+        SchDoc.AddSchObject(Parameter);
     End;
 
-    Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(FilePath) + '","name":"' + EscapeJsonString(ParamName) + '","value":"' + EscapeJsonString(ParamValue) + '"}');
+    { Mark modified via IServerDocument — this is the writable property
+      that WorkspaceManager:SaveAll checks. ISch_Document and IDocument
+      don't expose a writable Modified property (undeclared in DelphiScript). }
+    ServerDoc.Modified := True;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+
+    If Found Then Action := 'updated' Else Action := 'added';
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"action":"' + Action + '"' +
+        ',"dirty":true,"note":"call save_all to persist"' +
+        ',"file_path":"' + EscapeJsonString(FilePath) +
+        '","name":"' + EscapeJsonString(ParamName) +
+        '","value":"' + EscapeJsonString(ParamValue) + '"}');
 End;
 
 {..............................................................................}
