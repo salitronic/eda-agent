@@ -79,10 +79,23 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def detach_from_altium() -> dict[str, Any]:
-        """Disconnect from Altium Designer and stop the MCP server script.
+        """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
 
-        Sends a stop command to the Altium polling script so it exits cleanly,
-        then detaches the Python bridge.
+        While the eda-agent MCP server is connected, a keep-alive thread pings
+        Altium every 30 s, which keeps Altium's scripting engine held by the
+        polling loop — Altium's own script-backed UI commands (some ribbon
+        buttons, Parameter Manager actions, etc.) may be unresponsive until the
+        loop is released.
+
+        Call this tool once you've finished your Altium work for the session.
+        It sends application.stop_server so the DelphiScript loop exits cleanly
+        within ~500 ms and stops the Python keep-alive. Altium becomes
+        immediately fully responsive.
+
+        NOTE: After detach, the Altium script has fully stopped. To run more
+        MCP tools later in the same Altium session the user must re-launch
+        StartMCPServer via File -> Run Script. Don't detach until you're
+        confident you're done.
 
         Returns:
             Dictionary confirming detachment

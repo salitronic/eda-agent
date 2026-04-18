@@ -80,12 +80,19 @@ class AltiumBridge:
     # Keep-alive interval — must be less than Altium's AUTO_SHUTDOWN_MS (60s)
     KEEPALIVE_INTERVAL = 30  # seconds
 
+    # Inject a detach-reminder into responses after this many seconds of
+    # continuous attachment without the client calling detach_from_altium.
+    # The hint surfaces in the MCP response context so the LLM sees it.
+    DETACH_HINT_AFTER = 600  # 10 minutes
+
     def __init__(self):
         self.config = get_config()
         self.process_manager = AltiumProcessManager()
         self._attached = False
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop = threading.Event()
+        self._attach_time: Optional[float] = None
+        self._detach_hint_shown = False
 
     def ensure_workspace(self) -> None:
         """Ensure the workspace directory exists."""
@@ -123,6 +130,7 @@ class AltiumBridge:
 
         self.ensure_workspace()
         self._attached = True
+        self._attach_time = time.monotonic()
         self._start_keepalive()
         logger.info("Attached to Altium Designer (file-based IPC)")
         return True
@@ -131,6 +139,59 @@ class AltiumBridge:
         """Detach from Altium instance."""
         self._stop_keepalive()
         self._attached = False
+        self._attach_time = None
+        self._detach_hint_shown = False
+
+    def _ensure_keepalive(self) -> None:
+        """Start the keep-alive thread if it isn't already running.
+
+        Called from send_command so the first tool call auto-starts the
+        ping loop. The MCP client doesn't have to call attach_to_altium
+        explicitly — any command that reaches Altium kicks the keepalive
+        on so subsequent AI idle gaps (thinking, file reads, other tools)
+        longer than Altium's 60 s auto-shutdown window don't drop the
+        polling loop.
+        """
+        if self._attached and self._keepalive_thread and self._keepalive_thread.is_alive():
+            return
+        self._attached = True
+        self._attach_time = time.monotonic()
+        self._start_keepalive()
+
+    def attach_duration(self) -> float:
+        """Seconds since the bridge started keeping Altium alive. 0 if detached."""
+        if self._attach_time is None:
+            return 0.0
+        return time.monotonic() - self._attach_time
+
+    def _maybe_attach_detach_hint(self, command: str, data: Any) -> Any:
+        """Add a one-time _hint_detach field to the response dict when the
+        bridge has been holding Altium's scripting engine for longer than
+        DETACH_HINT_AFTER without the client calling detach_from_altium.
+
+        Surfaces a reminder to the LLM to call detach_from_altium when done.
+        Only fires once per session; clears on actual detach. Silent if the
+        response is not a dict (can't inject) or if the command itself is a
+        keep-alive / detach (don't spam those).
+        """
+        if command in ("application.ping", "application.stop_server"):
+            return data
+        if self._detach_hint_shown:
+            return data
+        if self.attach_duration() < self.DETACH_HINT_AFTER:
+            return data
+        if not isinstance(data, dict):
+            return data
+        self._detach_hint_shown = True
+        data = dict(data)
+        data["_hint_detach"] = (
+            "This MCP server has been holding Altium's scripting engine for "
+            "over 10 minutes. When your Altium work is done, call "
+            "detach_from_altium so Altium's own UI commands become responsive "
+            "again. The user will have to re-launch StartMCPServer in Altium "
+            "to run more MCP tools afterwards."
+        )
+        return data
 
     def _start_keepalive(self) -> None:
         """Start background thread that pings Altium to prevent auto-shutdown."""
@@ -248,7 +309,7 @@ class AltiumBridge:
 
         if response.success:
             logger.info("Command %s succeeded", command)
-            return response.data
+            return self._maybe_attach_detach_hint(command, response.data)
         else:
             error = response.error or {}
             logger.warning(
@@ -284,6 +345,7 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
 
+        self._ensure_keepalive()
         return self._execute_command(command, params or {}, timeout)
 
     async def send_command_async(
@@ -299,6 +361,7 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
 
+        self._ensure_keepalive()
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             _executor,
