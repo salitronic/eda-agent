@@ -25,7 +25,8 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - **140+ tools** across application, project, library, generic, and PCB categories
 - **Generic primitives** (`query_objects`, `modify_objects`, `create_object`, `delete_objects`, `run_process`) that work on almost any schematic or PCB object type via late-binding — avoids per-type handler proliferation
 - **Persistent polling loop** — one script start, then ~50 ms per tool call
-- **Autonomous annotation and ECO sync** — no modal dialogs to click through
+- **Annotation runs silently** — `annotate` designates components without popping the annotate dialog
+- **Per-operation persistence** — schematic parameter writes, PCB edits, and library mutations save to disk immediately via `IServerDocument.DoFileSave`; no trailing `save_all` needed
 - **pip-installable** — no admin, no installer, no touching Altium's config
 
 ## Requirements
@@ -132,6 +133,12 @@ Altium itself uses DelphiScript internally for many built-in commands (some ribb
 
 In practice, while an MCP client is attached and sending keep-alive pings every 30 s, the loop will never time out on its own — you need to either have the AI call `detach_from_altium` or close the MCP client session entirely. Once the client disconnects, expect up to ~60 s for Altium's script-backed buttons to become responsive again.
 
+### ECO (sch → PCB update) is not reliably scriptable
+
+`update_pcb` wraps `RunProcess('PCB:UpdatePCBFromProject')`. On some Altium builds this runs silently without applying changes; on others it pops the modal ECO dialog. The Altium Schematic API doesn't expose a fully scripted ECO executor — `IECO` only records proposed changes, no `DM_Execute` method is documented, and no factory is exposed for obtaining an `IECO` instance from a script.
+
+**Practical workflow:** call `update_pcb` and check the result's `components_added_to_pcb` count. If it's zero while `in_sync` is `false`, open the PCB in Altium and run **Design → Import Changes From …** yourself. Once the dialog is dismissed, every other tool (`pcb_move_component`, `pcb_place_track`, `pcb_run_drc`, etc.) works normally.
+
 ### Tools vary in maturity
 
 Not every one of the 140+ tools has been exercised on every Altium version or design size. The [generic primitives](#generic-primitives) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
@@ -162,7 +169,7 @@ In practice this means: the server stays alive as long as an MCP client is conne
 
 ### Why this matters for Altium UI responsiveness
 
-**30 seconds after the last AI command, Altium's script-backed buttons should become usable again** — that's when the polling loop hits its idle yield (long `Application.ProcessMessages` cycles) and gives Altium's own scripting paths room to run. If you want the server to fully disengage sooner, have the AI client call `detach_from_altium`.
+The polling loop goes into idle mode after ~1 second of no MCP commands. In idle mode it polls every 500 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously — only a burst of rapid tool calls can cause a brief stall. If you want the server to fully disengage, have the AI client call `detach_from_altium`.
 
 ## Tool reference
 
@@ -187,23 +194,24 @@ These five tools cover most day-to-day work. They accept any object type support
 
 **Scope values:** `active_doc`, `project`, `project:<path>`, `doc:<path>`.
 
-### Application (11 tools)
+### Application (12 tools)
 
 | Tool | Purpose |
 |---|---|
 | `get_altium_status` | Is Altium running? Version / PID / attached state |
 | `attach_to_altium` | Verify connection to the running instance |
 | `detach_from_altium` | Signal server shutdown and release scripting engine |
-| `ping_altium` | Test the polling loop is responsive |
-| `get_open_documents` | List every open document (sch, pcb, lib, outjob…) |
+| `ping_altium` | Test the polling loop is responsive; reports script version + mismatch with bundled |
+| `get_open_documents` | List every open document with `loaded` flag (sch, pcb, lib, outjob…) |
 | `get_active_document` | Which document currently has focus |
-| `set_active_document` | Switch focus to a specific document by path |
+| `set_active_document` | Switch focus to an already-loaded document by path |
+| `create_document` | Create a blank PCB / SCH / library / OutJob document and attach to the focused project |
 | `get_altium_version` | Build / product version string |
 | `get_preferences` | Snap grids, unit system, common prefs |
 | `execute_menu` | Run a menu command by path (e.g., `Tools|Design Rule Check`) |
 | `get_clipboard_text` | Read text from Windows clipboard |
 
-### Project (42 tools)
+### Project (43 tools)
 
 Lifecycle, parameters, compilation, analysis, outputs, ECO sync, variants.
 
@@ -212,13 +220,14 @@ Lifecycle, parameters, compilation, analysis, outputs, ECO sync, variants.
 | `create_project` / `open_project` / `save_project` / `close_project` | Project lifecycle |
 | `save_all` / `get_focused_project` / `get_open_projects` / `get_project_path` | Project state |
 | `get_project_documents` / `add_document_to_project` / `remove_document_from_project` / `import_document` | Document management |
+| `load_project_sheets` | Force every SCH sheet of the focused project into the editor so `scope=project` queries hit them |
 | `get_project_parameters` / `set_project_parameter` / `set_document_parameter` | Parameters |
 | `get_project_options` | Compiler / variant / channel settings |
 | `compile_project` / `get_messages` | Compile and read violations |
 | `get_design_stats` / `get_design_differences` / `get_board_info` | Design analysis |
 | `get_bom` / `get_nets` / `get_component_info` / `get_connectivity` / `find_component` | Design queries |
 | `cross_probe` / `lock_designator` / `annotate` | Designator management |
-| `compare_sch_pcb` / `update_pcb` / `update_schematic` | ECO sync |
+| `compare_sch_pcb` / `update_pcb` / `update_schematic` | ECO sync (see [ECO limitation](#eco-sch--pcb-update-is-not-reliably-scriptable)) |
 | `get_variants` / `get_active_variant` / `set_active_variant` / `create_variant` | Variant management |
 | `export_pdf` / `export_step` / `export_dxf` / `export_image` / `generate_output` | Output generation |
 | `get_outjob_containers` / `run_outjob` | OutJob execution |
@@ -369,7 +378,7 @@ At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` in
 
 **Altium error dialog "Undeclared identifier: …" or "Could not convert variant…"** — a DelphiScript crash in one of the bridge handlers. In Altium's Script IDE toolbar, press the red **Stop** button (or `Ctrl+F2`) to halt the debugger. Then re-launch the polling loop via **File → Run Script... → StartMCPServer → Run**. Report the identifier or error text as an issue.
 
-**Some Altium buttons don't respond while the server is running** — expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript temporarily wait for the polling loop to yield (~30 s after last AI activity, or immediately if the MCP client calls `detach_from_altium`).
+**Some Altium buttons don't respond while the server is running** — expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode within ~1 s of the last AI command; if a button is still unresponsive after that, call `detach_from_altium` from the MCP client to fully release the scripting engine.
 
 **Command timeouts on very large boards** — default is 120 s. Iterating 6000+ tracks or compiling a 500+ component project can take a while. The polling loop adapts (fast polling right after activity, slower polling when idle) but genuinely expensive operations just take time.
 
