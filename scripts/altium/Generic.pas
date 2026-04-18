@@ -1713,6 +1713,694 @@ Begin
 End;
 
 {..............................................................................}
+{ Place a bus segment between two points on the active schematic.             }
+{ Buses are multi-signal wires (typically used with bus net labels like       }
+{ DATA[0..7]). Placement and vertex handling mirror a normal wire.            }
+{..............................................................................}
+
+Function Gen_PlaceBus(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2 : Integer;
+    SchDoc : ISch_Document;
+    Bus : ISch_Bus;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Bus := SchServer.SchObjectFactory(eBus, eCreate_Default);
+    If Bus = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create bus object');
+        Exit;
+    End;
+
+    Bus.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Bus.InsertVertex := 1;
+    Bus.SetState_Vertex(1, Point(MilsToCoord(X2), MilsToCoord(Y2)));
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Bus);
+    SchRegisterObject(SchDoc, Bus);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) +
+        ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+End;
+
+{..............................................................................}
+{ Place a rectangle on the schematic — graphic box, not a functional shape.   }
+{ Params: x1,y1,x2,y2 in mils, solid=true/false, line_width=0..3              }
+{..............................................................................}
+
+Function Gen_PlaceRectangle(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2, TmpI, LW : Integer;
+    SchDoc : ISch_Document;
+    Rect : ISch_Rectangle;
+    SolidStr : String;
+    Solid : Boolean;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    SolidStr := ExtractJsonValue(Params, 'solid');
+    LW := StrToIntDef(ExtractJsonValue(Params, 'line_width'), 1);
+    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
+    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    Solid := (LowerCase(SolidStr) = 'true') Or (SolidStr = '1');
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Rect := SchServer.SchObjectFactory(eRectangle, eCreate_Default);
+    If Rect = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create rectangle');
+        Exit;
+    End;
+
+    Rect.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Rect.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+    Rect.IsSolid := Solid;
+    Try
+        If LW <= 0 Then Rect.LineWidth := eSmall
+        Else If LW = 1 Then Rect.LineWidth := eSmall
+        Else If LW = 2 Then Rect.LineWidth := eMedium
+        Else Rect.LineWidth := eLarge;
+    Except End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Rect);
+    SchRegisterObject(SchDoc, Rect);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"solid":' + BoolToJsonStr(Solid) + '}');
+End;
+
+{..............................................................................}
+{ Place a line segment on the schematic.                                      }
+{ Params: x1,y1,x2,y2 in mils, line_width=0..3                                }
+{..............................................................................}
+
+Function Gen_PlaceLine(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2, LW : Integer;
+    SchDoc : ISch_Document;
+    Line : ISch_Line;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    LW := StrToIntDef(ExtractJsonValue(Params, 'line_width'), 1);
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Line := SchServer.SchObjectFactory(eLine, eCreate_Default);
+    If Line = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create line');
+        Exit;
+    End;
+
+    Line.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Line.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+    Try
+        If LW <= 1 Then Line.LineWidth := eSmall
+        Else If LW = 2 Then Line.LineWidth := eMedium
+        Else Line.LineWidth := eLarge;
+    Except End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Line);
+    SchRegisterObject(SchDoc, Line);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+End;
+
+{..............................................................................}
+{ Place a note (text box) on the schematic. Notes are ISch_Rectangle children }
+{ with rich text. Useful for commentary / design notes on sheets.             }
+{ Params: x1,y1,x2,y2 in mils, text                                           }
+{..............................................................................}
+
+Function Gen_PlaceNote(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2, TmpI : Integer;
+    SchDoc : ISch_Document;
+    Note : ISch_Note;
+    TextStr : String;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    TextStr := ExtractJsonValue(Params, 'text');
+    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
+    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Note := SchServer.SchObjectFactory(eNote, eCreate_Default);
+    If Note = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create note');
+        Exit;
+    End;
+
+    Note.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Note.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+    Try Note.Text := TextStr; Except End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Note);
+    SchRegisterObject(SchDoc, Note);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"text":"' + EscapeJsonString(TextStr) + '"}');
+End;
+
+{..............................................................................}
+{ Place a sheet symbol on the schematic — reference to a child SchDoc.        }
+{ Params: x1,y1,x2,y2 in mils, sheet_file_name (e.g. PSU.SchDoc),             }
+{         sheet_name (display name)                                           }
+{..............................................................................}
+
+Function Gen_PlaceSheetSymbol(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2, TmpI : Integer;
+    SchDoc : ISch_Document;
+    Sym : ISch_SheetSymbol;
+    FileNameStr, NameStr : String;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    FileNameStr := ExtractJsonValue(Params, 'sheet_file_name');
+    NameStr := ExtractJsonValue(Params, 'sheet_name');
+    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
+    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+
+    If FileNameStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'sheet_file_name required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Sym := SchServer.SchObjectFactory(eSheetSymbol, eCreate_Default);
+    If Sym = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create sheet symbol');
+        Exit;
+    End;
+
+    Sym.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Sym.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+    { SheetFileName is the link to the child sheet file — must match an
+      existing .SchDoc in the project. SheetName is the display label
+      shown inside the sheet-symbol block. }
+    Sym.SheetFileName := FileNameStr;
+    If NameStr = '' Then NameStr := ChangeFileExt(FileNameStr, '');
+    Sym.SheetName := NameStr;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Sym);
+    SchRegisterObject(SchDoc, Sym);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"sheet_file_name":"' + EscapeJsonString(FileNameStr) + '",'
+        + '"sheet_name":"' + EscapeJsonString(NameStr) + '"}');
+End;
+
+{..............................................................................}
+{ Place a sheet entry on a sheet symbol.                                      }
+{ Params: sheet_name (name of target ISch_SheetSymbol), entry_name,           }
+{         io_type=Input|Output|Bidirectional|Unspecified,                     }
+{         side=Left|Right|Top|Bottom, distance_from_top (mils),               }
+{         style=None|Left|Right|LeftRight                                     }
+{..............................................................................}
+
+Function Gen_PlaceSheetEntry(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iterator : ISch_Iterator;
+    Obj : ISch_BasicObject;
+    Sym : ISch_SheetSymbol;
+    Entry : ISch_SheetEntry;
+    SheetNameStr, EntryName, IOStr, SideStr : String;
+    DistFromTop : Integer;
+    Found : Boolean;
+Begin
+    SheetNameStr := ExtractJsonValue(Params, 'sheet_name');
+    EntryName := ExtractJsonValue(Params, 'entry_name');
+    IOStr := LowerCase(ExtractJsonValue(Params, 'io_type'));
+    SideStr := LowerCase(ExtractJsonValue(Params, 'side'));
+    DistFromTop := StrToIntDef(ExtractJsonValue(Params, 'distance_from_top'), 100);
+
+    If (SheetNameStr = '') Or (EntryName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'sheet_name and entry_name are required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { Locate the target sheet symbol by its SheetName. }
+    Found := False;
+    Iterator := SchDoc.SchIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eSheetSymbol));
+    Try
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Try
+                Sym := Obj;
+                If Sym.SheetName = SheetNameStr Then
+                Begin
+                    Found := True;
+                    Break;
+                End;
+            Except End;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'Sheet symbol with SheetName "' + SheetNameStr + '" not found');
+        Exit;
+    End;
+
+    Entry := SchServer.SchObjectFactory(eSheetEntry, eCreate_Default);
+    If Entry = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create sheet entry');
+        Exit;
+    End;
+
+    Entry.Name := EntryName;
+    Entry.DistanceFromTop := MilsToCoord(DistFromTop);
+
+    If IOStr = 'input' Then Entry.IOType := ePortInput
+    Else If IOStr = 'output' Then Entry.IOType := ePortOutput
+    Else If IOStr = 'bidirectional' Then Entry.IOType := ePortBidirectional
+    Else Entry.IOType := ePortUnspecified;
+
+    If SideStr = 'right' Then Entry.Side := eSide_Right
+    Else If SideStr = 'top' Then Entry.Side := eSide_Top
+    Else If SideStr = 'bottom' Then Entry.Side := eSide_Bottom
+    Else Entry.Side := eSide_Left;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Sym.AddSchObject(Entry);
+    SchRegisterObject(Sym, Entry);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"sheet_name":"' + EscapeJsonString(SheetNameStr) + '",'
+        + '"entry_name":"' + EscapeJsonString(EntryName) + '",'
+        + '"io_type":"' + EscapeJsonString(IOStr) + '",'
+        + '"side":"' + EscapeJsonString(SideStr) + '"}');
+End;
+
+{..............................................................................}
+{ Place a bus entry (45° stub) between a bus line and a wire.                 }
+{ ISch_BusEntry inherits ISch_Line, so it accepts Location + Corner.          }
+{ Params: x1,y1,x2,y2 in mils                                                 }
+{..............................................................................}
+
+Function Gen_PlaceBusEntry(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2 : Integer;
+    SchDoc : ISch_Document;
+    Entry : ISch_BusEntry;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Entry := SchServer.SchObjectFactory(eBusEntry, eCreate_Default);
+    If Entry = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create bus entry');
+        Exit;
+    End;
+
+    Entry.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Entry.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Entry);
+    SchRegisterObject(SchDoc, Entry);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
+        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+End;
+
+{..............................................................................}
+{ Set the sheet size / template style of the active schematic.                }
+{ Params: style (e.g. A, B, C, A0, A1, A2, A3, A4, Letter, Legal, Custom),   }
+{         custom_width, custom_height (in mils, only used with Custom)        }
+{..............................................................................}
+
+Function Gen_SetSheetSize(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    StyleStr : String;
+    CustomW, CustomH : Integer;
+Begin
+    StyleStr := UpperCase(ExtractJsonValue(Params, 'style'));
+    CustomW := StrToIntDef(ExtractJsonValue(Params, 'custom_width'), 0);
+    CustomH := StrToIntDef(ExtractJsonValue(Params, 'custom_height'), 0);
+
+    If StyleStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'style required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        If StyleStr = 'A' Then SchDoc.SheetStyle := eSheetA
+        Else If StyleStr = 'B' Then SchDoc.SheetStyle := eSheetB
+        Else If StyleStr = 'C' Then SchDoc.SheetStyle := eSheetC
+        Else If StyleStr = 'D' Then SchDoc.SheetStyle := eSheetD
+        Else If StyleStr = 'E' Then SchDoc.SheetStyle := eSheetE
+        Else If StyleStr = 'A4' Then SchDoc.SheetStyle := eSheetA4
+        Else If StyleStr = 'A3' Then SchDoc.SheetStyle := eSheetA3
+        Else If StyleStr = 'A2' Then SchDoc.SheetStyle := eSheetA2
+        Else If StyleStr = 'A1' Then SchDoc.SheetStyle := eSheetA1
+        Else If StyleStr = 'A0' Then SchDoc.SheetStyle := eSheetA0
+        Else If StyleStr = 'LETTER' Then SchDoc.SheetStyle := eSheetLetter
+        Else If StyleStr = 'LEGAL' Then SchDoc.SheetStyle := eSheetLegal
+        Else If StyleStr = 'TABLOID' Then SchDoc.SheetStyle := eSheetTabloid
+        Else If StyleStr = 'CUSTOM' Then
+        Begin
+            SchDoc.SheetStyle := eSheetCustom;
+            If CustomW > 0 Then SchDoc.CustomX := MilsToCoord(CustomW);
+            If CustomH > 0 Then SchDoc.CustomY := MilsToCoord(CustomH);
+        End
+        Else
+        Begin
+            SchServer.ProcessControl.PostProcess(SchDoc, '');
+            Result := BuildErrorResponse(RequestId, 'INVALID_STYLE',
+                'Unknown sheet style: ' + StyleStr);
+            Exit;
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, '');
+    End;
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"style":"' + EscapeJsonString(StyleStr) + '"}');
+End;
+
+{..............................................................................}
+{ Place a schematic component instance from a library onto the active sheet.  }
+{ Uses ISch_Document.PlaceSchComponent — the verified direct-placement API.   }
+{ Params: library_path (.SchLib full path), lib_reference (component name),   }
+{         x, y (mils), designator (optional), rotation (0|90|180|270),        }
+{         footprint (optional override)                                        }
+{..............................................................................}
+
+Function Gen_PlaceSchComponentFromLibrary(Params : String; RequestId : String) : String;
+Var
+    LibPath, LibRef, DesigStr, FootprintStr : String;
+    X, Y, Rotation : Integer;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    CompLoc : TLocation;
+    RotCount, I : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    LibRef := ExtractJsonValue(Params, 'lib_reference');
+    DesigStr := ExtractJsonValue(Params, 'designator');
+    FootprintStr := ExtractJsonValue(Params, 'footprint');
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
+
+    If LibRef = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'lib_reference required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { PlaceSchComponent loads the library (or uses an already-open one) and       }
+    { registers the new component with the sheet. If lookup fails Comp is Nil.   }
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        Comp := SchDoc.PlaceSchComponent(LibPath, LibRef);
+    Except
+        Comp := Nil;
+    End;
+
+    If Comp = Nil Then
+    Begin
+        SchServer.ProcessControl.PostProcess(SchDoc, '');
+        Result := BuildErrorResponse(RequestId, 'PLACE_FAILED',
+            'PlaceSchComponent returned nil — check library_path and lib_reference');
+        Exit;
+    End;
+
+    { Position the newly placed component. }
+    CompLoc := Point(MilsToCoord(X), MilsToCoord(Y));
+    Try Comp.Location := CompLoc; Except End;
+
+    { Apply 90-degree rotations. }
+    RotCount := 0;
+    If Rotation = 90 Then RotCount := 1
+    Else If Rotation = 180 Then RotCount := 2
+    Else If Rotation = 270 Then RotCount := 3;
+    For I := 1 To RotCount Do
+        Try Comp.RotateBy90(CompLoc); Except End;
+
+    { Override designator if caller supplied one. }
+    If DesigStr <> '' Then
+        Try Comp.Designator.Text := DesigStr; Except End;
+
+    { Override footprint model if caller supplied one. }
+    If FootprintStr <> '' Then
+        Try Comp.CurrentFootprintModelName := FootprintStr; Except End;
+
+    SchRegisterObject(SchDoc, Comp);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,'
+        + '"library_path":"' + EscapeJsonString(LibPath) + '",'
+        + '"lib_reference":"' + EscapeJsonString(LibRef) + '",'
+        + '"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+        + '"rotation":' + IntToStr(Rotation) + ','
+        + '"designator":"' + EscapeJsonString(DesigStr) + '"}');
+End;
+
+{..............................................................................}
+{ Place a parameter-set directive on the schematic at (x, y).                 }
+{ A parameter-set directive attaches a named parameter to a wire or net,     }
+{ commonly used for differential pairs (DifferentialPair=<pair name>), net   }
+{ class membership (NetClass=<class name>), or custom net-level rules.        }
+{ Params: x, y, param_name, param_value                                       }
+{..............................................................................}
+
+Function Gen_PlaceDirective(Params : String; RequestId : String) : String;
+Var
+    X, Y : Integer;
+    ParamName, ParamValue : String;
+    SchDoc : ISch_Document;
+    ParamSet : ISch_ParameterSet;
+    Param : ISch_Parameter;
+Begin
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    ParamName := ExtractJsonValue(Params, 'param_name');
+    ParamValue := ExtractJsonValue(Params, 'param_value');
+
+    If ParamName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { ISch_ParameterSet is the proper directive interface — a group of
+      parameters applied to the wire/net at its location. Create the
+      parameter set first, then add a child ISch_Parameter carrying the
+      actual (name, value) payload. ISch_Parameter alone would render
+      as free-standing text and not act as a directive. }
+    ParamSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+    If ParamSet = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create parameter-set directive');
+        Exit;
+    End;
+
+    ParamSet.Location := Point(MilsToCoord(X), MilsToCoord(Y));
+    Try ParamSet.Name := ParamName; Except End;
+
+    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+    If Param <> Nil Then
+    Begin
+        Param.Name := ParamName;
+        Param.Text := ParamValue;
+        ParamSet.AddSchObject(Param);
+        SchRegisterObject(ParamSet, Param);
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(ParamSet);
+    SchRegisterObject(SchDoc, ParamSet);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+        + '"param_name":"' + EscapeJsonString(ParamName) + '",'
+        + '"param_value":"' + EscapeJsonString(ParamValue) + '"}');
+End;
+
+{..............................................................................}
+{ Place a compile mask (blanket) over a rectangular area on the schematic.    }
+{ Compile masks exclude enclosed objects from compilation and ERC.            }
+{ Params: x1,y1,x2,y2 in mils                                                 }
+{..............................................................................}
+
+Function Gen_PlaceCompileMask(Params : String; RequestId : String) : String;
+Var
+    X1, Y1, X2, Y2, TmpI : Integer;
+    SchDoc : ISch_Document;
+    Mask : ISch_CompileMask;
+Begin
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
+    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Mask := SchServer.SchObjectFactory(eCompileMask, eCreate_Default);
+    If Mask = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create compile mask');
+        Exit;
+    End;
+
+    Mask.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Mask.Corner := Point(MilsToCoord(X2), MilsToCoord(Y2));
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Mask);
+    SchRegisterObject(SchDoc, Mask);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,'
+        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+End;
+
+{..............................................................................}
 { Place a net label at coordinates on active schematic                        }
 { Params: text, x, y, orientation (0/1/2/3)                                  }
 {..............................................................................}
@@ -2527,6 +3215,17 @@ Begin
         'refresh_document': Result := Gen_RefreshDocument(RequestId);
         'get_unconnected_pins': Result := Gen_GetUnconnectedPins(Params, RequestId);
         'place_wire':       Result := Gen_PlaceWire(Params, RequestId);
+        'place_bus':        Result := Gen_PlaceBus(Params, RequestId);
+        'place_directive':  Result := Gen_PlaceDirective(Params, RequestId);
+        'place_compile_mask': Result := Gen_PlaceCompileMask(Params, RequestId);
+        'place_rectangle':  Result := Gen_PlaceRectangle(Params, RequestId);
+        'place_line':       Result := Gen_PlaceLine(Params, RequestId);
+        'place_note':       Result := Gen_PlaceNote(Params, RequestId);
+        'place_sheet_symbol': Result := Gen_PlaceSheetSymbol(Params, RequestId);
+        'place_sheet_entry': Result := Gen_PlaceSheetEntry(Params, RequestId);
+        'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
+        'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
+        'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'place_net_label':  Result := Gen_PlaceNetLabel(Params, RequestId);
         'place_port':       Result := Gen_PlacePort(Params, RequestId);
         'place_power_port': Result := Gen_PlacePowerPort(Params, RequestId);

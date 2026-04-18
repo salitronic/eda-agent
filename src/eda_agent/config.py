@@ -70,7 +70,7 @@ class AltiumConfig(BaseModel):
     # (iterating 6000+ tracks, compiling a 500+ component project, etc).
     # Individual tool calls can override per-invocation when they know
     # they're cheap.
-    poll_timeout: float = 120.0  # max wait for response
+    poll_timeout: float = 10.0  # max wait for response
 
     # Altium process name
     altium_process_name: str = "X2.exe"

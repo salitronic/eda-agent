@@ -568,6 +568,315 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def place_rectangle(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        solid: bool = False,
+        line_width: int = 1,
+    ) -> dict[str, Any]:
+        """Place a rectangle shape on the active schematic (decorative only).
+
+        Args:
+            x1, y1, x2, y2: Opposite corners in mils
+            solid: Fill the rectangle (default False = outline only)
+            line_width: 1 (small), 2 (medium), 3 (large)
+
+        Returns:
+            Dictionary confirming rectangle placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_rectangle",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "solid": "true" if solid else "false",
+                "line_width": str(line_width),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_line(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        line_width: int = 1,
+    ) -> dict[str, Any]:
+        """Place a decorative line on the active schematic.
+
+        This is a graphic line, not a signal wire. Use place_wire for
+        electrical connections. Use this for hand-drawn borders, arrows,
+        diagram overlays.
+
+        Args:
+            x1, y1, x2, y2: Endpoints in mils
+            line_width: 1 (small), 2 (medium), 3 (large)
+
+        Returns:
+            Dictionary confirming line placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_line",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "line_width": str(line_width),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_note(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        text: str,
+    ) -> dict[str, Any]:
+        """Place a text-box note on the active schematic.
+
+        Useful for design commentary, TODO markers, revision notes.
+        The box sizes itself to (x1,y1)-(x2,y2) and contains the
+        given text.
+
+        Args:
+            x1, y1, x2, y2: Note box corners in mils
+            text: Note content
+
+        Returns:
+            Dictionary confirming note placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_note",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "text": text,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_sheet_symbol(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        sheet_file_name: str,
+        sheet_name: str = "",
+    ) -> dict[str, Any]:
+        """Place a sheet symbol linking to a child schematic document.
+
+        Used for hierarchical designs — the parent sheet has one sheet
+        symbol per child .SchDoc in the project. The sheet_file_name
+        must exactly match a .SchDoc that's a project member. Without
+        that match the sheet symbol is dangling.
+
+        After placing, use place_sheet_entry (future tool) or manually
+        add sheet entries corresponding to the child sheet's ports.
+
+        Args:
+            x1, y1, x2, y2: Sheet symbol box corners in mils
+            sheet_file_name: Child SchDoc filename (e.g. "PSU.SchDoc")
+            sheet_name: Display label (default: file name without extension)
+
+        Returns:
+            Dictionary confirming sheet symbol placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_sheet_symbol",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "sheet_file_name": sheet_file_name,
+                "sheet_name": sheet_name,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_sheet_entry(
+        sheet_name: str,
+        entry_name: str,
+        io_type: str = "unspecified",
+        side: str = "left",
+        distance_from_top: int = 100,
+    ) -> dict[str, Any]:
+        """Place a sheet entry port on an existing sheet symbol.
+
+        Sheet entries are the ports on a sheet symbol that map to
+        hierarchical ports inside the child sheet. Name must match a
+        port defined in the child .SchDoc for electrical continuity.
+
+        Args:
+            sheet_name: SheetName of the target sheet symbol
+            entry_name: Port name (must match a port in the child sheet)
+            io_type: "input" | "output" | "bidirectional" | "unspecified"
+            side: "left" | "right" | "top" | "bottom"
+            distance_from_top: Position along the chosen side in mils
+
+        Returns:
+            Dictionary confirming sheet entry placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_sheet_entry",
+            {
+                "sheet_name": sheet_name,
+                "entry_name": entry_name,
+                "io_type": io_type,
+                "side": side,
+                "distance_from_top": str(distance_from_top),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_bus_entry(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Place a bus entry (45 degree stub) connecting a wire to a bus.
+
+        Bus entries are the angled stubs that tap a single-signal wire
+        off a bus line. Start point should sit on the bus; end point
+        should sit on the wire (both usually at 45 degrees offset).
+
+        Args:
+            x1, y1: Start coordinates in mils (typically on the bus)
+            x2, y2: End coordinates in mils (typically on the wire)
+
+        Returns:
+            Dictionary confirming bus entry placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_bus_entry",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
+        return result
+
+    @mcp.tool()
+    async def sch_set_sheet_size(
+        style: str,
+        custom_width: int = 0,
+        custom_height: int = 0,
+    ) -> dict[str, Any]:
+        """Set the sheet size / template style of the active schematic.
+
+        Changes SheetStyle on the current SchDoc. Use a named style
+        (A-E, A0-A4, Letter, Legal, Tabloid) or "Custom" with explicit
+        width and height in mils.
+
+        Args:
+            style: Sheet size name, e.g. "A", "A3", "A4", "Letter", "Custom"
+            custom_width: Custom sheet width in mils (only if style="Custom")
+            custom_height: Custom sheet height in mils (only if style="Custom")
+
+        Returns:
+            Dictionary confirming the style change
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.set_sheet_size",
+            {
+                "style": style,
+                "custom_width": str(custom_width),
+                "custom_height": str(custom_height),
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_sch_component_from_library(
+        lib_reference: str,
+        x: int,
+        y: int,
+        library_path: str = "",
+        designator: str = "",
+        rotation: int = 0,
+        footprint: str = "",
+    ) -> dict[str, Any]:
+        """Place a schematic component instance from a library at (x, y).
+
+        Calls ISch_Document.PlaceSchComponent with the given library path
+        and component name. If library_path is empty, Altium searches
+        already-open libraries and the integrated library chain.
+
+        Args:
+            lib_reference: Component name inside the library (e.g. "Res1")
+            x, y: Placement coordinates in mils
+            library_path: Full path to .SchLib (optional if library already open)
+            designator: Override designator (e.g. "R1"). Empty = keep default.
+            rotation: 0, 90, 180, or 270 degrees
+            footprint: Override current footprint model name (optional)
+
+        Returns:
+            Dictionary confirming component placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_sch_component_from_library",
+            {
+                "library_path": library_path,
+                "lib_reference": lib_reference,
+                "x": str(x),
+                "y": str(y),
+                "designator": designator,
+                "rotation": str(rotation),
+                "footprint": footprint,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def place_bus(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Place a bus segment between two XY coordinates on the active schematic.
+
+        Buses carry multi-signal groups like DATA[0..7]. Place a bus line
+        and then attach net labels with the bus naming syntax to mark the
+        signal group. Typical workflow: bus line, bus entries at each pin,
+        then connect each bus entry to a wire.
+
+        Args:
+            x1: Start X coordinate in mils
+            y1: Start Y coordinate in mils
+            x2: End X coordinate in mils
+            y2: End Y coordinate in mils
+
+        Returns:
+            Dictionary confirming bus placement with coordinates
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_bus",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
+        return result
+
+    @mcp.tool()
     async def place_net_label(
         text: str,
         x: int,

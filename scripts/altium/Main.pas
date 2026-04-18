@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.18.1';
+    SCRIPT_VERSION = '2026.04.18.19';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
@@ -19,7 +19,7 @@ Const
     POLL_INTERVAL_ACTIVE = 50;    // ms between polls right after a command
     POLL_INTERVAL_IDLE   = 500;   // ms between polls when idle (lower CPU load)
     IDLE_THRESHOLD       = 20;    // iterations before switching to idle polling
-    AUTO_SHUTDOWN_MS     = 60000;  // 60 sec inactivity auto-shutdown (Python sends keep-alive pings)
+    AUTO_SHUTDOWN_MS     = 600000; // 10 min inactivity auto-shutdown (Python sends keep-alive pings)
     YIELD_ITERATIONS     = 10;    // ProcessMessages calls per sleep cycle in idle mode
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).

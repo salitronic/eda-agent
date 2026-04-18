@@ -5,6 +5,17 @@
 { This file MUST compile last so all Handle*Command functions are declared.   }
 {..............................................................................}
 
+{ Request counters — used by ping_altium to report liveness. A floating      }
+{ status window was attempted but Altium's DelphiScript host blocks every    }
+{ VCL property setter we tried (.Caption, .SimpleText, .Text, .Lines are all }
+{ "Undeclared identifier" at compile time — Try/Except cannot catch those).  }
+{ A proper status GUI would need a pre-built .dfm form loaded via            }
+{ Application.CreateForm — left as a future-work item.                       }
+Var
+    StatusStartTick    : Cardinal;
+    StatusRequestCount : Integer;
+    StatusLastCommand  : String;
+
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -72,6 +83,10 @@ Begin
     DeleteFile(RequestPath);
 
     If (RequestId = '') Or (Command = '') Then Exit;
+
+    StatusLastCommand := Command;
+    Inc(StatusRequestCount);
+    SetStatusText('MCP: running ' + Command + '...  | req ' + IntToStr(StatusRequestCount));
 
     // Process the command
     ExceptionMsg := '';
@@ -152,6 +167,12 @@ Begin
     CurrentSleep := POLL_INTERVAL_ACTIVE;
     LastActivityMs := GetTickCount;
 
+    StatusStartTick := GetTickCount;
+    StatusRequestCount := 0;
+    StatusLastCommand := '';
+    ShowStatusForm;
+    SetStatusText('MCP: idle');
+
     Try
         While Running Do
         Begin
@@ -200,6 +221,8 @@ Begin
                 IdleCount := 0;
                 CurrentSleep := POLL_INTERVAL_ACTIVE;
                 LastActivityMs := GetTickCount;
+                SetStatusText('MCP: idle  | req ' + IntToStr(StatusRequestCount)
+                              + '  | last: ' + StatusLastCommand);
             End
             Else
             Begin
@@ -232,6 +255,7 @@ Begin
 
     // Always clean up regardless of how we exited
     Running := False;
+    HideStatusForm;
     CleanupMCPServer;
 End;
 

@@ -45,6 +45,26 @@ pip install -e .
 
 Register the server with your MCP client. The binary is `eda-agent` and runs on stdio — consult your client's docs for how to add a local stdio-based server.
 
+### Claude Code
+
+```bash
+claude mcp add altium eda-agent
+```
+
+Adds `eda-agent` as an MCP server named `altium` to your Claude Code project config. Use `-s user` to register it at the user level (available across every project):
+
+```bash
+claude mcp add -s user altium eda-agent
+```
+
+If `eda-agent` isn't on your `PATH`, give the full path instead — pip reports it after install, typically `%USERPROFILE%\AppData\Roaming\Python\Python312\Scripts\eda-agent.exe` on Windows. To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
+
+### Other MCP clients
+
+The server speaks standard MCP over stdio; any client that accepts a local stdio command will work. Invoke `eda-agent` (or `eda-agent serve`) as the subprocess.
+
+### Altium-side scripts
+
 Drop the Altium script project somewhere you can find it:
 
 ```bash

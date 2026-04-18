@@ -249,6 +249,132 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_set_board_shape(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Define the physical PCB board outline as a rectangle.
+
+        Overwrites the current board shape. Use this right after creating a
+        new PCB document to establish the board size before placing parts.
+        Coordinates are in mils; (x1,y1) and (x2,y2) are opposite corners in
+        any order.
+
+        Args:
+            x1: First corner X in mils
+            y1: First corner Y in mils
+            x2: Opposite corner X in mils
+            y2: Opposite corner Y in mils
+
+        Returns:
+            Dictionary confirming the new outline rectangle
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.set_board_shape",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_polygon_rect(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        net: str = "",
+        layer: str = "TopLayer",
+        pour_over: bool = True,
+    ) -> dict[str, Any]:
+        """Drop a copper polygon pour on a rectangular area.
+
+        Useful for placing a ground plane or power plane: pass the board's
+        corners, the layer, and the net name (typically "GND"). Set
+        pour_over=False to force the pour around same-net tracks/pads
+        instead of covering them.
+
+        Args:
+            x1: First corner X in mils
+            y1: First corner Y in mils
+            x2: Opposite corner X in mils
+            y2: Opposite corner Y in mils
+            net: Net name to assign (empty = no-net fill, unusual)
+            layer: Copper layer (default "TopLayer")
+            pour_over: Pour over same-net objects (default True)
+
+        Returns:
+            Dictionary confirming the polygon placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_polygon_rect",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "net": net,
+                "layer": layer,
+                "pour_over": "true" if pour_over else "false",
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_via_array(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        pitch: int = 50,
+        net: str = "",
+        size: int = 30,
+        hole_size: int = 12,
+        low_layer: str = "TopLayer",
+        high_layer: str = "BottomLayer",
+    ) -> dict[str, Any]:
+        """Stitch vias in a regular grid across a rectangle.
+
+        Typical use: GND stitching between top and bottom layer copper
+        pours. Places vias at every (pitch × pitch) grid intersection
+        inside the rectangle.
+
+        Args:
+            x1: First corner X in mils
+            y1: First corner Y in mils
+            x2: Opposite corner X in mils
+            y2: Opposite corner Y in mils
+            pitch: Grid spacing in mils (default 50)
+            net: Net to assign (typically "GND"; empty = no net)
+            size: Via pad diameter in mils (default 30)
+            hole_size: Drill hole diameter in mils (default 12)
+            low_layer: Start layer (default "TopLayer")
+            high_layer: End layer (default "BottomLayer")
+
+        Returns:
+            Dictionary with count of vias placed and rectangle/pitch echo
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_via_array",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "pitch": str(pitch),
+                "net": net,
+                "size": str(size),
+                "hole_size": str(hole_size),
+                "low_layer": low_layer,
+                "high_layer": high_layer,
+            },
+        )
+        return result
+
+    @mcp.tool()
     async def pcb_place_via(
         x: int,
         y: int,
@@ -296,10 +422,13 @@ def register_pcb_tools(mcp):
         layer: str = "TopLayer",
         net_name: str = "",
     ) -> dict[str, Any]:
-        """Place a track segment between two points on the active PCB.
+        """Place ONE track segment on the active PCB.
 
-        Creates a single straight track segment. Chain multiple calls
-        to build multi-segment routes.
+        IMPORTANT: If you are about to place more than one segment
+        (multi-segment manhattan routes, a whole net, a batch of
+        traces), use `pcb_place_tracks` instead — it takes a list of
+        segments and runs them in a single IPC round-trip, which is
+        dramatically faster than calling this tool repeatedly.
 
         Args:
             x1: Start X position in mils
@@ -326,6 +455,52 @@ def register_pcb_tools(mcp):
         if net_name:
             params["net_name"] = net_name
         result = await bridge.send_command_async("pcb.place_track", params)
+        return result
+
+    @mcp.tool()
+    async def pcb_place_tracks(
+        tracks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Place many track segments on the active PCB in ONE IPC round-trip.
+
+        PREFER THIS over looping `pcb_place_track` whenever you have
+        more than one segment to place. The whole batch is wrapped in
+        a single PreProcess/PostProcess and a single save, so 50
+        tracks take roughly the same wall time as 1. Typical uses:
+        routing a full net, laying down a whole stitch pattern,
+        replicating a motif, drawing a keepout rectangle.
+
+        Args:
+            tracks: List of track dicts. Each dict supports:
+                x1, y1, x2, y2 (required, mils)
+                width (default 10), layer (default "TopLayer"),
+                net_name (optional, empty = no net)
+
+            Example:
+                [
+                  {"x1": 5010, "y1": 4785, "x2": 5070, "y2": 4785,
+                   "width": 10, "net_name": "NetC8_2"},
+                  {"x1": 5070, "y1": 4785, "x2": 5070, "y2": 4862,
+                   "width": 10, "net_name": "NetC8_2"},
+                ]
+
+        Returns:
+            Dictionary with "placed" and "failed" counts
+        """
+        parts = []
+        for t in tracks:
+            x1 = int(t["x1"])
+            y1 = int(t["y1"])
+            x2 = int(t["x2"])
+            y2 = int(t["y2"])
+            width = int(t.get("width", 10))
+            layer = str(t.get("layer", "TopLayer"))
+            net = str(t.get("net_name", ""))
+            parts.append(f"{x1},{y1},{x2},{y2},{width},{layer},{net}")
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_tracks", {"tracks": "|".join(parts)}
+        )
         return result
 
     @mcp.tool()
@@ -475,6 +650,7 @@ def register_pcb_tools(mcp):
         rule_type: str = "clearance",
         value: int = 10,
         scope: str = "",
+        net_scope: str = "different_nets",
     ) -> dict[str, Any]:
         """Create a new design rule on the active PCB.
 
@@ -489,6 +665,12 @@ def register_pcb_tools(mcp):
             value: Rule value in mils (default 10)
             scope: Optional query expression for Scope1
                 (e.g., "InNet('GND')", "All")
+            net_scope: Which nets the rule applies between. Options:
+                "different_nets" (default) - only between pads/tracks of
+                    different nets. This is what you want for Clearance.
+                "any_net" - include same-net objects (flags a track
+                    touching a pad of its own net — almost always a bug).
+                "same_net" - only between same-net objects.
 
         Returns:
             Dictionary with created rule details
@@ -498,6 +680,7 @@ def register_pcb_tools(mcp):
             "name": name,
             "rule_type": rule_type,
             "value": str(value),
+            "net_scope": net_scope,
         }
         if scope:
             params["scope"] = scope
@@ -889,4 +1072,263 @@ def register_pcb_tools(mcp):
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.export_coordinates", {})
+        return result
+
+    @mcp.tool()
+    async def pcb_create_diff_pair(
+        positive_net: str,
+        negative_net: str,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a differential pair object from two existing nets.
+
+        The two nets must already exist on the board (typically present
+        after update_pcb / ECO). The diff-pair object lets Altium apply
+        differential routing constraints and the interactive router to
+        honour impedance / matched-length rules between the pair.
+
+        Args:
+            positive_net: Positive-side net name (e.g. "USB_DP")
+            negative_net: Negative-side net name (e.g. "USB_DM")
+            name: Optional diff-pair name (defaults to "<pos>_<neg>")
+
+        Returns:
+            Dictionary confirming creation with name, positive_net, negative_net
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.create_diff_pair",
+            {
+                "positive_net": positive_net,
+                "negative_net": negative_net,
+                "name": name,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_region(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        layer: str = "TopLayer",
+        net: str = "",
+    ) -> dict[str, Any]:
+        """Place a solid copper region on a rectangular area.
+
+        Regions are solid primitives; unlike polygons, they don't participate
+        in the connectivity engine unless you assign a net. Use for
+        mechanical copper zones, thermal pads, or solder-mask openings.
+        For a true ground plane with ratsnest tracking, prefer
+        pcb_place_polygon_rect.
+
+        Args:
+            x1, y1, x2, y2: Opposite corners in mils (any order)
+            layer: Copper or mech layer (default "TopLayer")
+            net: Optional net assignment
+
+        Returns:
+            Dictionary confirming the region placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_region",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "layer": layer,
+                "net": net,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_dimension(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        layer: str = "TopOverlay",
+        orientation: str = "",
+    ) -> dict[str, Any]:
+        """Place a linear dimension between two points.
+
+        Horizontal dimension measures delta-X, vertical measures delta-Y.
+        Orientation auto-detects from the larger axis delta if not given.
+
+        Args:
+            x1, y1: First reference point in mils
+            x2, y2: Second reference point in mils
+            layer: Layer to draw the dimension on (default "TopOverlay")
+            orientation: "horizontal" or "vertical" ("" = auto)
+
+        Returns:
+            Dictionary confirming the dimension placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_dimension",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "layer": layer,
+                "orientation": orientation,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_pad(
+        x: int,
+        y: int,
+        name: str = "",
+        net: str = "",
+        shape: str = "round",
+        x_size: int = 60,
+        y_size: int = 60,
+        hole_size: int = 0,
+        layer: str = "TopLayer",
+    ) -> dict[str, Any]:
+        """Place a standalone pad on the active PCB.
+
+        Not part of any component. Use for fiducials, test points,
+        mounting holes. Set hole_size=0 for surface-mount pads,
+        nonzero for through-hole.
+
+        Args:
+            x, y: Position in mils
+            name: Pad designator / label (optional)
+            net: Net to connect to (optional)
+            shape: "round" (default) / "rect" / "oct"
+            x_size, y_size: Pad dimensions in mils
+            hole_size: Drill diameter in mils (0 = SMD)
+            layer: Copper layer (default "TopLayer")
+
+        Returns:
+            Dictionary confirming pad placement
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_pad",
+            {
+                "x": str(x),
+                "y": str(y),
+                "name": name,
+                "net": net,
+                "shape": shape,
+                "x_size": str(x_size),
+                "y_size": str(y_size),
+                "hole_size": str(hole_size),
+                "layer": layer,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_angular_dimension(
+        center_x: int,
+        center_y: int,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        radius: int = 100,
+        layer: str = "TopOverlay",
+    ) -> dict[str, Any]:
+        """Place an angular dimension (angle between two reference directions).
+
+        Args:
+            center_x, center_y: Vertex of the angle in mils
+            x1, y1: First reference direction endpoint in mils
+            x2, y2: Second reference direction endpoint in mils
+            radius: Arc radius at which to draw the dimension in mils
+            layer: Layer (default "TopOverlay")
+
+        Returns:
+            Dictionary confirming the angular dimension
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_angular_dimension",
+            {
+                "center_x": str(center_x),
+                "center_y": str(center_y),
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "radius": str(radius),
+                "layer": layer,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_place_radial_dimension(
+        center_x: int,
+        center_y: int,
+        radius: int,
+        layer: str = "TopOverlay",
+    ) -> dict[str, Any]:
+        """Place a radial dimension around a center point with a given radius.
+
+        Args:
+            center_x, center_y: Center point in mils
+            radius: Radius to dimension in mils
+            layer: Layer (default "TopOverlay")
+
+        Returns:
+            Dictionary confirming the radial dimension
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.place_radial_dimension",
+            {
+                "center_x": str(center_x),
+                "center_y": str(center_y),
+                "radius": str(radius),
+                "layer": layer,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_distribute_components(
+        designators: str,
+        axis: str = "x",
+        start: int = 0,
+        end: int = 1000,
+    ) -> dict[str, Any]:
+        """Evenly space components along an axis.
+
+        Moves each named component so its X (or Y) coordinate lands at
+        equally-spaced stops from `start` to `end`. Order follows the
+        designators list — designators="R1,R2,R3" with start=0 end=200
+        places R1 at 0, R2 at 100, R3 at 200 on the chosen axis. Y (or X)
+        is untouched.
+
+        Args:
+            designators: Comma-separated list of component designators
+            axis: "x" or "y" (default "x")
+            start: First position in mils
+            end: Last position in mils
+
+        Returns:
+            Dictionary with distribution result
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.distribute_components",
+            {
+                "designators": designators,
+                "axis": axis,
+                "start": str(start),
+                "end": str(end),
+            },
+        )
         return result
