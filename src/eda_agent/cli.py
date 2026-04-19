@@ -38,7 +38,7 @@ def get_bundled_scripts_path() -> Path:
     time (see pyproject.toml).
 
     In an editable install (`pip install -e .`), the `force-include`
-    mapping is not honoured, so we fall back to `<repo>/scripts/altium/`
+    mapping is not honoured; the loader falls back to `<repo>/scripts/altium/`
     by walking up from the package's source location.
     """
     bundled = get_package_root() / "scripts"

@@ -11,16 +11,17 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.18.19';
+    SCRIPT_VERSION = '2026.04.19.23';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
     RESPONSE_FILE = 'response.json';
-    POLL_INTERVAL_ACTIVE = 50;    // ms between polls right after a command
-    POLL_INTERVAL_IDLE   = 500;   // ms between polls when idle (lower CPU load)
+    POLL_INTERVAL_ACTIVE = 10;    // ms between polls right after a command
+    POLL_INTERVAL_IDLE   = 100;   // ms between polls when idle (fast enough to feel snappy, light enough on CPU)
     IDLE_THRESHOLD       = 20;    // iterations before switching to idle polling
     AUTO_SHUTDOWN_MS     = 600000; // 10 min inactivity auto-shutdown (Python sends keep-alive pings)
-    YIELD_ITERATIONS     = 10;    // ProcessMessages calls per sleep cycle in idle mode
+    YIELD_ITERATIONS     = 5;     // ProcessMessages calls per idle cycle
+    YIELD_EVERY_N_ACTIVE = 5;     // call ProcessMessages only every Nth active tick
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     // Send SCHM_BeginModify / SCHM_EndModify around property writes on an
@@ -37,6 +38,10 @@ Const
 Var
     WorkspaceDir : String;
     Running : Boolean;
+    { Set True by handlers that write response.json themselves (to bypass a    }
+    { DelphiScript return-value corruption bug for long strings). Checked and  }
+    { cleared by ProcessSingleRequest each cycle.                              }
+    ResponseAlreadyWritten : Boolean;
 
 {..............................................................................}
 { ISch_RobotManager.SendMessage helpers.                                        }
@@ -45,8 +50,8 @@ Var
 { SchBeginModify / SchEndModify. Every new primitive added via SchObjectFactory }
 { + AddSchObject / RegisterSchObjectInContainer should be followed by          }
 { SchRegisterObject. Without these broadcasts the editor sub-systems and the   }
-{ undo stack are not notified, which matches the "writes don't appear" and    }
-{ "save doesn't pick up changes" symptoms we hit.                               }
+{ undo stack are not notified, which manifests as "writes don't appear" and    }
+{ "save doesn't pick up changes" in the UI.                                    }
 {..............................................................................}
 
 Procedure SchBeginModify(Obj : ISch_BasicContainer);
@@ -77,6 +82,11 @@ End;
 { docs that SaveAll otherwise silently skips.                                  }
 {..............................................................................}
 
+{ Deferred save: mark the document dirty but don't write to disk yet.         }
+{ DoFileSave on a medium PCB takes 1-5 s, so calling it after every mutation  }
+{ (50+ handlers used to) made every MCP call feel slow. We now rely on Altium }
+{ surfacing the dirty indicator and flush to disk happens only when the       }
+{ caller explicitly invokes application.save_all (or on detach).              }
 Procedure SaveDocByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -84,8 +94,38 @@ Begin
     If FilePath = '' Then Exit;
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
-    ServerDoc.SetModified(True);
-    Try ServerDoc.DoFileSave(''); Except End;
+    Try ServerDoc.SetModified(True); Except End;
+End;
+
+{ Walk every open logical document in the focused workspace and call         }
+{ DoFileSave on the ones whose Modified flag is set. This is the explicit    }
+{ flush that replaces the per-mutation save.                                 }
+Procedure SaveAllDirty;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    I, J : Integer;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Workspace.DM_Projects(I);
+        If Project = Nil Then Continue;
+        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(J);
+            If Doc = Nil Then Continue;
+            Try
+                ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+                If ServerDoc = Nil Then Continue;
+                If ServerDoc.Modified Then
+                    Try ServerDoc.DoFileSave(''); Except End;
+            Except End;
+        End;
+    End;
 End;
 
 {..............................................................................}
@@ -192,6 +232,38 @@ Begin
         Except
             // Silently fail
         End;
+    End;
+End;
+
+{ Append a line to workspace/activity.log for performance profiling. The     }
+{ polling loop uses this to record per-command timings, and handlers can     }
+{ add their own sub-stage timings for bottleneck analysis. Silently           }
+{ swallows IO errors — logging must not break a command.                      }
+Procedure AppendLog(Line : String);
+Var
+    F : TextFile;
+    LogPath : String;
+Begin
+    Try
+        LogPath := WorkspaceDir + 'activity.log';
+        AssignFile(F, LogPath);
+        If FileExists(LogPath) Then Append(F) Else Rewrite(F);
+        Try
+            WriteLn(F, Line);
+        Finally
+            CloseFile(F);
+        End;
+    Except
+        // Never raise from the logger
+    End;
+End;
+
+Function FormatLogStamp : String;
+Begin
+    Try
+        Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now);
+    Except
+        Result := '';
     End;
 End;
 

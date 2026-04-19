@@ -947,7 +947,7 @@ Var
     YCoords    : TStringList;  { Y in mils as integer-string }
     DocIndices : TStringList;
 
-    { Track which docs we touched so we can PreProcess/PostProcess/Invalidate only those }
+    { Set of modified docs — PreProcess/PostProcess/Invalidate are scoped to these only }
     TouchedDocs : TStringList;
 
     { Per-prefix counter for final assignment — stored as "Prefix=N" lines }
@@ -1078,7 +1078,7 @@ Begin
             End;
         End;
 
-        { If 'none' mode, we are done }
+        { 'none' mode: skip annotation entirely }
         If Order = 'none' Then
         Begin
             Result := BuildSuccessResponse(RequestId,
@@ -2345,18 +2345,18 @@ End;
 { executing an ECO — the IEngineeringChangeOrder / IECOManager interfaces     }
 { are not reachable from scripting in any publicly documented way.             }
 {                                                                              }
-{ What we do:                                                                  }
-{   1. Compile the project and gather component mapping differences so we can  }
-{      report useful counts regardless of what the ECO dialog does.            }
+{ Strategy:                                                                    }
+{   1. Compile the project and gather component mapping differences so useful  }
+{      counts are available regardless of what the ECO dialog does.            }
 {   2. Invoke PCB:UpdatePCBFromProject with parameter flags (DisableDialog,   }
 {      Silent, Execute, NoConfirm, AutoApply) that various Altium builds      }
-{      honor — older builds ignore unknown flags but don't error. Modern      }
+{      honor — older builds ignore unknown flags but do not error. Modern     }
 {      builds (AD20+) honor DisableDialog=True by applying changes            }
 {      automatically in many cases.                                           }
 {   3. Re-compile and recompute mappings; report the before/after delta.      }
 {                                                                              }
 { If the ECO dialog still opens (older Altium), the caller sees               }
-{ dialog_may_have_opened:true and the user can confirm manually; our own      }
+{ dialog_may_have_opened:true and the user can confirm manually; the          }
 { difference data still reports what Altium found.                            }
 {..............................................................................}
 

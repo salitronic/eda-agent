@@ -5,16 +5,15 @@
 { This file MUST compile last so all Handle*Command functions are declared.   }
 {..............................................................................}
 
-{ Request counters — used by ping_altium to report liveness. A floating      }
-{ status window was attempted but Altium's DelphiScript host blocks every    }
-{ VCL property setter we tried (.Caption, .SimpleText, .Text, .Lines are all }
-{ "Undeclared identifier" at compile time — Try/Except cannot catch those).  }
-{ A proper status GUI would need a pre-built .dfm form loaded via            }
-{ Application.CreateForm — left as a future-work item.                       }
+{ Dashboard counters — fed to StatusForm.pas helpers each tick. The form is }
+{ DFM-backed (StatusForm.dfm defines each control by name) so property       }
+{ setters on those controls compile and work at runtime, unlike controls     }
+{ created programmatically with TForm.Create where .Caption is undeclared.   }
 Var
-    StatusStartTick    : Cardinal;
-    StatusRequestCount : Integer;
-    StatusLastCommand  : String;
+    StatusStartTick      : Cardinal;
+    StatusRequestCount   : Integer;
+    StatusLastCommand    : String;
+    StatusTotalAltiumMs  : Cardinal;  { Sum of per-command durations — "time Altium spent working" }
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
@@ -56,6 +55,8 @@ Var
     RequestContent, ResponseContent : String;
     RequestId, Command, Params : String;
     ExceptionMsg : String;
+    StartMs, DurationMs : Cardinal;
+    ResultTag : String;
 Begin
     Result := False;
     EnsureWorkspaceDir;
@@ -86,7 +87,10 @@ Begin
 
     StatusLastCommand := Command;
     Inc(StatusRequestCount);
-    SetStatusText('MCP: running ' + Command + '...  | req ' + IntToStr(StatusRequestCount));
+    UpdateStatusHeader('MCP: running ' + Command + '...');
+    StartMs := GetTickCount;
+    ResultTag := 'OK';
+    ResponseAlreadyWritten := False;
 
     // Process the command
     ExceptionMsg := '';
@@ -95,10 +99,21 @@ Begin
     Except
         ExceptionMsg := 'Unhandled exception processing: ' + Command;
         ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
+        ResultTag := 'EXCEPTION';
     End;
 
-    // Write the response
-    WriteFileContent(ResponsePath, ResponseContent);
+    // Write the response (skip if handler already wrote it directly as a
+    // workaround for the DelphiScript long-string return-corruption bug).
+    If Not ResponseAlreadyWritten Then
+        WriteFileContent(ResponsePath, ResponseContent);
+
+    DurationMs := GetTickCount - StartMs;
+    StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
+
+    AppendLog(FormatLogStamp + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
+              + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
+    AppendLogLine(Command, DurationMs, ResultTag = 'EXCEPTION');
+
     Result := True;
 End;
 
@@ -155,6 +170,7 @@ Var
     NowMs          : Cardinal;
     HadRequest     : Boolean;
     I              : Integer;
+    ActiveTickCount : Integer;
 Begin
     If Running Then Exit;
 
@@ -166,12 +182,16 @@ Begin
     IdleCount := 0;
     CurrentSleep := POLL_INTERVAL_ACTIVE;
     LastActivityMs := GetTickCount;
+    ActiveTickCount := 0;
 
     StatusStartTick := GetTickCount;
     StatusRequestCount := 0;
     StatusLastCommand := '';
+    StatusTotalAltiumMs := 0;
     ShowStatusForm;
-    SetStatusText('MCP: idle');
+    UpdateStatusHeader('MCP: idle');
+    UpdateStatsLine(0, 0, 0, AUTO_SHUTDOWN_MS Div 1000);
+    AppendLog(FormatLogStamp + ',0,_session_start,version=' + SCRIPT_VERSION);
 
     Try
         While Running Do
@@ -221,19 +241,33 @@ Begin
                 IdleCount := 0;
                 CurrentSleep := POLL_INTERVAL_ACTIVE;
                 LastActivityMs := GetTickCount;
-                SetStatusText('MCP: idle  | req ' + IntToStr(StatusRequestCount)
-                              + '  | last: ' + StatusLastCommand);
+                UpdateStatusHeader('MCP: idle');
+                UpdateStatsLine(
+                    (GetTickCount - StatusStartTick) Div 1000,
+                    StatusRequestCount,
+                    StatusTotalAltiumMs,
+                    (AUTO_SHUTDOWN_MS - (GetTickCount - LastActivityMs)) Div 1000);
+                RefreshPerfPanel;
             End
             Else
             Begin
                 Inc(IdleCount);
                 If IdleCount > IDLE_THRESHOLD Then
                     CurrentSleep := POLL_INTERVAL_IDLE;
+                { Refresh uptime + countdown once a second while idle. }
+                If (IdleCount Mod 10) = 0 Then
+                    UpdateStatsLine(
+                        (GetTickCount - StatusStartTick) Div 1000,
+                        StatusRequestCount,
+                        StatusTotalAltiumMs,
+                        (AUTO_SHUTDOWN_MS - (GetTickCount - LastActivityMs)) Div 1000);
             End;
 
             // --- Yield to Altium ---
-            // In idle mode, call ProcessMessages multiple times to let Altium
-            // handle UI events, internal operations, and shutdown requests.
+            // Idle mode: call ProcessMessages multiple times per cycle so
+            // Altium's UI stays responsive while requests are infrequent.
+            // Active mode: ProcessMessages is expensive (pumps the whole UI
+            // message queue), so call it only every Nth tick.
             If CurrentSleep >= POLL_INTERVAL_IDLE Then
             Begin
                 For I := 1 To YIELD_ITERATIONS Do
@@ -242,10 +276,16 @@ Begin
                     Sleep(CurrentSleep Div YIELD_ITERATIONS);
                     If Not Running Then Break;
                 End;
+                ActiveTickCount := 0;
             End
             Else
             Begin
-                Application.ProcessMessages;
+                Inc(ActiveTickCount);
+                If ActiveTickCount >= YIELD_EVERY_N_ACTIVE Then
+                Begin
+                    Application.ProcessMessages;
+                    ActiveTickCount := 0;
+                End;
                 Sleep(CurrentSleep);
             End;
         End;
@@ -255,6 +295,7 @@ Begin
 
     // Always clean up regardless of how we exited
     Running := False;
+    AppendLog(FormatLogStamp + ',0,_session_end,requests=' + IntToStr(StatusRequestCount));
     HideStatusForm;
     CleanupMCPServer;
 End;

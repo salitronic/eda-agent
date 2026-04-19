@@ -78,6 +78,28 @@ def register_application_tools(mcp):
             }
 
     @mcp.tool()
+    async def save_all() -> dict[str, Any]:
+        """Flush every dirty Altium document to disk.
+
+        Mutation tools (pcb_place_tracks, move_component, modify_objects, ...)
+        now mark documents as modified in-memory only. Changes stay fast
+        because they skip per-operation disk writes. Call save_all at logical
+        checkpoints — after a routing pass, before running DRC, or before
+        closing — to persist everything.
+
+        Detach also triggers save_all automatically, so you don't need this
+        as the very last step.
+
+        Returns:
+            Dictionary confirming save
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "application.save_all", timeout=60.0
+        )
+        return result
+
+    @mcp.tool()
     async def detach_from_altium() -> dict[str, Any]:
         """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
 
@@ -88,7 +110,8 @@ def register_application_tools(mcp):
         loop is released.
 
         Call this tool once you've finished your Altium work for the session.
-        It sends application.stop_server so the DelphiScript loop exits cleanly
+        It flushes every dirty document via save_all, then sends
+        application.stop_server so the DelphiScript loop exits cleanly
         within ~500 ms and stops the Python keep-alive. Altium becomes
         immediately fully responsive.
 
@@ -102,7 +125,7 @@ def register_application_tools(mcp):
         """
         bridge = get_bridge()
         try:
-            await bridge.send_command_async("application.stop_server", timeout=3.0)
+            await bridge.send_command_async("application.stop_server", timeout=60.0)
         except Exception:
             pass  # Server may already be stopped
         bridge.detach()

@@ -422,6 +422,16 @@ End;
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
+Function App_SaveAll(RequestId : String) : String;
+Begin
+    Try
+        SaveAllDirty;
+        Result := BuildSuccessResponse(RequestId, '{"saved":true}');
+    Except
+        Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'SaveAllDirty raised an exception');
+    End;
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -435,7 +445,8 @@ Begin
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
         'create_document':     Result := App_CreateDocument(Params, RequestId);
-        'stop_server':         Begin Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
+        'save_all':            Result := App_SaveAll(RequestId);
+        'stop_server':         Begin SaveAllDirty; Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

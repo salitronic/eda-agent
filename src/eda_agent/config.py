@@ -65,7 +65,7 @@ class AltiumConfig(BaseModel):
     response_file: str = "response.json"
 
     # Polling settings
-    poll_interval: float = 0.05  # 50ms between polls
+    poll_interval: float = 0.01  # 10ms between polls — matches server-side active poll
     # Default timeout: generous to survive large-board operations
     # (iterating 6000+ tracks, compiling a 500+ component project, etc).
     # Individual tool calls can override per-invocation when they know

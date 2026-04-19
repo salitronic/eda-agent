@@ -1163,10 +1163,14 @@ Begin
             End;
 
             Board.AddPCBObject(Track);
-            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-                PCBM_BoardRegisteration, Track.I_ObjectAddress);
             Inc(Placed);
         End;
+        { Broadcast ONCE at the end of the batch instead of once per track.   }
+        { A single BoardRegisteration on the board object (null child) is     }
+        { enough to kick the connectivity/rules engines to refresh the whole  }
+        { board — much cheaper than N individual broadcasts.                   }
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
     Finally
         PCBServer.PostProcess;
     End;
@@ -2476,13 +2480,13 @@ Function PCB_GetUnroutedNets(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
-    Conn : IPCB_Connection;
+    Obj : IPCB_Primitive;
     JsonItems, NetName : String;
+    FinalResp : String;
     First : Boolean;
     Count, I, FoundIdx : Integer;
-    // Track unique net names and their connection counts
-    NetNames : Array[0..999] Of String;
-    NetCounts : Array[0..999] Of Integer;
+    NetNames : Array[0..127] Of String;
+    NetCounts : Array[0..127] Of Integer;
     NetTotal : Integer;
 Begin
     Board := PCBServer.GetCurrentPCBBoard;
@@ -2495,41 +2499,51 @@ Begin
     NetTotal := 0;
     Count := 0;
 
+    { Filtering only on eConnectionObject hangs because Altium treats it as a  }
+    { request for a fresh ratsnest — it rebuilds connectivity from scratch.    }
+    { Using the multi-type filter (same as PCB_GetBoardStatistics) is ~1000x  }
+    { faster — only walks primitives Altium already holds in memory.           }
     Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eConnectionObject));
+    Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, ePadObject,
+        eComponentObject, eFillObject, eTextObject, ePolyObject, eConnectionObject));
     Iterator.AddFilter_LayerSet(AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
-    Conn := Iterator.FirstPCBObject;
-    While Conn <> Nil Do
+    Obj := Iterator.FirstPCBObject;
+    While Obj <> Nil Do
     Begin
-        NetName := '';
-        Try
-            If Conn.Net <> Nil Then NetName := Conn.Net.Name;
-        Except End;
-
-        // Find or add net in tracking arrays
-        FoundIdx := -1;
-        For I := 0 To NetTotal - 1 Do
+        If Obj.ObjectId = eConnectionObject Then
         Begin
-            If NetNames[I] = NetName Then
+            NetName := '';
+            Try
+                { Use Obj directly (late-bound); casting to IPCB_Connection via a }
+                { local variable somehow corrupted the function Result string on  }
+                { return in DelphiScript and the caller got only an empty object. }
+                If Obj.Net <> Nil Then NetName := Obj.Net.Name;
+            Except End;
+
+            FoundIdx := -1;
+            For I := 0 To NetTotal - 1 Do
             Begin
-                FoundIdx := I;
-                Break;
+                If NetNames[I] = NetName Then
+                Begin
+                    FoundIdx := I;
+                    Break;
+                End;
             End;
-        End;
 
-        If FoundIdx >= 0 Then
-            NetCounts[FoundIdx] := NetCounts[FoundIdx] + 1
-        Else If NetTotal < 1000 Then
-        Begin
-            NetNames[NetTotal] := NetName;
-            NetCounts[NetTotal] := 1;
-            Inc(NetTotal);
-        End;
+            If FoundIdx >= 0 Then
+                NetCounts[FoundIdx] := NetCounts[FoundIdx] + 1
+            Else If NetTotal < 128 Then
+            Begin
+                NetNames[NetTotal] := NetName;
+                NetCounts[NetTotal] := 1;
+                Inc(NetTotal);
+            End;
 
-        Inc(Count);
-        Conn := Iterator.NextPCBObject;
+            Inc(Count);
+        End;
+        Obj := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
 
@@ -2544,9 +2558,17 @@ Begin
             + '"unrouted_connections":' + IntToStr(NetCounts[I]) + '}';
     End;
 
-    Result := BuildSuccessResponse(RequestId,
+    FinalResp := BuildSuccessResponse(RequestId,
         '{"unrouted_nets":[' + JsonItems + '],"net_count":' + IntToStr(NetTotal)
         + ',"total_unrouted":' + IntToStr(Count) + '}');
+
+    { DelphiScript corrupts long string Result values on return from this     }
+    { handler — the caller gets the RequestId argument instead of the JSON.  }
+    { Bypass: write the response file directly here and set the sentinel     }
+    { that tells Dispatcher.ProcessSingleRequest to skip its own write.       }
+    WriteFileContent(WorkspaceDir + RESPONSE_FILE, FinalResp);
+    ResponseAlreadyWritten := True;
+    Result := FinalResp;
 End;
 
 {..............................................................................}

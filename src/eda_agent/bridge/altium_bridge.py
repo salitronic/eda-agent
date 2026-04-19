@@ -32,6 +32,16 @@ logger = logging.getLogger("eda_agent.bridge")
 _executor = ThreadPoolExecutor(max_workers=1)
 
 
+def _trace_log(workspace_dir: Path, msg: str) -> None:
+    """Append a line to workspace/bridge_trace.log. Never raises."""
+    try:
+        path = workspace_dir / "bridge_trace.log"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{time.time():.3f} {msg}\n")
+    except Exception:
+        pass
+
+
 @dataclass
 class CommandRequest:
     """A command request to be sent to Altium."""
@@ -82,7 +92,8 @@ class AltiumBridge:
 
     # Inject a detach-reminder into responses after this many seconds of
     # continuous attachment without the client calling detach_from_altium.
-    # The hint surfaces in the MCP response context so the LLM sees it.
+    # The hint is added to the response payload so the calling client can
+    # surface it to the user.
     DETACH_HINT_AFTER = 600  # 10 minutes
 
     def __init__(self):
@@ -93,6 +104,10 @@ class AltiumBridge:
         self._keepalive_stop = threading.Event()
         self._attach_time: Optional[float] = None
         self._detach_hint_shown = False
+        # Serialize all IPC so the keep-alive thread and user tool calls
+        # don't race on response.json (bug: concurrent pollers delete each
+        # other's responses as "stale").
+        self._ipc_lock = threading.Lock()
 
     def ensure_workspace(self) -> None:
         """Ensure the workspace directory exists."""
@@ -148,9 +163,8 @@ class AltiumBridge:
         Called from send_command so the first tool call auto-starts the
         ping loop. The MCP client doesn't have to call attach_to_altium
         explicitly — any command that reaches Altium kicks the keepalive
-        on so subsequent AI idle gaps (thinking, file reads, other tools)
-        longer than Altium's 60 s auto-shutdown window don't drop the
-        polling loop.
+        on so subsequent idle gaps between tool calls longer than Altium's
+        60 s auto-shutdown window don't drop the polling loop.
         """
         if self._attached and self._keepalive_thread and self._keepalive_thread.is_alive():
             return
@@ -169,10 +183,10 @@ class AltiumBridge:
         bridge has been holding Altium's scripting engine for longer than
         DETACH_HINT_AFTER without the client calling detach_from_altium.
 
-        Surfaces a reminder to the LLM to call detach_from_altium when done.
-        Only fires once per session; clears on actual detach. Silent if the
-        response is not a dict (can't inject) or if the command itself is a
-        keep-alive / detach (don't spam those).
+        Surfaces a reminder in the response payload to call detach_from_altium
+        when done. Only fires once per session; clears on actual detach.
+        Silent if the response is not a dict (can't inject) or if the command
+        itself is a keep-alive / detach (no point nagging on those).
         """
         if command in ("application.ping", "application.stop_server"):
             return data
@@ -243,28 +257,46 @@ class AltiumBridge:
         response.json when done. We poll for response.json containing our ID.
         """
         response_path = self.config.response_path
+        workspace_dir = self.config.workspace_dir
         deadline = time.monotonic() + timeout
         poll_interval = self.config.poll_interval
+        poll_count = 0
+        first_appearance: Optional[float] = None
+        stale_deletions = 0
+        parse_errors = 0
+        start = time.monotonic()
+
+        _trace_log(workspace_dir, f"POLL_START id={request_id[:8]} timeout={timeout}s interval={poll_interval}s")
 
         while time.monotonic() < deadline:
+            poll_count += 1
             if not response_path.exists():
                 time.sleep(poll_interval)
                 continue
+
+            if first_appearance is None:
+                first_appearance = time.monotonic() - start
+                _trace_log(workspace_dir, f"POLL_SEEN id={request_id[:8]} after={first_appearance*1000:.0f}ms polls={poll_count}")
 
             try:
                 # Altium writes Latin-1 (Windows default), not UTF-8
                 with open(response_path, "r", encoding="latin-1") as f:
                     data = json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as e:
+                parse_errors += 1
+                if parse_errors <= 3 or parse_errors % 50 == 0:
+                    _trace_log(workspace_dir, f"POLL_PARSE_ERR id={request_id[:8]} err={type(e).__name__} count={parse_errors}")
                 # File might be partially written
                 time.sleep(poll_interval)
                 continue
 
-            if data.get("id") != request_id:
-                # Stale response from a previous command — delete it so ours can appear
+            response_id = data.get("id")
+            if response_id != request_id:
+                stale_deletions += 1
+                _trace_log(workspace_dir, f"POLL_STALE_DELETE got={str(response_id)[:8]} want={request_id[:8]} count={stale_deletions}")
                 logger.warning(
                     "Deleting stale response (id=%s, expected=%s)",
-                    data.get("id"),
+                    response_id,
                     request_id,
                 )
                 try:
@@ -274,14 +306,18 @@ class AltiumBridge:
                 time.sleep(poll_interval)
                 continue
 
-            # Got our response — clean up
+            # Matching response received — clean up
             try:
                 response_path.unlink()
             except OSError:
                 pass
 
+            elapsed = (time.monotonic() - start) * 1000
+            _trace_log(workspace_dir, f"POLL_MATCH id={request_id[:8]} elapsed={elapsed:.0f}ms polls={poll_count} stale_deletes={stale_deletions} parse_errs={parse_errors}")
             return CommandResponse.from_dict(data)
 
+        elapsed = (time.monotonic() - start) * 1000
+        _trace_log(workspace_dir, f"POLL_TIMEOUT id={request_id[:8]} elapsed={elapsed:.0f}ms polls={poll_count} stale_deletes={stale_deletions} parse_errs={parse_errors} first_seen_ms={first_appearance*1000 if first_appearance else -1}")
         raise AltiumTimeoutError(
             f"No response within {timeout}s — is the Altium script running?"
         )
@@ -291,21 +327,30 @@ class AltiumBridge:
 
         1. Write request.json
         2. Poll for response.json with matching ID
+
+        Serialized via _ipc_lock so concurrent calls (e.g. keep-alive ping +
+        user tool call) don't race on response.json and delete each other's
+        responses as stale.
         """
-        request = CommandRequest(command=command, params=params)
+        with self._ipc_lock:
+            request = CommandRequest(command=command, params=params)
+            workspace_dir = self.config.workspace_dir
 
-        # Clear stale response before writing new request
-        response_path = self.config.response_path
-        try:
-            if response_path.exists():
-                response_path.unlink()
-        except OSError:
-            pass
+            # Clear stale response before writing new request
+            response_path = self.config.response_path
+            pre_existed = False
+            try:
+                if response_path.exists():
+                    pre_existed = True
+                    response_path.unlink()
+            except OSError:
+                pass
 
-        self._write_request(request)
+            _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]} stale_resp_cleared={pre_existed}")
+            self._write_request(request)
 
-        logger.info("Sent command: %s (waiting for response)", command)
-        response = self._poll_response(request.id, timeout)
+            logger.info("Sent command: %s (waiting for response)", command)
+            response = self._poll_response(request.id, timeout)
 
         if response.success:
             logger.info("Command %s succeeded", command)

@@ -24,9 +24,12 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 - **140+ tools** across application, project, library, generic, and PCB categories
 - **Generic primitives** (`query_objects`, `modify_objects`, `create_object`, `delete_objects`, `run_process`) that work on almost any schematic or PCB object type via late-binding — avoids per-type handler proliferation
-- **Persistent polling loop** — one script start, then ~50 ms per tool call
+- **Persistent polling loop** — one script start, then ~10 ms per tool call in active mode
+- **Batched routing** — `pcb_place_tracks` takes a list of segments and places them all in one IPC round-trip; routing a whole net is the same wall time as placing a single track
 - **Annotation runs silently** — `annotate` designates components without popping the annotate dialog
-- **Per-operation persistence** — schematic parameter writes, PCB edits, and library mutations save to disk immediately via `IServerDocument.DoFileSave`; no trailing `save_all` needed
+- **Deferred save for speed** — mutations mark documents as modified in memory; disk writes happen on explicit `save_all` (or automatically on `detach_from_altium`). Before this, every edit triggered a full project save, which dominated latency
+- **Live dashboard** — a floating Altium-side window shows status, request count, per-command performance stats, and a command log. Detach button exits the loop cleanly; `Hide pings` / `Only >100ms` checkboxes filter noise
+- **Activity logs** — every command is appended to `workspace/activity.log` (CSV with timestamps, durations, command name, response size). The bridge also writes `bridge_trace.log` for IPC-level diagnostics
 - **pip-installable** — no admin, no installer, no touching Altium's config
 
 ## Requirements
@@ -148,10 +151,10 @@ Altium itself uses DelphiScript internally for many built-in commands (some ribb
 
 **The polling loop owns the scripting engine for as long as it's running.** While it runs, Altium's own script-backed buttons sit waiting. The loop exits when either:
 
-- The MCP client calls `detach_from_altium` (instant — loop exits within ~500 ms and Altium becomes fully responsive), OR
-- **60 seconds of total silence** from the MCP client (no commands AND no keep-alive pings) triggers the built-in auto-shutdown
+- The MCP client calls `detach_from_altium` (or the dashboard **Detach** button is clicked) — loop saves all dirty docs, exits within ~500 ms, and Altium becomes fully responsive, OR
+- **10 minutes of total silence** from the MCP client (no commands AND no keep-alive pings) triggers the built-in auto-shutdown
 
-In practice, while an MCP client is attached and sending keep-alive pings every 30 s, the loop will never time out on its own — you need to either have the AI call `detach_from_altium` or close the MCP client session entirely. Once the client disconnects, expect up to ~60 s for Altium's script-backed buttons to become responsive again.
+In practice, while an MCP client is attached and sending keep-alive pings every 30 s, the loop will never time out on its own — you need to either have the AI call `detach_from_altium` or close the MCP client session entirely. After the client disconnects, expect up to ~10 minutes for the loop to auto-exit unless you use **Detach** to release it immediately.
 
 ### ECO (sch → PCB update) is not reliably scriptable
 
@@ -169,27 +172,27 @@ The server has **three independent timeout mechanisms**:
 
 ### 1. Per-command timeout (Python side)
 
-When the MCP client calls a tool, the Python bridge writes a request file and waits up to 120 seconds (default) for a response. If the Altium script is busy (e.g., compiling a large project or iterating 6000+ tracks), a long operation can use most of that window and still succeed.
+When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Fast queries typically complete in under 100 ms, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`save_all`, `stop_server`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
 
-Per-tool overrides are possible in code if you embed the bridge directly; most clients use the default.
+Concurrent calls from the MCP client and the keep-alive thread are serialized by a `threading.Lock` in the bridge so their responses never race on the single `response.json` channel.
 
 ### 2. Server auto-shutdown (Altium side)
 
-The DelphiScript polling loop auto-stops after **60 seconds of inactivity**. If the AI client goes quiet for a minute, the server releases Altium's scripting engine and `StartMCPServer` returns. The next AI command will fail with a timeout — to resume, re-launch via **File → Run Script... → StartMCPServer → Run**.
+The DelphiScript polling loop auto-stops after **10 minutes of inactivity** (`AUTO_SHUTDOWN_MS = 600000`). If the MCP client disconnects and the keep-alive pings stop arriving, the server releases Altium's scripting engine after ten minutes and `StartMCPServer` returns. To resume, re-launch via **File → Run Script... → StartMCPServer → Run**.
 
 ### 3. Python keep-alive pings
 
-To prevent the 60 s auto-shutdown from firing during a real session, the Python bridge automatically pings Altium every 30 seconds while an MCP client is attached. The sequence:
+While an MCP client is attached, the Python bridge pings Altium every 30 seconds so the 10-minute auto-shutdown never fires mid-session. The sequence:
 
 - **AI issues command A** → Altium busy, then idle
 - **30 s later, Python pings** → Altium responds "pong", idle timer resets
-- **60 s later, still no AI activity and no ping** → Altium auto-shuts down
+- **10 min later, still no AI activity and no ping** → Altium auto-shuts down
 
-In practice this means: the server stays alive as long as an MCP client is connected, and exits cleanly ~60 s after the client disconnects. No manual stop needed in the common case.
+In practice: the server stays alive as long as an MCP client is connected, and exits cleanly ~10 minutes after the client fully disconnects. No manual stop needed in the common case. For a hard exit, the AI (or the **Detach** button on the dashboard window) calls `detach_from_altium`, which persists any unsaved work via `save_all` and returns control to Altium within ~500 ms.
 
 ### Why this matters for Altium UI responsiveness
 
-The polling loop goes into idle mode after ~1 second of no MCP commands. In idle mode it polls every 500 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously — only a burst of rapid tool calls can cause a brief stall. If you want the server to fully disengage, have the AI client call `detach_from_altium`.
+The polling loop goes into idle mode after ~1 second of no MCP commands. In idle mode it polls every 100 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), giving sub-50 ms round-trip latency for back-to-back commands. For a full release, call `detach_from_altium` or click **Detach** on the dashboard.
 
 ## Tool reference
 
@@ -214,13 +217,14 @@ These five tools cover most day-to-day work. They accept any object type support
 
 **Scope values:** `active_doc`, `project`, `project:<path>`, `doc:<path>`.
 
-### Application (12 tools)
+### Application (13 tools)
 
 | Tool | Purpose |
 |---|---|
 | `get_altium_status` | Is Altium running? Version / PID / attached state |
 | `attach_to_altium` | Verify connection to the running instance |
-| `detach_from_altium` | Signal server shutdown and release scripting engine |
+| `detach_from_altium` | Save all dirty docs, signal server shutdown, release scripting engine |
+| `save_all` | Flush every modified document to disk (explicit checkpoint for the deferred-save model) |
 | `ping_altium` | Test the polling loop is responsive; reports script version + mismatch with bundled |
 | `get_open_documents` | List every open document with `loaded` flag (sch, pcb, lib, outjob…) |
 | `get_active_document` | Which document currently has focus |
@@ -280,8 +284,12 @@ Schematic-side operations plus viewport and sheet management.
 | `highlight_net` / `clear_highlights` | Net highlighting |
 | `run_erc` / `get_unconnected_pins` | Electrical rules check |
 | `add_sheet` / `delete_sheet` / `get_sheet_parameters` / `get_document_info` | Sheet management |
-| `place_wire` / `place_net_label` / `place_port` / `place_power_port` | Schematic placement |
-| `place_no_erc` / `place_junction` / `place_image` | Markers and images |
+| `place_wire` / `place_bus` / `place_net_label` / `place_port` / `place_power_port` | Schematic placement |
+| `place_sheet_symbol` / `place_sheet_entry` / `place_bus_entry` | Hierarchical sheet primitives |
+| `place_sch_component_from_library` | Instantiate a component from an SchLib at (x,y) with rotation and designator override |
+| `sch_set_sheet_size` | Change SheetStyle (A / A0–A4 / Letter / Legal / Custom) |
+| `place_no_erc` / `place_junction` / `place_image` / `place_note` / `place_directive` | Markers, annotations, directives |
+| `place_rectangle` / `place_line` | Graphical primitives |
 | `copy_objects` / `get_object_count` / `replace_component` | Bulk operations |
 | `set_grid` | Change snap / visible grid |
 | `get_font_spec` / `get_font_id` | Font table lookup |
@@ -298,10 +306,12 @@ Queries and modifications on the active PCB document.
 | `pcb_run_drc` | Run design rule check, return violations |
 | `pcb_get_components` / `pcb_move_component` / `pcb_flip_component` / `pcb_align_components` / `pcb_snap_to_grid` | Component placement |
 | `pcb_get_component_pads` / `pcb_get_pad_properties` | Pad inspection |
-| `pcb_place_track` / `pcb_set_track_width` / `pcb_get_trace_lengths` | Track operations |
-| `pcb_place_via` / `pcb_get_vias` | Via operations |
-| `pcb_place_arc` / `pcb_place_text` / `pcb_place_fill` | Primitive placement |
-| `pcb_start_polygon_placement` / `pcb_get_polygons` / `pcb_modify_polygon` / `pcb_repour_polygons` | Polygons |
+| `pcb_place_track` / `pcb_place_tracks` / `pcb_set_track_width` / `pcb_get_trace_lengths` | Track operations (batch variant for whole-net routing) |
+| `pcb_place_via` / `pcb_place_via_array` / `pcb_get_vias` | Via operations and stitching arrays |
+| `pcb_place_arc` / `pcb_place_text` / `pcb_place_fill` / `pcb_place_pad` | Primitive placement |
+| `pcb_place_dimension` / `pcb_place_angular_dimension` / `pcb_place_radial_dimension` | Dimension annotations |
+| `pcb_start_polygon_placement` / `pcb_place_polygon_rect` / `pcb_place_region` / `pcb_get_polygons` / `pcb_modify_polygon` / `pcb_repour_polygons` | Polygons and regions |
+| `pcb_create_diff_pair` / `pcb_distribute_components` / `pcb_set_board_shape` | Higher-level ops |
 | `pcb_create_room` | Room placement |
 | `pcb_get_unrouted_nets` | Ratsnest / unrouted analysis |
 | `pcb_get_layer_stackup` / `pcb_set_layer_visibility` | Layer stack |
@@ -400,7 +410,7 @@ At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` in
 
 **Some Altium buttons don't respond while the server is running** — expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode within ~1 s of the last AI command; if a button is still unresponsive after that, call `detach_from_altium` from the MCP client to fully release the scripting engine.
 
-**Command timeouts on very large boards** — default is 120 s. Iterating 6000+ tracks or compiling a 500+ component project can take a while. The polling loop adapts (fast polling right after activity, slower polling when idle) but genuinely expensive operations just take time.
+**Command timeouts on very large boards** — default is 10 s so stalls surface fast. Tools known to take longer (`save_all`, `pcb_get_unrouted_nets`, `stop_server`) set their own internal timeouts up to 60 s. If you hit a timeout on a custom long-running operation, embed the bridge directly and pass a higher `timeout=` to `send_command_async`. The polling loop itself adapts (10 ms active, 100 ms idle) so it doesn't add latency.
 
 ## License
 
