@@ -87,9 +87,9 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     ObjClass : IPCB_ObjectClass;
-    JsonItems, MemberJson, MemberName : String;
-    First, FirstMember : Boolean;
-    Count, I : Integer;
+    JsonItems : String;
+    First : Boolean;
+    Count : Integer;
 Begin
     Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
@@ -102,6 +102,10 @@ Begin
     First := True;
     Count := 0;
 
+    { MemberCount / MemberName[] are not exposed on IPCB_ObjectClass in         }
+    { DelphiScript — they are compile-time undeclared. Return class metadata   }
+    { only; callers that need per-member resolution can iterate nets and       }
+    { group them via the parent class on each net.                              }
     Iterator := Board.BoardIterator_Create;
     Iterator.SetState_FilterAll;
     Iterator.AddFilter_ObjectSet(MkSet(eClassObject));
@@ -114,21 +118,8 @@ Begin
             If Not First Then JsonItems := JsonItems + ',';
             First := False;
 
-            // Build member nets array
-            MemberJson := '';
-            FirstMember := True;
-            For I := 0 To ObjClass.MemberCount - 1 Do
-            Begin
-                MemberName := ObjClass.MemberName[I];
-                If Not FirstMember Then MemberJson := MemberJson + ',';
-                FirstMember := False;
-                MemberJson := MemberJson + '"' + EscapeJsonString(MemberName) + '"';
-            End;
-
             JsonItems := JsonItems + '{"name":"' + EscapeJsonString(ObjClass.Name) + '",'
-                + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass) + ','
-                + '"member_count":' + IntToStr(ObjClass.MemberCount) + ','
-                + '"members":[' + MemberJson + ']}';
+                + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass) + '}';
             Inc(Count);
         End;
         ObjClass := Iterator.NextPCBObject;

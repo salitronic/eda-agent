@@ -26,11 +26,16 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_get_net_classes() -> dict[str, Any]:
-        """Get all net classes and their member nets from the active PCB.
+        """Get all net classes from the active PCB.
+
+        Only returns class metadata — IPCB_ObjectClass.MemberCount and
+        MemberName[] are not exposed in Altium's DelphiScript host, so
+        per-member enumeration has to be done by iterating eNetObject and
+        grouping by each net's parent class.
 
         Returns:
-            Dictionary with "net_classes" array (each with name, super_class,
-            member_count, members) and "count"
+            Dictionary with "net_classes" array (each with name, super_class)
+            and "count"
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_net_classes", {})
