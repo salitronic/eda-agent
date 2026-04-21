@@ -2975,16 +2975,16 @@ Begin
         Except
         End;
 
-        // Unit system
+        // Unit system — ISch_Document.UnitSystem returns a TUnitSystem enum
+        // (eImperial / eMetric). TUnit has finer granularity but UnitSystem is
+        // the right read for a simple "metric vs imperial" field.
         Try
-            If SchDoc.UseMetricUnit Then
+            If SchDoc.UnitSystem = eMetric Then
                 UnitStr := 'metric'
             Else
                 UnitStr := 'imperial';
-        Except
-            UnitStr := 'imperial';
-        End;
-        Data := Data + ',"unit_system":"' + UnitStr + '"';
+            Data := Data + ',"unit_system":"' + UnitStr + '"';
+        Except End;
 
         Data := Data + '}';
         Result := BuildSuccessResponse(RequestId, Data);
@@ -3049,6 +3049,64 @@ Begin
         '{"success":true' +
         ',"snap_grid":' + IntToStr(CoordToMils(SchDoc.SnapGridSize)) +
         ',"visible_grid":' + IntToStr(CoordToMils(SchDoc.VisibleGridSize)) + '}');
+End;
+
+{..............................................................................}
+{ Set the active schematic unit system via ISch_Document.SetState_Unit.       }
+{ Accepts 'mil', 'inch', 'dxp', 'auto_imperial', 'mm', 'cm', 'm',             }
+{ 'auto_metric'. Returns the resulting unit_system (imperial/metric).         }
+{..............................................................................}
+
+Function Gen_SetSchUnits(Params : String; RequestId : String) : String;
+Var
+    UnitStr : String;
+    SchDoc : ISch_Document;
+    Target : TUnit;
+    SystemStr : String;
+Begin
+    UnitStr := LowerCase(ExtractJsonValue(Params, 'unit'));
+    If UnitStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'unit required (mil, inch, dxp, auto_imperial, mm, cm, m, auto_metric)');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { TUnit = (eMil, eMM, eIN, eCM, eDXP, eM, eAutoImperial, eAutoMetric).      }
+    If UnitStr = 'mil' Then Target := eMil
+    Else If UnitStr = 'inch' Then Target := eIN
+    Else If UnitStr = 'in' Then Target := eIN
+    Else If UnitStr = 'dxp' Then Target := eDXP
+    Else If UnitStr = 'auto_imperial' Then Target := eAutoImperial
+    Else If UnitStr = 'mm' Then Target := eMM
+    Else If UnitStr = 'cm' Then Target := eCM
+    Else If UnitStr = 'm' Then Target := eM
+    Else If UnitStr = 'auto_metric' Then Target := eAutoMetric
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_UNIT',
+            'Unknown unit "' + UnitStr + '"');
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try SchDoc.SetState_Unit(Target); Except End;
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Set schematic unit');
+    SchDoc.GraphicallyInvalidate;
+
+    If SchDoc.UnitSystem = eMetric Then SystemStr := 'metric'
+    Else SystemStr := 'imperial';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"unit":"' + EscapeJsonString(UnitStr) + '"'
+        + ',"unit_system":"' + SystemStr + '"}');
 End;
 
 {..............................................................................}
@@ -3236,6 +3294,7 @@ Begin
         'place_junction':   Result := Gen_PlaceJunction(Params, RequestId);
         'get_document_info': Result := Gen_GetDocumentInfo(Params, RequestId);
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
+        'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);
     Else

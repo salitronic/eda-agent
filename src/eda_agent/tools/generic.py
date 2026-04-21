@@ -1134,6 +1134,36 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_set_units(
+        unit: str,
+    ) -> dict[str, Any]:
+        """Set the unit system for the active schematic.
+
+        Calls ISch_Document.SetState_Unit with a TUnit enum value. The
+        current unit is readable via get_document_info (unit_system field).
+
+        Args:
+            unit: one of
+                "mil"            — imperial, mils (0.001 in)
+                "inch"           — imperial, inches
+                "dxp"            — DXP default
+                "auto_imperial"  — auto-scaled imperial display
+                "mm"             — metric, millimetres
+                "cm"             — metric, centimetres
+                "m"              — metric, metres
+                "auto_metric"    — auto-scaled metric display
+
+        Returns:
+            Dictionary confirming the change, with the resulting
+            unit_system ("imperial" or "metric").
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.set_sch_units", {"unit": unit}
+        )
+        return result
+
+    @mcp.tool()
     async def place_image(
         image_path: str,
         x: int,

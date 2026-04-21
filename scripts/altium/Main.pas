@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.20.1';
+    SCRIPT_VERSION = '2026.04.20.3';
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
