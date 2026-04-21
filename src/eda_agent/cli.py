@@ -125,8 +125,11 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
 
     dst.mkdir(parents=True, exist_ok=True)
 
-    # Only ship the files Altium needs: .pas sources + the project file.
-    allowed_suffixes = {".pas", ".PrjScr"}
+    # Only ship the files Altium needs: .pas sources, DFM form files, and
+    # the project file. Without .dfm the DFM-backed StatusForm dashboard
+    # fails to compile and StartMCPServer crashes with "unknown identifier"
+    # errors referencing the form's controls.
+    allowed_suffixes = {".pas", ".dfm", ".PrjScr"}
 
     copied = 0
     for child in src.iterdir():
