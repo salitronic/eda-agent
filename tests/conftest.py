@@ -51,33 +51,46 @@ def altium_sim(tmp_path):
 def e2e_bridge(altium_sim):
     """Create a real AltiumBridge wired to the simulator's workspace.
 
+    Calls the real ``AltiumBridge()`` constructor so every instance attribute
+    (``_ipc_lock``, ``_attach_time``, ``_detach_hint_shown``, keep-alive state,
+    etc.) is initialized identically to production. Bypassing ``__init__`` via
+    ``__new__`` was the source of repeated test breakage as bridge internals
+    evolved; don't reintroduce that pattern.
+
     Patches:
     - Config workspace_dir to point at the simulator's temp directory
-    - is_altium_running() to always return True (no real process needed)
+    - process_manager so ``is_altium_running()`` returns True (no real
+      Altium process needed for pure IPC tests)
     """
     from eda_agent.config import AltiumConfig
     from eda_agent.bridge.altium_bridge import AltiumBridge
 
-    config = AltiumConfig(
+    test_config = AltiumConfig(
         workspace_dir=altium_sim.workspace_dir,
         poll_interval=0.01,
         poll_timeout=5.0,
     )
 
-    bridge = AltiumBridge.__new__(AltiumBridge)
-    bridge.config = config
-    bridge._attached = True
-
-    # Patch process_manager so is_altium_running() returns True
     class FakeProcessManager:
         def is_altium_running(self):
             return True
+
         def get_altium_info(self):
             from eda_agent.bridge.process_manager import AltiumProcessInfo
             return AltiumProcessInfo(pid=12345, name="X2.exe", exe_path="C:\\X2.exe")
 
+    # Stub get_config so AltiumBridge.__init__ sees our test workspace.
+    with patch("eda_agent.bridge.altium_bridge.get_config", return_value=test_config):
+        bridge = AltiumBridge()
+
     bridge.process_manager = FakeProcessManager()
-    return bridge
+    bridge._attached = True
+    yield bridge
+    # Make sure the keep-alive thread doesn't outlive the test.
+    try:
+        bridge.detach()
+    except Exception:
+        pass
 
 
 def write_request(path: Path, request_id: str, command: str, params: dict) -> None:

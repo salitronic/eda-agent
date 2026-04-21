@@ -1159,6 +1159,46 @@ def read_outputs(filepath):
 # FPC compilation fixture
 # ---------------------------------------------------------------------------
 
+def _discover_fpc_unit_paths(fpc_exe: str) -> list:
+    """Return candidate -Fu paths for FPC unit directories (fcl-base etc.).
+
+    Scoop/zip FPC installs don't always have a fpc.cfg wired up, so we
+    discover the unit tree explicitly. Search:
+      1. Directories relative to the fpc binary (typical MSI install).
+      2. Scoop apps directory when the binary is a scoop shim.
+      3. %USERPROFILE% and %ProgramFiles% walks for freepascal/units/.
+
+    Returns every subdirectory containing a .ppu — one -Fu per directory.
+    """
+    roots_to_scan: set = set()
+    fpc_dir = Path(fpc_exe).resolve().parent
+
+    # Case 1: binary sits under .../bin/<arch>/fpc.exe, units at ../../units.
+    for rel in ("../../units", "../units", "units"):
+        candidate = (fpc_dir / rel).resolve()
+        if candidate.is_dir():
+            roots_to_scan.add(candidate)
+
+    # Case 2: scoop shim — actual install is under scoop/apps/freepascal.
+    scoop_dir = Path.home() / "scoop" / "apps" / "freepascal" / "current"
+    if scoop_dir.is_dir():
+        scoop_units = scoop_dir / "units"
+        if scoop_units.is_dir():
+            roots_to_scan.add(scoop_units)
+
+    # Flatten: every dir with at least one .ppu becomes an -Fu candidate.
+    candidates: list = []
+    for root in roots_to_scan:
+        try:
+            for d in root.rglob("*.ppu"):
+                parent = d.parent
+                if str(parent) not in candidates:
+                    candidates.append(str(parent))
+        except OSError:
+            continue
+    return candidates
+
+
 @pytest.fixture(scope="module")
 def fpc_executable():
     """Compile the Pascal cross-validation program. Skip if FPC unavailable."""
@@ -1169,10 +1209,14 @@ def fpc_executable():
     if not PASCAL_SRC.exists():
         pytest.skip(f"Pascal source not found: {PASCAL_SRC}")
 
-    # Compile. If FPC_UNIT_PATH is set, pass it via -Fu; otherwise rely on fpc.cfg.
+    # Compile. If FPC_UNIT_PATH is set, use it; otherwise auto-discover
+    # the fcl-base unit directory so scoop/zip installs work without config.
     cmd = ["fpc"]
     if FPC_UNIT_PATH:
         cmd.append(f"-Fu{FPC_UNIT_PATH}")
+    else:
+        for path in _discover_fpc_unit_paths(fpc_path):
+            cmd.append(f"-Fu{path}")
     cmd.append(str(PASCAL_SRC))
     result = subprocess.run(
         cmd,

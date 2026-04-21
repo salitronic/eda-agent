@@ -457,3 +457,105 @@ class TestE2E_SetParameterRoundTrip:
         )
         param_dict = {p["name"]: p["value"] for p in params}
         assert param_dict.get("NewParam") == "NewValue"
+
+
+class TestInstallScriptsIncludesDfm:
+    """install-scripts must copy DFM form files alongside .pas sources.
+
+    Regression for GitHub issue #2: without the DFM, the DFM-backed
+    StatusForm dashboard fails to compile and StartMCPServer crashes
+    with 'unknown identifier' errors for the form's controls.
+    """
+
+    def test_dfm_files_are_copied(self, tmp_path):
+        from eda_agent.cli import cmd_install_scripts
+
+        rc = cmd_install_scripts(dest=str(tmp_path), force=True)
+        assert rc == 0, "install-scripts should succeed"
+
+        dfm_files = list(tmp_path.glob("*.dfm"))
+        pas_files = list(tmp_path.glob("*.pas"))
+
+        assert pas_files, ".pas files should be copied"
+        assert dfm_files, (
+            ".dfm files MUST be copied — without them DFM-backed forms fail "
+            "to compile at Altium startup (issue #2)"
+        )
+
+        statusform_dfm = tmp_path / "StatusForm.dfm"
+        assert statusform_dfm.exists(), (
+            "StatusForm.dfm specifically must be copied — it is referenced "
+            "by the Altium_API.PrjScr and required for the dashboard"
+        )
+
+    def test_prjscr_references_match_copied_files(self, tmp_path):
+        """Every DocumentPath entry in the .PrjScr must point at a file that
+        actually landed in the destination. Catches the case where new files
+        are added to the PrjScr but the install-scripts whitelist forgets
+        the new suffix."""
+        from eda_agent.cli import cmd_install_scripts
+
+        rc = cmd_install_scripts(dest=str(tmp_path), force=True)
+        assert rc == 0
+
+        prjscr = tmp_path / "Altium_API.PrjScr"
+        assert prjscr.exists()
+
+        missing = []
+        for line in prjscr.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line.startswith("DocumentPath="):
+                continue
+            name = line.split("=", 1)[1].strip()
+            if not name:
+                continue
+            if not (tmp_path / name).exists():
+                missing.append(name)
+
+        assert not missing, (
+            f"PrjScr references these files that were not copied: {missing}. "
+            f"install-scripts allowed_suffixes probably needs a new entry."
+        )
+
+
+class TestIpcLockSerializesConcurrentCalls:
+    """Two threads calling send_command concurrently must each receive
+    their own response. Before the IPC lock, concurrent pollers would
+    read and delete each other's response files as 'stale', causing
+    one of the two calls to timeout even though both had a response
+    written. Regression for the keep-alive/user-call race.
+    """
+
+    def test_concurrent_send_commands_both_complete(self, altium_sim, e2e_bridge):
+        import threading
+
+        results = {}
+        errors = {}
+
+        def call(tag):
+            try:
+                results[tag] = e2e_bridge.send_command(
+                    "application.ping", timeout=5.0
+                )
+            except Exception as e:
+                errors[tag] = e
+
+        threads = [threading.Thread(target=call, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert not errors, f"Concurrent send_command failed for some threads: {errors}"
+        assert len(results) == 4, "All four concurrent callers should receive a response"
+        for tag, result in results.items():
+            assert result is not None, f"Thread {tag} got None"
+
+    def test_ipc_lock_exists_on_bridge(self, e2e_bridge):
+        import threading
+        assert hasattr(e2e_bridge, "_ipc_lock"), (
+            "AltiumBridge must expose _ipc_lock — the serialization primitive "
+            "that prevents concurrent pollers from deleting each other's "
+            "responses as stale"
+        )
+        assert isinstance(e2e_bridge._ipc_lock, type(threading.Lock()))

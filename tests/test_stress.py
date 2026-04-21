@@ -34,16 +34,23 @@ from eda_agent.config import AltiumConfig
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_bridge(sim: AltiumSimulator, timeout: float = 5.0) -> AltiumBridge:
-    """Build a real AltiumBridge wired to the given simulator."""
-    config = AltiumConfig(
-        workspace_dir=sim.workspace_dir,
-        poll_interval=0.005,
+def _build_bridge(workspace, poll_interval: float, timeout: float) -> AltiumBridge:
+    """Construct a real AltiumBridge via its normal __init__.
+
+    Previously these helpers used ``AltiumBridge.__new__(AltiumBridge)`` to
+    skip construction, then assigned a couple of attributes. Every time
+    the bridge gained a new field (``_ipc_lock``, ``_attach_time``,
+    ``_detach_hint_shown``, ``_keepalive_thread``, ...) this pattern
+    silently left it unset and the next send_command raised
+    AttributeError. Use the real constructor with get_config patched.
+    """
+    from unittest.mock import patch
+
+    test_config = AltiumConfig(
+        workspace_dir=workspace,
+        poll_interval=poll_interval,
         poll_timeout=timeout,
     )
-    bridge = AltiumBridge.__new__(AltiumBridge)
-    bridge.config = config
-    bridge._attached = True
 
     class FakeProcessManager:
         def is_altium_running(self):
@@ -53,31 +60,22 @@ def make_bridge(sim: AltiumSimulator, timeout: float = 5.0) -> AltiumBridge:
             from eda_agent.bridge.process_manager import AltiumProcessInfo
             return AltiumProcessInfo(pid=12345, name="X2.exe", exe_path="C:\\X2.exe")
 
+    with patch("eda_agent.bridge.altium_bridge.get_config", return_value=test_config):
+        bridge = AltiumBridge()
+
     bridge.process_manager = FakeProcessManager()
+    bridge._attached = True
     return bridge
+
+
+def make_bridge(sim: AltiumSimulator, timeout: float = 5.0) -> AltiumBridge:
+    """Build a real AltiumBridge wired to the given simulator."""
+    return _build_bridge(sim.workspace_dir, poll_interval=0.005, timeout=timeout)
 
 
 def make_bare_bridge(workspace, timeout: float = 5.0) -> AltiumBridge:
     """Bridge with no simulator attached -- for tests that hand-write responses."""
-    config = AltiumConfig(
-        workspace_dir=workspace,
-        poll_interval=0.01,
-        poll_timeout=timeout,
-    )
-    bridge = AltiumBridge.__new__(AltiumBridge)
-    bridge.config = config
-    bridge._attached = True
-
-    class FakePM:
-        def is_altium_running(self):
-            return True
-
-        def get_altium_info(self):
-            from eda_agent.bridge.process_manager import AltiumProcessInfo
-            return AltiumProcessInfo(pid=1, name="X2.exe", exe_path="C:\\X2.exe")
-
-    bridge.process_manager = FakePM()
-    return bridge
+    return _build_bridge(workspace, poll_interval=0.01, timeout=timeout)
 
 
 # =========================================================================
