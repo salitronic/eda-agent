@@ -1178,7 +1178,7 @@ Begin
     End;
 
     // Compile the project first (required before ERC)
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     // Run ERC via RunProcess
     ResetParameters;
@@ -1644,7 +1644,7 @@ Begin
     End;
 
     // Compile the project (required for DM pin connectivity data)
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Total := 0;
     JsonItems := '';

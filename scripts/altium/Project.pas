@@ -366,7 +366,9 @@ Begin
 
         If Project <> Nil Then
         Begin
-            Project.DM_Compile;
+            { Explicit user-requested compile: invalidate cache then recompile. }
+            LastCompileTick := 0;
+            SmartCompile(Project);
             Result := BuildSuccessResponse(RequestId, '{"success":true}');
         End
         Else
@@ -441,7 +443,7 @@ Begin
     End;
 
     // Compile to resolve net connectivity
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Data := '[';
     First := True;
@@ -514,7 +516,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Data := '[';
     First := True;
@@ -596,7 +598,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
     Found := False;
 
     For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
@@ -743,7 +745,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     CompCount := 0; PinCount := 0; DocCount := 0;
     For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
@@ -978,7 +980,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     CompList       := TInterfaceList.Create;
     Prefixes       := TStringList.Create;
@@ -1587,7 +1589,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Data := '[';
     First := True;
@@ -1857,7 +1859,7 @@ Begin
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
     { Compile to populate violations }
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Data := '[';
     First := True;
@@ -1927,7 +1929,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     Data := '[';
     First := True;
@@ -2008,7 +2010,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
     Found := False;
 
     For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
@@ -2263,7 +2265,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     { Count schematic components (DM_NetCount does not exist in scripting API) }
     SchCompCount := 0;
@@ -2381,7 +2383,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
     Ok := ComputeECODifferences(Project, MatchedBefore, ExtraSchBefore, ExtraPcbBefore, PcbPath);
     If Not Ok Then
     Begin
@@ -2400,7 +2402,7 @@ Begin
     RunProcess('PCB:UpdatePCBFromProject');
 
     { Recompile and recompute to report actual changes }
-    Try Project.DM_Compile; Except End;
+    Try SmartCompile(Project); Except End;
     ComputeECODifferences(Project, MatchedAfter, ExtraSchAfter, ExtraPcbAfter, PcbPath);
 
     Data := '{"success":true';
@@ -2450,7 +2452,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
     Ok := ComputeECODifferences(Project, MatchedBefore, ExtraSchBefore, ExtraPcbBefore, PcbPath);
     If Not Ok Then
     Begin
@@ -2466,7 +2468,7 @@ Begin
     AddStringParameter('AutoApply', '1');
     RunProcess('PCB:UpdateSchematicFromPCB');
 
-    Try Project.DM_Compile; Except End;
+    Try SmartCompile(Project); Except End;
     ComputeECODifferences(Project, MatchedAfter, ExtraSchAfter, ExtraPcbAfter, PcbPath);
 
     Data := '{"success":true';
@@ -2513,7 +2515,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    Project.DM_Compile;
+    SmartCompile(Project);
 
     PcbDoc := Project.DM_PrimaryImplementationDocument;
     If PcbDoc = Nil Then

@@ -8,6 +8,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 
 from typing import Any
 from ..bridge import get_bridge
+from .bulk_hints import BulkHintTracker
 
 
 def register_pcb_tools(mcp):
@@ -109,7 +110,12 @@ def register_pcb_tools(mcp):
         y: int | None = None,
         rotation: float | None = None,
     ) -> dict[str, Any]:
-        """Move and/or rotate a PCB component by its designator.
+        """Move and/or rotate ONE PCB component by its designator.
+
+        IMPORTANT — if you need to reposition more than one component,
+        use `pcb_move_components` (batch) instead. Looping this tool is
+        the single biggest wall-time cost: each call is a full LLM
+        round-trip, but the batch version does N moves in one turn.
 
         Sets the absolute position/rotation. Only provided parameters are
         changed; omitted parameters keep their current values.
@@ -132,6 +138,74 @@ def register_pcb_tools(mcp):
         if rotation is not None:
             params["rotation"] = str(rotation)
         result = await bridge.send_command_async("pcb.move_component", params)
+        hint = BulkHintTracker.record_and_hint("pcb_move_component")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
+        return result
+
+    @mcp.tool()
+    async def pcb_move_components(
+        moves: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Move and/or rotate MANY PCB components in ONE IPC round-trip.
+
+        PREFER THIS over looping `pcb_move_component`. Each call to the
+        singular tool is a full LLM turn (5-15 s); one call to this tool
+        repositions every component in the list in a single Altium
+        transaction.
+
+        Typical uses: applying a full layout pass, running an
+        auto-placement result, undoing and redoing a placement set,
+        adjusting a row of components relative to each other.
+
+        Args:
+            moves: List of move dicts. Each dict supports:
+                designator (required)  — target component
+                x        (optional)    — new X in mils
+                y        (optional)    — new Y in mils
+                rotation (optional)    — new rotation in degrees
+
+            Example:
+                [
+                  {"designator": "U1", "x": 5000, "y": 5000, "rotation": 0},
+                  {"designator": "R1", "x": 5200, "y": 4800},
+                  {"designator": "C1", "rotation": 90},
+                ]
+
+        Returns:
+            Dictionary with per-designator results and a count.
+        """
+        # Pack each move as comma-separated fields: designator,x,y,rotation
+        # (empty field = leave that property unchanged). Moves joined by '|'.
+        # This format is unambiguous and matches PCB_PlaceTracks.
+        ops: list[str] = []
+        for m in moves:
+            desig = str(m.get("designator", "")).strip()
+            if not desig:
+                continue
+            x_str = (
+                str(int(m["x"])) if "x" in m and m["x"] is not None else ""
+            )
+            y_str = (
+                str(int(m["y"])) if "y" in m and m["y"] is not None else ""
+            )
+            rot_str = (
+                str(m["rotation"])
+                if "rotation" in m and m["rotation"] is not None
+                else ""
+            )
+            if x_str == "" and y_str == "" and rot_str == "":
+                continue
+            ops.append(f"{desig},{x_str},{y_str},{rot_str}")
+
+        if not ops:
+            return {"error": "No valid moves provided", "moves_applied": 0}
+
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.batch_move_components",
+            {"moves": "|".join(ops)},
+        )
         return result
 
     @mcp.tool()
@@ -551,6 +625,9 @@ def register_pcb_tools(mcp):
         if net_name:
             params["net_name"] = net_name
         result = await bridge.send_command_async("pcb.place_track", params)
+        hint = BulkHintTracker.record_and_hint("pcb_place_track")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()

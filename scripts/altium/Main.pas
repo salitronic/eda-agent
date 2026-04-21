@@ -11,7 +11,12 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.21.3';
+    SCRIPT_VERSION = '2026.04.21.5';
+    { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
+    { result instead of recompiling. Design-review snapshots fire 3-4 project  }
+    { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
+    { so bursts without this cache add up to 30-40 s of needless recompiles.   }
+    COMPILE_CACHE_TTL_MS = 2000;
 
     CONFIG_FILE = 'mcp_config.json';
     REQUEST_FILE = 'request.json';
@@ -42,6 +47,33 @@ Var
     { DelphiScript return-value corruption bug for long strings). Checked and  }
     { cleared by ProcessSingleRequest each cycle.                              }
     ResponseAlreadyWritten : Boolean;
+    { SmartCompile cache state. Tick of the last DM_Compile and the Project    }
+    { pointer it was run against, so we only skip when the SAME project was    }
+    { compiled recently. Reset to 0 / Nil at startup.                          }
+    LastCompileTick : Cardinal;
+    LastCompiledProject : IProject;
+
+{..............................................................................}
+{ SmartCompile                                                                  }
+{                                                                               }
+{ Thin wrapper over Project.DM_Compile that skips the compile when the SAME     }
+{ project was compiled less than COMPILE_CACHE_TTL_MS ago. Design-review        }
+{ handlers each call DM_Compile at the top; on a non-trivial design that's      }
+{ 5-10 s per call. Back-to-back calls in a snapshot pay the compile cost once   }
+{ instead of N times. TTL is intentionally short (2 s) so any out-of-band edit  }
+{ is picked up on the next handler that runs more than 2 s after the last one. }
+{..............................................................................}
+
+Procedure SmartCompile(Project : IProject);
+Begin
+    If Project = Nil Then Exit;
+    If (Project = LastCompiledProject) And (LastCompileTick > 0) And
+       ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) Then
+        Exit;
+    Project.DM_Compile;
+    LastCompiledProject := Project;
+    LastCompileTick := GetTickCount;
+End;
 
 {..............................................................................}
 { ISch_RobotManager.SendMessage helpers.                                        }

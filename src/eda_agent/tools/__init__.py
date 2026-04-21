@@ -7,6 +7,7 @@ from .project import register_project_tools
 from .library import register_library_tools
 from .generic import register_generic_tools
 from .pcb import register_pcb_tools
+from .review import register_review_tools
 
 
 def register_all_tools(mcp):
@@ -16,6 +17,7 @@ def register_all_tools(mcp):
     register_library_tools(mcp)
     register_generic_tools(mcp)
     register_pcb_tools(mcp)
+    register_review_tools(mcp)
 
 
 __all__ = [
@@ -25,4 +27,5 @@ __all__ = [
     "register_library_tools",
     "register_generic_tools",
     "register_pcb_tools",
+    "register_review_tools",
 ]

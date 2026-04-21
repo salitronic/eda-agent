@@ -495,6 +495,134 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_BatchMoveComponents - Move/rotate many components in ONE IPC call.      }
+{ Param 'moves' is a pipe-separated list; each entry is 4 comma-separated     }
+{ fields: designator,x,y,rotation. Empty field = leave that property          }
+{ unchanged. Single PreProcess/PostProcess and a single save for the whole    }
+{ batch, so N moves cost roughly 1x the overhead of one move.                 }
+{..............................................................................}
+
+Function PCB_BatchMoveComponents(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    MovesStr, MoveStr, Remaining : String;
+    PipePos, CommaPos, Applied, Failed, I : Integer;
+    FieldVals : Array[0..3] Of String;
+    Desig, XStr, YStr, RotStr : String;
+    NewX, NewY : Integer;
+    NewRot : Double;
+    HasX, HasY, HasRot : Boolean;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    MovesStr := ExtractJsonValue(Params, 'moves');
+    If MovesStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'moves parameter required');
+        Exit;
+    End;
+
+    Applied := 0;
+    Failed := 0;
+    Remaining := MovesStr;
+
+    PCBServer.PreProcess;
+    Try
+        While Length(Remaining) > 0 Do
+        Begin
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                MoveStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                MoveStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+
+            If MoveStr = '' Then Continue;
+
+            For I := 0 To 3 Do FieldVals[I] := '';
+            I := 0;
+            While (MoveStr <> '') And (I <= 3) Do
+            Begin
+                CommaPos := Pos(',', MoveStr);
+                If CommaPos = 0 Then
+                Begin
+                    FieldVals[I] := MoveStr;
+                    MoveStr := '';
+                End
+                Else
+                Begin
+                    FieldVals[I] := Copy(MoveStr, 1, CommaPos - 1);
+                    MoveStr := Copy(MoveStr, CommaPos + 1, Length(MoveStr));
+                End;
+                I := I + 1;
+            End;
+
+            Desig := FieldVals[0];
+            XStr := FieldVals[1];
+            YStr := FieldVals[2];
+            RotStr := FieldVals[3];
+
+            If Desig = '' Then
+            Begin
+                Failed := Failed + 1;
+                Continue;
+            End;
+
+            Comp := Board.GetPcbComponentByRefDes(Desig);
+            If Comp = Nil Then
+            Begin
+                Failed := Failed + 1;
+                Continue;
+            End;
+
+            HasX := (XStr <> '');
+            HasY := (YStr <> '');
+            HasRot := (RotStr <> '');
+
+            If HasX Then NewX := StrToIntDef(XStr, 0);
+            If HasY Then NewY := StrToIntDef(YStr, 0);
+            If HasRot Then NewRot := StrToFloatDef(RotStr, 0);
+
+            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                PCBM_BeginModify, c_NoEventData);
+
+            If HasX Then Comp.x := MilsToCoord(NewX);
+            If HasY Then Comp.y := MilsToCoord(NewY);
+            If HasRot Then Comp.Rotation := NewRot;
+
+            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+
+            Applied := Applied + 1;
+        End;
+
+        { One broadcast at end of batch kicks the connectivity/rules engines  }
+        { to refresh once instead of N times.                                  }
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"moves_applied":' + IntToStr(Applied) + ','
+        + '"failed":' + IntToStr(Failed) + '}');
+End;
+
+{..............................................................................}
 { PCB_GetTraceLengths - Sum track segment lengths per net                     }
 {..............................................................................}
 
@@ -4133,6 +4261,7 @@ Begin
         'run_drc':                 Result := PCB_RunDRC(Params, RequestId);
         'get_components':          Result := PCB_GetComponents(Params, RequestId);
         'move_component':          Result := PCB_MoveComponent(Params, RequestId);
+        'batch_move_components':   Result := PCB_BatchMoveComponents(Params, RequestId);
         'get_trace_lengths':       Result := PCB_GetTraceLengths(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);

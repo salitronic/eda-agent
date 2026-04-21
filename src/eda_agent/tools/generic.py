@@ -9,6 +9,7 @@ a pass-through layer for object iteration, property access, and process executio
 
 from typing import Any
 from ..bridge import get_bridge
+from .bulk_hints import BulkHintTracker
 
 
 def register_generic_tools(mcp):
@@ -73,10 +74,18 @@ def register_generic_tools(mcp):
         scope: str = "active_doc",
         filter: str = "",
     ) -> dict[str, Any]:
-        """Find and modify schematic objects.
+        """Apply ONE set of property values to every object matching ONE filter.
 
-        Iterates objects of the given type, filters by property values,
-        and sets new property values on matching objects.
+        IMPORTANT — if every target object needs a DIFFERENT value (move 10
+        pins to 10 different positions, rename 5 nets to 5 different names,
+        set distinct designators per component), use `batch_modify` instead.
+        Each call to this tool is a full LLM round-trip; doing that in a
+        loop is the single biggest wall-time cost in the server. One
+        `batch_modify` with a list of operations does the same work in one
+        turn.
+
+        Use this tool when the SAME set string applies to every match
+        (e.g., "set every 10k resistor's Tolerance to 1%").
 
         Args:
             object_type: Altium object type constant (see query_objects)
@@ -92,7 +101,7 @@ def register_generic_tools(mcp):
         Returns:
             Dictionary with "matched" count and "sheets_processed"
 
-        Example - rename a net across all sheets:
+        Example - rename a net across all sheets (one value fits all matches):
             modify_objects(
                 object_type="eNetLabel",
                 scope="project",
@@ -117,6 +126,9 @@ def register_generic_tools(mcp):
                 "set": set,
             },
         )
+        hint = BulkHintTracker.record_and_hint("modify_objects")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -307,42 +319,69 @@ def register_generic_tools(mcp):
     async def batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Execute multiple modify operations in a single IPC call.
+        """Apply many filter+set operations in ONE IPC round-trip.
 
-        Much more efficient than calling modify_objects multiple times,
-        especially for multi-sheet edits. All operations are executed
-        on the Altium side in one round-trip.
+        PREFER THIS over looping `modify_objects` whenever you have more
+        than one change to make — especially when each change targets a
+        different object (different designator, different pin name,
+        different sheet). A single `batch_modify` call touches N objects
+        in the same Altium transaction; N separate `modify_objects` calls
+        cost N LLM round-trips plus N IPC round-trips. The wall-time
+        difference is typically 10-100x on a multi-item edit.
+
+        Use it for: moving multiple pins to specific positions, re-laying
+        component placement, per-sheet title changes, bulk designator
+        rewrites, any workflow where each object gets its own value.
 
         Args:
             operations: List of operation dicts, each with:
-                - scope: "active_doc", "project", or "doc:C:\\path\\to\\file.SchDoc"
-                - object_type: Altium object type (e.g., "eParameter")
+                - scope: "active_doc" (default), "project", or
+                  "doc:C:\\path\\to\\file.SchDoc"
+                - object_type: Altium object type (e.g., "ePin", "eParameter",
+                  "eSchComponent", "eNetLabel")
                 - filter: Pipe-separated filter conditions
+                  (e.g., "Designator.Text=U1", "Name=VDD")
                 - set: Pipe-separated property=value assignments
+                  (e.g., "Location.X=300|Location.Y=-100|Orientation=2")
 
         Returns:
             Dictionary with operations_processed count
 
-        Example - update 4 parameters across all project sheets in ONE call:
+        Example — reposition 10 pins on a library symbol in ONE call
+        (vs. 10 separate modify_objects calls, each a full LLM turn):
+            batch_modify(operations=[
+                {"scope": "active_doc", "object_type": "ePin",
+                 "filter": "Name=S1",
+                 "set":    "Location.X=200|Location.Y=-100|Orientation=2"},
+                {"scope": "active_doc", "object_type": "ePin",
+                 "filter": "Name=S2",
+                 "set":    "Location.X=200|Location.Y=-200|Orientation=2"},
+                {"scope": "active_doc", "object_type": "ePin",
+                 "filter": "Name=VDD",
+                 "set":    "Location.X=800|Location.Y=-100|Orientation=0"},
+                ... # 7 more pins
+            ])
+
+        Example — update 4 parameters across every project sheet in ONE call:
             batch_modify(operations=[
                 {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=Engineer", "set": "Text=John Smith"},
+                 "filter": "Name=Engineer",     "set": "Text=John Smith"},
                 {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=Revision", "set": "Text=2.0"},
+                 "filter": "Name=Revision",     "set": "Text=2.0"},
                 {"scope": "project", "object_type": "eParameter",
                  "filter": "Name=Organization", "set": "Text=Acme Corp"},
                 {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=CompanyName", "set": "Text=Acme Corp"},
+                 "filter": "Name=CompanyName",  "set": "Text=Acme Corp"},
             ])
 
-        Example - set different titles on specific sheets in ONE call:
+        Example — different titles on specific sheets in ONE call:
             batch_modify(operations=[
-                {"scope": "doc:C:\\path\\TopLevel.SchDoc", "object_type": "eParameter",
+                {"scope": "doc:C:\\path\\TopLevel.SchDoc",
+                 "object_type": "eParameter",
                  "filter": "Name=Title", "set": "Text=Top Level"},
-                {"scope": "doc:C:\\path\\PSU.SchDoc", "object_type": "eParameter",
+                {"scope": "doc:C:\\path\\PSU.SchDoc",
+                 "object_type": "eParameter",
                  "filter": "Name=Title", "set": "Text=Power Supply"},
-                {"scope": "doc:C:\\path\\MCU.SchDoc", "object_type": "eParameter",
-                 "filter": "Name=Title", "set": "Text=Microcontroller"},
             ])
         """
         # Build pipe-separated operations string: scope;type;filter;set|scope;type;filter;set|...
