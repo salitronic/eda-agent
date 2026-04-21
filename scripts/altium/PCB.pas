@@ -684,6 +684,222 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_AddLayer - Insert a copper layer (MidLayer1..30 / InternalPlane1..16)   }
+{ into the stack via IPCB_LayerStack.InsertLayer.                             }
+{ Params: layer (e.g. MidLayer1)                                              }
+{..............................................................................}
+
+Function PCB_AddLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerName : String;
+    TargetLayer : TLayer;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerName := ExtractJsonValue(Params, 'layer');
+    If LayerName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'layer required (e.g. MidLayer1, InternalPlane1)');
+        Exit;
+    End;
+
+    TargetLayer := GetLayerFromString(LayerName);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+            'Unknown layer name: ' + LayerName);
+        Exit;
+    End;
+
+    LayerStack := Board.LayerStack_V7;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        Try LayerStack.InsertLayer(TargetLayer); Except End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_RemoveLayer - Remove a copper layer from the stack.                     }
+{ Params: layer (e.g. MidLayer1)                                              }
+{..............................................................................}
+
+Function PCB_RemoveLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    LayerName : String;
+    TargetLayer : TLayer;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerName := ExtractJsonValue(Params, 'layer');
+    If LayerName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'layer required');
+        Exit;
+    End;
+
+    TargetLayer := GetLayerFromString(LayerName);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+            'Unknown layer name: ' + LayerName);
+        Exit;
+    End;
+
+    LayerStack := Board.LayerStack_V7;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    LayerObj := LayerStack.LayerObject_V7[TargetLayer];
+    If LayerObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
+            'Layer ' + LayerName + ' is not present in the current stack');
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        Try LayerStack.RemoveFromStack(LayerObj); Except End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_ModifyLayer - Change copper thickness, layer name, and/or dielectric    }
+{ properties on an existing layer.                                            }
+{ Params: layer, name, copper_thickness_mils, dielectric_type (none/core/     }
+{         prepreg/surface), dielectric_height_mils, dielectric_constant,     }
+{         dielectric_material                                                  }
+{..............................................................................}
+
+Function PCB_ModifyLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    LayerName, NewName, TypeStr, Material : String;
+    ThickStr, HeightStr, ConstStr : String;
+    TargetLayer : TLayer;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerName := ExtractJsonValue(Params, 'layer');
+    If LayerName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'layer required');
+        Exit;
+    End;
+
+    TargetLayer := GetLayerFromString(LayerName);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+            'Unknown layer name: ' + LayerName);
+        Exit;
+    End;
+
+    LayerStack := Board.LayerStack_V7;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    LayerObj := LayerStack.LayerObject_V7[TargetLayer];
+    If LayerObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
+            'Layer ' + LayerName + ' is not present in the current stack');
+        Exit;
+    End;
+
+    NewName := ExtractJsonValue(Params, 'name');
+    ThickStr := ExtractJsonValue(Params, 'copper_thickness_mils');
+    TypeStr := LowerCase(ExtractJsonValue(Params, 'dielectric_type'));
+    HeightStr := ExtractJsonValue(Params, 'dielectric_height_mils');
+    ConstStr := ExtractJsonValue(Params, 'dielectric_constant');
+    Material := ExtractJsonValue(Params, 'dielectric_material');
+
+    PCBServer.PreProcess;
+    Try
+        If NewName <> '' Then
+            Try LayerObj.Name := NewName; Except End;
+        If ThickStr <> '' Then
+            Try LayerObj.CopperThickness := MilsToCoord(StrToIntDef(ThickStr, 0)); Except End;
+
+        If TypeStr = 'none' Then
+            Try LayerObj.Dielectric.DielectricType := eNoDielectric; Except End
+        Else If TypeStr = 'core' Then
+            Try LayerObj.Dielectric.DielectricType := eCore; Except End
+        Else If TypeStr = 'prepreg' Then
+            Try LayerObj.Dielectric.DielectricType := ePrePreg; Except End
+        Else If TypeStr = 'surface' Then
+            Try LayerObj.Dielectric.DielectricType := eSurfaceMaterial; Except End;
+
+        If HeightStr <> '' Then
+            Try LayerObj.Dielectric.DielectricHeight := MilsToCoord(StrToIntDef(HeightStr, 0)); Except End;
+        If ConstStr <> '' Then
+            Try LayerObj.Dielectric.DielectricConstant := StrToFloatDef(ConstStr, 1.0); Except End;
+        If Material <> '' Then
+            Try LayerObj.Dielectric.DielectricMaterial := Material; Except End;
+
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+End;
+
+{..............................................................................}
 { PCB_GetBoardOutline - Get board outline vertices                            }
 {..............................................................................}
 
@@ -3919,6 +4135,9 @@ Begin
         'move_component':          Result := PCB_MoveComponent(Params, RequestId);
         'get_trace_lengths':       Result := PCB_GetTraceLengths(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
+        'add_layer':               Result := PCB_AddLayer(Params, RequestId);
+        'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
+        'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);

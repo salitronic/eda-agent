@@ -175,6 +175,12 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "IPCB_ObjectClass has no per-member enumeration surface",
         "ObjClass.MemberCount / ObjClass.MemberName[I]  →  iterate nets and group",
     ),
+    (
+        re.compile(r"\beElectricBiDir\b"),
+        "eElectricBiDir is undeclared; Altium spells the bidirectional "
+        "pin electrical type eElectricIO",
+        "Pin.Electrical := eElectricBiDir  →  Pin.Electrical := eElectricIO",
+    ),
 ]
 
 

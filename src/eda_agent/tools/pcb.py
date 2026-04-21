@@ -175,6 +175,97 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_add_layer(layer: str) -> dict[str, Any]:
+        """Insert a copper layer into the PCB layer stack.
+
+        Calls IPCB_LayerStack.InsertLayer with the requested TLayer enum.
+        Valid names include MidLayer1..MidLayer30 (signal layers) and
+        InternalPlane1..InternalPlane16 (power / ground planes). Top / Bottom
+        are always present — they cannot be added.
+
+        Args:
+            layer: Layer name, e.g. "MidLayer1", "InternalPlane1"
+
+        Returns:
+            Dictionary confirming the layer was inserted.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.add_layer", {"layer": layer}
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_remove_layer(layer: str) -> dict[str, Any]:
+        """Remove a copper layer from the PCB layer stack.
+
+        Calls IPCB_LayerStack.RemoveFromStack on the requested layer.
+        Does nothing if the layer is not currently in the stack.
+
+        Args:
+            layer: Layer name, e.g. "MidLayer1", "InternalPlane2"
+
+        Returns:
+            Dictionary confirming the layer was removed.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.remove_layer", {"layer": layer}
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_modify_layer(
+        layer: str,
+        name: str = "",
+        copper_thickness_mils: int = 0,
+        dielectric_type: str = "",
+        dielectric_height_mils: int = 0,
+        dielectric_constant: float = 0.0,
+        dielectric_material: str = "",
+    ) -> dict[str, Any]:
+        """Tune properties on an existing copper layer.
+
+        Every optional parameter is applied only if provided (non-empty
+        string / non-zero number). Maps to:
+          name                   IPCB_LayerObject.Name
+          copper_thickness_mils  IPCB_LayerObject.CopperThickness
+          dielectric_type        Dielectric.DielectricType
+                                 (one of "none", "core", "prepreg", "surface")
+          dielectric_height_mils Dielectric.DielectricHeight
+          dielectric_constant    Dielectric.DielectricConstant
+          dielectric_material    Dielectric.DielectricMaterial
+
+        Args:
+            layer: Target layer name, e.g. "MidLayer1"
+            name: New layer name (optional)
+            copper_thickness_mils: New copper thickness in mils (optional)
+            dielectric_type: "none" | "core" | "prepreg" | "surface" (optional)
+            dielectric_height_mils: New dielectric height in mils (optional)
+            dielectric_constant: New Dk value (optional)
+            dielectric_material: New dielectric material string (optional)
+
+        Returns:
+            Dictionary confirming the changes.
+        """
+        bridge = get_bridge()
+        params: dict[str, str] = {"layer": layer}
+        if name:
+            params["name"] = name
+        if copper_thickness_mils:
+            params["copper_thickness_mils"] = str(copper_thickness_mils)
+        if dielectric_type:
+            params["dielectric_type"] = dielectric_type
+        if dielectric_height_mils:
+            params["dielectric_height_mils"] = str(dielectric_height_mils)
+        if dielectric_constant:
+            params["dielectric_constant"] = str(dielectric_constant)
+        if dielectric_material:
+            params["dielectric_material"] = dielectric_material
+        result = await bridge.send_command_async("pcb.modify_layer", params)
+        return result
+
+    @mcp.tool()
     async def pcb_get_board_outline() -> dict[str, Any]:
         """Get the board outline vertices and bounding rectangle.
 

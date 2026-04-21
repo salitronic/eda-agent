@@ -93,11 +93,16 @@ Begin
         Pin.Orientation := Rotation Div 90;
         Pin.IsHidden := Hidden;
 
-        // Set electrical type
+        // Set electrical type. The bidirectional constant is spelled
+        // eElectricIO in Altium's DelphiScript (eElectricBiDir is undeclared).
         If ElecType = 'input' Then Pin.Electrical := eElectricInput
         Else If ElecType = 'output' Then Pin.Electrical := eElectricOutput
-        Else If ElecType = 'bidirectional' Then Pin.Electrical := eElectricBiDir
+        Else If ElecType = 'bidirectional' Then Pin.Electrical := eElectricIO
+        Else If ElecType = 'io' Then Pin.Electrical := eElectricIO
         Else If ElecType = 'power' Then Pin.Electrical := eElectricPower
+        Else If ElecType = 'open_collector' Then Pin.Electrical := eElectricOpenCollector
+        Else If ElecType = 'open_emitter' Then Pin.Electrical := eElectricOpenEmitter
+        Else If ElecType = 'hiz' Then Pin.Electrical := eElectricHiZ
         Else Pin.Electrical := eElectricPassive;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
@@ -1290,12 +1295,16 @@ Begin
             If Not First Then JsonItems := JsonItems + ',';
             First := False;
 
-            // Map electrical type to string
+            // Map electrical type to string. Altium uses eElectricIO for
+            // bidirectional; eElectricBiDir is undeclared.
             If Pin.Electrical = eElectricInput Then ElecStr := 'input'
             Else If Pin.Electrical = eElectricOutput Then ElecStr := 'output'
-            Else If Pin.Electrical = eElectricBiDir Then ElecStr := 'bidirectional'
+            Else If Pin.Electrical = eElectricIO Then ElecStr := 'bidirectional'
             Else If Pin.Electrical = eElectricPassive Then ElecStr := 'passive'
             Else If Pin.Electrical = eElectricPower Then ElecStr := 'power'
+            Else If Pin.Electrical = eElectricOpenCollector Then ElecStr := 'open_collector'
+            Else If Pin.Electrical = eElectricOpenEmitter Then ElecStr := 'open_emitter'
+            Else If Pin.Electrical = eElectricHiZ Then ElecStr := 'hiz'
             Else ElecStr := 'passive';
 
             JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Pin.Designator) +

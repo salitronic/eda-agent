@@ -1164,6 +1164,65 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_add_directive(
+        x: int,
+        y: int,
+        param_name: str,
+        param_value: str,
+    ) -> dict[str, Any]:
+        """Place a parameter-set directive at (x, y) on the active schematic.
+
+        A parameter-set directive attaches a single ``name=value`` design
+        parameter to a wire or net. Drop the directive on top of the target
+        wire/net and the compile engine will propagate the parameter. Common
+        uses:
+
+        - ``param_name="DifferentialPair", param_value="USB"``
+          — marks the net as a member of the USB differential pair.
+        - ``param_name="NetClass", param_value="HighSpeed"``
+          — assigns the net to the HighSpeed class.
+        - ``param_name="Signal_Stimulus", param_value="..."``
+          — any custom per-net rule parameter.
+
+        Args:
+            x, y: Location in mils — place ON the target wire/net.
+            param_name: Parameter name (e.g. "NetClass", "DifferentialPair")
+            param_value: Parameter value
+
+        Returns:
+            Dictionary confirming placement.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.place_directive",
+            {
+                "x": str(x),
+                "y": str(y),
+                "param_name": param_name,
+                "param_value": param_value,
+            },
+        )
+        return result
+
+    @mcp.tool()
+    async def sch_get_directives() -> dict[str, Any]:
+        """Enumerate parameter-set directives on the active schematic sheet.
+
+        Returns every ISch_ParameterSet on the sheet along with its location
+        and the list of parameters it carries. Use this to audit which nets
+        have explicit NetClass / DifferentialPair / custom-rule assignments
+        before a compile, or to verify a bulk placement worked.
+
+        Returns:
+            Dictionary with ``directives`` array — each entry has
+            ``name``, ``x``, ``y``, and a ``parameters`` list of
+            ``{name, value}`` objects — plus ``count``.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.get_directives", {})
+        return result
+
+    @mcp.tool()
     async def place_image(
         image_path: str,
         x: int,

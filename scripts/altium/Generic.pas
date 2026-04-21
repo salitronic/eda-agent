@@ -22,6 +22,7 @@ Begin
     Else If TypeStr = 'eBus'           Then Result := eBus
     Else If TypeStr = 'eBusEntry'      Then Result := eBusEntry
     Else If TypeStr = 'eParameter'     Then Result := eParameter
+    Else If TypeStr = 'eParameterSet'  Then Result := eParameterSet
     Else If TypeStr = 'ePin'           Then Result := ePin
     Else If TypeStr = 'eLabel'         Then Result := eLabel
     Else If TypeStr = 'eLine'          Then Result := eLine
@@ -138,13 +139,39 @@ End;
 {..............................................................................}
 
 Procedure SetSchProperty(Obj : ISch_GraphicalObject; PropName : String; Value : String);
+Var
+    Loc : TLocation;
+    Crn : TLocation;
 Begin
     Try
-        // Coordinates (expected in mils)
-        If PropName = 'Location.X'       Then Obj.Location.X := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Location.Y'  Then Obj.Location.Y := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Corner.X'    Then Obj.Corner.X := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Corner.Y'    Then Obj.Corner.Y := MilsToCoord(StrToIntDef(Value, 0))
+        // Coordinates (expected in mils). `Obj.Location` returns a copy of
+        // the TLocation record via the GetState_Location reader; writing
+        // directly to `.X` / `.Y` on that copy is silently discarded. Read
+        // the whole record, patch the target field, write it back.
+        If PropName = 'Location.X' Then
+        Begin
+            Loc := Obj.Location;
+            Loc.X := MilsToCoord(StrToIntDef(Value, 0));
+            Obj.Location := Loc;
+        End
+        Else If PropName = 'Location.Y' Then
+        Begin
+            Loc := Obj.Location;
+            Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
+            Obj.Location := Loc;
+        End
+        Else If PropName = 'Corner.X' Then
+        Begin
+            Crn := Obj.Corner;
+            Crn.X := MilsToCoord(StrToIntDef(Value, 0));
+            Obj.Corner := Crn;
+        End
+        Else If PropName = 'Corner.Y' Then
+        Begin
+            Crn := Obj.Corner;
+            Crn.Y := MilsToCoord(StrToIntDef(Value, 0));
+            Obj.Corner := Crn;
+        End
 
         // String properties (late-bound across all types — primitives only)
         Else If PropName = 'Text'        Then Obj.Text := Value
@@ -2353,6 +2380,85 @@ Begin
 End;
 
 {..............................................................................}
+{ Enumerate parameter-set directives on the active sheet (or project).        }
+{ Each directive is a named group of key=value parameters attached at a       }
+{ specific (x, y) on a wire or net. Used for net classes, differential pair   }
+{ definitions, channel naming, and any other per-net design rule directive.   }
+{ Params: scope = active_doc | project (default active_doc)                  }
+{..............................................................................}
+
+Function Gen_GetDirectives(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    OuterIter, InnerIter : ISch_Iterator;
+    ParamSet : ISch_BasicContainer;
+    Param : ISch_BasicContainer;
+    JsonItems, ChildJson, PName, PValue, DirName : String;
+    First, FirstChild : Boolean;
+    Count, X, Y : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    JsonItems := '';
+    First := True;
+    Count := 0;
+
+    OuterIter := SchDoc.SchIterator_Create;
+    OuterIter.AddFilter_ObjectSet(MkSet(eParameterSet));
+    Try
+        ParamSet := OuterIter.FirstSchObject;
+        While ParamSet <> Nil Do
+        Begin
+            If Not First Then JsonItems := JsonItems + ',';
+            First := False;
+
+            DirName := '';
+            X := 0; Y := 0;
+            Try DirName := ParamSet.Name; Except End;
+            Try X := CoordToMils(ParamSet.Location.X); Except End;
+            Try Y := CoordToMils(ParamSet.Location.Y); Except End;
+
+            ChildJson := '';
+            FirstChild := True;
+            { Iterate the parameters (eParameter) owned by this parameter set. }
+            Try
+                InnerIter := ParamSet.SchIterator_Create;
+                InnerIter.AddFilter_ObjectSet(MkSet(eParameter));
+                Param := InnerIter.FirstSchObject;
+                While Param <> Nil Do
+                Begin
+                    PName := '';
+                    PValue := '';
+                    Try PName := Param.Name; Except End;
+                    Try PValue := Param.Text; Except End;
+                    If Not FirstChild Then ChildJson := ChildJson + ',';
+                    FirstChild := False;
+                    ChildJson := ChildJson + '{"name":"' + EscapeJsonString(PName) + '","value":"' + EscapeJsonString(PValue) + '"}';
+                    Param := InnerIter.NextSchObject;
+                End;
+                ParamSet.SchIterator_Destroy(InnerIter);
+            Except End;
+
+            JsonItems := JsonItems + '{"name":"' + EscapeJsonString(DirName) + '",'
+                + '"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+                + '"parameters":[' + ChildJson + ']}';
+            Inc(Count);
+            ParamSet := OuterIter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(OuterIter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"directives":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+{..............................................................................}
 { Place a compile mask (blanket) over a rectangular area on the schematic.    }
 { Compile masks exclude enclosed objects from compilation and ERC.            }
 { Params: x1,y1,x2,y2 in mils                                                 }
@@ -3275,6 +3381,7 @@ Begin
         'place_wire':       Result := Gen_PlaceWire(Params, RequestId);
         'place_bus':        Result := Gen_PlaceBus(Params, RequestId);
         'place_directive':  Result := Gen_PlaceDirective(Params, RequestId);
+        'get_directives':   Result := Gen_GetDirectives(Params, RequestId);
         'place_compile_mask': Result := Gen_PlaceCompileMask(Params, RequestId);
         'place_rectangle':  Result := Gen_PlaceRectangle(Params, RequestId);
         'place_line':       Result := Gen_PlaceLine(Params, RequestId);
