@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.22.17';
+    SCRIPT_VERSION = '2026.04.22.18';
     { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
     { result instead of recompiling. Design-review snapshots fire 3-4 project  }
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
@@ -66,31 +66,31 @@ Var
 { ... → Generic) and a callee must come earlier than its caller.               }
 {..............................................................................}
 
-Procedure SplitBatchOps(Operations : String; Var Ops : Array of String; Var Count : Integer);
+{ Cursor-based batch iterator. The caller holds a String `Remaining` and   }
+{ calls NextBatchOp repeatedly; each call returns the next op and          }
+{ advances the cursor. Returns '' when exhausted. Replaces the earlier    }
+{ SplitBatchOps(..., Var Ops : Array of String, ...) helper — DelphiScript }
+{ PascalScript doesn't pass fixed-size arrays to open-array parameters    }
+{ ("wrong number of params" at call time), so the array-based API can't   }
+{ work. This cursor form has no array parameters and handles any batch    }
+{ size.                                                                    }
+Function NextBatchOp(Var Remaining : String) : String;
 Var
-    Remaining, Op : String;
     SepPos : Integer;
 Begin
-    Count := 0;
-    Remaining := Operations;
-    While (Length(Remaining) > 0) And (Count <= High(Ops)) Do
+    Result := '';
+    While Length(Remaining) > 0 Do
     Begin
         SepPos := Pos('~~', Remaining);
         If SepPos = 0 Then
         Begin
-            Op := Remaining;
+            Result := Remaining;
             Remaining := '';
-        End
-        Else
-        Begin
-            Op := Copy(Remaining, 1, SepPos - 1);
-            Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
+            Exit;
         End;
-        If Op <> '' Then
-        Begin
-            Ops[Count] := Op;
-            Count := Count + 1;
-        End;
+        Result := Copy(Remaining, 1, SepPos - 1);
+        Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
+        If Result <> '' Then Exit;
     End;
 End;
 

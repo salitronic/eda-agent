@@ -4350,9 +4350,8 @@ End;
 
 Function Gen_BatchCreate(Params : String; RequestId : String) : String;
 Var
-    Operations : String;
-    Ops : Array[0..499] Of String;
-    OpCount, I, Created, Failed : Integer;
+    Operations, Remaining : String;
+    OpCount, Created, Failed : Integer;
     Op, Scope, ObjTypeStr, PropsStr : String;
     ObjTypeInt : Integer;
     SchDoc : ISch_Document;
@@ -4369,23 +4368,20 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(Operations, Ops, OpCount);
-    If OpCount = 0 Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'EMPTY_BATCH', 'No operations parsed from batch');
-        Exit;
-    End;
-
     Created := 0;
     Failed := 0;
+    OpCount := 0;
     ActiveDoc := SchServer.GetCurrentSchDocument;
+    Remaining := Operations;
 
     If ActiveDoc <> Nil Then
         SchServer.ProcessControl.PreProcess(ActiveDoc, '');
     Try
-        For I := 0 To OpCount - 1 Do
+        While True Do
         Begin
-            Op := Ops[I];
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
             Scope := GetBatchField(Op, 'scope');
             If Scope = '' Then Scope := 'active_doc';
             ObjTypeStr := GetBatchField(Op, 'object_type');
@@ -4468,9 +4464,8 @@ End;
 
 Function Gen_BatchDelete(Params : String; RequestId : String) : String;
 Var
-    Operations : String;
-    Ops : Array[0..499] Of String;
-    OpCount, I, OpsRun : Integer;
+    Operations, Remaining : String;
+    OpCount, OpsRun : Integer;
     Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
     ObjTypeInt : Integer;
 Begin
@@ -4481,12 +4476,15 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(Operations, Ops, OpCount);
     OpsRun := 0;
+    OpCount := 0;
+    Remaining := Operations;
 
-    For I := 0 To OpCount - 1 Do
+    While True Do
     Begin
-        Op := Ops[I];
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        OpCount := OpCount + 1;
         Scope := GetBatchField(Op, 'scope');
         If Scope = '' Then Scope := 'active_doc';
         ObjTypeStr := GetBatchField(Op, 'object_type');
@@ -4516,9 +4514,8 @@ End;
 
 Function Gen_PlaceWires(Params : String; RequestId : String) : String;
 Var
-    WireStr : String;
-    Ops : Array[0..999] Of String;
-    OpCount, I, Placed, Failed : Integer;
+    WireStr, Remaining : String;
+    OpCount, Placed, Failed : Integer;
     X1, Y1, X2, Y2 : Integer;
     SchDoc : ISch_Document;
     Wire : ISch_Wire;
@@ -4538,15 +4535,18 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(WireStr, Ops, OpCount);
     Placed := 0;
     Failed := 0;
+    OpCount := 0;
+    Remaining := WireStr;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
-        For I := 0 To OpCount - 1 Do
+        While True Do
         Begin
-            Op := Ops[I];
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
             X1 := StrToIntDef(GetBatchField(Op, 'x1'), 0);
             Y1 := StrToIntDef(GetBatchField(Op, 'y1'), 0);
             X2 := StrToIntDef(GetBatchField(Op, 'x2'), 0);
@@ -4587,9 +4587,8 @@ End;
 
 Function Gen_PlaceSchComponentsFromLibrary(Params : String; RequestId : String) : String;
 Var
-    PlaceStr, Op : String;
-    Ops : Array[0..499] Of String;
-    OpCount, I, Placed, Failed, Rotation, RotCount, J : Integer;
+    PlaceStr, Op, Remaining : String;
+    OpCount, Placed, Failed, Rotation, RotCount, J : Integer;
     LibPath, LibRef, Desig, Footprint : String;
     X, Y : Integer;
     SchDoc : ISch_Document;
@@ -4610,15 +4609,18 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(PlaceStr, Ops, OpCount);
     Placed := 0;
     Failed := 0;
+    OpCount := 0;
+    Remaining := PlaceStr;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
-        For I := 0 To OpCount - 1 Do
+        While True Do
         Begin
-            Op := Ops[I];
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
             LibPath := GetBatchField(Op, 'library_path');
             LibRef := GetBatchField(Op, 'lib_reference');
             Desig := GetBatchField(Op, 'designator');
@@ -4680,9 +4682,8 @@ End;
 
 Function Gen_AttachSpicePrimitivesBatch(Params : String; RequestId : String) : String;
 Var
-    AttachStr, Op : String;
-    Ops : Array[0..999] Of String;
-    OpCount, I, Attached, Failed : Integer;
+    AttachStr, Op, Remaining : String;
+    OpCount, Attached, Failed : Integer;
     Designator, Primitive, Value, ModelName, SimKind : String;
     SchDoc : ISch_Document;
     Iter : ISch_Iterator;
@@ -4704,15 +4705,18 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(AttachStr, Ops, OpCount);
     Attached := 0;
     Failed := 0;
+    OpCount := 0;
+    Remaining := AttachStr;
 
     SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitives');
     Try
-        For I := 0 To OpCount - 1 Do
+        While True Do
         Begin
-            Op := Ops[I];
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
             Designator := GetBatchField(Op, 'designator');
             Primitive := UpperCase(GetBatchField(Op, 'primitive'));
             Value := GetBatchField(Op, 'value');

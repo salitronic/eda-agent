@@ -10,6 +10,12 @@ Claude Code reviewing a buck converter through eda-agent. The feedback resistor 
 
 [![eda-agent demo: Claude Code reviewing a buck converter](https://img.youtube.com/vi/snRyCx3OlxM/maxresdefault.jpg)](https://youtu.be/snRyCx3OlxM)
 
+## Dashboard
+
+<img src="assets/dashboard.png" alt="eda-agent dashboard inside Altium Designer" width="320">
+
+A floating Altium-side window shows live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. The **Detach** button saves all dirty docs and exits the polling loop cleanly.
+
 ## How it works
 
 - Altium Designer stays open and in full control of your design

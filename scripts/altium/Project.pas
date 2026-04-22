@@ -2102,7 +2102,7 @@ End;
 
 Function Proj_GetConnectivityBatch(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, DesigStr : String;
+    ProjectPath, DesigStr, Remaining : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
@@ -2125,14 +2125,25 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(DesigStr, Wanted, WantedCount);
+    { Pre-scan DesigStr into the Wanted / Found arrays using the cursor }
+    { helper — we need random-access to the full list to track "not     }
+    { found" after the iteration below.                                 }
+    WantedCount := 0;
+    Remaining := DesigStr;
+    While True Do
+    Begin
+        ThisDesig := NextBatchOp(Remaining);
+        If ThisDesig = '' Then Break;
+        If WantedCount > High(Wanted) Then Break;
+        Wanted[WantedCount] := ThisDesig;
+        Found[WantedCount] := False;
+        WantedCount := WantedCount + 1;
+    End;
     If WantedCount = 0 Then
     Begin
         Result := BuildErrorResponse(RequestId, 'EMPTY_BATCH', 'No designators parsed');
         Exit;
     End;
-
-    For I := 0 To WantedCount - 1 Do Found[I] := False;
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then

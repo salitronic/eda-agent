@@ -212,6 +212,19 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "each via Client.GetDocumentByPath(path)",
     ),
     (
+        # Open-array parameters (`Var X : Array of T`) crash DelphiScript
+        # at call time with "wrong number of params" — PascalScript
+        # expands the parameter into a hidden (base_ptr, high_index)
+        # pair, and fixed-size arrays (Array[0..N] Of T) don't auto-
+        # coerce. See NextBatchOp in Main.pas for the cursor-based
+        # replacement every batch helper uses.
+        re.compile(r"\bVar\s+\w+\s*:\s*Array\s+of\s+"),
+        "Open-array parameter (Var X : Array of T) — DelphiScript "
+        "fails the call with 'wrong number of params'",
+        "Use a cursor: Function NextBatchOp(Var Remaining : String) "
+        ": String; caller loops and checks for ''",
+    ),
+    (
         # PCBServer.GetCurrentPCBBoard is focus-dependent — it returns
         # nil whenever the active Altium tab is a schematic, even though
         # the PCB is loaded in the project. Handlers should use the

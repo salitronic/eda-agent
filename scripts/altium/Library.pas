@@ -1404,9 +1404,8 @@ End;
 
 Function Lib_AddPins(Params : String; RequestId : String) : String;
 Var
-    PinsStr, Op : String;
-    Ops : Array[0..499] Of String;
-    OpCount, I, Added, Failed : Integer;
+    PinsStr, Op, Remaining : String;
+    OpCount, Added, Failed : Integer;
     Designator, Name, ElecType, HiddenStr : String;
     X, Y, Length, Rotation : Integer;
     Hidden : Boolean;
@@ -1436,15 +1435,18 @@ Begin
         Exit;
     End;
 
-    SplitBatchOps(PinsStr, Ops, OpCount);
     Added := 0;
     Failed := 0;
+    OpCount := 0;
+    Remaining := PinsStr;
 
     SchServer.ProcessControl.PreProcess(SchLib, '');
     Try
-        For I := 0 To OpCount - 1 Do
+        While True Do
         Begin
-            Op := Ops[I];
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
             Designator := GetBatchField(Op, 'designator');
             Name := GetBatchField(Op, 'name');
             X := StrToIntDef(GetBatchField(Op, 'x'), 0);
