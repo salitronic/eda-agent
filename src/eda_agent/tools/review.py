@@ -16,24 +16,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..bridge import get_bridge
-
-
-DATASHEET_RULES = [
-    "Fetch the datasheet for every unique manufacturer part number "
-    "in _unique_parts before drawing any conclusion about pin "
-    "function, voltage rating, current limit, or timing spec.",
-    "The schematic symbol's pin functions can be wrong or outdated. "
-    "Verify every pin against the datasheet's pin description table.",
-    "Library parameter fields (Description, Comment, Value) are not "
-    "authoritative. Trust the datasheet.",
-    "Voltage ratings and absolute maximums are what the part "
-    "actually supports, not what the designer intended. Cross-check "
-    "operating voltages against Vmax / Vmin from the datasheet.",
-    "When proposing a fix, cite the datasheet page or section you "
-    "are relying on. If you cannot cite it, you have not verified.",
-    "If a datasheet is unavailable (proprietary, obsolete, generic), "
-    "flag that explicitly - do not guess.",
-]
+from .datasheet_hints import (
+    DATASHEET_RULES,
+    build_guidance_block,
+    extract_unique_parts,
+)
 
 
 REVIEW_SECTIONS: dict[str, tuple[str, dict[str, Any], float]] = {
@@ -71,98 +58,13 @@ DEFAULT_SECTIONS = [
 def _extract_unique_parts(
     components: Any, bom: Any
 ) -> list[dict[str, str]]:
-    """Extract unique (manufacturer, part_number) pairs for datasheet fetch.
-
-    BOM gets priority (it carries manufacturer part numbers). Falls
-    back to the PCB component list's Comment / Footprint when BOM
-    is absent.
-    """
-    seen: set[tuple[str, str]] = set()
-    out: list[dict[str, str]] = []
-
-    if isinstance(bom, dict):
-        rows = bom.get("bom") or bom.get("items") or bom.get("rows") or []
-        if isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                mfr = str(
-                    row.get("Manufacturer")
-                    or row.get("manufacturer")
-                    or ""
-                ).strip()
-                part = str(
-                    row.get("ManufacturerPartNumber")
-                    or row.get("manufacturer_part_number")
-                    or row.get("PartNumber")
-                    or row.get("part_number")
-                    or row.get("Comment")
-                    or row.get("comment")
-                    or ""
-                ).strip()
-                if not part:
-                    continue
-                key = (mfr.lower(), part.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append({
-                    "manufacturer": mfr,
-                    "part_number": part,
-                    "designators": str(
-                        row.get("Designator")
-                        or row.get("designator")
-                        or row.get("Designators")
-                        or ""
-                    ),
-                })
-
-    if not out and isinstance(components, dict):
-        rows = components.get("components") or []
-        if isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                part = str(
-                    row.get("Comment")
-                    or row.get("comment")
-                    or row.get("value")
-                    or ""
-                ).strip()
-                if not part:
-                    continue
-                key = ("", part.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append({
-                    "manufacturer": "",
-                    "part_number": part,
-                    "designators": str(
-                        row.get("designator") or row.get("Designator") or ""
-                    ),
-                })
-
-    return out
+    """Thin wrapper around the shared extractor — kept for test compat."""
+    return extract_unique_parts(components=components, bom=bom)
 
 
 def _guidance_block(unique_parts: list[dict[str, str]]) -> dict[str, Any]:
-    return {
-        "datasheet_rules": DATASHEET_RULES,
-        "action_required": (
-            "Before proposing fixes, fetch the datasheet for each entry "
-            "in _unique_parts (use WebFetch / WebSearch with "
-            "'<manufacturer> <part_number> datasheet filetype:pdf', "
-            "or ask the user for a local copy). Verify every pin, "
-            "voltage, and timing claim against the datasheet you "
-            "actually read - do not rely on memory or library metadata."
-        ),
-        "unique_part_count": len(unique_parts),
-        "reminder": (
-            "The symbol, footprint, and parameter fields can be wrong. "
-            "The datasheet is ground truth."
-        ),
-    }
+    """Thin wrapper around the shared guidance builder — kept for test compat."""
+    return build_guidance_block(unique_parts, context="design_review")
 
 
 def register_review_tools(mcp):

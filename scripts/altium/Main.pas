@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.22.1';
+    SCRIPT_VERSION = '2026.04.22.4';
     { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
     { result instead of recompiling. Design-review snapshots fire 3-4 project  }
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
@@ -52,6 +52,81 @@ Var
     { compiled recently. Reset to 0 / Nil at startup.                          }
     LastCompileTick : Cardinal;
     LastCompiledProject : IProject;
+
+{..............................................................................}
+{ Batch tool helpers                                                            }
+{                                                                               }
+{ New-generation batch tools use '~~' (double tilde) as the operation           }
+{ separator and ';' as field separator within an operation. '~~' doesn't       }
+{ appear in Altium object names, filters, or property strings, so it's         }
+{ unambiguous even when a single operation's property list contains '|'.       }
+{                                                                               }
+{ Defined in Main.pas so Library.pas and Generic.pas can both use them —       }
+{ the Altium project compiles files in DesignN order (Main → ... → Library →  }
+{ ... → Generic) and a callee must come earlier than its caller.               }
+{..............................................................................}
+
+Procedure SplitBatchOps(Operations : String; Var Ops : Array of String; Var Count : Integer);
+Var
+    Remaining, Op : String;
+    SepPos : Integer;
+Begin
+    Count := 0;
+    Remaining := Operations;
+    While (Length(Remaining) > 0) And (Count <= High(Ops)) Do
+    Begin
+        SepPos := Pos('~~', Remaining);
+        If SepPos = 0 Then
+        Begin
+            Op := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Op := Copy(Remaining, 1, SepPos - 1);
+            Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
+        End;
+        If Op <> '' Then
+        Begin
+            Ops[Count] := Op;
+            Count := Count + 1;
+        End;
+    End;
+End;
+
+Function GetBatchField(Op : String; Key : String) : String;
+Var
+    Remaining, Field, FKey, FVal : String;
+    SepPos, EqPos : Integer;
+Begin
+    Result := '';
+    Remaining := Op;
+    While Length(Remaining) > 0 Do
+    Begin
+        SepPos := Pos(';', Remaining);
+        If SepPos = 0 Then
+        Begin
+            Field := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Field := Copy(Remaining, 1, SepPos - 1);
+            Remaining := Copy(Remaining, SepPos + 1, Length(Remaining));
+        End;
+        EqPos := Pos('=', Field);
+        If EqPos > 0 Then
+        Begin
+            FKey := Copy(Field, 1, EqPos - 1);
+            FVal := Copy(Field, EqPos + 1, Length(Field));
+            If UpperCase(FKey) = UpperCase(Key) Then
+            Begin
+                Result := FVal;
+                Exit;
+            End;
+        End;
+    End;
+End;
 
 {..............................................................................}
 { SmartCompile                                                                  }

@@ -9,6 +9,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 from typing import Any
 from ..bridge import get_bridge
 from .bulk_hints import BulkHintTracker
+from .datasheet_hints import tag_response
 
 
 def register_pcb_tools(mcp):
@@ -95,13 +96,20 @@ def register_pcb_tools(mcp):
     async def pcb_get_components() -> dict[str, Any]:
         """Get all components from the active PCB with position and properties.
 
+        DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`
+        block. Before drawing any conclusion about a listed part's
+        electrical behavior, pin function, or voltage rating, fetch its
+        manufacturer datasheet (use WebSearch + WebFetch if you don't
+        already have it). Library metadata here is NOT authoritative.
+
         Returns:
             Dictionary with "components" array (each with designator, x, y,
-            rotation, layer, footprint) and "count"
+            rotation, layer, footprint) and "count", plus
+            `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_components", {})
-        return result
+        return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()
     async def pcb_move_component(

@@ -158,6 +158,9 @@ def register_generic_tools(mcp):
                 "container": container,
             },
         )
+        hint = BulkHintTracker.record_and_hint("create_object")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -195,6 +198,9 @@ def register_generic_tools(mcp):
                 "filter": filter,
             },
         )
+        hint = BulkHintTracker.record_and_hint("delete_objects")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -604,6 +610,9 @@ def register_generic_tools(mcp):
             "generic.place_wire",
             {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
         )
+        hint = BulkHintTracker.record_and_hint("place_wire")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -883,6 +892,9 @@ def register_generic_tools(mcp):
                 "footprint": footprint,
             },
         )
+        hint = BulkHintTracker.record_and_hint("place_sch_component_from_library")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -1492,4 +1504,278 @@ def register_generic_tools(mcp):
             params["kind"] = kind
         return await bridge.send_command_async(
             "generic.add_datafile_link", params
+        )
+
+    # --------------------------------------------------------------
+    # Batch tools using the '~~'-separator format.
+    # --------------------------------------------------------------
+
+    @mcp.tool()
+    async def batch_create(
+        operations: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Create many schematic objects in ONE IPC round-trip.
+
+        PREFER THIS over looping `create_object`. Each create costs one
+        LLM turn when done one at a time; batched it's a single
+        PreProcess/PostProcess + one save for the whole set.
+
+        Args:
+            operations: List of create dicts, each with:
+                - scope: "active_doc" (default) — only active_doc is
+                  currently honored for creates.
+                - object_type: Altium type name (e.g. "eNetLabel",
+                  "eJunction", "eNoERC").
+                - properties: pipe-separated ``Name=Value`` list, same
+                  format as ``create_object`` accepts.
+                - container: "document" (default) or "component" (for
+                  library-symbol contents when a lib is active).
+
+        Example — drop 3 net labels in one call:
+            batch_create(operations=[
+                {"object_type": "eNetLabel",
+                 "properties": "Text=VCC|Location.X=100|Location.Y=200"},
+                {"object_type": "eNetLabel",
+                 "properties": "Text=GND|Location.X=100|Location.Y=400"},
+                {"object_type": "eNetLabel",
+                 "properties": "Text=SCK|Location.X=300|Location.Y=200"},
+            ])
+
+        Returns:
+            Dict with created, failed, total counts.
+        """
+        op_strs: list[str] = []
+        for op in operations:
+            scope = op.get("scope", "active_doc")
+            obj_type = op.get("object_type", "")
+            props = op.get("properties", "")
+            container = op.get("container", "")
+            if not obj_type:
+                continue
+            fields = [
+                f"scope={scope}",
+                f"object_type={obj_type}",
+                f"properties={props}",
+            ]
+            if container:
+                fields.append(f"container={container}")
+            op_strs.append(";".join(fields))
+
+        if not op_strs:
+            return {"error": "No valid operations", "created": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.batch_create",
+            {"operations": "~~".join(op_strs)},
+        )
+
+    @mcp.tool()
+    async def batch_delete(
+        operations: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Delete matching objects across many scope/type/filter operations.
+
+        PREFER THIS over looping `delete_objects`. Each op is evaluated
+        in one go — cleaning a mixed set of stale junctions, no-ERCs,
+        and net labels costs one IPC round-trip instead of N.
+
+        Args:
+            operations: List of delete dicts, each with:
+                - scope: "active_doc" (default), "project", or
+                  "doc:<absolute_path>".
+                - object_type: Altium type name (e.g. "eJunction",
+                  "eNoERC", "eWire").
+                - filter: pipe-separated ``PropName=Value`` filter
+                  conditions (AND logic), same format as
+                  ``delete_objects``.
+
+        Example — purge all no-ERCs on a specific sheet and every
+        junction on the project:
+            batch_delete(operations=[
+                {"scope": "doc:C:\\proj\\Power.SchDoc",
+                 "object_type": "eNoERC", "filter": ""},
+                {"scope": "project",
+                 "object_type": "eJunction", "filter": ""},
+            ])
+
+        Returns:
+            Dict with operations_processed and total.
+        """
+        op_strs: list[str] = []
+        for op in operations:
+            scope = op.get("scope", "active_doc")
+            obj_type = op.get("object_type", "")
+            filt = op.get("filter", "")
+            if not obj_type:
+                continue
+            op_strs.append(
+                f"scope={scope};object_type={obj_type};filter={filt}"
+            )
+
+        if not op_strs:
+            return {"error": "No valid operations", "operations_processed": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.batch_delete",
+            {"operations": "~~".join(op_strs)},
+        )
+
+    @mcp.tool()
+    async def place_wires(
+        wires: list[dict[str, int]],
+    ) -> dict[str, Any]:
+        """Place MANY wire segments on the active schematic in ONE call.
+
+        PREFER THIS over looping `place_wire`. Wiring up a netlist is
+        inherently N pairs of endpoints; the bulk version is 10-100x
+        faster in wall time because the whole batch shares one
+        PreProcess/PostProcess and one redraw.
+
+        Args:
+            wires: List of wire dicts, each with x1, y1, x2, y2 in mils.
+
+        Example — a 3-segment L-shaped bus routing:
+            place_wires(wires=[
+                {"x1": 100, "y1": 200, "x2": 300, "y2": 200},
+                {"x1": 300, "y1": 200, "x2": 300, "y2": 400},
+                {"x1": 300, "y1": 400, "x2": 600, "y2": 400},
+            ])
+
+        Returns:
+            Dict with placed, failed, total counts.
+        """
+        op_strs: list[str] = []
+        for w in wires:
+            op_strs.append(
+                f"x1={int(w.get('x1', 0))};y1={int(w.get('y1', 0))};"
+                f"x2={int(w.get('x2', 0))};y2={int(w.get('y2', 0))}"
+            )
+        if not op_strs:
+            return {"error": "No wires provided", "placed": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.place_wires",
+            {"wires": "~~".join(op_strs)},
+        )
+
+    @mcp.tool()
+    async def place_sch_components_from_library(
+        placements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Place MANY schematic components from libraries in ONE call.
+
+        PREFER THIS over looping `place_sch_component_from_library`.
+        Laying out a 50-part BOM is inherently a bulk operation;
+        done one-by-one it costs 50 LLM turns.
+
+        Args:
+            placements: List of placement dicts, each with:
+                - library_path (str, optional — empty uses an
+                  already-open library)
+                - lib_reference (str, required) — component name
+                - x, y (int, mils) — placement location
+                - designator (str, optional) — override designator
+                - rotation (int, optional) — 0 / 90 / 180 / 270
+                - footprint (str, optional) — override current footprint
+
+        Example — place a 5-part BOM row:
+            place_sch_components_from_library(placements=[
+                {"library_path": "C:\\Lib\\ST.SchLib",
+                 "lib_reference": "STM32F411RE",
+                 "x": 1000, "y": 2000, "designator": "U1"},
+                {"library_path": "C:\\Lib\\Res.SchLib",
+                 "lib_reference": "Res1", "x": 1500, "y": 2000,
+                 "designator": "R1"},
+                ... # 3 more
+            ])
+
+        Returns:
+            Dict with placed, failed, total counts.
+        """
+        op_strs: list[str] = []
+        for p in placements:
+            lib_ref = str(p.get("lib_reference", "")).strip()
+            if not lib_ref:
+                continue
+            fields = [
+                f"library_path={p.get('library_path', '')}",
+                f"lib_reference={lib_ref}",
+                f"x={int(p.get('x', 0))}",
+                f"y={int(p.get('y', 0))}",
+                f"rotation={int(p.get('rotation', 0))}",
+            ]
+            if p.get("designator"):
+                fields.append(f"designator={p['designator']}")
+            if p.get("footprint"):
+                fields.append(f"footprint={p['footprint']}")
+            op_strs.append(";".join(fields))
+
+        if not op_strs:
+            return {"error": "No valid placements", "placed": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.place_sch_components_from_library",
+            {"placements": "~~".join(op_strs)},
+        )
+
+    @mcp.tool()
+    async def sch_attach_spice_primitives(
+        attachments: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Attach SPICE primitives to MANY components in ONE call.
+
+        PREFER THIS after running `sch_get_simulation_readiness` — the
+        readiness response typically lists 20-50 passives that all
+        need the SpicePrefix + Value parameter pair. Looping
+        `sch_attach_spice_primitive` costs one LLM turn per component;
+        this tool does the whole set in one round-trip.
+
+        Args:
+            attachments: List of attach dicts, each with:
+                - designator (str, required)
+                - primitive  (str, required) — R/L/C/V/I/D/Q/M/X
+                - value      (str, optional) — "10k", "100n",
+                  "DC 5", "SIN(0 1 1k)", etc.
+                - spice_model (str, optional) — model name for
+                  semi/sub-circuit parts
+                - sim_kind   (str, optional) — "General" /
+                  "Subcircuit" / "Model"
+
+        Example — attach the 4 passives from a readiness audit:
+            sch_attach_spice_primitives(attachments=[
+                {"designator": "R1", "primitive": "R", "value": "10k"},
+                {"designator": "R2", "primitive": "R", "value": "10k"},
+                {"designator": "C1", "primitive": "C", "value": "100n"},
+                {"designator": "C2", "primitive": "C", "value": "1u"},
+            ])
+
+        Returns:
+            Dict with attached, failed, total counts.
+        """
+        op_strs: list[str] = []
+        for a in attachments:
+            desig = str(a.get("designator", "")).strip()
+            prim = str(a.get("primitive", "")).strip().upper()
+            if not desig or not prim:
+                continue
+            fields = [f"designator={desig}", f"primitive={prim}"]
+            if a.get("value"):
+                fields.append(f"value={a['value']}")
+            if a.get("spice_model"):
+                fields.append(f"spice_model={a['spice_model']}")
+            if a.get("sim_kind"):
+                fields.append(f"sim_kind={a['sim_kind']}")
+            op_strs.append(";".join(fields))
+
+        if not op_strs:
+            return {"error": "No valid attachments", "attached": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.attach_spice_primitives",
+            {"attachments": "~~".join(op_strs)},
         )

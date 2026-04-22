@@ -8,9 +8,28 @@ from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
 from ..cli import get_bundled_scripts_path
+from .datasheet_hints import DATASHEET_RULES
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
+
+_SESSION_REMINDER = {
+    "title": "Datasheet discipline — read before every design decision",
+    "rule": (
+        "For any question about a component's pin function, voltage "
+        "rating, timing, current limit, or electrical behavior, the "
+        "manufacturer datasheet is the only authoritative source. "
+        "Library symbol metadata (Description, Comment, Value) can "
+        "be wrong and must not be trusted. If the datasheet for a "
+        "referenced part is not already in the conversation, use "
+        "WebSearch + WebFetch to fetch it from the vendor before "
+        "drawing conclusions. Never fabricate or guess datasheet-"
+        "derived values. Tool responses that surface component "
+        "information carry a `_datasheet_guidance` block with per-"
+        "part search queries — use them."
+    ),
+    "datasheet_rules": DATASHEET_RULES,
+}
 
 
 @lru_cache(maxsize=1)
@@ -69,12 +88,14 @@ def register_application_tools(mcp):
                 "message": "Connected to Altium Designer — script is responding"
                 if script_loaded
                 else "Altium is running but script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
+                "_system_reminder": _SESSION_REMINDER,
             }
         except AltiumNotRunningError as e:
             return {
                 "attached": False,
                 "script_loaded": False,
                 "message": str(e),
+                "_system_reminder": _SESSION_REMINDER,
             }
 
     @mcp.tool()
@@ -211,6 +232,7 @@ def register_application_tools(mcp):
             "bundled_script_version": bundled,
             "version_match": match,
             "message": msg,
+            "_system_reminder": _SESSION_REMINDER,
         }
 
     @mcp.tool()

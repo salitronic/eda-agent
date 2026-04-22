@@ -3738,6 +3738,851 @@ Begin
 End;
 
 {..............................................................................}
+{ Helpers for SPICE / simulation handlers                                       }
+{..............................................................................}
+
+{ Classify a component's Comment as a passive primitive kind (R / L / C) or   }
+{ empty when it doesn't look like a standard passive.                         }
+Function ClassifyPassivePrefix(Comment : String) : String;
+Var
+    S : String;
+    Ch : Char;
+Begin
+    Result := '';
+    If Comment = '' Then Exit;
+    S := Trim(Comment);
+    Ch := UpCase(S[1]);
+    If (Ch = 'R') Or (Ch = 'L') Or (Ch = 'C') Then
+    Begin
+        { Accept "R1", "10k", "Res", "Cap" etc. — anything that starts with    }
+        { the letter and is short. Longer names (e.g. "Resonator") we skip.    }
+        If (Length(S) <= 20) And ((Length(S) = 1) Or (S[2] = ' ') Or
+           (S[2] >= '0') And (S[2] <= '9') Or (UpCase(S[2]) >= 'A') And
+           (UpCase(S[2]) <= 'Z')) Then
+            Result := Ch;
+    End;
+End;
+
+{ Read a named parameter's text off a sch component. Empty string if absent.   }
+Function GetCompParamText(Comp : ISch_Component; ParamName : String) : String;
+Var
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+Begin
+    Result := '';
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If UpperCase(Param.Name) = UpperCase(ParamName) Then
+            Begin
+                Result := Param.Text;
+                Break;
+            End;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+End;
+
+{ Set (or create) a component parameter. Returns True if created, False if     }
+{ modified. Caller is responsible for PreProcess/PostProcess on the document. }
+Function SetCompParamText(Comp : ISch_Component; ParamName, ParamValue : String) : Boolean;
+Var
+    Iter : ISch_Iterator;
+    Param, NewParam : ISch_Parameter;
+    Found : ISch_Parameter;
+Begin
+    Result := False;
+    Found := Nil;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If UpperCase(Param.Name) = UpperCase(ParamName) Then
+            Begin
+                Found := Param;
+                Break;
+            End;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+
+    If Found <> Nil Then
+    Begin
+        SchBeginModify(Found);
+        Found.Text := ParamValue;
+        SchEndModify(Found);
+    End
+    Else
+    Begin
+        NewParam := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+        If NewParam <> Nil Then
+        Begin
+            NewParam.Name := ParamName;
+            NewParam.Text := ParamValue;
+            Comp.AddSchObject(NewParam);
+            SchRegisterObject(Comp, NewParam);
+            Result := True;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ Gen_GetSimulationReadiness - Audit every component on the active schematic    }
+{ and report which are ready for SPICE sim vs which need a primitive vs which   }
+{ need a model file fetched from the vendor.                                   }
+{                                                                               }
+{ Ready means: has a SpicePrefix parameter already set. Passives that only have }
+{ R/L/C-shaped Comments but no SpicePrefix land in needs_primitive so the       }
+{ client can call sch_attach_spice_primitive. Everything else lands in          }
+{ needs_file with a suggested vendor search URL.                               }
+{..............................................................................}
+
+Function Gen_GetSimulationReadiness(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Designator, Comment, LibRef, SpicePrefix, Value : String;
+    PassivePrefix, Kind, MfrPart, Mfr : String;
+    ReadyJson, NeedsPrimJson, NeedsFileJson : String;
+    ReadyCount, NeedsPrimCount, NeedsFileCount : Integer;
+    FirstR, FirstP, FirstF : Boolean;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    ReadyJson := '';
+    NeedsPrimJson := '';
+    NeedsFileJson := '';
+    ReadyCount := 0;
+    NeedsPrimCount := 0;
+    NeedsFileCount := 0;
+    FirstR := True;
+    FirstP := True;
+    FirstF := True;
+
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            Designator := '';
+            Try Designator := Comp.Designator.Text; Except End;
+            Comment := '';
+            Try Comment := Comp.DM_Comment; Except End;
+            LibRef := '';
+            Try LibRef := Comp.DM_LibraryReference; Except End;
+
+            SpicePrefix := GetCompParamText(Comp, 'SpicePrefix');
+            Value := GetCompParamText(Comp, 'Value');
+            If Value = '' Then
+                Value := Comment;
+            MfrPart := GetCompParamText(Comp, 'Manufacturer Part Number');
+            If MfrPart = '' Then MfrPart := GetCompParamText(Comp, 'PartNumber');
+            Mfr := GetCompParamText(Comp, 'Manufacturer');
+
+            If SpicePrefix <> '' Then
+            Begin
+                If Not FirstR Then ReadyJson := ReadyJson + ',';
+                FirstR := False;
+                ReadyJson := ReadyJson
+                    + '{"designator":"' + EscapeJsonString(Designator) + '",'
+                    + '"comment":"' + EscapeJsonString(Comment) + '",'
+                    + '"spice_prefix":"' + EscapeJsonString(SpicePrefix) + '",'
+                    + '"value":"' + EscapeJsonString(Value) + '"}';
+                Inc(ReadyCount);
+            End
+            Else
+            Begin
+                PassivePrefix := ClassifyPassivePrefix(Comment);
+                If PassivePrefix = '' Then
+                    PassivePrefix := ClassifyPassivePrefix(LibRef);
+                If PassivePrefix <> '' Then
+                Begin
+                    Kind := PassivePrefix;
+                    If Not FirstP Then NeedsPrimJson := NeedsPrimJson + ',';
+                    FirstP := False;
+                    NeedsPrimJson := NeedsPrimJson
+                        + '{"designator":"' + EscapeJsonString(Designator) + '",'
+                        + '"comment":"' + EscapeJsonString(Comment) + '",'
+                        + '"suggested_prefix":"' + EscapeJsonString(Kind) + '",'
+                        + '"suggested_value":"' + EscapeJsonString(Value) + '"}';
+                    Inc(NeedsPrimCount);
+                End
+                Else
+                Begin
+                    If Not FirstF Then NeedsFileJson := NeedsFileJson + ',';
+                    FirstF := False;
+                    NeedsFileJson := NeedsFileJson
+                        + '{"designator":"' + EscapeJsonString(Designator) + '",'
+                        + '"comment":"' + EscapeJsonString(Comment) + '",'
+                        + '"lib_ref":"' + EscapeJsonString(LibRef) + '",'
+                        + '"manufacturer":"' + EscapeJsonString(Mfr) + '",'
+                        + '"manufacturer_part":"' + EscapeJsonString(MfrPart) + '"}';
+                    Inc(NeedsFileCount);
+                End;
+            End;
+
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"ready":[' + ReadyJson + '],"ready_count":' + IntToStr(ReadyCount) + ','
+        + '"needs_primitive":[' + NeedsPrimJson + '],"needs_primitive_count":' + IntToStr(NeedsPrimCount) + ','
+        + '"needs_file":[' + NeedsFileJson + '],"needs_file_count":' + IntToStr(NeedsFileCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_AttachSpicePrimitive - Attach a built-in SPICE primitive to a component.  }
+{ For passives (R/L/C) and sources (V/I), this is just SpicePrefix + Value;     }
+{ no model file is needed — Altium's simulator maps these to built-in          }
+{ primitives directly.                                                          }
+{ Params: designator, primitive (R|L|C|V|I|D|Q), value, spice_model (optional  }
+{         subckt / model name for semi devices like D / Q), sim_kind (optional }
+{         "General"/"Subcircuit"/"Model").                                     }
+{..............................................................................}
+
+Function Gen_AttachSpicePrimitive(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Designator, Primitive, Value, ModelName, SimKind : String;
+    Found : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    Primitive := UpperCase(ExtractJsonValue(Params, 'primitive'));
+    Value := ExtractJsonValue(Params, 'value');
+    ModelName := ExtractJsonValue(Params, 'spice_model');
+    SimKind := ExtractJsonValue(Params, 'sim_kind');
+
+    If (Designator = '') Or (Primitive = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designator and primitive are required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitive');
+    Try
+        Iter := SchDoc.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Obj := Iter.FirstSchObject;
+            While (Obj <> Nil) And Not Found Do
+            Begin
+                Comp := Obj;
+                If Comp.Designator.Text = Designator Then
+                Begin
+                    SetCompParamText(Comp, 'SpicePrefix', Primitive);
+                    If Value <> '' Then
+                        SetCompParamText(Comp, 'Value', Value);
+                    If ModelName <> '' Then
+                        SetCompParamText(Comp, 'SpiceModel', ModelName);
+                    If SimKind <> '' Then
+                        SetCompParamText(Comp, 'SimulationKind', SimKind);
+                    Found := True;
+                End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(Iter);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE primitive');
+    End;
+    SchDoc.GraphicallyInvalidate;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
+        + '"primitive":"' + EscapeJsonString(Primitive) + '",'
+        + '"value":"' + EscapeJsonString(Value) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_AttachSpiceModel - Attach an external SPICE model file (.mdl / .ckt) to  }
+{ a component. Sets SpicePrefix=X (subcircuit), SpiceModel=<model_name>,       }
+{ SimulationKind=Subcircuit, and adds a datafile link pointing at the file.   }
+{ Params: designator, file_path, model_name (subckt name inside the file),    }
+{         primitive (default "X")                                             }
+{..............................................................................}
+
+Function Gen_AttachSpiceModel(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Impl : ISch_Implementation;
+    Link : ISch_GraphicalObject;
+    Designator, FilePath, ModelName, Primitive : String;
+    Found : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    ModelName := ExtractJsonValue(Params, 'model_name');
+    Primitive := UpperCase(ExtractJsonValue(Params, 'primitive'));
+    If Primitive = '' Then Primitive := 'X';
+
+    If (Designator = '') Or (FilePath = '') Or (ModelName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designator, file_path, and model_name are all required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE model');
+    Try
+        Iter := SchDoc.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Obj := Iter.FirstSchObject;
+            While (Obj <> Nil) And Not Found Do
+            Begin
+                Comp := Obj;
+                If Comp.Designator.Text = Designator Then
+                Begin
+                    SetCompParamText(Comp, 'SpicePrefix', Primitive);
+                    SetCompParamText(Comp, 'SpiceModel', ModelName);
+                    SetCompParamText(Comp, 'SimulationKind', 'Subcircuit');
+                    SetCompParamText(Comp, 'SimulationFile', FilePath);
+
+                    { Also add a datafile link on the current implementation so  }
+                    { the file is tracked as a design asset.                     }
+                    Impl := Nil;
+                    Try Impl := Comp.GetState_CurrentImplementation; Except End;
+                    If Impl <> Nil Then
+                    Begin
+                        Try Link := Impl.AddDataFileLink; Except End;
+                        If Link <> Nil Then
+                        Begin
+                            Try Link.FileName := FilePath; Except End;
+                            Try Link.Kind := 'SimModel'; Except End;
+                        End;
+                    End;
+
+                    Found := True;
+                End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(Iter);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE model');
+    End;
+    SchDoc.GraphicallyInvalidate;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
+        + '"file_path":"' + EscapeJsonString(FilePath) + '",'
+        + '"model_name":"' + EscapeJsonString(ModelName) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_RunSimulation - Trigger an Altium mixed-signal simulation. The analysis  }
+{ type and parameters must already be configured on the project's simulation  }
+{ profile — this handler just kicks the run.                                  }
+{ Params: analysis (optional: operating_point | transient | ac | dc | noise | }
+{         tran | etc). Currently used only for the success-response echo;    }
+{         Altium picks up the active simulation profile regardless.          }
+{..............................................................................}
+
+Function Gen_RunSimulation(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    AnalysisStr : String;
+Begin
+    AnalysisStr := ExtractJsonValue(Params, 'analysis');
+
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Project := Workspace.DM_FocusedProject;
+        If Project <> Nil Then SmartCompile(Project);
+    End;
+
+    ResetParameters;
+    RunProcess('Sim:RunMixedSim');
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"analysis":"' + EscapeJsonString(AnalysisStr) + '",'
+        + '"note":"Simulation dispatched via Sim:RunMixedSim. Altium uses the active sim profile; configure it in the Simulation Dashboard first."}');
+End;
+
+{..............................................................................}
+{ Gen_BatchCreate - Generic bulk create. Each op specifies its own scope,       }
+{ object_type, and properties. One shared PreProcess/PostProcess per            }
+{ document touched, so N creates cost ~1x the overhead of one create.          }
+{ Params: operations = 'scope=active_doc;object_type=eNetLabel;properties=Text=VCC|Location.X=100|Location.Y=200~~scope=...;object_type=...;properties=...' }
+{..............................................................................}
+
+Function Gen_BatchCreate(Params : String; RequestId : String) : String;
+Var
+    Operations : String;
+    Ops : Array[0..499] Of String;
+    OpCount, I, Created, Failed : Integer;
+    Op, Scope, ObjTypeStr, PropsStr : String;
+    ObjTypeInt : Integer;
+    SchDoc : ISch_Document;
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    NewObj : ISch_GraphicalObject;
+    ActiveDoc : ISch_Document;
+    ContainerStr : String;
+Begin
+    Operations := ExtractJsonValue(Params, 'operations');
+    If Operations = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'operations is required');
+        Exit;
+    End;
+
+    SplitBatchOps(Operations, Ops, OpCount);
+    If OpCount = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'EMPTY_BATCH', 'No operations parsed from batch');
+        Exit;
+    End;
+
+    Created := 0;
+    Failed := 0;
+    ActiveDoc := SchServer.GetCurrentSchDocument;
+
+    If ActiveDoc <> Nil Then
+        SchServer.ProcessControl.PreProcess(ActiveDoc, '');
+    Try
+        For I := 0 To OpCount - 1 Do
+        Begin
+            Op := Ops[I];
+            Scope := GetBatchField(Op, 'scope');
+            If Scope = '' Then Scope := 'active_doc';
+            ObjTypeStr := GetBatchField(Op, 'object_type');
+            PropsStr := GetBatchField(Op, 'properties');
+            ContainerStr := GetBatchField(Op, 'container');
+            If ContainerStr = '' Then ContainerStr := 'document';
+
+            ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            If ObjTypeInt = -1 Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            NewObj := SchServer.SchObjectFactory(ObjTypeInt, eCreate_Default);
+            If NewObj = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            ApplySetProperties(NewObj, PropsStr);
+
+            If ContainerStr = 'component' Then
+            Begin
+                SchLib := SchServer.GetCurrentSchDocument;
+                If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
+                Begin
+                    Component := SchLib.CurrentSchComponent;
+                    If Component <> Nil Then
+                    Begin
+                        Component.AddSchObject(NewObj);
+                        SchRegisterObject(Component, NewObj);
+                        Inc(Created);
+                    End
+                    Else
+                    Begin
+                        SchServer.DestroySchObject(NewObj);
+                        Inc(Failed);
+                    End;
+                End
+                Else
+                Begin
+                    SchServer.DestroySchObject(NewObj);
+                    Inc(Failed);
+                End;
+            End
+            Else
+            Begin
+                SchDoc := ActiveDoc;
+                If SchDoc = Nil Then
+                Begin
+                    SchServer.DestroySchObject(NewObj);
+                    Inc(Failed);
+                    Continue;
+                End;
+                SchDoc.RegisterSchObjectInContainer(NewObj);
+                SchRegisterObject(SchDoc, NewObj);
+                Inc(Created);
+            End;
+        End;
+    Finally
+        If ActiveDoc <> Nil Then
+        Begin
+            SchServer.ProcessControl.PostProcess(ActiveDoc, '');
+            ActiveDoc.GraphicallyInvalidate;
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"created":' + IntToStr(Created) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_BatchDelete - Generic bulk delete. Each op is one scope/type/filter       }
+{ delete expressed in the same format as delete_objects.                       }
+{ Params: operations = 'scope=active_doc;object_type=eWire;filter=Text=old~~scope=...' }
+{..............................................................................}
+
+Function Gen_BatchDelete(Params : String; RequestId : String) : String;
+Var
+    Operations : String;
+    Ops : Array[0..499] Of String;
+    OpCount, I, OpsRun : Integer;
+    Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
+    ObjTypeInt : Integer;
+Begin
+    Operations := ExtractJsonValue(Params, 'operations');
+    If Operations = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'operations is required');
+        Exit;
+    End;
+
+    SplitBatchOps(Operations, Ops, OpCount);
+    OpsRun := 0;
+
+    For I := 0 To OpCount - 1 Do
+    Begin
+        Op := Ops[I];
+        Scope := GetBatchField(Op, 'scope');
+        If Scope = '' Then Scope := 'active_doc';
+        ObjTypeStr := GetBatchField(Op, 'object_type');
+        FilterStr := GetBatchField(Op, 'filter');
+
+        ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+        If ObjTypeInt = -1 Then Continue;
+
+        ParseScope(Scope, ScopeType, ScopePath);
+        If ScopeType = 'project' Then
+            IterateProjectDocs(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, ScopePath, 0)
+        Else If ScopeType = 'doc' Then
+            ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
+        Else
+            ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
+        Inc(OpsRun);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"operations_processed":' + IntToStr(OpsRun) + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceWires - Bulk wire placement on the active schematic.                 }
+{ Params: wires = 'x1=100;y1=200;x2=300;y2=200~~x1=300;y1=200;x2=300;y2=400~~...' }
+{..............................................................................}
+
+Function Gen_PlaceWires(Params : String; RequestId : String) : String;
+Var
+    WireStr : String;
+    Ops : Array[0..999] Of String;
+    OpCount, I, Placed, Failed : Integer;
+    X1, Y1, X2, Y2 : Integer;
+    SchDoc : ISch_Document;
+    Wire : ISch_Wire;
+    Op : String;
+Begin
+    WireStr := ExtractJsonValue(Params, 'wires');
+    If WireStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'wires is required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    SplitBatchOps(WireStr, Ops, OpCount);
+    Placed := 0;
+    Failed := 0;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        For I := 0 To OpCount - 1 Do
+        Begin
+            Op := Ops[I];
+            X1 := StrToIntDef(GetBatchField(Op, 'x1'), 0);
+            Y1 := StrToIntDef(GetBatchField(Op, 'y1'), 0);
+            X2 := StrToIntDef(GetBatchField(Op, 'x2'), 0);
+            Y2 := StrToIntDef(GetBatchField(Op, 'y2'), 0);
+
+            Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
+            If Wire = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Wire.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+            Wire.InsertVertex := 1;
+            Wire.SetState_Vertex(1, Point(MilsToCoord(X2), MilsToCoord(Y2)));
+            Wire.Color := 0;
+            Wire.LineWidth := eSmall;
+
+            SchDoc.RegisterSchObjectInContainer(Wire);
+            SchRegisterObject(SchDoc, Wire);
+            Inc(Placed);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, '');
+        SchDoc.GraphicallyInvalidate;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceSchComponentsFromLibrary - Bulk BOM placement.                       }
+{ Each op: library_path, lib_reference, x, y, designator, rotation, footprint. }
+{ library_path and lib_reference are required; others have sane defaults.      }
+{..............................................................................}
+
+Function Gen_PlaceSchComponentsFromLibrary(Params : String; RequestId : String) : String;
+Var
+    PlaceStr, Op : String;
+    Ops : Array[0..499] Of String;
+    OpCount, I, Placed, Failed, Rotation, RotCount, J : Integer;
+    LibPath, LibRef, Desig, Footprint : String;
+    X, Y : Integer;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    CompLoc : TLocation;
+Begin
+    PlaceStr := ExtractJsonValue(Params, 'placements');
+    If PlaceStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'placements is required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    SplitBatchOps(PlaceStr, Ops, OpCount);
+    Placed := 0;
+    Failed := 0;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        For I := 0 To OpCount - 1 Do
+        Begin
+            Op := Ops[I];
+            LibPath := GetBatchField(Op, 'library_path');
+            LibRef := GetBatchField(Op, 'lib_reference');
+            Desig := GetBatchField(Op, 'designator');
+            Footprint := GetBatchField(Op, 'footprint');
+            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+
+            If LibRef = '' Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Comp := Nil;
+            Try
+                Comp := SchDoc.PlaceSchComponent(LibPath, LibRef);
+            Except End;
+
+            If Comp = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            CompLoc := Point(MilsToCoord(X), MilsToCoord(Y));
+            Try Comp.Location := CompLoc; Except End;
+
+            RotCount := 0;
+            If Rotation = 90 Then RotCount := 1
+            Else If Rotation = 180 Then RotCount := 2
+            Else If Rotation = 270 Then RotCount := 3;
+            For J := 1 To RotCount Do
+                Try Comp.RotateBy90(CompLoc); Except End;
+
+            If Desig <> '' Then
+                Try Comp.Designator.Text := Desig; Except End;
+            If Footprint <> '' Then
+                Try Comp.CurrentFootprintModelName := Footprint; Except End;
+
+            SchRegisterObject(SchDoc, Comp);
+            Inc(Placed);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, '');
+        SchDoc.GraphicallyInvalidate;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_AttachSpicePrimitivesBatch - Attach SPICE primitives to many components   }
+{ in one go. Each op: designator, primitive, value, spice_model (optional),    }
+{ sim_kind (optional).                                                          }
+{..............................................................................}
+
+Function Gen_AttachSpicePrimitivesBatch(Params : String; RequestId : String) : String;
+Var
+    AttachStr, Op : String;
+    Ops : Array[0..999] Of String;
+    OpCount, I, Attached, Failed : Integer;
+    Designator, Primitive, Value, ModelName, SimKind : String;
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Found : Boolean;
+Begin
+    AttachStr := ExtractJsonValue(Params, 'attachments');
+    If AttachStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'attachments is required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    SplitBatchOps(AttachStr, Ops, OpCount);
+    Attached := 0;
+    Failed := 0;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitives');
+    Try
+        For I := 0 To OpCount - 1 Do
+        Begin
+            Op := Ops[I];
+            Designator := GetBatchField(Op, 'designator');
+            Primitive := UpperCase(GetBatchField(Op, 'primitive'));
+            Value := GetBatchField(Op, 'value');
+            ModelName := GetBatchField(Op, 'spice_model');
+            SimKind := GetBatchField(Op, 'sim_kind');
+
+            If (Designator = '') Or (Primitive = '') Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Found := False;
+            Iter := SchDoc.SchIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+                Obj := Iter.FirstSchObject;
+                While (Obj <> Nil) And Not Found Do
+                Begin
+                    Comp := Obj;
+                    If Comp.Designator.Text = Designator Then
+                    Begin
+                        SetCompParamText(Comp, 'SpicePrefix', Primitive);
+                        If Value <> '' Then
+                            SetCompParamText(Comp, 'Value', Value);
+                        If ModelName <> '' Then
+                            SetCompParamText(Comp, 'SpiceModel', ModelName);
+                        If SimKind <> '' Then
+                            SetCompParamText(Comp, 'SimulationKind', SimKind);
+                        Found := True;
+                        Inc(Attached);
+                    End;
+                    Obj := Iter.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(Iter);
+            End;
+            If Not Found Then Inc(Failed);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE primitives');
+        SchDoc.GraphicallyInvalidate;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"attached":' + IntToStr(Attached) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end                                            }
 {..............................................................................}
 
@@ -3798,6 +4643,15 @@ Begin
         'set_component_part_id':      Result := Gen_SetComponentPartId(Params, RequestId);
         'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
         'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
+        'get_simulation_readiness':   Result := Gen_GetSimulationReadiness(Params, RequestId);
+        'attach_spice_primitive':     Result := Gen_AttachSpicePrimitive(Params, RequestId);
+        'attach_spice_model':         Result := Gen_AttachSpiceModel(Params, RequestId);
+        'run_simulation':             Result := Gen_RunSimulation(Params, RequestId);
+        'batch_create':               Result := Gen_BatchCreate(Params, RequestId);
+        'batch_delete':               Result := Gen_BatchDelete(Params, RequestId);
+        'place_wires':                Result := Gen_PlaceWires(Params, RequestId);
+        'place_sch_components_from_library': Result := Gen_PlaceSchComponentsFromLibrary(Params, RequestId);
+        'attach_spice_primitives':    Result := Gen_AttachSpicePrimitivesBatch(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown generic action: ' + Action);
     End;

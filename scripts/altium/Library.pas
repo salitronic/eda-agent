@@ -1393,6 +1393,112 @@ Begin
 End;
 
 {..............................................................................}
+{ Lib_AddPins - Bulk add pins to the currently-selected library component.     }
+{ One PreProcess/PostProcess + one save for the whole batch, so adding 50      }
+{ pins to a new IC symbol costs ~1x the overhead of adding one pin.           }
+{ Params: pins = '~~'-separated list; each pin has key=value fields joined by  }
+{         ';'. Fields: designator, name, x, y, length (mils), rotation        }
+{         (0/90/180/270), electrical_type (input/output/bidirectional/        }
+{         passive/power/open_collector/open_emitter/hiz), hidden (true/false).}
+{..............................................................................}
+
+Function Lib_AddPins(Params : String; RequestId : String) : String;
+Var
+    PinsStr, Op : String;
+    Ops : Array[0..499] Of String;
+    OpCount, I, Added, Failed : Integer;
+    Designator, Name, ElecType, HiddenStr : String;
+    X, Y, Length, Rotation : Integer;
+    Hidden : Boolean;
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    Pin : ISch_Pin;
+    Loc : TLocation;
+Begin
+    PinsStr := ExtractJsonValue(Params, 'pins');
+    If PinsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pins is required');
+        Exit;
+    End;
+
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+
+    Component := SchLib.CurrentSchComponent;
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
+        Exit;
+    End;
+
+    SplitBatchOps(PinsStr, Ops, OpCount);
+    Added := 0;
+    Failed := 0;
+
+    SchServer.ProcessControl.PreProcess(SchLib, '');
+    Try
+        For I := 0 To OpCount - 1 Do
+        Begin
+            Op := Ops[I];
+            Designator := GetBatchField(Op, 'designator');
+            Name := GetBatchField(Op, 'name');
+            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            Length := StrToIntDef(GetBatchField(Op, 'length'), 200);
+            Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+            ElecType := GetBatchField(Op, 'electrical_type');
+            HiddenStr := GetBatchField(Op, 'hidden');
+            Hidden := (HiddenStr = 'true') Or (HiddenStr = '1');
+
+            Pin := SchServer.SchObjectFactory(ePin, eCreate_Default);
+            If Pin = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Pin.Designator := Designator;
+            Pin.Name := Name;
+            { Location is a by-value record — read, mutate, write back.         }
+            Loc := Pin.Location;
+            Loc.X := MilsToCoord(X);
+            Loc.Y := MilsToCoord(Y);
+            Pin.Location := Loc;
+            Pin.PinLength := MilsToCoord(Length);
+            Pin.Orientation := Rotation Div 90;
+            Pin.IsHidden := Hidden;
+
+            If ElecType = 'input' Then Pin.Electrical := eElectricInput
+            Else If ElecType = 'output' Then Pin.Electrical := eElectricOutput
+            Else If ElecType = 'bidirectional' Then Pin.Electrical := eElectricIO
+            Else If ElecType = 'io' Then Pin.Electrical := eElectricIO
+            Else If ElecType = 'power' Then Pin.Electrical := eElectricPower
+            Else If ElecType = 'open_collector' Then Pin.Electrical := eElectricOpenCollector
+            Else If ElecType = 'open_emitter' Then Pin.Electrical := eElectricOpenEmitter
+            Else If ElecType = 'hiz' Then Pin.Electrical := eElectricHiZ
+            Else Pin.Electrical := eElectricPassive;
+
+            Component.AddSchObject(Pin);
+            SchRegisterObject(Component, Pin);
+            Inc(Added);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchLib, '');
+    End;
+
+    SaveDocByPath(SchLib.DocumentName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end                                             }
 {..............................................................................}
 
@@ -1401,6 +1507,7 @@ Begin
     Case Action Of
         'create_symbol':        Result := Lib_CreateSymbol(Params, RequestId);
         'add_pin':              Result := Lib_AddPin(Params, RequestId);
+        'add_pins':             Result := Lib_AddPins(Params, RequestId);
         'add_symbol_rectangle': Result := Lib_AddSymbolRectangle(Params, RequestId);
         'add_symbol_line':      Result := Lib_AddSymbolLine(Params, RequestId);
         'create_footprint':     Result := Lib_CreateFootprint(Params, RequestId);

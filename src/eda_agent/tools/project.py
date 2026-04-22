@@ -4,6 +4,8 @@
 
 from typing import Any, Optional
 from ..bridge import get_bridge
+from .datasheet_hints import tag_response
+from .bulk_hints import BulkHintTracker
 
 
 def register_project_tools(mcp):
@@ -200,6 +202,15 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get net-to-pin connectivity from the compiled project netlist.
 
+        CRITICAL — if you need connectivity for MORE THAN ONE component
+        or net, do NOT loop this tool. Call it ONCE with no filters
+        (`component=""`, `net_name=""`, raise `limit` if needed) to pull
+        the entire pin-net table in a single round-trip, then slice the
+        result locally. Each filtered call is ~700 ms and compiles the
+        project; doing 30 of them (observed) costs 30× the wall time of
+        one unfiltered call. Only filter when you truly need exactly one
+        component or net.
+
         Compiles the project and returns pin-level net assignments. Use this to
         trace which pins connect to which nets, which components share a net, or
         verify that a specific pin is wired to the correct net.
@@ -208,15 +219,19 @@ def register_project_tools(mcp):
             component: Filter by component designator (e.g., "U1", "R8"). Empty = all components.
             net_name: Filter by net name (e.g., "VCC", "CLSA"). Empty = all nets.
             project_path: Optional project path. If None, uses active project.
-            limit: Maximum pin records to return (default 500).
+            limit: Maximum pin records to return (default 500). Raise
+                this if you're pulling the whole netlist (5000+ on big
+                boards).
 
         Returns:
             Dictionary with "pins" array (each: component, pin_number, pin_name, net) and "count"
 
         Examples:
-            get_nets(component="U1") — all pin-net connections for U1
-            get_nets(net_name="CLSA") — all pins connected to the CLSA net
-            get_nets(component="U1", net_name="VCC") — just U1's VCC pins
+            # PREFERRED — one unfiltered call, then filter in your analysis:
+            all_pins = get_nets(limit=10000)["pins"]
+            u1_pins = [p for p in all_pins if p["component"] == "U1"]
+
+            get_nets(component="U1", net_name="VCC")  # one targeted lookup
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -227,6 +242,9 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.get_nets", params)
+        hint = BulkHintTracker.record_and_hint("get_nets")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
 
     @mcp.tool()
@@ -290,6 +308,13 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Export a full BOM from the compiled project.
 
+        DATASHEET DISCIPLINE: The BOM is the canonical list of
+        manufacturer part numbers in this design. The response carries
+        `_datasheet_guidance` with per-part search queries. Before
+        drawing any conclusion about a listed part, fetch and read
+        its datasheet (WebSearch + WebFetch if not already at hand).
+        Library metadata here is NOT authoritative.
+
         Returns every component with designator, comment/value, footprint,
         library reference, and all pin-net connections.
 
@@ -298,14 +323,15 @@ def register_project_tools(mcp):
             limit: Max components to return (default 1000).
 
         Returns:
-            Dictionary with "components" array and "count"
+            Dictionary with "components" array and "count", plus
+            `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.get_bom", params)
-        return result
+        return tag_response(result, bom=result, context="get_bom")
 
     @mcp.tool()
     async def get_component_info(
@@ -313,6 +339,14 @@ def register_project_tools(mcp):
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get full information about a single component.
+
+        DATASHEET DISCIPLINE: Before making any claim about this
+        component's pin function, voltage rating, timing, or electrical
+        behavior, fetch its datasheet (WebSearch + WebFetch if needed).
+        The parameters / comment / library metadata returned here are
+        NOT authoritative — only the manufacturer datasheet is.
+        `_datasheet_guidance` in the response carries the rule and a
+        suggested search query.
 
         Compiles the project and returns the component's designator, comment,
         footprint, library reference, all parameters, and every pin with its
@@ -324,13 +358,37 @@ def register_project_tools(mcp):
 
         Returns:
             Dictionary with designator, comment, footprint, lib_ref, sheet,
-            parameters dict, and pins array
+            parameters dict, and pins array, plus `_datasheet_guidance` +
+            `_datasheet_parts`.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.get_component_info", params)
+        if isinstance(result, dict):
+            mfr = str(
+                result.get("parameters", {}).get("Manufacturer")
+                or result.get("parameters", {}).get("manufacturer")
+                or ""
+            )
+            part = str(
+                result.get("parameters", {}).get("Manufacturer Part Number")
+                or result.get("parameters", {}).get("ManufacturerPartNumber")
+                or result.get("parameters", {}).get("PartNumber")
+                or result.get("comment")
+                or ""
+            ).strip()
+            parts = [{
+                "manufacturer": mfr,
+                "part_number": part,
+                "designators": str(result.get("designator", "")),
+            }] if part else []
+            return tag_response(
+                result,
+                explicit_parts=parts,
+                context="get_component_info",
+            )
         return result
 
     @mcp.tool()
@@ -783,6 +841,12 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Search for components across all project sheets.
 
+        DATASHEET DISCIPLINE: Results carry `_datasheet_guidance`. If
+        you're searching by a part number / comment to answer a
+        technical question (pinout, rating, behavior), the matched
+        parts' datasheets must be consulted before drawing any
+        conclusion. Symbol metadata is not ground truth.
+
         Performs a case-insensitive partial match against the chosen property.
 
         Args:
@@ -792,7 +856,8 @@ def register_project_tools(mcp):
 
         Returns:
             Dictionary with "results" array (each: designator, comment, footprint,
-            lib_ref, sheet, location_x, location_y) and "count"
+            lib_ref, sheet, location_x, location_y) and "count", plus
+            `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -802,6 +867,16 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.find_component", params)
+        if isinstance(result, dict):
+            # find_component response puts matches under "results"
+            # with comment/value fields — reshape to the components form
+            # extract_unique_parts understands.
+            synthetic = {"components": result.get("results") or []}
+            return tag_response(
+                result,
+                components=synthetic,
+                context="find_component",
+            )
         return result
 
     @mcp.tool()
@@ -810,6 +885,14 @@ def register_project_tools(mcp):
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get pin-to-net connectivity for a specific component.
+
+        IMPORTANT — if you need connectivity for MORE THAN ONE
+        component, use `get_connectivity_many` (batch). Looping this
+        tool for a set of designators is the single biggest time sink
+        in design-review workflows: each call is ~700 ms plus one LLM
+        turn, so a 10-part review costs ~7 s of bridge time and
+        60-150 s of LLM-turn time. The batch version does all of them
+        in one round-trip + one LLM turn.
 
         Compiles the project and returns every pin with its number, name, net
         assignment, and electrical type for the given designator.
@@ -827,7 +910,52 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.get_connectivity", params)
+        hint = BulkHintTracker.record_and_hint("get_connectivity")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
+
+    @mcp.tool()
+    async def get_connectivity_many(
+        designators: list[str],
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Pin-net connectivity for MANY components in ONE round-trip.
+
+        PREFER THIS over looping `get_connectivity`. Each singular
+        call is ~700 ms plus a full LLM turn; this tool returns all
+        requested components in a single IPC round-trip, compiling
+        the project only once (courtesy of SmartCompile).
+
+        Args:
+            designators: List of component designators (e.g.,
+                ["U1", "U2", "R8", "C3"]).
+            project_path: Optional project path. If None, uses active project.
+
+        Example — typical PoE review with one call instead of 8:
+            get_connectivity_many(designators=[
+                "U7", "R154", "R155", "R156", "R157",
+                "R159", "R160", "R161",
+            ])
+
+        Returns:
+            Dict with:
+              - components: list of {designator, comment, sheet, pin_count,
+                pins: [{pin_number, pin_name, net}, ...]} per matched part
+              - matched: int
+              - requested: int
+              - not_found: list of designators that weren't found
+        """
+        bridge = get_bridge()
+        cleaned = [str(d).strip() for d in (designators or []) if str(d).strip()]
+        if not cleaned:
+            return {"error": "No designators provided", "matched": 0}
+        params: dict[str, Any] = {"designators": "~~".join(cleaned)}
+        if project_path:
+            params["project_path"] = project_path
+        return await bridge.send_command_async(
+            "project.get_connectivity_batch", params
+        )
 
     @mcp.tool()
     async def import_document(
@@ -912,6 +1040,11 @@ def register_project_tools(mcp):
 
         Compiles the project and compares net counts and component counts between
         the schematic sheets and the primary PCB document.
+
+        DATASHEET DISCIPLINE: If the diff reveals mismatched or missing
+        parts and you're proposing a fix, the datasheets of the parts
+        involved are authoritative on their pinout and behavior — fetch
+        them before suggesting a footprint change or pin reassignment.
 
         Args:
             project_path: Optional project path. If None, uses active project.

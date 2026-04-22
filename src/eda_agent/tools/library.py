@@ -5,6 +5,8 @@
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..bridge.exceptions import InvalidParameterError
+from .bulk_hints import BulkHintTracker
+from .datasheet_hints import tag_response
 from ..config import get_config
 
 
@@ -55,6 +57,12 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add a pin to the current symbol.
 
+        IMPORTANT — if you need to add more than one pin, use
+        `lib_add_pins` (batch) instead. Creating a new symbol with 20+
+        pins via this singular tool is the biggest wall-time sink in
+        library workflows: each pin is a full LLM turn. The batch
+        version does all pins in one PreProcess/PostProcess + one save.
+
         Args:
             designator: Pin designator (e.g., "1", "2", "VCC")
             name: Pin name
@@ -84,7 +92,74 @@ def register_library_tools(mcp):
                 "hidden": hidden,
             },
         )
+        hint = BulkHintTracker.record_and_hint("lib_add_pin")
+        if hint and isinstance(result, dict):
+            result["_hint_bulk"] = hint
         return result
+
+    @mcp.tool()
+    async def lib_add_pins(
+        pins: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Add MANY pins to the current symbol in ONE call.
+
+        PREFER THIS over looping `lib_add_pin`. A 48-pin IC symbol
+        built one pin at a time is 48 LLM turns; with this tool it's
+        one turn + one PreProcess/PostProcess + one save.
+
+        Args:
+            pins: List of pin dicts, each with:
+                - designator (str, required)
+                - name       (str, required)
+                - x, y       (int, mils) — pin endpoint
+                - length     (int, mils, default 200)
+                - rotation   (int, default 0) — 0/90/180/270
+                - electrical_type (str, default "passive") — one of
+                  input/output/bidirectional/passive/open_collector/
+                  open_emitter/power/hiz/io
+                - hidden     (bool, default False)
+
+        Example — a 4-pin dual op-amp stage:
+            lib_add_pins(pins=[
+                {"designator": "1", "name": "OUT1",  "x": 0,   "y": 0,
+                 "rotation": 180, "electrical_type": "output"},
+                {"designator": "2", "name": "IN1-",  "x": 0,   "y": 100,
+                 "rotation": 180, "electrical_type": "input"},
+                {"designator": "3", "name": "IN1+",  "x": 0,   "y": 200,
+                 "rotation": 180, "electrical_type": "input"},
+                {"designator": "4", "name": "GND",   "x": 0,   "y": 300,
+                 "rotation": 180, "electrical_type": "power"},
+            ])
+
+        Returns:
+            Dict with added, failed, total counts.
+        """
+        op_strs: list[str] = []
+        for p in pins:
+            desig = str(p.get("designator", "")).strip()
+            name = str(p.get("name", "")).strip()
+            if not desig:
+                continue
+            fields = [
+                f"designator={desig}",
+                f"name={name}",
+                f"x={int(p.get('x', 0))}",
+                f"y={int(p.get('y', 0))}",
+                f"length={int(p.get('length', 200))}",
+                f"rotation={int(p.get('rotation', 0))}",
+                f"electrical_type={p.get('electrical_type', 'passive')}",
+                f"hidden={'true' if p.get('hidden') else 'false'}",
+            ]
+            op_strs.append(";".join(fields))
+
+        if not op_strs:
+            return {"error": "No valid pins", "added": 0}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.add_pins",
+            {"pins": "~~".join(op_strs)},
+        )
 
     @mcp.tool()
     async def lib_add_symbol_rectangle(
@@ -393,20 +468,35 @@ def register_library_tools(mcp):
     async def lib_search(
         query: str,
         search_type: str = "all",
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Search installed libraries for components.
+
+        DATASHEET DISCIPLINE: Matches carry `_datasheet_guidance`.
+        Before recommending any matched part as a replacement or
+        answer, fetch its datasheet (WebSearch + WebFetch). Do not
+        recommend based on symbol metadata alone.
 
         Args:
             query: Search query string
             search_type: What to search ("all", "name", "description", "parameters")
 
         Returns:
-            List of matching component dictionaries
+            Dict with matched components plus `_datasheet_guidance` +
+            `_datasheet_parts`.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.search", {"query": query, "search_type": search_type}
         )
+        if isinstance(result, list):
+            result = {"results": result}
+        if isinstance(result, dict):
+            synthetic = {"components": (
+                result.get("results") or result.get("components") or []
+            )}
+            return tag_response(
+                result, components=synthetic, context="lib_search"
+            )
         return result
 
     @mcp.tool()

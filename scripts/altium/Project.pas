@@ -2061,6 +2061,138 @@ Begin
 End;
 
 {..............................................................................}
+{ Proj_GetConnectivityBatch - Pin-net connectivity for MANY components in ONE  }
+{ call. Iterates every project document once and matches component            }
+{ designators against a '~~'-separated set. Output is a JSON array of         }
+{ per-component records in the same shape as Proj_GetConnectivity returns.    }
+{ Missing designators are reported in "not_found".                             }
+{..............................................................................}
+
+Function Proj_GetConnectivityBatch(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, DesigStr : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    Comp : IComponent;
+    Pin : IPin;
+    I, J, K, N : Integer;
+    Data, PinList, CompEntry, NotFoundJson, ThisDesig : String;
+    FirstPin, FirstC, FirstNF, Matched : Boolean;
+    Wanted : Array[0..499] Of String;
+    Found : Array[0..499] Of Boolean;
+    WantedCount, MatchCount : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    ProjectPath := StringReplace(ProjectPath, '\\', '\', -1);
+    DesigStr := ExtractJsonValue(Params, 'designators');
+
+    If DesigStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'designators is required');
+        Exit;
+    End;
+
+    SplitBatchOps(DesigStr, Wanted, WantedCount);
+    If WantedCount = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'EMPTY_BATCH', 'No designators parsed');
+        Exit;
+    End;
+
+    For I := 0 To WantedCount - 1 Do Found[I] := False;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found');
+        Exit;
+    End;
+
+    SmartCompile(Project);
+
+    Data := '';
+    FirstC := True;
+    MatchCount := 0;
+
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+
+        For J := 0 To Doc.DM_ComponentCount - 1 Do
+        Begin
+            Comp := Doc.DM_Components(J);
+            If Comp = Nil Then Continue;
+
+            Matched := False;
+            For N := 0 To WantedCount - 1 Do
+            Begin
+                If Comp.DM_PhysicalDesignator = Wanted[N] Then
+                Begin
+                    Found[N] := True;
+                    ThisDesig := Wanted[N];
+                    Matched := True;
+                    Break;
+                End;
+            End;
+            If Not Matched Then Continue;
+
+            PinList := '';
+            FirstPin := True;
+            For K := 0 To Comp.DM_PinCount - 1 Do
+            Begin
+                Pin := Comp.DM_Pins(K);
+                If Pin = Nil Then Continue;
+                If Not FirstPin Then PinList := PinList + ',';
+                FirstPin := False;
+                PinList := PinList + '{"pin_number":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
+                PinList := PinList + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
+                PinList := PinList + ',"net":"' + EscapeJsonString(Pin.DM_FlattenedNetName) + '"';
+                PinList := PinList + '}';
+            End;
+
+            CompEntry := '{"designator":"' + EscapeJsonString(ThisDesig) + '"';
+            CompEntry := CompEntry + ',"comment":"' + EscapeJsonString(Comp.DM_Comment) + '"';
+            CompEntry := CompEntry + ',"sheet":"' + EscapeJsonString(Doc.DM_FileName) + '"';
+            CompEntry := CompEntry + ',"pin_count":' + IntToStr(Comp.DM_PinCount);
+            CompEntry := CompEntry + ',"pins":[' + PinList + ']}';
+
+            If Not FirstC Then Data := Data + ',';
+            FirstC := False;
+            Data := Data + CompEntry;
+            MatchCount := MatchCount + 1;
+        End;
+    End;
+
+    NotFoundJson := '';
+    FirstNF := True;
+    For I := 0 To WantedCount - 1 Do
+    Begin
+        If Not Found[I] Then
+        Begin
+            If Not FirstNF Then NotFoundJson := NotFoundJson + ',';
+            FirstNF := False;
+            NotFoundJson := NotFoundJson + '"' + EscapeJsonString(Wanted[I]) + '"';
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"components":[' + Data + '],'
+        + '"matched":' + IntToStr(MatchCount) + ','
+        + '"requested":' + IntToStr(WantedCount) + ','
+        + '"not_found":[' + NotFoundJson + ']}');
+End;
+
+{..............................................................................}
 { Import a document into the project from an external path                    }
 { Copies the file to the project directory, then adds it to the project.      }
 { Params: source_path                                                         }
@@ -2868,6 +3000,7 @@ Begin
         'get_messages':      Result := Proj_GetMessages(Params, RequestId);
         'find_component':    Result := Proj_FindComponent(Params, RequestId);
         'get_connectivity':  Result := Proj_GetConnectivity(Params, RequestId);
+        'get_connectivity_batch': Result := Proj_GetConnectivityBatch(Params, RequestId);
         'import_document':   Result := Proj_ImportDocument(Params, RequestId);
         'get_project_path':  Result := Proj_GetProjectPath(RequestId);
         'set_document_parameter': Result := Proj_SetDocumentParameter(Params, RequestId);
