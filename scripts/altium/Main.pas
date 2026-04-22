@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.21.5';
+    SCRIPT_VERSION = '2026.04.22.1';
     { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
     { result instead of recompiling. Design-review snapshots fire 3-4 project  }
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }

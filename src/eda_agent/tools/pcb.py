@@ -1505,3 +1505,154 @@ def register_pcb_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def pcb_get_rule_properties(name: str) -> dict[str, Any]:
+        """Read the full property set of a named PCB design rule.
+
+        `pcb_get_design_rules` returns only metadata (name, kind, scope,
+        enabled). This tool returns the actual numeric values that
+        drive DRC: clearance gap, min/max/preferred trace width
+        (per layer, reported at the top layer), min/max hole size,
+        via diameters, parallel-segment limits, and min/max
+        impedance. Properties that don't apply to the rule's kind
+        are silently skipped — you get back only the keys that are
+        meaningful for this specific rule.
+
+        Args:
+            name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
+
+        Returns:
+            Dict with name, rule_kind, enabled, priority, plus any of:
+            gap_mils, min_width_mils, max_width_mils, preferred_width_mils,
+            min_limit_mils, max_limit_mils, min_hole_size_mils,
+            max_hole_size_mils, preferred_hole_size_mils,
+            min_width_via_mils, max_width_via_mils, preferred_width_via_mils,
+            parallel_limit_mils, parallel_gap_mils,
+            min_impedance, max_impedance, preferred_impedance.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.get_rule_properties", {"name": name}
+        )
+
+    @mcp.tool()
+    async def pcb_set_rule_properties(
+        name: str,
+        gap_mils: int | None = None,
+        min_width_mils: int | None = None,
+        max_width_mils: int | None = None,
+        preferred_width_mils: int | None = None,
+        min_limit_mils: int | None = None,
+        max_limit_mils: int | None = None,
+        min_hole_size_mils: int | None = None,
+        max_hole_size_mils: int | None = None,
+        preferred_hole_size_mils: int | None = None,
+        min_impedance: float | None = None,
+        max_impedance: float | None = None,
+        preferred_impedance: float | None = None,
+        enabled: bool | None = None,
+        priority: int | None = None,
+        scope1: str | None = None,
+        scope2: str | None = None,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        """Update kind-specific properties of a named PCB design rule.
+
+        Pass only the parameters you want to change; leave the rest at
+        None. Properties that don't apply to this rule's kind are
+        silently ignored (trying to set gap_mils on a Width rule is
+        a no-op, not an error). Width properties are applied to every
+        copper layer.
+
+        Args:
+            name: Rule name to update.
+            gap_mils: Clearance (for Clearance rules).
+            min_width_mils / max_width_mils / preferred_width_mils:
+                For Width rules. Applied across all layers.
+            min_limit_mils / max_limit_mils: Generic min/max
+                (hole size, flight time, etc.).
+            min_hole_size_mils / max_hole_size_mils /
+                preferred_hole_size_mils: For via rules.
+            min_impedance / max_impedance / preferred_impedance:
+                For MaxMinImpedance rules (ohms).
+            enabled: Whether DRC enforces the rule.
+            priority: Rule priority (lower number = higher priority).
+            scope1 / scope2: Rule scope query expressions.
+            comment: Free-form comment.
+
+        Returns:
+            Dict with name and properties_updated count.
+        """
+        params: dict[str, Any] = {"name": name}
+        for key, value in [
+            ("gap_mils", gap_mils),
+            ("min_width_mils", min_width_mils),
+            ("max_width_mils", max_width_mils),
+            ("preferred_width_mils", preferred_width_mils),
+            ("min_limit_mils", min_limit_mils),
+            ("max_limit_mils", max_limit_mils),
+            ("min_hole_size_mils", min_hole_size_mils),
+            ("max_hole_size_mils", max_hole_size_mils),
+            ("preferred_hole_size_mils", preferred_hole_size_mils),
+            ("min_impedance", min_impedance),
+            ("max_impedance", max_impedance),
+            ("preferred_impedance", preferred_impedance),
+            ("priority", priority),
+            ("scope1", scope1),
+            ("scope2", scope2),
+            ("comment", comment),
+        ]:
+            if value is not None:
+                params[key] = str(value)
+        if enabled is not None:
+            params["enabled"] = "true" if enabled else "false"
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.set_rule_properties", params
+        )
+
+    @mcp.tool()
+    async def pcb_place_embedded_board(
+        child_path: str,
+        x: int,
+        y: int,
+        rows: int = 1,
+        cols: int = 1,
+        row_spacing_mils: int = 0,
+        col_spacing_mils: int = 0,
+        mirror: bool = False,
+        layer: str = "TopLayer",
+    ) -> dict[str, Any]:
+        """Place an embedded-board array (panel) referencing a child PCB.
+
+        An embedded board is a grid of copies of a child .PcbDoc file,
+        used for panelization (multi-up arrays, step-and-repeat).
+
+        Args:
+            child_path: Full path to the child .PcbDoc file.
+            x, y: Bottom-left corner of the array in mils.
+            rows, cols: Grid size (default 1x1).
+            row_spacing_mils, col_spacing_mils: Gap between array cells.
+            mirror: Flip the child board over when True.
+            layer: Placement layer for the embedded-board primitive.
+
+        Returns:
+            Dict with success, child_path, rows, cols, x, y.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.place_embedded_board",
+            {
+                "child_path": child_path,
+                "x": str(x),
+                "y": str(y),
+                "rows": str(rows),
+                "cols": str(cols),
+                "row_spacing_mils": str(row_spacing_mils),
+                "col_spacing_mils": str(col_spacing_mils),
+                "mirror": "true" if mirror else "false",
+                "layer": layer,
+            },
+        )

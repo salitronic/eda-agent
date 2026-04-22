@@ -285,6 +285,270 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_FindRuleByName - Helper to locate an IPCB_Rule by its Name                }
+{..............................................................................}
+
+Function PCB_FindRuleByName(Board : IPCB_Board; RuleName : String) : IPCB_Rule;
+Var
+    Iterator : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
+Begin
+    Result := Nil;
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Rule := Iterator.FirstPCBObject;
+    While Rule <> Nil Do
+    Begin
+        If Rule.Name = RuleName Then
+        Begin
+            Result := Rule;
+            Break;
+        End;
+        Rule := Iterator.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iterator);
+End;
+
+{..............................................................................}
+{ PCB_GetRuleProperties - Read kind-specific properties of a design rule.       }
+{                                                                               }
+{ IPCB_Rule is declared with a union of all rule-kind properties (Gap for       }
+{ clearance, MinWidth[L] for width, MinLimit / MaxLimit / MinHoleSize /         }
+{ MaxHoleSize / Impedance, ...). Reading a property that doesn't apply to the   }
+{ rule's actual kind raises at runtime; Try/Except skips those silently.        }
+{..............................................................................}
+
+Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Rule : IPCB_Rule;
+    RuleName, JsonProps : String;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    RuleName := ExtractJsonValue(Params, 'name');
+    If RuleName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', '"name" parameter is required');
+        Exit;
+    End;
+
+    Rule := PCB_FindRuleByName(Board, RuleName);
+    If Rule = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Rule not found: ' + RuleName);
+        Exit;
+    End;
+
+    JsonProps := '';
+
+    { Clearance rules — Gap is the minimum clearance in internal coord units. }
+    Try JsonProps := JsonProps + ',"gap_mils":' + IntToStr(CoordToMils(Rule.Gap)); Except End;
+
+    { Width rules — per-layer min/max/favored. Emit the top-layer value as a  }
+    { representative; full per-layer readback is rarely useful in practice.   }
+    Try JsonProps := JsonProps + ',"min_width_mils":' + IntToStr(CoordToMils(Rule.MinWidth[eTopLayer])); Except End;
+    Try JsonProps := JsonProps + ',"max_width_mils":' + IntToStr(CoordToMils(Rule.MaxWidth[eTopLayer])); Except End;
+    Try JsonProps := JsonProps + ',"preferred_width_mils":' + IntToStr(CoordToMils(Rule.FavoredWidth[eTopLayer])); Except End;
+
+    { Generic MinLimit / MaxLimit — hole size, via size, flight time limit.   }
+    Try JsonProps := JsonProps + ',"min_limit_mils":' + IntToStr(CoordToMils(Rule.MinLimit)); Except End;
+    Try JsonProps := JsonProps + ',"max_limit_mils":' + IntToStr(CoordToMils(Rule.MaxLimit)); Except End;
+
+    { Via size — hole and diameter. }
+    Try JsonProps := JsonProps + ',"min_hole_size_mils":' + IntToStr(CoordToMils(Rule.MinHoleSize)); Except End;
+    Try JsonProps := JsonProps + ',"max_hole_size_mils":' + IntToStr(CoordToMils(Rule.MaxHoleSize)); Except End;
+    Try JsonProps := JsonProps + ',"preferred_hole_size_mils":' + IntToStr(CoordToMils(Rule.PreferredHoleSize)); Except End;
+    Try JsonProps := JsonProps + ',"min_width_via_mils":' + IntToStr(CoordToMils(Rule.MinWidth)); Except End;
+    Try JsonProps := JsonProps + ',"max_width_via_mils":' + IntToStr(CoordToMils(Rule.MaxWidth)); Except End;
+    Try JsonProps := JsonProps + ',"preferred_width_via_mils":' + IntToStr(CoordToMils(Rule.PreferredWidth)); Except End;
+
+    { Parallel segment / daisy chain stub — Limit is already a coord. }
+    Try JsonProps := JsonProps + ',"parallel_limit_mils":' + IntToStr(CoordToMils(Rule.ParallelLimit)); Except End;
+    Try JsonProps := JsonProps + ',"parallel_gap_mils":' + IntToStr(CoordToMils(Rule.ParallelGap)); Except End;
+
+    { Max/min impedance — no coord units, floating-point ohms.                  }
+    Try JsonProps := JsonProps + ',"min_impedance":' + FloatToStr(Rule.MinImpedance); Except End;
+    Try JsonProps := JsonProps + ',"max_impedance":' + FloatToStr(Rule.MaxImpedance); Except End;
+    Try JsonProps := JsonProps + ',"preferred_impedance":' + FloatToStr(Rule.PreferredImpedance); Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"name":"' + EscapeJsonString(Rule.Name) + '",'
+        + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
+        + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
+        + '"priority":' + IntToStr(Rule.Priority)
+        + JsonProps + '}');
+End;
+
+{..............................................................................}
+{ PCB_SetRuleProperties - Update kind-specific properties of a design rule.     }
+{ Params: name + any of the keys PCB_GetRuleProperties returns.                 }
+{..............................................................................}
+
+Function PCB_SetRuleProperties(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Rule : IPCB_Rule;
+    RuleName, V : String;
+    L : TLayer;
+    UpdatedCount : Integer;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    RuleName := ExtractJsonValue(Params, 'name');
+    If RuleName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', '"name" parameter is required');
+        Exit;
+    End;
+
+    Rule := PCB_FindRuleByName(Board, RuleName);
+    If Rule = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Rule not found: ' + RuleName);
+        Exit;
+    End;
+
+    UpdatedCount := 0;
+    PCBServer.PreProcess;
+    Try
+        PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
+            PCBM_BeginModify, c_NoEventData);
+
+        V := ExtractJsonValue(Params, 'enabled');
+        If V <> '' Then
+        Begin
+            Try Rule.Enabled := (V = 'true') Or (V = 'True') Or (V = '1'); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'priority');
+        If V <> '' Then
+        Begin
+            Try Rule.Priority := StrToIntDef(V, Rule.Priority); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'gap_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.Gap := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'min_width_mils');
+        If V <> '' Then
+        Begin
+            For L := MinLayer To MaxLayer Do
+                Try Rule.MinWidth[L] := MilsToCoord(StrToIntDef(V, 0)); Except End;
+            Inc(UpdatedCount);
+        End;
+
+        V := ExtractJsonValue(Params, 'max_width_mils');
+        If V <> '' Then
+        Begin
+            For L := MinLayer To MaxLayer Do
+                Try Rule.MaxWidth[L] := MilsToCoord(StrToIntDef(V, 0)); Except End;
+            Inc(UpdatedCount);
+        End;
+
+        V := ExtractJsonValue(Params, 'preferred_width_mils');
+        If V <> '' Then
+        Begin
+            For L := MinLayer To MaxLayer Do
+                Try Rule.FavoredWidth[L] := MilsToCoord(StrToIntDef(V, 0)); Except End;
+            Inc(UpdatedCount);
+        End;
+
+        V := ExtractJsonValue(Params, 'min_limit_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.MinLimit := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'max_limit_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.MaxLimit := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'min_hole_size_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.MinHoleSize := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'max_hole_size_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.MaxHoleSize := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'preferred_hole_size_mils');
+        If V <> '' Then
+        Begin
+            Try Rule.PreferredHoleSize := MilsToCoord(StrToIntDef(V, 0)); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'min_impedance');
+        If V <> '' Then
+        Begin
+            Try Rule.MinImpedance := StrToFloatDef(V, 0); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'max_impedance');
+        If V <> '' Then
+        Begin
+            Try Rule.MaxImpedance := StrToFloatDef(V, 0); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'preferred_impedance');
+        If V <> '' Then
+        Begin
+            Try Rule.PreferredImpedance := StrToFloatDef(V, 0); Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'scope1');
+        If V <> '' Then
+        Begin
+            Try Rule.Scope1Expression := V; Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'scope2');
+        If V <> '' Then
+        Begin
+            Try Rule.Scope2Expression := V; Inc(UpdatedCount); Except End;
+        End;
+
+        V := ExtractJsonValue(Params, 'comment');
+        If V <> '' Then
+        Begin
+            Try Rule.Comment := V; Inc(UpdatedCount); Except End;
+        End;
+
+        PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
+            PCBM_EndModify, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"name":"' + EscapeJsonString(Rule.Name) + '",'
+        + '"properties_updated":' + IntToStr(UpdatedCount) + '}');
+End;
+
+{..............................................................................}
 { PCB_RunDRC - Run design rule check, return violation count                  }
 {..............................................................................}
 
@@ -4248,6 +4512,89 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_PlaceEmbeddedBoard - Place an IPCB_EmbeddedBoard array (paneling).       }
+{ The embedded-board primitive is a grid of child-PCB copies, used for panel  }
+{ designs and multi-up arrays. Spacing values are in mils.                    }
+{ Params: x, y (bottom-left corner, mils), child_path (full path to the child }
+{         .PcbDoc), rows, cols, row_spacing_mils, col_spacing_mils,           }
+{         mirror (true/false), layer (default TopLayer).                      }
+{..............................................................................}
+
+Function PCB_PlaceEmbeddedBoard(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Emb : IPCB_Primitive;
+    ChildPath, LayerStr, MirrorStr : String;
+    X, Y, Rows, Cols, RowSpace, ColSpace : Integer;
+    TargetLayer : TLayer;
+Begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    ChildPath := ExtractJsonValue(Params, 'child_path');
+    If ChildPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'child_path is required');
+        Exit;
+    End;
+    ChildPath := StringReplace(ChildPath, '\\', '\', -1);
+
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    Rows := StrToIntDef(ExtractJsonValue(Params, 'rows'), 1);
+    Cols := StrToIntDef(ExtractJsonValue(Params, 'cols'), 1);
+    RowSpace := StrToIntDef(ExtractJsonValue(Params, 'row_spacing_mils'), 0);
+    ColSpace := StrToIntDef(ExtractJsonValue(Params, 'col_spacing_mils'), 0);
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    MirrorStr := LowerCase(ExtractJsonValue(Params, 'mirror'));
+
+    If LayerStr <> '' Then
+        TargetLayer := GetLayerFromString(LayerStr)
+    Else
+        TargetLayer := eTopLayer;
+
+    Emb := PCBServer.PCBObjectFactory(eEmbeddedBoardObject, eNoDimension, eCreate_Default);
+    If Emb = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create embedded board');
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        Try Emb.Layer := TargetLayer; Except End;
+        Try Emb.XLocation := MilsToCoord(X); Except End;
+        Try Emb.YLocation := MilsToCoord(Y); Except End;
+        Try Emb.DocumentPath := ChildPath; Except End;
+        Try Emb.RowCount := Rows; Except End;
+        Try Emb.ColCount := Cols; Except End;
+        If RowSpace > 0 Then
+            Try Emb.RowSpacing := MilsToCoord(RowSpace); Except End;
+        If ColSpace > 0 Then
+            Try Emb.ColSpacing := MilsToCoord(ColSpace); Except End;
+        If (MirrorStr = 'true') Or (MirrorStr = '1') Then
+            Try Emb.MirrorFlag := True; Except End;
+
+        Board.AddPCBObject(Emb);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Emb.I_ObjectAddress);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    SaveDocByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"child_path":"' + EscapeJsonString(ChildPath) + '",'
+        + '"rows":' + IntToStr(Rows) + ',"cols":' + IntToStr(Cols)
+        + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
+End;
+
+{..............................................................................}
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
@@ -4258,6 +4605,8 @@ Begin
         'get_net_classes':         Result := PCB_GetNetClasses(Params, RequestId);
         'create_net_class':        Result := PCB_CreateNetClass(Params, RequestId);
         'get_design_rules':        Result := PCB_GetDesignRules(Params, RequestId);
+        'get_rule_properties':     Result := PCB_GetRuleProperties(Params, RequestId);
+        'set_rule_properties':     Result := PCB_SetRuleProperties(Params, RequestId);
         'run_drc':                 Result := PCB_RunDRC(Params, RequestId);
         'get_components':          Result := PCB_GetComponents(Params, RequestId);
         'move_component':          Result := PCB_MoveComponent(Params, RequestId);
@@ -4307,6 +4656,7 @@ Begin
         'place_pad':               Result := PCB_PlacePad(Params, RequestId);
         'place_angular_dimension': Result := PCB_PlaceAngularDimension(Params, RequestId);
         'place_radial_dimension':  Result := PCB_PlaceRadialDimension(Params, RequestId);
+        'place_embedded_board':    Result := PCB_PlaceEmbeddedBoard(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown PCB action: ' + Action);
     End;

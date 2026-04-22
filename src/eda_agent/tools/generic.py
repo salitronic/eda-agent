@@ -1324,3 +1324,172 @@ def register_generic_tools(mcp):
             "generic.replace_component", params
         )
         return result
+
+    @mcp.tool()
+    async def sch_get_constraint_groups() -> dict[str, Any]:
+        """Enumerate IDocument.DM_ConstraintGroups on the active schematic.
+
+        Constraint groups are FPGA-style pin/timing constraints attached
+        to a document. Each group has a target kind and id, plus a list
+        of IConstraint entries with a kind/data payload. Useful for
+        auditing FPGA pin assignments and timing constraints that don't
+        show up in the regular PCB design-rule list.
+
+        Returns:
+            Dict with groups (list of {target_kind, target_id,
+            constraint_count, constraints[{kind, data}, ...]}) and count.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.get_constraint_groups", {}
+        )
+
+    @mcp.tool()
+    async def sch_place_harness_connector(
+        x: int,
+        y: int,
+        width: int = 500,
+        height: int = 800,
+        harness_type: str = "",
+    ) -> dict[str, Any]:
+        """Place a harness connector on the active schematic sheet.
+
+        Harness connectors group a set of wires/buses into a named
+        signal bundle, letting cross-sheet connections be drawn as a
+        single line instead of a bus.
+
+        Args:
+            x, y: Bottom-left corner in mils.
+            width, height: Connector rectangle size in mils.
+            harness_type: Named harness type (optional).
+
+        Returns:
+            Dict with success, x, y, width, height, harness_type.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "x": str(x), "y": str(y),
+            "width": str(width), "height": str(height),
+        }
+        if harness_type:
+            params["harness_type"] = harness_type
+        return await bridge.send_command_async(
+            "generic.place_harness_connector", params
+        )
+
+    @mcp.tool()
+    async def sch_place_cross_sheet_connector(
+        x: int,
+        y: int,
+        net: str = "",
+        side: str = "",
+    ) -> dict[str, Any]:
+        """Place a cross-sheet connector (off-sheet port) on the active sheet.
+
+        Cross-sheet connectors are the hierarchical equivalent of a net
+        label — they connect a signal to the same net name on another
+        sheet.
+
+        Args:
+            x, y: Connector location in mils.
+            net: Net name the connector binds to.
+            side: "left" or "right" orientation (optional).
+
+        Returns:
+            Dict with success, x, y, net.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"x": str(x), "y": str(y)}
+        if net:
+            params["net"] = net
+        if side:
+            params["side"] = side
+        return await bridge.send_command_async(
+            "generic.place_cross_sheet_connector", params
+        )
+
+    @mcp.tool()
+    async def sch_set_component_part_id(
+        designator: str,
+        part_id: int,
+    ) -> dict[str, Any]:
+        """Switch the active sub-part on a multi-part schematic component.
+
+        Multi-gate parts like quad op-amps expose one sub-part per gate
+        (U1A, U1B, U1C, U1D). CurrentPartID selects which one this
+        symbol instance represents. IDs are 1-based.
+
+        Args:
+            designator: Component reference (e.g., "U1").
+            part_id: Sub-part index, 1-based (1=A, 2=B, ...).
+
+        Returns:
+            Dict with success, designator, part_id.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.set_component_part_id",
+            {"designator": designator, "part_id": str(part_id)},
+        )
+
+    @mcp.tool()
+    async def sch_place_probe(
+        x: int,
+        y: int,
+        net_name: str = "",
+        probe_method: str = "probed_nets_only",
+    ) -> dict[str, Any]:
+        """Place a probe/measurement marker on the active schematic.
+
+        Probes mark nodes for SPICE/simulation output. Attach one to a
+        wire to declare "capture voltage / current at this point" in
+        simulation runs.
+
+        Args:
+            x, y: Probe location in mils.
+            net_name: Optional explicit net label text.
+            probe_method: "probed_nets_only" (default) or "all_nets".
+
+        Returns:
+            Dict with success, x, y, net_name.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.place_probe",
+            {
+                "x": str(x), "y": str(y),
+                "net_name": net_name,
+                "probe_method": probe_method,
+            },
+        )
+
+    @mcp.tool()
+    async def sch_add_datafile_link(
+        designator: str,
+        file_path: str,
+        kind: str = "",
+    ) -> dict[str, Any]:
+        """Attach a datafile link to a component's current implementation.
+
+        Datafile links are how parametric data (IBIS model files, sim
+        models, external CSVs) is bound to a schematic part.
+
+        Args:
+            designator: Component reference (e.g., "U1").
+            file_path: Full path to the file being linked.
+            kind: Optional implementation-specific type
+                (e.g., "SimModel", "IBIS").
+
+        Returns:
+            Dict with success, designator, file_path.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "designator": designator,
+            "file_path": file_path,
+        }
+        if kind:
+            params["kind"] = kind
+        return await bridge.send_command_async(
+            "generic.add_datafile_link", params
+        )

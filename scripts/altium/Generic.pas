@@ -2164,16 +2164,17 @@ End;
 Function Gen_SetSheetSize(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
-    StyleStr : String;
+    StyleStr, OrientStr : String;
     CustomW, CustomH : Integer;
 Begin
     StyleStr := UpperCase(ExtractJsonValue(Params, 'style'));
     CustomW := StrToIntDef(ExtractJsonValue(Params, 'custom_width'), 0);
     CustomH := StrToIntDef(ExtractJsonValue(Params, 'custom_height'), 0);
+    OrientStr := LowerCase(ExtractJsonValue(Params, 'orientation'));
 
-    If StyleStr = '' Then
+    If (StyleStr = '') And (OrientStr = '') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'style required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'style or orientation required');
         Exit;
     End;
 
@@ -2186,6 +2187,20 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
+        If OrientStr = 'landscape' Then
+            Try SchDoc.WorkspaceOrientation := eLandscape; Except End
+        Else If OrientStr = 'portrait' Then
+            Try SchDoc.WorkspaceOrientation := ePortrait; Except End;
+
+        If StyleStr = '' Then
+        Begin
+            SchServer.ProcessControl.PostProcess(SchDoc, '');
+            SchDoc.GraphicallyInvalidate;
+            Result := BuildSuccessResponse(RequestId,
+                '{"success":true,"orientation":"' + EscapeJsonString(OrientStr) + '"}');
+            Exit;
+        End;
+
         If StyleStr = 'A' Then SchDoc.SheetStyle := eSheetA
         Else If StyleStr = 'B' Then SchDoc.SheetStyle := eSheetB
         Else If StyleStr = 'C' Then SchDoc.SheetStyle := eSheetC
@@ -3350,6 +3365,379 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_GetConstraintGroups - Enumerate IDocument.DM_ConstraintGroups on the      }
+{ active schematic document. Constraint groups are FPGA-style pin/timing        }
+{ constraints attached to a document; each group has a target kind/id and a    }
+{ list of IConstraint entries with Kind + Data payloads.                       }
+{..............................................................................}
+
+Function Gen_GetConstraintGroups(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Doc : IDocument;
+    Group : IConstraintGroup;
+    Cons : IConstraint;
+    I, J, GroupCount, ConsCount : Integer;
+    Json, GroupJson, ConsJson : String;
+    FirstC : Boolean;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Doc := SchDoc;
+    GroupCount := 0;
+    Try GroupCount := Doc.DM_ConstraintGroupCount; Except End;
+
+    Json := '';
+    For I := 0 To GroupCount - 1 Do
+    Begin
+        Group := Nil;
+        Try Group := Doc.DM_ConstraintGroups(I); Except End;
+        If Group = Nil Then Continue;
+
+        ConsCount := 0;
+        Try ConsCount := Group.DM_ConstraintCount; Except End;
+
+        ConsJson := '';
+        FirstC := True;
+        For J := 0 To ConsCount - 1 Do
+        Begin
+            Cons := Nil;
+            Try Cons := Group.DM_Constraints(J); Except End;
+            If Cons = Nil Then Continue;
+            If Not FirstC Then ConsJson := ConsJson + ',';
+            FirstC := False;
+            ConsJson := ConsJson + '{"kind":"';
+            Try ConsJson := ConsJson + EscapeJsonString(Cons.DM_Kind); Except End;
+            ConsJson := ConsJson + '","data":"';
+            Try ConsJson := ConsJson + EscapeJsonString(Cons.DM_Data); Except End;
+            ConsJson := ConsJson + '"}';
+        End;
+
+        GroupJson := '{"target_kind":"';
+        Try GroupJson := GroupJson + EscapeJsonString(Group.DM_TargetKindString); Except End;
+        GroupJson := GroupJson + '","target_id":"';
+        Try GroupJson := GroupJson + EscapeJsonString(Group.DM_TargetId); Except End;
+        GroupJson := GroupJson + '","constraint_count":' + IntToStr(ConsCount);
+        GroupJson := GroupJson + ',"constraints":[' + ConsJson + ']}';
+
+        If Json <> '' Then Json := Json + ',';
+        Json := Json + GroupJson;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"groups":[' + Json + '],"count":' + IntToStr(GroupCount) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceHarnessConnector - Place an ISch_HarnessConnector on the active      }
+{ sheet. Harness connectors group a set of wires/buses into a named harness    }
+{ so cross-sheet signal bundles can be represented as a single connection.     }
+{ Params: x, y, width, height (mils), harness_type (optional name string)      }
+{..............................................................................}
+
+Function Gen_PlaceHarnessConnector(Params : String; RequestId : String) : String;
+Var
+    X, Y, W, H : Integer;
+    HarnessType : String;
+    SchDoc : ISch_Document;
+    Harness : ISch_GraphicalObject;
+    LL, UR : TLocation;
+Begin
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    W := StrToIntDef(ExtractJsonValue(Params, 'width'), 500);
+    H := StrToIntDef(ExtractJsonValue(Params, 'height'), 800);
+    HarnessType := ExtractJsonValue(Params, 'harness_type');
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Harness := SchServer.SchObjectFactory(eHarnessConnector, eCreate_Default);
+    If Harness = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create harness connector');
+        Exit;
+    End;
+
+    LL := Point(MilsToCoord(X), MilsToCoord(Y));
+    UR := Point(MilsToCoord(X + W), MilsToCoord(Y + H));
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try Harness.Location := LL; Except End;
+    Try Harness.Corner := UR; Except End;
+    If HarnessType <> '' Then
+        Try Harness.HarnessType := HarnessType; Except End;
+
+    SchDoc.RegisterSchObjectInContainer(Harness);
+    SchRegisterObject(SchDoc, Harness);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"width":' + IntToStr(W) + ',"height":' + IntToStr(H)
+        + ',"harness_type":"' + EscapeJsonString(HarnessType) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceCrossSheetConnector - Place an ISch_CrossSheetConnector (the off-    }
+{ sheet port variant used for hierarchical signal links).                      }
+{ Params: x, y, net (net name to connect), side (left|right)                    }
+{..............................................................................}
+
+Function Gen_PlaceCrossSheetConnector(Params : String; RequestId : String) : String;
+Var
+    X, Y : Integer;
+    NetName, SideStr : String;
+    SchDoc : ISch_Document;
+    Conn : ISch_GraphicalObject;
+Begin
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    NetName := ExtractJsonValue(Params, 'net');
+    SideStr := LowerCase(ExtractJsonValue(Params, 'side'));
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Conn := SchServer.SchObjectFactory(eCrossSheetConnector, eCreate_Default);
+    If Conn = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create cross-sheet connector');
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try Conn.Location := Point(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    If NetName <> '' Then
+        Try Conn.Text := NetName; Except End;
+    If SideStr = 'left' Then
+        Try Conn.Side := 0; Except End
+    Else If SideStr = 'right' Then
+        Try Conn.Side := 1; Except End;
+
+    SchDoc.RegisterSchObjectInContainer(Conn);
+    SchRegisterObject(SchDoc, Conn);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"net":"' + EscapeJsonString(NetName) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_SetComponentPartId - Switch the active sub-part on a multi-part           }
+{ component (e.g. U1A -> U1B on a quad op-amp). CurrentPartID is 1-based.      }
+{ Params: designator, part_id                                                  }
+{..............................................................................}
+
+Function Gen_SetComponentPartId(Params : String; RequestId : String) : String;
+Var
+    Designator : String;
+    PartId : Integer;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    Found : Boolean;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator required');
+        Exit;
+    End;
+
+    If PartId < 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PART_ID', 'part_id must be >= 1');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    Iterator := SchDoc.SchIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj := Iterator.FirstSchObject;
+    While (Obj <> Nil) And Not Found Do
+    Begin
+        Comp := Obj;
+        If Comp.Designator.Text = Designator Then
+        Begin
+            SchServer.ProcessControl.PreProcess(SchDoc, 'Set part id');
+            Try Comp.CurrentPartID := PartId; Except End;
+            SchServer.ProcessControl.PostProcess(SchDoc, 'Set part id');
+            Found := True;
+        End;
+        Obj := Iterator.NextSchObject;
+    End;
+    SchDoc.SchIterator_Destroy(Iterator);
+    SchDoc.GraphicallyInvalidate;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator)
+        + '","part_id":' + IntToStr(PartId) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceProbe - Place an ISch_Probe marker for SPICE / simulation            }
+{ measurement nodes. Probe sits at a wire and names the node to measure.       }
+{ Params: x, y, net_name, probe_method (all_nets | probed_nets_only, default    }
+{         probed_nets_only)                                                    }
+{..............................................................................}
+
+Function Gen_PlaceProbe(Params : String; RequestId : String) : String;
+Var
+    X, Y : Integer;
+    NetName, MethodStr : String;
+    SchDoc : ISch_Document;
+    Probe : ISch_GraphicalObject;
+Begin
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    NetName := ExtractJsonValue(Params, 'net_name');
+    MethodStr := LowerCase(ExtractJsonValue(Params, 'probe_method'));
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Probe := SchServer.SchObjectFactory(eProbe, eCreate_Default);
+    If Probe = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create probe');
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try Probe.Location := Point(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    If NetName <> '' Then
+        Try Probe.Text := NetName; Except End;
+    If MethodStr = 'all_nets' Then
+        Try Probe.ProbeMethod := eProbeMethodAllNets; Except End
+    Else
+        Try Probe.ProbeMethod := eProbeMethodProbedNetsOnly; Except End;
+
+    SchDoc.RegisterSchObjectInContainer(Probe);
+    SchRegisterObject(SchDoc, Probe);
+    SchServer.ProcessControl.PostProcess(SchDoc, '');
+    SchDoc.GraphicallyInvalidate;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"net_name":"' + EscapeJsonString(NetName) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_AddDatafileLink - Add an ISch_ModelDatafileLink to a component's active  }
+{ implementation. This is how parametric data (IBIS model files, sim models,   }
+{ external CSVs) is attached to a schematic part.                              }
+{ Params: designator, file_path, kind (optional string — implementation-       }
+{         specific, e.g. "SimModel", "IBIS")                                   }
+{..............................................................................}
+
+Function Gen_AddDatafileLink(Params : String; RequestId : String) : String;
+Var
+    Designator, FilePath, KindStr : String;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    Impl : ISch_Implementation;
+    Link : ISch_GraphicalObject;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Found : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    KindStr := ExtractJsonValue(Params, 'kind');
+
+    If (Designator = '') Or (FilePath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator and file_path are required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    Iterator := SchDoc.SchIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj := Iterator.FirstSchObject;
+    While (Obj <> Nil) And Not Found Do
+    Begin
+        Comp := Obj;
+        If Comp.Designator.Text = Designator Then
+        Begin
+            Impl := Nil;
+            Try Impl := Comp.GetState_CurrentImplementation; Except End;
+            If Impl <> Nil Then
+            Begin
+                SchServer.ProcessControl.PreProcess(SchDoc, 'Add datafile link');
+                Try Link := Impl.AddDataFileLink; Except End;
+                If Link <> Nil Then
+                Begin
+                    Try Link.FileName := FilePath; Except End;
+                    If KindStr <> '' Then
+                        Try Link.Kind := KindStr; Except End;
+                End;
+                SchServer.ProcessControl.PostProcess(SchDoc, 'Add datafile link');
+                Found := True;
+            End;
+        End;
+        Obj := Iterator.NextSchObject;
+    End;
+    SchDoc.SchIterator_Destroy(Iterator);
+    SchDoc.GraphicallyInvalidate;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'Component or implementation not found for designator: ' + Designator);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator)
+        + '","file_path":"' + EscapeJsonString(FilePath) + '"}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end                                            }
 {..............................................................................}
 
@@ -3404,6 +3792,12 @@ Begin
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);
+        'get_constraint_groups':      Result := Gen_GetConstraintGroups(Params, RequestId);
+        'place_harness_connector':    Result := Gen_PlaceHarnessConnector(Params, RequestId);
+        'place_cross_sheet_connector': Result := Gen_PlaceCrossSheetConnector(Params, RequestId);
+        'set_component_part_id':      Result := Gen_SetComponentPartId(Params, RequestId);
+        'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
+        'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown generic action: ' + Action);
     End;
