@@ -403,6 +403,33 @@ Begin
 End;
 
 {..............................................................................}
+{ ForceRecompileIfRequested - If Params carries force_recompile=true, flush   }
+{ dirty docs to disk, invalidate the SmartCompile cache, and run a fresh      }
+{ DM_Compile on the given project. Called by the net/connectivity handlers   }
+{ below, so it must be declared BEFORE them — DelphiScript has no forward    }
+{ declarations (no `Forward;` directive), functions must appear in           }
+{ caller-dependency order.                                                    }
+{..............................................................................}
+
+Procedure ForceRecompileIfRequested(Project : IProject; Params : String);
+Var
+    Flag : String;
+Begin
+    If Project = Nil Then Exit;
+    Flag := LowerCase(ExtractJsonValue(Params, 'force_recompile'));
+    If (Flag = 'true') Or (Flag = '1') Then
+    Begin
+        { Flush editor-side edits first — DM_Compile reads from the          }
+        { on-disk project structure in some code paths, and users hit this  }
+        { tool precisely when the in-editor state has diverged from the     }
+        { cached netlist.                                                   }
+        Try SaveAllDirty; Except End;
+        LastCompileTick := 0;
+        SmartCompile(Project);
+    End;
+End;
+
+{..............................................................................}
 { Get net-to-pin connectivity from compiled project                           }
 { Params: project_path, component, net_name, limit                            }
 {..............................................................................}
@@ -441,6 +468,9 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found');
         Exit;
     End;
+
+    // Honor force_recompile BEFORE SmartCompile so the cache is fresh.
+    ForceRecompileIfRequested(Project, Params);
 
     // Compile to resolve net connectivity
     SmartCompile(Project);
@@ -598,6 +628,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
+    ForceRecompileIfRequested(Project, Params);
     SmartCompile(Project);
     Found := False;
 
@@ -781,7 +812,7 @@ Var
     OutlineStr, LayerStr, Data : String;
     First : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
 
     // Board outline vertices
@@ -2010,6 +2041,7 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
+    ForceRecompileIfRequested(Project, Params);
     SmartCompile(Project);
     Found := False;
 
@@ -2960,6 +2992,127 @@ Begin
 End;
 
 {..............................................................................}
+{ Proj_ForceRecompile - Explicit force-recompile handler. Saves, invalidates,  }
+{ recompiles, returns the new compile tick so callers can verify it moved.    }
+{..............................................................................}
+
+Function Proj_ForceRecompile(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    PrevTick, NewTick : Cardinal;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Exit;
+    End;
+
+    PrevTick := LastCompileTick;
+    Try SaveAllDirty; Except End;
+    LastCompileTick := 0;
+    SmartCompile(Project);
+    NewTick := LastCompileTick;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"recompiled":true,'
+        + '"prev_compile_tick":' + IntToStr(PrevTick) + ','
+        + '"new_compile_tick":' + IntToStr(NewTick) + ','
+        + '"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"}');
+End;
+
+{..............................................................................}
+{ Proj_GetCompileFreshness - Report how old the SmartCompile cache is and     }
+{ how many open editor docs are dirty. Gives callers a way to see, before    }
+{ trusting a netlist read, whether the compile is stale.                     }
+{..............................................................................}
+
+Function Proj_GetCompileFreshness(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    I, DirtyCount, OpenCount : Integer;
+    DirtyList, FullPath : String;
+    First : Boolean;
+    AgeMs, CurrentTick : Cardinal;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Exit;
+    End;
+
+    CurrentTick := GetTickCount;
+    If LastCompileTick = 0 Then
+        AgeMs := 0
+    Else If CurrentTick >= LastCompileTick Then
+        AgeMs := CurrentTick - LastCompileTick
+    Else
+        AgeMs := 0;  { tick wrap-around }
+
+    DirtyCount := 0;
+    OpenCount := 0;
+    DirtyList := '';
+    First := True;
+
+    { Walk the focused project's logical documents (Client.GetDocumentCount   }
+    { is undeclared in DelphiScript; Client.GetDocumentByPath is how we       }
+    { resolve each logical doc to an IServerDocument). A doc "counts as       }
+    { open" if it resolves to a live IServerDocument. A doc is dirty if that }
+    { IServerDocument reports Modified = True.                               }
+    Try
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(I);
+            If Doc = Nil Then Continue;
+            FullPath := '';
+            Try FullPath := Doc.DM_FullPath; Except FullPath := Doc.DM_FileName; End;
+            If FullPath = '' Then Continue;
+
+            ServerDoc := Nil;
+            Try ServerDoc := Client.GetDocumentByPath(FullPath); Except End;
+            If ServerDoc = Nil Then Continue;
+            Inc(OpenCount);
+
+            Try
+                If ServerDoc.Modified Then
+                Begin
+                    Inc(DirtyCount);
+                    If Not First Then DirtyList := DirtyList + ',';
+                    First := False;
+                    DirtyList := DirtyList + '"' + EscapeJsonString(FullPath) + '"';
+                End;
+            Except End;
+        End;
+    Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"compile_age_ms":' + IntToStr(AgeMs) + ','
+        + '"compile_cached":' + BoolToJsonStr(LastCompileTick > 0) + ','
+        + '"ttl_ms":' + IntToStr(COMPILE_CACHE_TTL_MS) + ','
+        + '"open_doc_count":' + IntToStr(OpenCount) + ','
+        + '"dirty_doc_count":' + IntToStr(DirtyCount) + ','
+        + '"dirty_docs":[' + DirtyList + '],'
+        + '"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
@@ -3001,6 +3154,8 @@ Begin
         'find_component':    Result := Proj_FindComponent(Params, RequestId);
         'get_connectivity':  Result := Proj_GetConnectivity(Params, RequestId);
         'get_connectivity_batch': Result := Proj_GetConnectivityBatch(Params, RequestId);
+        'force_recompile':       Result := Proj_ForceRecompile(Params, RequestId);
+        'get_compile_freshness': Result := Proj_GetCompileFreshness(Params, RequestId);
         'import_document':   Result := Proj_ImportDocument(Params, RequestId);
         'get_project_path':  Result := Proj_GetProjectPath(RequestId);
         'set_document_parameter': Result := Proj_SetDocumentParameter(Params, RequestId);

@@ -199,39 +199,41 @@ def register_project_tools(mcp):
         net_name: str = "",
         project_path: Optional[str] = None,
         limit: int = 500,
+        force_recompile: bool = False,
     ) -> dict[str, Any]:
         """Get net-to-pin connectivity from the compiled project netlist.
 
-        CRITICAL — if you need connectivity for MORE THAN ONE component
-        or net, do NOT loop this tool. Call it ONCE with no filters
-        (`component=""`, `net_name=""`, raise `limit` if needed) to pull
-        the entire pin-net table in a single round-trip, then slice the
-        result locally. Each filtered call is ~700 ms and compiles the
-        project; doing 30 of them (observed) costs 30× the wall time of
-        one unfiltered call. Only filter when you truly need exactly one
-        component or net.
+        CRITICAL for bulk queries — if you need connectivity for MORE
+        THAN ONE component or net, do NOT loop this tool. Call it
+        ONCE with no filters (`component=""`, `net_name=""`, raise
+        `limit` if needed) to pull the entire pin-net table in a
+        single round-trip, then slice the result locally. Each
+        filtered call is ~700 ms and compiles the project.
 
-        Compiles the project and returns pin-level net assignments. Use this to
-        trace which pins connect to which nets, which components share a net, or
-        verify that a specific pin is wired to the correct net.
+        Compiles the project and returns pin-level net assignments.
 
         Args:
-            component: Filter by component designator (e.g., "U1", "R8"). Empty = all components.
-            net_name: Filter by net name (e.g., "VCC", "CLSA"). Empty = all nets.
-            project_path: Optional project path. If None, uses active project.
-            limit: Maximum pin records to return (default 500). Raise
-                this if you're pulling the whole netlist (5000+ on big
-                boards).
+            component: Filter by component designator. Empty = all.
+            net_name: Filter by net name. Empty = all.
+            project_path: Optional project path. If None, uses active.
+            limit: Max pin records (default 500). Raise for big boards.
+            force_recompile: Save all dirty docs, invalidate the
+                SmartCompile cache, recompile. Costs one extra
+                compile (~5-10 s on real designs). Use when you need
+                a guaranteed-fresh netlist (e.g., after the user
+                edited schematics in the UI). Pair with
+                `get_compile_freshness` to confirm no docs are dirty.
 
         Returns:
-            Dictionary with "pins" array (each: component, pin_number, pin_name, net) and "count"
+            Dict with "pins" and "count".
 
         Examples:
-            # PREFERRED — one unfiltered call, then filter in your analysis:
+            # PREFERRED — one unfiltered call, then filter locally:
             all_pins = get_nets(limit=10000)["pins"]
             u1_pins = [p for p in all_pins if p["component"] == "U1"]
 
-            get_nets(component="U1", net_name="VCC")  # one targeted lookup
+            # Guaranteed-fresh read after user edits:
+            fresh = get_nets(force_recompile=True, limit=10000)
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -241,6 +243,8 @@ def register_project_tools(mcp):
             params["net_name"] = net_name
         if project_path:
             params["project_path"] = project_path
+        if force_recompile:
+            params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_nets", params)
         hint = BulkHintTracker.record_and_hint("get_nets")
         if hint and isinstance(result, dict):
@@ -883,32 +887,34 @@ def register_project_tools(mcp):
     async def get_connectivity(
         designator: str,
         project_path: Optional[str] = None,
+        force_recompile: bool = False,
     ) -> dict[str, Any]:
         """Get pin-to-net connectivity for a specific component.
 
         IMPORTANT — if you need connectivity for MORE THAN ONE
         component, use `get_connectivity_many` (batch). Looping this
-        tool for a set of designators is the single biggest time sink
-        in design-review workflows: each call is ~700 ms plus one LLM
-        turn, so a 10-part review costs ~7 s of bridge time and
-        60-150 s of LLM-turn time. The batch version does all of them
-        in one round-trip + one LLM turn.
+        tool for a set of designators is the biggest wall-time sink
+        in design-review workflows.
 
-        Compiles the project and returns every pin with its number, name, net
-        assignment, and electrical type for the given designator.
+        Compiles the project and returns every pin with number, name,
+        net assignment, and electrical type.
 
         Args:
             designator: Component designator (e.g., "U1", "R8")
-            project_path: Optional project path. If None, uses active project.
+            project_path: Optional project path. If None, uses active.
+            force_recompile: SaveAll + invalidate cache + recompile
+                before reading. Use when you need a guaranteed-fresh
+                netlist.
 
         Returns:
-            Dictionary with designator, comment, sheet, pin_count,
-            and "pins" array (each: pin_number, pin_name, net, electrical_type)
+            Dict with designator, comment, sheet, pin_count, pins[].
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}
         if project_path:
             params["project_path"] = project_path
+        if force_recompile:
+            params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_connectivity", params)
         hint = BulkHintTracker.record_and_hint("get_connectivity")
         if hint and isinstance(result, dict):
@@ -919,32 +925,21 @@ def register_project_tools(mcp):
     async def get_connectivity_many(
         designators: list[str],
         project_path: Optional[str] = None,
+        force_recompile: bool = False,
     ) -> dict[str, Any]:
         """Pin-net connectivity for MANY components in ONE round-trip.
 
-        PREFER THIS over looping `get_connectivity`. Each singular
-        call is ~700 ms plus a full LLM turn; this tool returns all
-        requested components in a single IPC round-trip, compiling
-        the project only once (courtesy of SmartCompile).
+        PREFER THIS over looping `get_connectivity`.
 
         Args:
-            designators: List of component designators (e.g.,
-                ["U1", "U2", "R8", "C3"]).
-            project_path: Optional project path. If None, uses active project.
-
-        Example — typical PoE review with one call instead of 8:
-            get_connectivity_many(designators=[
-                "U7", "R154", "R155", "R156", "R157",
-                "R159", "R160", "R161",
-            ])
+            designators: List of component designators.
+            project_path: Optional project path.
+            force_recompile: SaveAll + invalidate cache + recompile
+                before reading. Use when you need a guaranteed-fresh
+                netlist.
 
         Returns:
-            Dict with:
-              - components: list of {designator, comment, sheet, pin_count,
-                pins: [{pin_number, pin_name, net}, ...]} per matched part
-              - matched: int
-              - requested: int
-              - not_found: list of designators that weren't found
+            Dict with components[], matched, requested, not_found[].
         """
         bridge = get_bridge()
         cleaned = [str(d).strip() for d in (designators or []) if str(d).strip()]
@@ -953,8 +948,47 @@ def register_project_tools(mcp):
         params: dict[str, Any] = {"designators": "~~".join(cleaned)}
         if project_path:
             params["project_path"] = project_path
+        if force_recompile:
+            params["force_recompile"] = "true"
         return await bridge.send_command_async(
             "project.get_connectivity_batch", params
+        )
+
+    @mcp.tool()
+    async def force_recompile() -> dict[str, Any]:
+        """Flush all dirty docs, invalidate the compile cache, and recompile.
+
+        Use this when you need a guaranteed-fresh netlist — e.g.
+        immediately before re-running a connectivity check the user
+        has disputed. Returns prev / new compile tick so you can
+        verify the recompile actually happened.
+
+        Returns:
+            Dict with recompiled, prev_compile_tick, new_compile_tick,
+            project path.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "project.force_recompile", {}, timeout=120.0
+        )
+
+    @mcp.tool()
+    async def get_compile_freshness() -> dict[str, Any]:
+        """Report the age of the cached netlist and which docs are dirty.
+
+        Use this when you're about to disagree with the user about
+        connectivity — first check how stale the netlist you're
+        reading actually is, and whether any open editor docs haven't
+        been saved yet. A dirty doc means the netlist does NOT
+        reflect what the user is looking at.
+
+        Returns:
+            Dict with compile_age_ms, compile_cached (bool), ttl_ms,
+            open_doc_count, dirty_doc_count, dirty_docs[], project.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "project.get_compile_freshness", {}
         )
 
     @mcp.tool()

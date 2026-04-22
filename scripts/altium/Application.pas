@@ -209,7 +209,7 @@ Begin
 
     { Try to get PCB preferences from the active board }
     Try
-        Board := PCBServer.GetCurrentPCBBoard;
+        Board := GetPCBBoardAnywhere;
         If Board <> Nil Then
         Begin
             Data := Data + '"pcb":{';

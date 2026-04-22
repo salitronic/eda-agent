@@ -11,7 +11,7 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.22.4';
+    SCRIPT_VERSION = '2026.04.22.17';
     { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
     { result instead of recompiling. Design-review snapshots fire 3-4 project  }
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
@@ -207,6 +207,54 @@ End;
 { Walk every open logical document in the focused workspace and call         }
 { DoFileSave on the ones whose Modified flag is set. This is the explicit    }
 { flush that replaces the per-mutation save.                                 }
+{..............................................................................}
+{ GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
+{                                                                               }
+{ PCBServer.GetCurrentPCBBoard is FOCUS-DEPENDENT — it returns nil whenever    }
+{ the active Altium tab is a schematic (or any non-PCB doc). Every handler    }
+{ that wants to operate on "the project's PCB" hit this: the PCB is loaded,   }
+{ but the sch tab is on top, so Board := nil and the handler bails out with   }
+{ a misleading "No PCB document is active" error.                              }
+{                                                                               }
+{ This helper tries the focus lookup first, then falls back to walking the    }
+{ focused project's documents for a .PcbDoc and resolving via                 }
+{ PCBServer.GetPCBBoardByPath, which is focus-independent. Use this instead   }
+{ of PCBServer.GetCurrentPCBBoard in every handler that doesn't specifically }
+{ need "the currently-viewed PCB" semantics.                                   }
+{..............................................................................}
+
+Function GetPCBBoardAnywhere : IPCB_Board;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    I : Integer;
+    Path : String;
+Begin
+    Result := PCBServer.GetCurrentPCBBoard;
+    If Result <> Nil Then Exit;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Exit;
+
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        Try
+            Path := Doc.DM_FullPath;
+            If (UpperCase(Doc.DM_DocumentKind) = 'PCB') Or
+               (Pos('.PCBDOC', UpperCase(Path)) > 0) Then
+            Begin
+                Result := PCBServer.GetPCBBoardByPath(Path);
+                If Result <> Nil Then Exit;
+            End;
+        Except End;
+    End;
+End;
+
 Procedure SaveAllDirty;
 Var
     Workspace : IWorkspace;

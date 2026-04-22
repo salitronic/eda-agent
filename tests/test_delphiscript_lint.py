@@ -181,6 +181,68 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "pin electrical type eElectricIO",
         "Pin.Electrical := eElectricBiDir  →  Pin.Electrical := eElectricIO",
     ),
+    (
+        # Any textual reference to `.Corner` on an `Obj` variable typed
+        # as ISch_GraphicalObject (the base interface). Corner is only
+        # on ISch_Line and ISch_Rectangle, so even `Crn := Obj.Corner`
+        # fails to compile regardless of the assignment target — the
+        # typed-local trick does NOT sidestep it. The only compile-safe
+        # access is via ObjectId dispatch into a typed-subtype local
+        # (R : ISch_Rectangle; L : ISch_Line; R := Obj; Crn := R.Corner).
+        # See SetSchProperty / GetSchProperty in Generic.pas.
+        re.compile(r"\bObj\.Corner\b"),
+        "Obj.Corner on an ISch_GraphicalObject variable — Corner is "
+        "only on ISch_Rectangle / ISch_Line subtypes, the compiler "
+        "rejects it on the base interface",
+        "dispatch on Obj.ObjectId, narrow to R : ISch_Rectangle or "
+        "L : ISch_Line first, then read/write R.Corner / L.Corner",
+    ),
+    (
+        # IClient doesn't expose a numeric-index document enumerator
+        # in DelphiScript. `Client.GetDocumentCount` and
+        # `Client.GetDocument(I)` are both undeclared. The working
+        # path is to walk `Workspace.DM_Projects(i).DM_LogicalDocuments(j)`
+        # and resolve each logical doc via `Client.GetDocumentByPath(path)`
+        # — see App_GetOpenDocuments in Application.pas or
+        # Proj_GetCompileFreshness in Project.pas for the pattern.
+        re.compile(r"\bClient\.GetDocumentCount\b|\bClient\.GetDocument\s*\("),
+        "Client.GetDocumentCount / Client.GetDocument(I) are "
+        "undeclared in DelphiScript — no numeric enumerator on IClient",
+        "walk Workspace.DM_Projects(i).DM_LogicalDocuments(j), resolve "
+        "each via Client.GetDocumentByPath(path)",
+    ),
+    (
+        # PCBServer.GetCurrentPCBBoard is focus-dependent — it returns
+        # nil whenever the active Altium tab is a schematic, even though
+        # the PCB is loaded in the project. Handlers should use the
+        # focus-independent helper GetPCBBoardAnywhere (Main.pas)
+        # instead; it tries the focused lookup first, then falls back
+        # to PCBServer.GetPCBBoardByPath on the project's .PcbDoc.
+        # The only legitimate direct caller is GetPCBBoardAnywhere
+        # itself (lives in Main.pas).
+        re.compile(r"PCBServer\.GetCurrentPCBBoard\b"),
+        "Direct PCBServer.GetCurrentPCBBoard — fails when user is on a "
+        "sch tab. Use GetPCBBoardAnywhere (focus-independent wrapper)",
+        "Board := GetPCBBoardAnywhere;  "
+        "(only GetPCBBoardAnywhere itself may call the raw API)",
+        frozenset({"Main.pas"}),
+    ),
+    (
+        # Sch primitives don't expose a unified NetName property on the
+        # base ISch_GraphicalObject interface — nets are graph data
+        # derived at compile time, not a per-primitive attribute. Net
+        # labels / power ports / ports store the name in .Text; sheet
+        # entries in .Name; wires don't store it at all. Dispatch on
+        # ObjectId and read the per-type property. Try/Except does NOT
+        # catch the compile error.
+        re.compile(r"\b(?:Obj|Primitive|Prim)\.NetName\b"),
+        "Obj.NetName on an ISch_GraphicalObject variable — NetName is "
+        "not a property on the base schematic primitive interface",
+        "dispatch on Obj.ObjectId; read .Text for eNetLabel / "
+        "ePowerObject / ePort, .Name for eSheetEntry; wires carry no "
+        "net name at primitive level (use Pin.DM_FlattenedNetName on "
+        "the DM side for pin-level connectivity)",
+    ),
 ]
 
 
@@ -190,7 +252,14 @@ def _scan_file_for_bad_patterns(path: Path) -> list[str]:
     code_only = _strip_string_literals(src)
     violations: list[str] = []
     for lineno, fragment in _iter_lines_outside_comments(code_only):
-        for pattern, desc, hint in BAD_PATTERNS:
+        for entry in BAD_PATTERNS:
+            pattern, desc, hint = entry[0], entry[1], entry[2]
+            # Optional 4th element: set of filenames where the pattern
+            # is allowed (e.g. the wrapper helper itself legitimately
+            # calls the raw API it's wrapping).
+            allowed = entry[3] if len(entry) > 3 else frozenset()
+            if path.name in allowed:
+                continue
             if pattern.search(fragment):
                 violations.append(f"{path.name}:{lineno}  {desc}\n    hint: {hint}")
     return violations

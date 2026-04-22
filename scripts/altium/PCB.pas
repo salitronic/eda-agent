@@ -47,7 +47,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -91,7 +91,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -145,7 +145,7 @@ Var
     ClassExists : Boolean;
     CommaPos, AddedCount : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -238,7 +238,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -326,7 +326,7 @@ Var
     Rule : IPCB_Rule;
     RuleName, JsonProps : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -400,7 +400,7 @@ Var
     L : TLayer;
     UpdatedCount : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -580,7 +580,7 @@ Var
     JsonItems : String;
     First : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -633,7 +633,7 @@ Var
     First : Boolean;
     Count, HeightMils : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -699,7 +699,7 @@ Var
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -778,7 +778,7 @@ Var
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -907,7 +907,7 @@ Var
     NetCount, I, FoundIdx : Integer;
     SegLen, DX, DY, ArcAngle, RadiusMils : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1013,7 +1013,7 @@ Var
     Count : Integer;
     CopperThickMils, DielectricHeightMils, DielectricConst : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1088,7 +1088,7 @@ Var
     LayerName : String;
     TargetLayer : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1145,7 +1145,7 @@ Var
     LayerName : String;
     TargetLayer : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1213,7 +1213,7 @@ Var
     ThickStr, HeightStr, ConstStr : String;
     TargetLayer : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1305,7 +1305,7 @@ Var
     First : Boolean;
     I : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1380,7 +1380,7 @@ Var
     First : Boolean;
     I, Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1422,7 +1422,7 @@ Var
     LayerID : TLayer;
     Visible : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1459,7 +1459,7 @@ Function PCB_RepourPolygons(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1489,7 +1489,7 @@ Var
     FoundNet : IPCB_Net;
     ViaX, ViaY, ViaSize, ViaHole : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1580,7 +1580,7 @@ Var
     FoundNet : IPCB_Net;
     TX1, TY1, TX2, TY2, TWidth : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1674,7 +1674,7 @@ Var
     FoundNet : IPCB_Net;
     FieldVals : Array[0..6] Of String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1794,7 +1794,7 @@ Var
     ArcXC, ArcYC, ArcRad, ArcWidth : Integer;
     ArcSA, ArcEA : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1878,7 +1878,7 @@ Var
     TX, TY, THeight : Integer;
     TRot : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -1963,7 +1963,7 @@ Var
     FoundNet : IPCB_Net;
     FX1, FY1, FX2, FY2 : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2046,7 +2046,7 @@ Var
     Board : IPCB_Board;
     LayerStr, NetStr : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2086,7 +2086,7 @@ Var
     RuleValue, NetScopeVal : Integer;
     L : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2197,7 +2197,7 @@ Var
     RuleName : String;
     Found : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2266,7 +2266,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2337,7 +2337,7 @@ Var
     Comp : IPCB_Component;
     DesStr, OldLayer, NewLayer : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2401,7 +2401,7 @@ Var
     Comps : Array[0..99] Of IPCB_Component;
     MinX, MaxX, MinY, MaxY, CenterX, CenterY, AlignTarget : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2518,7 +2518,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2578,7 +2578,7 @@ Var
     DesStr, GridStr : String;
     GridSize, OldX, OldY, NewX, NewY : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2650,7 +2650,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2702,7 +2702,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2763,7 +2763,7 @@ Var
     FoundObj : IPCB_Primitive;
     Dist, BestDist : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -2895,7 +2895,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3005,7 +3005,7 @@ Var
     NetNameStr, WidthStr, TrackNetName : String;
     NewWidth, ModCount : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3088,7 +3088,7 @@ Var
     NetCounts : Array[0..127] Of Integer;
     NetTotal : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3183,7 +3183,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3255,7 +3255,7 @@ Var
     FoundNet : IPCB_Net;
     Found : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3371,7 +3371,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3440,7 +3440,7 @@ Var
     RX1, RY1, RX2, RY2, CommaPos : Integer;
     First : Boolean;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3554,7 +3554,7 @@ Var
     TotalTraceLen, DX, DY : Double;
     BoardWidth, BoardHeight, BoardArea : Double;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3662,7 +3662,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3722,7 +3722,7 @@ Var
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     Seg : TPolySegment;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3785,7 +3785,7 @@ Var
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3877,7 +3877,7 @@ Var
     Ix, Iy, PlacedCount : Integer;
     LowLayer, HighLayer : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -3962,7 +3962,7 @@ Var
     DPName, PosNet, NegNet : String;
     PosNetObj, NegNetObj : IPCB_Net;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4038,7 +4038,7 @@ Var
     LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4122,7 +4122,7 @@ Var
     Comp : IPCB_Component;
     Iterator : IPCB_BoardIterator;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4238,7 +4238,7 @@ Var
     X1, Y1, X2, Y2, TextX, TextY : Integer;
     Orient, LayerStr : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4328,7 +4328,7 @@ Var
     Shape, NameStr, NetStr, LayerStr : String;
     FoundNet : IPCB_Net;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4408,7 +4408,7 @@ Var
     Cx, Cy, X1, Y1, X2, Y2, Radius : Integer;
     LayerStr : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4467,7 +4467,7 @@ Var
     Cx, Cy, Radius : Integer;
     LayerStr : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4528,7 +4528,7 @@ Var
     X, Y, Rows, Cols, RowSpace, ColSpace : Integer;
     TargetLayer : TLayer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');

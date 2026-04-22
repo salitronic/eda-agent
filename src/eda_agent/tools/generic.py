@@ -465,12 +465,24 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Highlight a net by name in the active schematic or PCB document.
 
+        PCB path sets IPCB_Net.IsHighlighted on the matched net (the
+        documented property). Schematic path walks wires / net labels /
+        power ports / pins / sheet entries on the active sheet and
+        marks those whose NetName matches as Selection=True — the
+        closest thing Altium exposes to a "highlight" on schematic
+        without interactive commands.
+
         Args:
-            net_name: The net name to highlight (e.g., "VCC", "GND", "NET_D0")
-            clear_existing: Whether to clear existing highlights first (default True)
+            net_name: Exact net name to highlight (e.g., "VCC", "GND",
+                "NET_D0"). Returns NOT_FOUND if the net doesn't exist
+                on the PCB, or `highlighted=0` on schematic if no
+                primitive carries that net name on the active sheet
+                (check other sheets).
+            clear_existing: Clear existing highlights first (default True).
 
         Returns:
-            Dictionary with the highlighted net name and document context
+            Dict with success, net, context ("pcb" or "schematic"), and
+            `highlighted` (count of matches — 1 for PCB, N for sch).
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -481,6 +493,50 @@ def register_generic_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def crossref_net(net_name: str) -> dict[str, Any]:
+        """Compare the schematic vs PCB membership of a named net.
+
+        Returns the full pin list the SCHEMATIC assigns to this net
+        alongside the pad list the PCB assigns to the same net, plus
+        the diff in each direction.
+
+        USE THIS when:
+          - `get_nets` / `get_connectivity` returns an answer that
+            surprises you or the user (e.g. a net appears to be missing
+            a pin you expect on it, or appears to be disconnected from
+            a component you know is wired).
+          - Investigating "board works but schematic says otherwise" —
+            a non-empty `pcb_only` list means the PCB was fabricated
+            from an older schematic revision, or an edit broke the
+            post-ECO merge. `Design > Update PCB from Schematic` would
+            rip up those PCB connections.
+          - Debugging ECO workflow issues.
+
+        Args:
+            net_name: Exact net name as it appears in the schematic
+                (case-sensitive).
+
+        Returns:
+            Dict with:
+              - net_name
+              - sch_pin_count, pcb_pin_count
+              - matched (count of pins present on both sides)
+              - sch_only_count, pcb_only_count
+              - in_sync (True only when both sides list the same pins
+                AND the net exists on at least one side)
+              - sch_pins[], pcb_pins[] — each entry is
+                "Designator.PinNumber"
+              - sch_only[], pcb_only[] — the diff lists. If
+                `sch_only` is non-empty the PCB is missing those
+                connections. If `pcb_only` is non-empty the PCB has
+                stale connections the current schematic doesn't have.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.crossref_net", {"net_name": net_name}
+        )
 
     @mcp.tool()
     async def clear_highlights() -> dict[str, Any]:

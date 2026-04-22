@@ -76,6 +76,7 @@ def register_review_tools(mcp):
         include_bom: bool = True,
         run_drc: bool = False,
         run_erc: bool = False,
+        force_recompile: bool = False,
     ) -> dict[str, Any]:
         """Fetch a comprehensive design-review snapshot in ONE tool call.
 
@@ -110,6 +111,11 @@ def register_review_tools(mcp):
                 ran it, or run it separately when asked.
             run_erc: If True, runs ERC and includes results. Off by
                 default.
+            force_recompile: SaveAll + invalidate SmartCompile cache
+                + recompile before gathering any sections. Use this
+                when the user has been editing schematics in the
+                Altium UI and you need a guaranteed-fresh netlist.
+                Costs one extra ~5-10 s compile up-front.
 
         Returns:
             Dict with one key per requested section, plus:
@@ -120,6 +126,19 @@ def register_review_tools(mcp):
                 are still usable)
         """
         bridge = get_bridge()
+
+        # Force a fresh compile up-front if requested. Subsequent
+        # SmartCompile calls inside each section will hit the newly
+        # refreshed cache.
+        if force_recompile:
+            try:
+                await bridge.send_command_async(
+                    "project.force_recompile", {}, timeout=120.0
+                )
+            except Exception:
+                # Non-fatal — individual sections still run; they'll
+                # just use whatever compile state is current.
+                pass
 
         requested = list(sections) if sections else list(DEFAULT_SECTIONS)
         if include_bom and "bom" not in requested:

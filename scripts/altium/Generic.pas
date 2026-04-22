@@ -78,17 +78,51 @@ Begin
 End;
 
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    R : ISch_Rectangle;
+    L : ISch_Line;
+    Crn : TLocation;
+    Have : Boolean;
 Begin
     Result := '';
     Try
         // Identity
         If PropName = 'ObjectId'    Then Result := IntToStr(Obj.ObjectId)
 
-        // Coordinates (returned in mils)
+        // Coordinates (returned in mils). Corner is declared only on
+        // ISch_Rectangle and ISch_Line (ISch_RoundRectangle inherits from
+        // ISch_Rectangle) — NOT on the base ISch_GraphicalObject. The
+        // DelphiScript compiler rejects any textual reference to
+        // 'Obj.Corner' when Obj is typed ISch_GraphicalObject, regardless
+        // of the assignment target. The only compile-safe path is to
+        // dispatch on Obj.ObjectId and narrow to a typed-local interface
+        // that actually has Corner (R := Obj is a legal interface
+        // narrowing in DelphiScript, same pattern as GetSchComponentSubText).
         Else If PropName = 'Location.X'  Then Result := IntToStr(CoordToMils(Obj.Location.X))
         Else If PropName = 'Location.Y'  Then Result := IntToStr(CoordToMils(Obj.Location.Y))
-        Else If PropName = 'Corner.X'    Then Result := IntToStr(CoordToMils(Obj.Corner.X))
-        Else If PropName = 'Corner.Y'    Then Result := IntToStr(CoordToMils(Obj.Corner.Y))
+        Else If (PropName = 'Corner.X') Or (PropName = 'Corner.Y') Then
+        Begin
+            Have := False;
+            If (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle) Then
+            Begin
+                R := Obj;
+                Crn := R.Corner;
+                Have := True;
+            End
+            Else If Obj.ObjectId = eLine Then
+            Begin
+                L := Obj;
+                Crn := L.Corner;
+                Have := True;
+            End;
+            If Have Then
+            Begin
+                If PropName = 'Corner.X' Then
+                    Result := IntToStr(CoordToMils(Crn.X))
+                Else
+                    Result := IntToStr(CoordToMils(Crn.Y));
+            End;
+        End
 
         // String properties (late-bound across all types — primitives only)
         Else If PropName = 'Text'        Then Result := Obj.Text
@@ -142,6 +176,8 @@ Procedure SetSchProperty(Obj : ISch_GraphicalObject; PropName : String; Value : 
 Var
     Loc : TLocation;
     Crn : TLocation;
+    R : ISch_Rectangle;
+    L : ISch_Line;
 Begin
     Try
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
@@ -160,17 +196,32 @@ Begin
             Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
             Obj.Location := Loc;
         End
-        Else If PropName = 'Corner.X' Then
+        // Corner lives on ISch_Rectangle and ISch_Line only (not on the base
+        // ISch_GraphicalObject — the compiler rejects Obj.Corner regardless
+        // of assignment target). Dispatch on ObjectId and narrow to a typed
+        // local before touching Corner. See GetSchProperty for the read side.
+        Else If (PropName = 'Corner.X') Or (PropName = 'Corner.Y') Then
         Begin
-            Crn := Obj.Corner;
-            Crn.X := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Corner := Crn;
-        End
-        Else If PropName = 'Corner.Y' Then
-        Begin
-            Crn := Obj.Corner;
-            Crn.Y := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Corner := Crn;
+            If (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle) Then
+            Begin
+                R := Obj;
+                Crn := R.Corner;
+                If PropName = 'Corner.X' Then
+                    Crn.X := MilsToCoord(StrToIntDef(Value, 0))
+                Else
+                    Crn.Y := MilsToCoord(StrToIntDef(Value, 0));
+                R.Corner := Crn;
+            End
+            Else If Obj.ObjectId = eLine Then
+            Begin
+                L := Obj;
+                Crn := L.Corner;
+                If PropName = 'Corner.X' Then
+                    Crn.X := MilsToCoord(StrToIntDef(Value, 0))
+                Else
+                    Crn.Y := MilsToCoord(StrToIntDef(Value, 0));
+                L.Corner := Crn;
+            End;
         End
 
         // String properties (late-bound across all types — primitives only)
@@ -1005,7 +1056,7 @@ Begin
         Exit;
     End;
 
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board <> Nil Then
     Begin
         ResetParameters;
@@ -1032,7 +1083,7 @@ Begin
     If Action = '' Then Action := 'fit';
 
     SchDoc := SchServer.GetCurrentSchDocument;
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
 
     If Action = 'fit' Then
     Begin
@@ -1198,9 +1249,17 @@ Var
     ClearExisting : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Net : IPCB_Net;
+    Iterator : IPCB_BoardIterator;
+    AllNet : IPCB_Net;
+    SchIter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Matched : Integer;
+    TargetUpper, ObjNet : String;
 Begin
     NetName := ExtractJsonValue(Params, 'net_name');
     ClearExisting := ExtractJsonValue(Params, 'clear_existing');
+    TargetUpper := UpperCase(NetName);
 
     If NetName = '' Then
     Begin
@@ -1208,43 +1267,105 @@ Begin
         Exit;
     End;
 
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     SchDoc := SchServer.GetCurrentSchDocument;
 
+    { PCB path — use the documented IPCB_Net.IsHighlighted property set    }
+    { directly on the net object. The earlier RunProcess('PCB:NetColor-    }
+    { Highlight') was a guess; that process name isn't in the reference   }
+    { and silently no-ops, which is why the tool appeared to do nothing.  }
     If Board <> Nil Then
     Begin
-        // PCB: clear first if requested (default true)
         If (ClearExisting = '') Or (ClearExisting = 'true') Then
         Begin
-            ResetParameters;
-            RunProcess('PCB:DeSelect');
+            Iterator := Board.BoardIterator_Create;
+            Try
+                Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+                Iterator.AddFilter_LayerSet(AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+                AllNet := Iterator.FirstPCBObject;
+                While AllNet <> Nil Do
+                Begin
+                    Try AllNet.IsHighlighted := False; Except End;
+                    AllNet := Iterator.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iterator);
+            End;
         End;
 
-        ResetParameters;
-        AddStringParameter('Net', NetName);
-        RunProcess('PCB:NetColorHighlight');
+        Net := FindNetByName(Board, NetName);
+        If Net = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+                'Net not found on PCB: ' + NetName);
+            Exit;
+        End;
+
+        PCBServer.PreProcess;
+        Try Net.IsHighlighted := True; Except End;
+        PCBServer.PostProcess;
+        Try Board.GraphicallyInvalidate; Except End;
 
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"net":"' + EscapeJsonString(NetName) + '","context":"pcb"}');
-    End
-    Else If SchDoc <> Nil Then
+            '{"success":true,"net":"' + EscapeJsonString(NetName) + '",'
+            + '"context":"pcb","highlighted":1}');
+        Exit;
+    End;
+
+    { Schematic path — nets aren't first-class objects in Altium's Sch    }
+    { API. The base ISch_GraphicalObject has no NetName property          }
+    { (compile-time "Undeclared identifier: NetName"; Try/Except can't    }
+    { rescue it). Instead, dispatch on ObjectId:                          }
+    {   - eNetLabel / ePowerObject / ePort  — match against .Text         }
+    {   - eSheetEntry                        — match against .Name         }
+    {   - eWire                              — wires don't store a net    }
+    {     name as a primitive property; the net is derived at compile     }
+    {     time from the labels / ports attached to the wire segment.     }
+    {     We skip them — selecting the net labels is enough to make the  }
+    {     user eyeball-trace the wires.                                  }
+    If SchDoc <> Nil Then
     Begin
-        // Schematic: use Sch:NetHighlight
-        If (ClearExisting = '') Or (ClearExisting = 'true') Then
-        Begin
-            ResetParameters;
-            RunProcess('Sch:ClearHighlight');
-        End;
+        Matched := 0;
+        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            SchIter := SchDoc.SchIterator_Create;
+            Try
+                SchIter.AddFilter_ObjectSet(MkSet(eNetLabel, ePowerObject,
+                    ePort, eSheetEntry));
+                Obj := SchIter.FirstSchObject;
+                While Obj <> Nil Do
+                Begin
+                    ObjNet := '';
+                    If Obj.ObjectId = eSheetEntry Then
+                        Try ObjNet := Obj.Name; Except End
+                    Else
+                        Try ObjNet := Obj.Text; Except End;
 
-        ResetParameters;
-        AddStringParameter('Net', NetName);
-        RunProcess('Sch:NetHighlight');
+                    If (ObjNet <> '') And (UpperCase(ObjNet) = TargetUpper) Then
+                    Begin
+                        Try Obj.Selection := True; Except End;
+                        Matched := Matched + 1;
+                    End
+                    Else If (ClearExisting = '') Or (ClearExisting = 'true') Then
+                        Try Obj.Selection := False; Except End;
+                    Obj := SchIter.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(SchIter);
+            End;
+        Finally
+            SchServer.ProcessControl.PostProcess(SchDoc, '');
+        End;
+        Try SchDoc.GraphicallyInvalidate; Except End;
 
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"net":"' + EscapeJsonString(NetName) + '","context":"schematic"}');
-    End
-    Else
-        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
+            '{"success":true,"net":"' + EscapeJsonString(NetName) + '",'
+            + '"context":"schematic","highlighted":' + IntToStr(Matched) + '}');
+        Exit;
+    End;
+
+    Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
 End;
 
 {..............................................................................}
@@ -1255,24 +1376,83 @@ Function Gen_ClearHighlights(RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Net : IPCB_Net;
+    SchIter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Cleared : Integer;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     SchDoc := SchServer.GetCurrentSchDocument;
+    Cleared := 0;
 
     If Board <> Nil Then
     Begin
-        ResetParameters;
-        RunProcess('PCB:ClearAllHighlights');
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"context":"pcb"}');
-    End
-    Else If SchDoc <> Nil Then
+        { Walk every net on the board and clear its IsHighlighted flag.   }
+        { RunProcess('PCB:ClearAllHighlights') isn't documented and       }
+        { appears to no-op — use the typed API path.                      }
+        Iterator := Board.BoardIterator_Create;
+        Try
+            Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
+            Net := Iterator.FirstPCBObject;
+            PCBServer.PreProcess;
+            While Net <> Nil Do
+            Begin
+                Try
+                    If Net.IsHighlighted Then
+                    Begin
+                        Net.IsHighlighted := False;
+                        Cleared := Cleared + 1;
+                    End;
+                Except End;
+                Net := Iterator.NextPCBObject;
+            End;
+            PCBServer.PostProcess;
+        Finally
+            Board.BoardIterator_Destroy(Iterator);
+        End;
+        Try Board.GraphicallyInvalidate; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"context":"pcb","cleared":' + IntToStr(Cleared) + '}');
+        Exit;
+    End;
+
+    If SchDoc <> Nil Then
     Begin
-        ResetParameters;
-        RunProcess('Sch:ClearHighlight');
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"context":"schematic"}');
-    End
-    Else
-        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
+        { Deselect all connective primitives on the active sheet.          }
+        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            SchIter := SchDoc.SchIterator_Create;
+            Try
+                SchIter.AddFilter_ObjectSet(MkSet(eWire, eNetLabel, ePowerObject,
+                    ePort, ePin, eSheetEntry));
+                Obj := SchIter.FirstSchObject;
+                While Obj <> Nil Do
+                Begin
+                    Try
+                        If Obj.Selection Then
+                        Begin
+                            Obj.Selection := False;
+                            Cleared := Cleared + 1;
+                        End;
+                    Except End;
+                    Obj := SchIter.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(SchIter);
+            End;
+        Finally
+            SchServer.ProcessControl.PostProcess(SchDoc, '');
+        End;
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"context":"schematic","cleared":' + IntToStr(Cleared) + '}');
+        Exit;
+    End;
+
+    Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
 End;
 
 {..............................................................................}
@@ -1432,7 +1612,7 @@ Begin
         Exit;
     End;
 
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     SchDoc := SchServer.GetCurrentSchDocument;
 
     If Board <> Nil Then
@@ -1472,7 +1652,7 @@ Begin
     Mode := ExtractJsonValue(Params, 'mode');
     If Mode = '' Then Mode := '3d';
 
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No active PCB document');
@@ -1594,7 +1774,7 @@ Var
     Board : IPCB_Board;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
 
     If SchDoc <> Nil Then
     Begin
@@ -3032,7 +3212,7 @@ Var
     Data : String;
     SheetStyle, UnitStr : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc <> Nil Then
@@ -4583,6 +4763,259 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_CrossRefNet - Compare the schematic vs PCB membership of a named net.   }
+{                                                                               }
+{ Reports the pin list the compiled SCHEMATIC assigns to `net_name` alongside  }
+{ the pad list the PCB assigns to the same net, plus the diff in each         }
+{ direction. An in_sync=false result means either the design hasn't been     }
+{ ECO'd (Design -> Update PCB from Schematic) OR the PCB was fabricated from }
+{ an earlier schematic revision and a later edit broke the merge.             }
+{                                                                               }
+{ This is the go-to tool when schematic connectivity surprises the user.      }
+{ Params: net_name.                                                            }
+{..............................................................................}
+
+Function Gen_CrossRefNet(Params : String; RequestId : String) : String;
+Var
+    NetName : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    Comp : IComponent;
+    Pin : IPin;
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    { Must be typed as IPCB_Pad — the base IPCB_Primitive doesn't expose   }
+    { .Net, .Component, or .Name, and accesses fail silently under the    }
+    { surrounding Try/Except, which is why every net returned 0 pads.     }
+    Pad : IPCB_Pad;
+    I, J, K, N : Integer;
+    { Diagnostic counters — emitted in the response so we can tell "PCB   }
+    { is open but iterator returned nothing" from "iterator returned pads }
+    { but every one had Pad.Net = nil" from "iterator ran fine and we    }
+    { just got no name match".                                            }
+    DiagBoardNil, DiagIterVisited, DiagPadNetNil, DiagNameRaise : Integer;
+    NetReadOk : Boolean;
+    SchList, PCBList : Array[0..999] Of String;
+    SchCount, PCBCount : Integer;
+    SchJson, PCBJson, SchOnlyJson, PCBOnlyJson, Key : String;
+    FirstS, FirstP, FirstSO, FirstPO, InPCB, InSch, InSync : Boolean;
+    SchOnlyCount, PCBOnlyCount, MatchCount : Integer;
+Begin
+    NetName := ExtractJsonValue(Params, 'net_name');
+    If NetName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'net_name is required');
+        Exit;
+    End;
+
+    SchCount := 0;
+    PCBCount := 0;
+    DiagBoardNil := 0;
+    DiagIterVisited := 0;
+    DiagPadNetNil := 0;
+    DiagNameRaise := 0;
+
+    { --- Schematic side: compile project, walk every component's pins,     }
+    { collect "designator.pin_number" for every pin whose flattened net    }
+    { name matches.                                                         }
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Project := Workspace.DM_FocusedProject;
+        If Project <> Nil Then
+        Begin
+            SmartCompile(Project);
+            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+            Begin
+                Doc := Project.DM_LogicalDocuments(I);
+                If Doc = Nil Then Continue;
+                For J := 0 To Doc.DM_ComponentCount - 1 Do
+                Begin
+                    Comp := Doc.DM_Components(J);
+                    If Comp = Nil Then Continue;
+                    For K := 0 To Comp.DM_PinCount - 1 Do
+                    Begin
+                        Pin := Comp.DM_Pins(K);
+                        If Pin = Nil Then Continue;
+                        If SchCount > 999 Then Break;
+                        Try
+                            If Pin.DM_FlattenedNetName = NetName Then
+                            Begin
+                                SchList[SchCount] := Comp.DM_PhysicalDesignator + '.' + Pin.DM_PinNumber;
+                                SchCount := SchCount + 1;
+                            End;
+                        Except End;
+                    End;
+                End;
+            End;
+        End;
+    End;
+
+    { --- PCB side: iterate every pad on the board, collect the ones whose }
+    { .Net matches. Each property access is in its own Try/Except and     }
+    { we use nested If (not boolean And) so a nil/raising step never      }
+    { drops an otherwise-valid pad — that was the bug that made pcb_pin_ }
+    { count come back 0 even though pcb_get_component_pads found them.    }
+    { GetCurrentPCBBoard only returns a board when a PCB tab has focus.   }
+    { crossref_net is typically called while the USER is looking at a    }
+    { schematic, so focus-based lookup silently returns nil — that's the }
+    { source of the original pcb_pin_count:0 bug. Fall back to iterating }
+    { the project's documents, find the first .PcbDoc, resolve it via   }
+    { PCBServer.GetPCBBoardByPath which doesn't care about focus.         }
+    Board := GetPCBBoardAnywhere;
+    If (Board = Nil) And (Workspace <> Nil) And (Project <> Nil) Then
+    Begin
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(I);
+            If Doc = Nil Then Continue;
+            Try
+                If (UpperCase(Doc.DM_DocumentKind) = 'PCB')
+                    Or (Pos('.PCBDOC', UpperCase(Doc.DM_FullPath)) > 0) Then
+                Begin
+                    Board := PCBServer.GetPCBBoardByPath(Doc.DM_FullPath);
+                    If Board <> Nil Then Break;
+                End;
+            Except End;
+        End;
+    End;
+
+    If Board = Nil Then
+        DiagBoardNil := 1
+    Else
+    Begin
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Pad := Iter.FirstPCBObject;
+            While (Pad <> Nil) And (PCBCount <= 999) Do
+            Begin
+                DiagIterVisited := DiagIterVisited + 1;
+                NetReadOk := False;
+                Key := '';
+                Try
+                    If Pad.Net = Nil Then
+                        DiagPadNetNil := DiagPadNetNil + 1
+                    Else
+                    Begin
+                        NetReadOk := True;
+                        If Pad.Net.Name = NetName Then
+                            Key := '__MATCHED__';
+                    End;
+                Except
+                    DiagNameRaise := DiagNameRaise + 1;
+                End;
+
+                If Key = '__MATCHED__' Then
+                Begin
+                    Key := '';
+                    Try
+                        If Pad.Component <> Nil Then
+                            Key := Pad.Component.Name.Text + '.';
+                    Except End;
+                    If Key = '' Then Key := '?.';
+                    Try Key := Key + Pad.Name; Except End;
+                    PCBList[PCBCount] := Key;
+                    PCBCount := PCBCount + 1;
+                End;
+
+                Pad := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    End;
+
+    { Build JSON arrays + diff (sch_only = in sch but not pcb, etc.). O(N*M) }
+    { is fine at our scale (nets with 1000+ pins are rare).                   }
+    SchJson := '';
+    FirstS := True;
+    For I := 0 To SchCount - 1 Do
+    Begin
+        If Not FirstS Then SchJson := SchJson + ',';
+        FirstS := False;
+        SchJson := SchJson + '"' + EscapeJsonString(SchList[I]) + '"';
+    End;
+
+    PCBJson := '';
+    FirstP := True;
+    For I := 0 To PCBCount - 1 Do
+    Begin
+        If Not FirstP Then PCBJson := PCBJson + ',';
+        FirstP := False;
+        PCBJson := PCBJson + '"' + EscapeJsonString(PCBList[I]) + '"';
+    End;
+
+    SchOnlyJson := '';
+    FirstSO := True;
+    SchOnlyCount := 0;
+    For I := 0 To SchCount - 1 Do
+    Begin
+        InPCB := False;
+        For N := 0 To PCBCount - 1 Do
+            If SchList[I] = PCBList[N] Then
+            Begin
+                InPCB := True;
+                Break;
+            End;
+        If Not InPCB Then
+        Begin
+            If Not FirstSO Then SchOnlyJson := SchOnlyJson + ',';
+            FirstSO := False;
+            SchOnlyJson := SchOnlyJson + '"' + EscapeJsonString(SchList[I]) + '"';
+            SchOnlyCount := SchOnlyCount + 1;
+        End;
+    End;
+
+    PCBOnlyJson := '';
+    FirstPO := True;
+    PCBOnlyCount := 0;
+    For I := 0 To PCBCount - 1 Do
+    Begin
+        InSch := False;
+        For N := 0 To SchCount - 1 Do
+            If PCBList[I] = SchList[N] Then
+            Begin
+                InSch := True;
+                Break;
+            End;
+        If Not InSch Then
+        Begin
+            If Not FirstPO Then PCBOnlyJson := PCBOnlyJson + ',';
+            FirstPO := False;
+            PCBOnlyJson := PCBOnlyJson + '"' + EscapeJsonString(PCBList[I]) + '"';
+            PCBOnlyCount := PCBOnlyCount + 1;
+        End;
+    End;
+
+    MatchCount := SchCount - SchOnlyCount;
+    InSync := (SchOnlyCount = 0) And (PCBOnlyCount = 0) And
+              ((SchCount > 0) Or (PCBCount > 0));
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"net_name":"' + EscapeJsonString(NetName) + '",'
+        + '"sch_pin_count":' + IntToStr(SchCount) + ','
+        + '"pcb_pin_count":' + IntToStr(PCBCount) + ','
+        + '"matched":' + IntToStr(MatchCount) + ','
+        + '"sch_only_count":' + IntToStr(SchOnlyCount) + ','
+        + '"pcb_only_count":' + IntToStr(PCBOnlyCount) + ','
+        + '"in_sync":' + BoolToJsonStr(InSync) + ','
+        + '"sch_pins":[' + SchJson + '],'
+        + '"pcb_pins":[' + PCBJson + '],'
+        + '"sch_only":[' + SchOnlyJson + '],'
+        + '"pcb_only":[' + PCBOnlyJson + '],'
+        + '"_diag":{'
+        + '"board_nil":' + IntToStr(DiagBoardNil) + ','
+        + '"iter_visited":' + IntToStr(DiagIterVisited) + ','
+        + '"pad_net_nil":' + IntToStr(DiagPadNetNil) + ','
+        + '"name_read_raised":' + IntToStr(DiagNameRaise)
+        + '}}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end                                            }
 {..............................................................................}
 
@@ -4603,6 +5036,7 @@ Begin
         'run_erc':          Result := Gen_RunERC(Params, RequestId);
         'highlight_net':    Result := Gen_HighlightNet(Params, RequestId);
         'clear_highlights': Result := Gen_ClearHighlights(RequestId);
+        'crossref_net':     Result := Gen_CrossRefNet(Params, RequestId);
         'add_sheet':        Result := Gen_AddSheet(Params, RequestId);
         'delete_sheet':     Result := Gen_DeleteSheet(Params, RequestId);
         'zoom_to_xy':       Result := Gen_ZoomToXY(Params, RequestId);

@@ -248,7 +248,7 @@ Var
     TotalMatched : Integer;
     JsonItems : String;
 Begin
-    Board := PCBServer.GetCurrentPCBBoard;
+    Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
