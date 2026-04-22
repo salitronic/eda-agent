@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**. It exposes 140+ tools covering schematic, PCB, library, and project operations over a persistent DelphiScript bridge — the AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**. It exposes 195+ tools covering schematic, PCB, library, and project operations over a persistent DelphiScript bridge — the AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -28,14 +28,21 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **140+ tools** across application, project, library, generic, and PCB categories
+- **195+ tools** across application, project, library, schematic/general, and PCB categories
 - **Generic primitives** (`query_objects`, `modify_objects`, `create_object`, `delete_objects`, `run_process`) that work on almost any schematic or PCB object type via late-binding — avoids per-type handler proliferation
+- **Bulk batch primitives** — `batch_modify`, `batch_create`, `batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `place_wires`, `place_sch_components_from_library`, `lib_add_pins`, `get_connectivity_many`, `sch_attach_spice_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10–100× on multi-item edits
+- **Design review snapshot** — `design_review_snapshot` bundles 8–12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
+- **Datasheet-first discipline** — every component-surfacing response (`pcb_get_components`, `get_bom`, `get_component_info`, `find_component`, `lib_search`, `design_review_snapshot`, `sch_get_simulation_readiness`) carries a `_datasheet_guidance` block with per-part vendor search queries. `attach_to_altium` / `ping_altium` carry a `_system_reminder` so every MCP client that connects sees the rule at session start. LLM-fabricated datasheet values are forbidden; WebFetch/WebSearch are called out by name
+- **Sch ↔ PCB netlist crossref** — `crossref_net(net_name)` compares the schematic pin list against the PCB pad list for the same net. Catches ECO drift, stale post-fabrication routing, phantom nets from port/sheet-entry rename conflicts. `in_sync` flag + `sch_only` / `pcb_only` diff
+- **SPICE simulation workflow** — `sch_get_simulation_readiness` audits every component and partitions into ready / needs-primitive / needs-file. `sch_attach_spice_primitive(s)` sets SpicePrefix + Value on passives. `sch_attach_spice_model` links a vendor `.mdl` / `.ckt`. `sim_run` dispatches the simulator. Built-in guardrail: never fabricate a SPICE model file, fetch the vendor one
+- **Focus-independent PCB access** — every PCB handler falls back to `GetPCBBoardByPath` when `GetCurrentPCBBoard` returns nil (user has a sch tab focused). No more misleading "No PCB document is active" when the PCB is right there
+- **Fast & compile-cached** — persistent polling loop; ~10 ms per call in active mode. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `force_recompile` + `get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
 - **Persistent polling loop** — one script start, then ~10 ms per tool call in active mode
-- **Batched routing** — `pcb_place_tracks` takes a list of segments and places them all in one IPC round-trip; routing a whole net is the same wall time as placing a single track
 - **Annotation runs silently** — `annotate` designates components without popping the annotate dialog
 - **Deferred save for speed** — mutations mark documents as modified in memory; disk writes happen on explicit `save_all` (or automatically on `detach_from_altium`). Before this, every edit triggered a full project save, which dominated latency
 - **Live dashboard** — a floating Altium-side window shows status, request count, per-command performance stats, and a command log. Detach button exits the loop cleanly; `Hide pings` / `Only >100ms` checkboxes filter noise
 - **Activity logs** — every command is appended to `workspace/activity.log` (CSV with timestamps, durations, command name, response size). The bridge also writes `bridge_trace.log` for IPC-level diagnostics
+- **Bulk-tool nudge** — when a singular tool is hit 2–3 times in 10 s, the response carries a `_hint_bulk` field pointing at the batch variant. Clients that missed the bulk tool in the docstring learn about it at runtime
 - **pip-installable** — no admin, no installer, no touching Altium's config
 
 ## Requirements
@@ -98,6 +105,12 @@ The polling loop starts and your MCP client can drive Altium.
 
 ## Example use cases
 
+### Full-project design review
+
+> *"Do a design review of the PoE front-end. Pull the snapshot, fetch the TPS2372 and TL072 datasheets, and flag anything that doesn't match."*
+
+One `design_review_snapshot` call gives the AI project info, design stats, components, nets, rules, diff, messages, board stats, and BOM — plus a datasheet-fetch checklist. The AI then grounds every recommendation in the vendor datasheets it actually pulled. 8–12 separate queries → one tool call.
+
 ### Schematic review
 
 The AI reads your schematic live. Ask it anything a reviewer would:
@@ -112,13 +125,29 @@ The AI reads your schematic live. Ask it anything a reviewer would:
 >
 > *"Compare the focused schematic to the version from 3 weeks ago — what parameter values changed?"*
 
-Under the hood, the AI calls tools like `query_objects(object_type="eSchComponent", scope="project")`, `get_connectivity(designator=...)`, `get_nets(...)`, `modify_objects(...)`, and so on. You watch Altium repaint as it works.
+Under the hood, the AI calls tools like `query_objects(object_type="eSchComponent", scope="project")`, `get_connectivity_many(designators=[...])`, `get_nets(...)`, `modify_objects(...)`, and so on. You watch Altium repaint as it works.
+
+### Sch ↔ PCB drift detection
+
+> *"Run `crossref_net` on POE_PG. The PCB seems to have R7 on this net but I'm not sure the schematic still does."*
+
+The response shows sch pins, PCB pads, matched count, and the diff in each direction. A non-empty `pcb_only` list means the board was fabricated from an earlier schematic revision and a later edit broke the post-ECO merge — catch this before the next ECO push rips routed connections. `in_sync: false` plus the exact diff tells you which port or sheet-entry rename to undo.
+
+### SPICE simulation setup
+
+> *"Set this schematic up for an AC sweep. Attach SPICE primitives to every passive, fetch vendor SPICE models for the op-amps, and tell me if any part can't be simulated."*
+
+`sch_get_simulation_readiness` partitions the design into `ready` / `needs_primitive` / `needs_file`. The AI batches primitives onto every passive in one `sch_attach_spice_primitives` call, searches vendor sites for the IC models, attaches them with `sch_attach_spice_model`, and reports any holdouts. It will not fabricate a SPICE model file — the rule is baked into the tool response.
 
 ### Library hygiene
 
 > *"Open `Resistors.SchLib` and report every component missing a Value, ManufacturerPart1, or Description parameter. Fill in the missing Description from the datasheet URL if present."*
 >
 > *"Diff our `Caps.SchLib` against `Caps_vendor.SchLib` and tell me what's new or changed."*
+>
+> *"Create a new 48-pin symbol for STM32F411 with this pinout table."*
+
+The last one uses `lib_add_pins` — one call places the whole pinout in a single transaction instead of 48 LLM turns.
 
 ### PCB spot-checks
 
@@ -129,12 +158,20 @@ Under the hood, the AI calls tools like `query_objects(object_type="eSchComponen
 > *"Show me all vias on the 12V net and their drill sizes."*
 >
 > *"Run DRC and summarize the violations by severity."*
+>
+> *"What does the `Clearance_HV` rule actually enforce — clearance value, scope expressions, priority?"*
+
+That last one uses `pcb_get_rule_properties` — returns the actual numeric gap / widths / impedance targets, not just rule metadata.
 
 ### Bulk changes
 
 > *"Every 0402 resistor with value 10k, set its Tolerance parameter to 1% and Voltage to 50V."*
 >
 > *"Rename the net OLD_CS to SPI_CS across every sheet in the project."*
+>
+> *"Move C1–C20 into this 200-mil grid layout pattern."*
+
+Bulk tools like `batch_modify`, `pcb_move_components`, and `place_sch_components_from_library` finish the whole operation in one IPC round-trip.
 
 ## Known limitations
 
@@ -170,7 +207,7 @@ In practice, while an MCP client is attached and sending keep-alive pings every 
 
 ### Tools vary in maturity
 
-Not every one of the 140+ tools has been exercised on every Altium version or design size. The [generic primitives](#generic-primitives) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
+Not every one of the 195+ tools has been exercised on every Altium version or design size. The [generic primitives](#generic-primitives) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
 
 ## Timeout and server lifecycle
 
@@ -202,7 +239,7 @@ The polling loop goes into idle mode after ~1 second of no MCP commands. In idle
 
 ## Tool reference
 
-140+ tools grouped into five categories. The **generic primitives** are the engine; the rest are convenience wrappers or category-specific operations.
+195+ tools grouped into five categories. The **generic primitives** are the engine; the rest are convenience wrappers or category-specific operations.
 
 ### Generic primitives (the core)
 
@@ -241,7 +278,7 @@ These five tools cover most day-to-day work. They accept any object type support
 | `execute_menu` | Run a menu command by path (e.g., `Tools|Design Rule Check`) |
 | `get_clipboard_text` | Read text from Windows clipboard |
 
-### Project (43 tools)
+### Project (47 tools)
 
 Lifecycle, parameters, compilation, analysis, outputs, ECO sync, variants.
 
@@ -258,18 +295,20 @@ Lifecycle, parameters, compilation, analysis, outputs, ECO sync, variants.
 | `get_bom` / `get_nets` / `get_component_info` / `get_connectivity` / `find_component` | Design queries |
 | `cross_probe` / `lock_designator` / `annotate` | Designator management |
 | `compare_sch_pcb` / `update_pcb` / `update_schematic` | ECO sync (see [ECO limitation](#eco-sch--pcb-update-is-not-reliably-scriptable)) |
+| `get_connectivity_many` | Pin-net connectivity for many designators in one round-trip (bulk) |
+| `force_recompile` / `get_compile_freshness` | Explicit SmartCompile cache control — save all dirty docs, invalidate, recompile; report cache age + dirty-in-editor docs |
 | `get_variants` / `get_active_variant` / `set_active_variant` / `create_variant` | Variant management |
 | `export_pdf` / `export_step` / `export_dxf` / `export_image` / `generate_output` | Output generation |
 | `get_outjob_containers` / `run_outjob` | OutJob execution |
 
-### Library (21 tools)
+### Library (22 tools)
 
 Symbol and footprint creation, linking, batch editing, comparison.
 
 | Tool | Purpose |
 |---|---|
 | `lib_create_symbol` / `lib_copy_component` / `lib_set_component_description` | Symbol lifecycle |
-| `lib_add_pin` / `lib_get_pin_list` | Pins |
+| `lib_add_pin` / `lib_add_pins` / `lib_get_pin_list` | Pins (bulk variant places the whole pinout in one call) |
 | `lib_add_symbol_rectangle` / `lib_add_symbol_line` / `lib_add_symbol_arc` / `lib_add_symbol_polygon` | Symbol graphics |
 | `lib_create_footprint` | Footprint creation |
 | `lib_add_footprint_pad` / `lib_add_footprint_track` / `lib_add_footprint_arc` | Footprint primitives |
@@ -278,7 +317,7 @@ Symbol and footprint creation, linking, batch editing, comparison.
 | `lib_batch_set_params` / `lib_batch_rename` | Bulk parameter / rename operations |
 | `lib_diff_libraries` | Compare two libraries |
 
-### Schematic and general (28 tools)
+### Schematic and general (62 tools)
 
 Schematic-side operations plus viewport and sheet management.
 
@@ -297,11 +336,23 @@ Schematic-side operations plus viewport and sheet management.
 | `place_no_erc` / `place_junction` / `place_image` / `place_note` / `place_directive` | Markers, annotations, directives |
 | `place_rectangle` / `place_line` | Graphical primitives |
 | `copy_objects` / `get_object_count` / `replace_component` | Bulk operations |
-| `set_grid` | Change snap / visible grid |
+| `set_grid` / `sch_set_units` | Change snap / visible grid / UnitSystem (mm ↔ mil) |
 | `get_font_spec` / `get_font_id` | Font table lookup |
+| `batch_create` / `batch_delete` | Generic bulk create / delete meta-tools |
+| `place_wires` | Place many wire segments in one IPC round-trip |
+| `place_sch_components_from_library` | Bulk BOM placement — library_path + lib_ref + x/y/rotation per entry |
+| `sch_add_directive` / `sch_get_directives` | Parameter-set directives (diff pair tags, net class, custom rules) |
+| `sch_place_harness_connector` / `sch_place_cross_sheet_connector` | Harness bundles + hierarchical off-sheet ports |
+| `sch_place_probe` | SPICE / simulation measurement node |
+| `sch_set_component_part_id` | Switch active sub-part on a multi-gate symbol (U1A ↔ U1B) |
+| `sch_add_datafile_link` | Attach IBIS / SPICE model / CSV to a component's implementation |
+| `sch_get_constraint_groups` | Enumerate `DM_ConstraintGroups` (FPGA-style pin/timing constraints) |
+| `sch_get_simulation_readiness` / `sch_attach_spice_primitive` / `sch_attach_spice_primitives` / `sch_attach_spice_model` / `sim_run` | SPICE workflow — audit, attach, simulate |
+| `design_review_snapshot` / `datasheet_checklist` | One-call full-project review + datasheet discipline |
+| `crossref_net` | Sch pin list vs PCB pad list for a named net — diff + `in_sync` flag |
 | `generic_run_process` | Run any Altium process command |
 
-### PCB (37 tools)
+### PCB (55 tools)
 
 Queries and modifications on the active PCB document.
 
@@ -309,18 +360,20 @@ Queries and modifications on the active PCB document.
 |---|---|
 | `pcb_get_nets` / `pcb_get_net_classes` / `pcb_create_net_class` | Net / net class management |
 | `pcb_get_design_rules` / `pcb_create_design_rule` / `pcb_delete_design_rule` / `pcb_get_diff_pair_rules` / `pcb_get_room_rules` | Design rules |
+| `pcb_get_rule_properties` / `pcb_set_rule_properties` | Read and write the actual values a design rule enforces (clearance gap, min/max/preferred trace width, hole sizes, impedance targets, parallel-segment limits) — not just metadata |
 | `pcb_run_drc` | Run design rule check, return violations |
-| `pcb_get_components` / `pcb_move_component` / `pcb_flip_component` / `pcb_align_components` / `pcb_snap_to_grid` | Component placement |
+| `pcb_get_components` / `pcb_move_component` / `pcb_move_components` / `pcb_flip_component` / `pcb_align_components` / `pcb_snap_to_grid` | Component placement (bulk `pcb_move_components` for N components in one round-trip) |
 | `pcb_get_component_pads` / `pcb_get_pad_properties` | Pad inspection |
 | `pcb_place_track` / `pcb_place_tracks` / `pcb_set_track_width` / `pcb_get_trace_lengths` | Track operations (batch variant for whole-net routing) |
 | `pcb_place_via` / `pcb_place_via_array` / `pcb_get_vias` | Via operations and stitching arrays |
 | `pcb_place_arc` / `pcb_place_text` / `pcb_place_fill` / `pcb_place_pad` | Primitive placement |
 | `pcb_place_dimension` / `pcb_place_angular_dimension` / `pcb_place_radial_dimension` | Dimension annotations |
 | `pcb_start_polygon_placement` / `pcb_place_polygon_rect` / `pcb_place_region` / `pcb_get_polygons` / `pcb_modify_polygon` / `pcb_repour_polygons` | Polygons and regions |
+| `pcb_place_embedded_board` | Panelization — drop an `IPCB_EmbeddedBoard` grid referencing a child `.PcbDoc` |
 | `pcb_create_diff_pair` / `pcb_distribute_components` / `pcb_set_board_shape` | Higher-level ops |
 | `pcb_create_room` | Room placement |
 | `pcb_get_unrouted_nets` | Ratsnest / unrouted analysis |
-| `pcb_get_layer_stackup` / `pcb_set_layer_visibility` | Layer stack |
+| `pcb_get_layer_stackup` / `pcb_add_layer` / `pcb_remove_layer` / `pcb_modify_layer` / `pcb_set_layer_visibility` | Layer stack — get, add/remove layers, copper thickness + dielectric properties |
 | `pcb_get_board_outline` / `pcb_get_board_statistics` | Board-level queries |
 | `pcb_get_selected_objects` | Current selection |
 | `pcb_export_coordinates` | Pick-and-place export |
