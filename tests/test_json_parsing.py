@@ -144,30 +144,37 @@ def escape_json_string(s: str) -> str:
     return result
 
 
-def build_success_response(request_id: str, data: str) -> str:
-    """Mirror: Main.pas:146 BuildSuccessResponse
+PROTOCOL_VERSION = 2
 
-    NOTE: data is a raw JSON string, not a Python object. The DelphiScript
-    concatenates it directly into the response JSON string.
-    """
+
+def build_success_response(request_id: str, data: str) -> str:
+    """Mirror: Main.pas BuildSuccessResponse — includes protocol_version."""
     if data == '':
         data = 'null'
-    return '{"id":"' + request_id + '","success":true,"data":' + data + ',"error":null}'
+    return ('{"protocol_version":' + str(PROTOCOL_VERSION) +
+            ',"id":"' + request_id +
+            '","success":true,"data":' + data + ',"error":null}')
 
 
-def build_error_response(request_id: str, error_code: str, error_msg: str) -> str:
-    """Mirror: Main.pas:153 BuildErrorResponse
+def build_error_response(request_id: str, error_code: str, error_msg: str,
+                         details_json: str = '') -> str:
+    """Mirror: Main.pas BuildErrorResponseDetailed.
 
-    The error message gets inline JSON-escaped (same order as EscapeJsonString).
+    Inline JSON-escapes the message (same order as EscapeJsonString).
+    Pass details_json='' for a null details field, or a JSON value string.
     """
-    # Inline escape — same as the DelphiScript in BuildErrorResponse
     error_msg = error_msg.replace('\\', '\\\\')
     error_msg = error_msg.replace('"', '\\"')
     error_msg = error_msg.replace('\r', '\\r')
     error_msg = error_msg.replace('\n', '\\n')
     error_msg = error_msg.replace('\t', '\\t')
-    return ('{"id":"' + request_id + '","success":false,"data":null,'
-            '"error":{"code":"' + error_code + '","message":"' + error_msg + '"}}')
+    details_field = details_json if details_json else 'null'
+    return ('{"protocol_version":' + str(PROTOCOL_VERSION) +
+            ',"id":"' + request_id +
+            '","success":false,"data":null,'
+            '"error":{"code":"' + error_code +
+            '","message":"' + error_msg +
+            '","details":' + details_field + '}}')
 
 
 # ---------------------------------------------------------------------------

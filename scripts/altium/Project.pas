@@ -26,7 +26,10 @@ End;
 
 Function Proj_Create(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, ProjectType : String;
+    ProjectPath, ProjectType, ProjectExt : String;
+    StubContent : String;
+    F : TextFile;
+    Saved : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     ProjectPath := StringReplace(ProjectPath, '\\', '\', -1);
@@ -34,12 +37,57 @@ Begin
 
     If ProjectType = '' Then ProjectType := 'PCB';
 
+    // Altium project files are INI-like text. Write a minimal stub directly
+    // to disk so we don't trigger the GUI New Project dialog, then open it
+    // via WorkspaceManager:OpenObject (the documented programmatic open).
+    // The stub is the smallest .PrjPcb that Altium will load and let us
+    // attach documents to.
+    If ProjectType = 'PCB' Then
+    Begin
+        ProjectExt := '.PrjPcb';
+        StubContent :=
+            '[Design]' + #13#10 +
+            'Version=1.0' + #13#10 +
+            'HierarchyMode=0' + #13#10 +
+            'OpenOutputs=1' + #13#10 +
+            'ArchiveProject=0' + #13#10;
+    End
+    Else
+    Begin
+        ProjectExt := '.PrjPcb';
+        StubContent := '[Design]' + #13#10 + 'Version=1.0' + #13#10;
+    End;
+
+    Saved := False;
+    Try
+        AssignFile(F, ProjectPath);
+        Rewrite(F);
+        Try
+            Write(F, StubContent);
+        Finally
+            CloseFile(F);
+        End;
+        Saved := FileExists(ProjectPath);
+    Except
+        Saved := False;
+    End;
+
+    If Not Saved Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+            'Could not write project stub: ' + ProjectPath);
+        Exit;
+    End;
+
+    // Open the freshly-written project so subsequent commands can target it.
     ResetParameters;
     AddStringParameter('ObjectKind', 'Project');
     AddStringParameter('FileName', ProjectPath);
     RunProcess('WorkspaceManager:OpenObject');
 
-    Result := BuildSuccessResponse(RequestId, '{"success":true,"project_path":"' + EscapeJsonString(ProjectPath) + '"}');
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"project_path":"' + EscapeJsonString(ProjectPath) +
+        '","saved":true}');
 End;
 
 Function Proj_Open(Params : String; RequestId : String) : String;
@@ -2101,6 +2149,8 @@ End;
 {..............................................................................}
 
 Function Proj_GetConnectivityBatch(Params : String; RequestId : String) : String;
+Const
+    MaxWanted = 500;
 Var
     ProjectPath, DesigStr, Remaining : String;
     Workspace : IWorkspace;
@@ -2134,7 +2184,7 @@ Begin
     Begin
         ThisDesig := NextBatchOp(Remaining);
         If ThisDesig = '' Then Break;
-        If WantedCount > High(Wanted) Then Break;
+        If WantedCount >= MaxWanted Then Break;
         Wanted[WantedCount] := ThisDesig;
         Found[WantedCount] := False;
         WantedCount := WantedCount + 1;

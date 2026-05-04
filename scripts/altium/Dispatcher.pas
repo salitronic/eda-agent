@@ -1,26 +1,22 @@
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba                                      }
 {..............................................................................}
-{ Dispatcher.pas - Command dispatcher for the Altium integration bridge                      }
-{ This file MUST compile last so all Handle*Command functions are declared.   }
+{ Dispatcher.pas - Polling loop and per-request dispatcher.                     }
+{ Compiles last so all Handle*Command functions are visible.                   }
 {..............................................................................}
 
-{ Dashboard counters — fed to StatusForm.pas helpers each tick. The form is }
-{ DFM-backed (StatusForm.dfm defines each control by name) so property       }
-{ setters on those controls compile and work at runtime, unlike controls     }
-{ created programmatically with TForm.Create where .Caption is undeclared.   }
+{ Dashboard counters fed to StatusForm.pas helpers each tick. }
 Var
     StatusStartTick      : Cardinal;
     StatusRequestCount   : Integer;
     StatusLastCommand    : String;
-    StatusTotalAltiumMs  : Cardinal;  { Sum of per-command durations — "time Altium spent working" }
+    StatusTotalAltiumMs  : Cardinal;
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
     DotPos : Integer;
 Begin
-    // Split command into category.action
     DotPos := Pos('.', Command);
     If DotPos > 0 Then
     Begin
@@ -33,7 +29,6 @@ Begin
         Action := '';
     End;
 
-    // Dispatch to appropriate handler
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -41,58 +36,85 @@ Begin
         'generic':     Result := HandleGenericCommand(Action, Params, RequestId);
         'pcb':         Result := HandlePCBCommand(Action, Params, RequestId);
     Else
-        Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND', 'Unknown command category: ' + Category + '. Use generic.* for object operations or pcb.* for PCB-specific commands.');
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
+            'Unknown command category: ' + Category +
+            '. Use generic.* for object operations or pcb.* for PCB-specific commands.');
     End;
 End;
 
 {..............................................................................}
-{ Process a single request if one exists. Returns True if a request was found.}
+{ Process a single request if one exists. Returns True iff a request was found.}
+{                                                                                }
+{ The dispatcher scans for any request_*.json file in the workspace, extracts  }
+{ the ID from the filename, reads and deletes the request, dispatches, and    }
+{ writes response_<id>.json. The handler returns the JSON envelope as a       }
+{ String; the dispatcher writes the file. Handlers that previously bypassed    }
+{ the dispatcher's write via the ResponseAlreadyWritten flag have all been     }
+{ migrated to the standard pattern.                                            }
 {..............................................................................}
 
 Function ProcessSingleRequest : Boolean;
 Var
-    RequestPath, ResponsePath : String;
+    RequestPath, RequestId : String;
     RequestContent, ResponseContent : String;
-    RequestId, Command, Params : String;
+    Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
 Begin
     Result := False;
     EnsureWorkspaceDir;
-    RequestPath := WorkspaceDir + REQUEST_FILE;
-    ResponsePath := WorkspaceDir + RESPONSE_FILE;
 
-    // Check if request file exists
-    If Not FileExists(RequestPath) Then Exit;
+    If Not ScanForRequestFile(RequestPath, RequestId) Then Exit;
 
     // Read the request file
     RequestContent := ReadFileContent(RequestPath);
-    If RequestContent = '' Then
-    Begin
-        DeleteFile(RequestPath);
-        Result := False;
-        Exit;
-    End;
+    // Remove the request file regardless of read outcome so we never reprocess
+    DeleteFile(RequestPath);
 
-    // Extract fields from request
+    If RequestContent = '' Then Exit;
+
+    // ID arrives in the JSON body. Per-request response files use it for
+    // the filename so concurrent callers each get an isolated response file.
     RequestId := ExtractJsonValue(RequestContent, 'id');
     Command := ExtractJsonValue(RequestContent, 'command');
     Params := ExtractJsonValue(RequestContent, 'params');
+    ProtoVer := ExtractJsonValue(RequestContent, 'protocol_version');
 
-    // Delete request file so we don't process it again (even if malformed)
-    DeleteFile(RequestPath);
+    EnvelopeError := ValidateRequestEnvelope(RequestId, Command);
+    If EnvelopeError <> '' Then
+    Begin
+        // Without a valid id we can't write a per-request response file —
+        // fall back to writing response.json so Python can still pick it up.
+        If IsValidRequestId(RequestId) Then
+            WriteResponseFile(RequestId,
+                BuildErrorResponse(RequestId, 'MALFORMED_REQUEST', EnvelopeError))
+        Else
+            WriteFileContent(WorkspaceDir + 'response.json',
+                BuildErrorResponse('', 'MALFORMED_REQUEST', EnvelopeError));
+        Result := True;
+        Exit;
+    End;
 
-    If (RequestId = '') Or (Command = '') Then Exit;
+    If (ProtoVer <> '') And (ProtoVer <> IntToStr(PROTOCOL_VERSION)) Then
+    Begin
+        WriteResponseFile(RequestId,
+            BuildErrorResponseDetailed(RequestId, 'PROTOCOL_VERSION_MISMATCH',
+                'Client protocol_version=' + ProtoVer +
+                ' does not match server PROTOCOL_VERSION=' + IntToStr(PROTOCOL_VERSION) +
+                '. Update the eda-agent client or restart the Altium script.',
+                '{"client_version":' + ProtoVer +
+                ',"server_version":' + IntToStr(PROTOCOL_VERSION) + '}'));
+        Result := True;
+        Exit;
+    End;
 
     StatusLastCommand := Command;
     Inc(StatusRequestCount);
     UpdateStatusHeader('MCP: running ' + Command + '...');
     StartMs := GetTickCount;
     ResultTag := 'OK';
-    ResponseAlreadyWritten := False;
 
-    // Process the command
     ExceptionMsg := '';
     Try
         ResponseContent := ProcessCommand(Command, Params, RequestId);
@@ -102,10 +124,16 @@ Begin
         ResultTag := 'EXCEPTION';
     End;
 
-    // Write the response (skip if handler already wrote it directly as a
-    // workaround for the DelphiScript long-string return-corruption bug).
-    If Not ResponseAlreadyWritten Then
-        WriteFileContent(ResponsePath, ResponseContent);
+    If ResponseContent = '' Then
+    Begin
+        // Handler returned nothing — degenerate but recoverable. Synthesise
+        // an INTERNAL_ERROR rather than leaving the caller polling forever.
+        ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR',
+            'Handler returned empty response for: ' + Command);
+        ResultTag := 'EMPTY';
+    End;
+
+    WriteResponseFile(RequestId, ResponseContent);
 
     DurationMs := GetTickCount - StartMs;
     StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
@@ -118,47 +146,27 @@ Begin
 End;
 
 {..............................................................................}
-{ Clean up any state left by the MCP server before exiting.                  }
-{ Deletes stale IPC files and flushes the UI so Altium returns to normal.   }
+{ Clean up state left by the MCP server before exiting. Deletes any leftover   }
+{ per-request IPC files and flushes the UI.                                    }
 {..............................................................................}
 
 Procedure CleanupMCPServer;
-Var
-    ReqPath, RespPath : String;
 Begin
-    // Remove stale IPC files so they don't confuse the next session
-    ReqPath := WorkspaceDir + REQUEST_FILE;
-    RespPath := WorkspaceDir + RESPONSE_FILE;
-    If FileExists(ReqPath)  Then DeleteFile(ReqPath);
-    If FileExists(RespPath) Then DeleteFile(RespPath);
-
-    // Flush any pending UI messages so Altium isn't stuck mid-operation
+    CleanupOrphanResponses;
     Application.ProcessMessages;
 End;
 
 {..............................................................................}
 { Start MCP server — adaptive polling loop.                                  }
 {                                                                            }
-{ The server uses ADAPTIVE POLLING to avoid blocking Altium:                 }
-{   - After receiving a command: polls fast (50ms) for quick response        }
-{   - When idle: polls slow (500ms) with extra ProcessMessages calls         }
-{     to give Altium breathing room for UI, scripts, and built-in features   }
-{   - Auto-shuts down after AUTO_SHUTDOWN_MS (60s) with no request.          }
-{     Python sends keep-alive pings every 30s to keep the server alive while }
-{     attached, so this only fires after Python has disconnected.            }
+{ Uses ADAPTIVE POLLING to avoid blocking Altium:                             }
+{   - Active (just processed a request): polls fast (PollIntervalActiveMs)   }
+{   - Idle: polls slow (PollIntervalIdleMs) with extra ProcessMessages calls }
+{   - Auto-shuts down after AutoShutdownMs of inactivity                      }
 {                                                                            }
-{ IMPORTANT: While this loop runs, Altium's scripting engine is occupied.    }
-{ Some script-based features may be unavailable. Use detach_from_altium      }
-{ or the stop file to release the engine when not needed.                    }
-{                                                                            }
-{ Stop methods (all work while loop is running):                             }
-{   1. Send application.stop_server via MCP (detach_from_altium does this)   }
-{   2. Create a file named 'stop' in the workspace directory                 }
-{   3. Altium debugger: press Stop button in the script IDE                  }
-{   4. Auto-shutdown after AUTO_SHUTDOWN_MS of inactivity (see constants)    }
-{                                                                            }
-{ On exit the server cleans up IPC files and flushes UI state so Altium     }
-{ returns to normal with no leftover artifacts.                              }
+{ All tunables come from mcp_config.json via LoadMCPConfig at startup.       }
+{ Stop methods: send application.stop_server, drop a 'stop' file in the      }
+{ workspace, or wait for auto-shutdown.                                      }
 {..............................................................................}
 
 Procedure StartMCPServer;
@@ -174,13 +182,16 @@ Var
 Begin
     If Running Then Exit;
 
+    InitDefaultConfig;
     EnsureWorkspaceDir;
+    LoadMCPConfig;
+    CleanupOrphanResponses;
     Running := True;
     StopPath := WorkspaceDir + 'stop';
     If FileExists(StopPath) Then DeleteFile(StopPath);
 
     IdleCount := 0;
-    CurrentSleep := POLL_INTERVAL_ACTIVE;
+    CurrentSleep := PollIntervalActiveMs;
     LastActivityMs := GetTickCount;
     ActiveTickCount := 0;
 
@@ -190,14 +201,14 @@ Begin
     StatusTotalAltiumMs := 0;
     ShowStatusForm;
     UpdateStatusHeader('MCP: idle');
-    UpdateStatsLine(0, 0, 0, AUTO_SHUTDOWN_MS Div 1000);
-    AppendLog(FormatLogStamp + ',0,_session_start,version=' + SCRIPT_VERSION);
+    UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
+    AppendLog(FormatLogStamp + ',0,_session_start,version=' + SCRIPT_VERSION
+              + ',protocol=' + IntToStr(PROTOCOL_VERSION));
 
     Try
         While Running Do
         Begin
-            // --- Shutdown detection ---
-            // Client.IsQuitting returns True when Altium is closing.
+            // Shutdown detection: Altium quitting
             Try
                 If Client.IsQuitting Then
                 Begin
@@ -209,9 +220,7 @@ Begin
                 Break;
             End;
 
-            // --- Stop signal checks ---
-
-            // Check for stop file
+            // Stop file
             If FileExists(StopPath) Then
             Begin
                 DeleteFile(StopPath);
@@ -220,12 +229,12 @@ Begin
             End;
 
             // Auto-shutdown after prolonged inactivity
-            If AUTO_SHUTDOWN_MS > 0 Then
+            If AutoShutdownMs > 0 Then
             Begin
                 NowMs := GetTickCount;
                 If NowMs >= LastActivityMs Then
                 Begin
-                    If (NowMs - LastActivityMs) > AUTO_SHUTDOWN_MS Then
+                    If (NowMs - LastActivityMs) > AutoShutdownMs Then
                     Begin
                         Running := False;
                         Break;
@@ -233,47 +242,40 @@ Begin
                 End;
             End;
 
-            // --- Process one request if available ---
             HadRequest := ProcessSingleRequest;
 
             If HadRequest Then
             Begin
                 IdleCount := 0;
-                CurrentSleep := POLL_INTERVAL_ACTIVE;
+                CurrentSleep := PollIntervalActiveMs;
                 LastActivityMs := GetTickCount;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
                     StatusRequestCount,
                     StatusTotalAltiumMs,
-                    (AUTO_SHUTDOWN_MS - (GetTickCount - LastActivityMs)) Div 1000);
+                    (AutoShutdownMs - (GetTickCount - LastActivityMs)) Div 1000);
                 RefreshPerfPanel;
             End
             Else
             Begin
                 Inc(IdleCount);
-                If IdleCount > IDLE_THRESHOLD Then
-                    CurrentSleep := POLL_INTERVAL_IDLE;
-                { Refresh uptime + countdown once a second while idle. }
+                If IdleCount > IdleThreshold Then
+                    CurrentSleep := PollIntervalIdleMs;
                 If (IdleCount Mod 10) = 0 Then
                     UpdateStatsLine(
                         (GetTickCount - StatusStartTick) Div 1000,
                         StatusRequestCount,
                         StatusTotalAltiumMs,
-                        (AUTO_SHUTDOWN_MS - (GetTickCount - LastActivityMs)) Div 1000);
+                        (AutoShutdownMs - (GetTickCount - LastActivityMs)) Div 1000);
             End;
 
-            // --- Yield to Altium ---
-            // Idle mode: call ProcessMessages multiple times per cycle so
-            // Altium's UI stays responsive while requests are infrequent.
-            // Active mode: ProcessMessages is expensive (pumps the whole UI
-            // message queue), so call it only every Nth tick.
-            If CurrentSleep >= POLL_INTERVAL_IDLE Then
+            If CurrentSleep >= PollIntervalIdleMs Then
             Begin
-                For I := 1 To YIELD_ITERATIONS Do
+                For I := 1 To YieldIterations Do
                 Begin
                     Application.ProcessMessages;
-                    Sleep(CurrentSleep Div YIELD_ITERATIONS);
+                    Sleep(CurrentSleep Div YieldIterations);
                     If Not Running Then Break;
                 End;
                 ActiveTickCount := 0;
@@ -281,7 +283,7 @@ Begin
             Else
             Begin
                 Inc(ActiveTickCount);
-                If ActiveTickCount >= YIELD_EVERY_N_ACTIVE Then
+                If ActiveTickCount >= YieldEveryNActive Then
                 Begin
                     Application.ProcessMessages;
                     ActiveTickCount := 0;
@@ -290,10 +292,9 @@ Begin
             End;
         End;
     Except
-        // Altium is shutting down or fatal error — exit gracefully
+        // Altium shutting down or fatal error — exit gracefully
     End;
 
-    // Always clean up regardless of how we exited
     Running := False;
     AppendLog(FormatLogStamp + ',0,_session_end,requests=' + IntToStr(StatusRequestCount));
     HideStatusForm;
@@ -301,9 +302,8 @@ Begin
 End;
 
 {..............................................................................}
-{ Stop the MCP server from outside the polling loop.                         }
-{ Writes the 'stop' signal file so a running StartMCPServer will exit on    }
-{ its next poll. Safe to call even if the server isn't running.              }
+{ Stop the MCP server from outside the polling loop. Writes the 'stop' file   }
+{ so a running StartMCPServer exits on its next poll.                          }
 {..............................................................................}
 
 Procedure StopMCPServer;

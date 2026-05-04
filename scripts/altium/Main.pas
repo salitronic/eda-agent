@@ -1,8 +1,10 @@
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba                                      }
 {..............................................................................}
-{ Main.pas - Constants and helpers for the Altium integration bridge                         }
-{ The script polls for request.json, processes commands, writes response.json }
+{ Main.pas - Constants, IPC primitives and JSON helpers for the Altium bridge   }
+{ The script polls for request_<id>.json files, processes commands, writes      }
+{ response_<id>.json with the matching ID. Per-request files eliminate the      }
+{ stale-response race that the old single-file scheme had.                       }
 {..............................................................................}
 
 Const
@@ -11,7 +13,15 @@ Const
     // returns — mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.04.22.18';
+    SCRIPT_VERSION = '2026.05.04.1';
+
+    // Wire protocol version. Bumped whenever the request/response JSON shape
+    // changes incompatibly. Python and Pascal must agree; mismatch returns
+    // PROTOCOL_VERSION_MISMATCH on the Pascal side and raises on the Python
+    // side. v2 introduced per-request IPC files, structured error.details,
+    // and the protocol_version field itself.
+    PROTOCOL_VERSION = 2;
+
     { Milliseconds during which SmartCompile reuses the previous DM_Compile    }
     { result instead of recompiling. Design-review snapshots fire 3-4 project  }
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
@@ -19,23 +29,8 @@ Const
     COMPILE_CACHE_TTL_MS = 2000;
 
     CONFIG_FILE = 'mcp_config.json';
-    REQUEST_FILE = 'request.json';
-    RESPONSE_FILE = 'response.json';
-    POLL_INTERVAL_ACTIVE = 10;    // ms between polls right after a command
-    POLL_INTERVAL_IDLE   = 100;   // ms between polls when idle (fast enough to feel snappy, light enough on CPU)
-    IDLE_THRESHOLD       = 20;    // iterations before switching to idle polling
-    AUTO_SHUTDOWN_MS     = 600000; // 10 min inactivity auto-shutdown (Python sends keep-alive pings)
-    YIELD_ITERATIONS     = 5;     // ProcessMessages calls per idle cycle
-    YIELD_EVERY_N_ACTIVE = 5;     // call ProcessMessages only every Nth active tick
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
-    // Send SCHM_BeginModify / SCHM_EndModify around property writes on an
-    // existing ISch_BasicContainer primitive so the Undo system and editor
-    // sub-systems are notified. Send SCHM_PrimitiveRegistration after
-    // RegisterSchObjectInContainer so a newly-added primitive is known to
-    // Altium's editor (otherwise the title block / BOM never sees it).
-    // Source and Destination pointers are passed as Nil for broadcast
-    // (documented c_BroadCast = Nil, c_NoEventData = Nil).
     SCHM_PrimitiveRegistration = 1;
     SCHM_BeginModify           = 2;
     SCHM_EndModify             = 3;
@@ -43,15 +38,53 @@ Const
 Var
     WorkspaceDir : String;
     Running : Boolean;
-    { Set True by handlers that write response.json themselves (to bypass a    }
-    { DelphiScript return-value corruption bug for long strings). Checked and  }
-    { cleared by ProcessSingleRequest each cycle.                              }
-    ResponseAlreadyWritten : Boolean;
+
+    { Polling tunables — defaults below, overridden by mcp_config.json at      }
+    { startup via LoadMCPConfig. Single source of truth: the config file.     }
+    PollIntervalActiveMs : Integer;
+    PollIntervalIdleMs   : Integer;
+    IdleThreshold        : Integer;
+    AutoShutdownMs       : Cardinal;
+    YieldIterations      : Integer;
+    YieldEveryNActive    : Integer;
+
     { SmartCompile cache state. Tick of the last DM_Compile and the Project    }
     { pointer it was run against, so we only skip when the SAME project was    }
     { compiled recently. Reset to 0 / Nil at startup.                          }
     LastCompileTick : Cardinal;
     LastCompiledProject : IProject;
+
+    { Silent cast-failure counter — incremented every time a defensive       }
+    { Try/Except in an iteration helper swallows an interface cast that      }
+    { ObjectId-checking should have ruled out. Surfaced via application.ping }
+    { as cast_errors so a non-zero value at session end isn't invisible.     }
+    CastErrorCount : Integer;
+
+    { Tracks the most recently created/selected library component so the    }
+    { Lib_Add* primitive helpers can target it directly. SchLib's           }
+    { CurrentSchComponent setter is a no-op in DelphiScript — assigning to  }
+    { it does not move the editor's selection — so primitives that read     }
+    { CurrentSchComponent end up attaching to whatever the editor was       }
+    { showing before (typically Component_1, the default empty placeholder).}
+    { Storing the reference here gives us a working "current target" the    }
+    { primitive helpers can trust.                                           }
+    LastCreatedLibComponent : ISch_Component;
+
+{..............................................................................}
+{ Initialise polling tunables to compile-time defaults. Called by the          }
+{ dispatcher startup before LoadMCPConfig so a missing/corrupt config file    }
+{ still leaves the loop with sane values.                                     }
+{..............................................................................}
+
+Procedure InitDefaultConfig;
+Begin
+    PollIntervalActiveMs := 10;
+    PollIntervalIdleMs   := 100;
+    IdleThreshold        := 20;
+    AutoShutdownMs       := 600000;  { 10 min }
+    YieldIterations      := 5;
+    YieldEveryNActive    := 5;
+End;
 
 {..............................................................................}
 { Batch tool helpers                                                            }
@@ -66,14 +99,6 @@ Var
 { ... → Generic) and a callee must come earlier than its caller.               }
 {..............................................................................}
 
-{ Cursor-based batch iterator. The caller holds a String `Remaining` and   }
-{ calls NextBatchOp repeatedly; each call returns the next op and          }
-{ advances the cursor. Returns '' when exhausted. Replaces the earlier    }
-{ SplitBatchOps(..., Var Ops : Array of String, ...) helper — DelphiScript }
-{ PascalScript doesn't pass fixed-size arrays to open-array parameters    }
-{ ("wrong number of params" at call time), so the array-based API can't   }
-{ work. This cursor form has no array parameters and handles any batch    }
-{ size.                                                                    }
 Function NextBatchOp(Var Remaining : String) : String;
 Var
     SepPos : Integer;
@@ -132,33 +157,61 @@ End;
 { SmartCompile                                                                  }
 {                                                                               }
 { Thin wrapper over Project.DM_Compile that skips the compile when the SAME     }
-{ project was compiled less than COMPILE_CACHE_TTL_MS ago. Design-review        }
-{ handlers each call DM_Compile at the top; on a non-trivial design that's      }
-{ 5-10 s per call. Back-to-back calls in a snapshot pay the compile cost once   }
-{ instead of N times. TTL is intentionally short (2 s) so any out-of-band edit  }
-{ is picked up on the next handler that runs more than 2 s after the last one. }
+{ project was compiled less than COMPILE_CACHE_TTL_MS ago.                      }
 {..............................................................................}
+
+{ Probe whether any logical document in the project has been modified by    }
+{ an out-of-band edit (typically: user clicked in Altium's UI between MCP   }
+{ calls). If so the cached DM_Compile is stale even if it's within the     }
+{ TTL window — force a fresh recompile so subsequent queries see the       }
+{ new netlist / component set.                                             }
+Function ProjectHasDirtyDocs(Project : IProject) : Boolean;
+Var
+    I : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        Try
+            ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+            If (ServerDoc <> Nil) And ServerDoc.Modified Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        Except End;
+    End;
+End;
 
 Procedure SmartCompile(Project : IProject);
 Begin
     If Project = Nil Then Exit;
+    // Honour the TTL window only when nothing in the project has changed
+    // since the last compile. An external UI edit invalidates the cache
+    // immediately, so the next MCP call after the user clicked "Add part"
+    // sees the new state instead of a 2-second-stale snapshot.
     If (Project = LastCompiledProject) And (LastCompileTick > 0) And
-       ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) Then
+       ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) And
+       (Not ProjectHasDirtyDocs(Project)) Then
         Exit;
     Project.DM_Compile;
     LastCompiledProject := Project;
     LastCompileTick := GetTickCount;
 End;
 
+Procedure InvalidateCompileCache;
+Begin
+    LastCompileTick := 0;
+    LastCompiledProject := Nil;
+End;
+
 {..............................................................................}
 { ISch_RobotManager.SendMessage helpers.                                        }
-{                                                                               }
-{ Every property write on an existing sch primitive should be bracketed by     }
-{ SchBeginModify / SchEndModify. Every new primitive added via SchObjectFactory }
-{ + AddSchObject / RegisterSchObjectInContainer should be followed by          }
-{ SchRegisterObject. Without these broadcasts the editor sub-systems and the   }
-{ undo stack are not notified, which manifests as "writes don't appear" and    }
-{ "save doesn't pick up changes" in the UI.                                    }
 {..............................................................................}
 
 Procedure SchBeginModify(Obj : ISch_BasicContainer);
@@ -182,18 +235,9 @@ Begin
 End;
 
 {..............................................................................}
-{ Persist a specific document (schematic, PCB, or any server doc) to disk by   }
-{ resolving its IServerDocument via Client.GetDocumentByPath and calling       }
-{ SetModified(True) + DoFileSave(''). DoFileSave writes regardless of focus    }
-{ and doesn't go through WorkspaceManager:SaveAll — so it works on non-active }
-{ docs that SaveAll otherwise silently skips.                                  }
+{ Persist a specific document by path (deferred save: mark dirty only).        }
 {..............................................................................}
 
-{ Deferred save: mark the document dirty but don't write to disk yet.         }
-{ DoFileSave on a medium PCB takes 1-5 s, so calling it after every mutation  }
-{ (50+ handlers used to) made every MCP call feel slow. We now rely on Altium }
-{ surfacing the dirty indicator and flush to disk happens only when the       }
-{ caller explicitly invokes application.save_all (or on detach).              }
 Procedure SaveDocByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -204,23 +248,8 @@ Begin
     Try ServerDoc.SetModified(True); Except End;
 End;
 
-{ Walk every open logical document in the focused workspace and call         }
-{ DoFileSave on the ones whose Modified flag is set. This is the explicit    }
-{ flush that replaces the per-mutation save.                                 }
 {..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
-{                                                                               }
-{ PCBServer.GetCurrentPCBBoard is FOCUS-DEPENDENT — it returns nil whenever    }
-{ the active Altium tab is a schematic (or any non-PCB doc). Every handler    }
-{ that wants to operate on "the project's PCB" hit this: the PCB is loaded,   }
-{ but the sch tab is on top, so Board := nil and the handler bails out with   }
-{ a misleading "No PCB document is active" error.                              }
-{                                                                               }
-{ This helper tries the focus lookup first, then falls back to walking the    }
-{ focused project's documents for a .PcbDoc and resolving via                 }
-{ PCBServer.GetPCBBoardByPath, which is focus-independent. Use this instead   }
-{ of PCBServer.GetCurrentPCBBoard in every handler that doesn't specifically }
-{ need "the currently-viewed PCB" semantics.                                   }
 {..............................................................................}
 
 Function GetPCBBoardAnywhere : IPCB_Board;
@@ -255,32 +284,52 @@ Begin
     End;
 End;
 
+{ Save every modified IServerDocument the workspace knows about — both     }
+{ project-attached docs and free-floating docs (libraries opened           }
+{ standalone, scratch docs). Free docs live inside the synthetic           }
+{ DM_FreeDocumentsProject which we iterate like any normal project.        }
+Procedure SaveOneDocByDocRef(Doc : IDocument);
+Var
+    ServerDoc : IServerDocument;
+Begin
+    If Doc = Nil Then Exit;
+    Try
+        ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+        If (ServerDoc <> Nil) And ServerDoc.Modified Then
+            Try ServerDoc.DoFileSave(''); Except End;
+    Except End;
+End;
+
+Procedure SaveProjectMembers(Project : IProject);
+Var
+    J : Integer;
+    ProjectServerDoc : IServerDocument;
+Begin
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        SaveOneDocByDocRef(Project.DM_LogicalDocuments(J));
+    // The project file itself, when it's a real on-disk project
+    Try
+        ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
+        If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
+            Try ProjectServerDoc.DoFileSave(''); Except End;
+    Except End;
+End;
+
 Procedure SaveAllDirty;
 Var
     Workspace : IWorkspace;
-    Project : IProject;
-    Doc : IDocument;
-    ServerDoc : IServerDocument;
-    I, J : Integer;
+    I : Integer;
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
+
+    // Real projects + their member docs
     For I := 0 To Workspace.DM_ProjectCount - 1 Do
-    Begin
-        Project := Workspace.DM_Projects(I);
-        If Project = Nil Then Continue;
-        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            Doc := Project.DM_LogicalDocuments(J);
-            If Doc = Nil Then Continue;
-            Try
-                ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
-                If ServerDoc = Nil Then Continue;
-                If ServerDoc.Modified Then
-                    Try ServerDoc.DoFileSave(''); Except End;
-            Except End;
-        End;
-    End;
+        SaveProjectMembers(Workspace.DM_Projects(I));
+
+    // Free documents live inside the synthetic FreeDocumentsProject
+    Try SaveProjectMembers(Workspace.DM_FreeDocumentsProject); Except End;
 End;
 
 {..............................................................................}
@@ -341,8 +390,10 @@ Function ReadFileContent(FilePath : String) : String;
 Var
     F : TextFile;
     Line, Content : String;
+    First : Boolean;
 Begin
     Content := '';
+    First := True;
     Try
         If FileExists(FilePath) Then
         Begin
@@ -351,7 +402,9 @@ Begin
             While Not EOF(F) Do
             Begin
                 ReadLn(F, Line);
+                If Not First Then Content := Content + #10;
                 Content := Content + Line;
+                First := False;
             End;
             CloseFile(F);
         End;
@@ -422,6 +475,12 @@ Begin
     End;
 End;
 
+Procedure RecordCastError(Where : String);
+Begin
+    Inc(CastErrorCount);
+    AppendLog(FormatLogStamp + ',0,_cast_error,' + Where);
+End;
+
 Function IsWhitespaceOrColon(S : String; Idx : Integer) : Boolean;
 Var
     C : String;
@@ -438,20 +497,29 @@ Begin
     Result := (C = '') Or (C = ',') Or (C = '}') Or (C = ']') Or (C = ' ') Or (C = #9) Or (C = #10) Or (C = #13);
 End;
 
+{ Hex digit to integer (0-15). Returns -1 for invalid input. }
+Function HexDigitValue(Ch : String) : Integer;
+Var
+    O : Integer;
+Begin
+    Result := -1;
+    If Length(Ch) <> 1 Then Exit;
+    O := Ord(Ch[1]);
+    If (O >= Ord('0')) And (O <= Ord('9')) Then Result := O - Ord('0')
+    Else If (O >= Ord('a')) And (O <= Ord('f')) Then Result := O - Ord('a') + 10
+    Else If (O >= Ord('A')) And (O <= Ord('F')) Then Result := O - Ord('A') + 10;
+End;
+
 Function UnescapeJsonString(S : String) : String;
 Var
     I, L : Integer;
-    Ch, NextCh : String;
+    Ch, NextCh, HexStr : String;
+    Code, D0, D1, D2, D3 : Integer;
 Begin
-    // Char-by-char JSON unescape. The naive StringReplace order
-    // (\t -> tab, \n -> LF, ..., \\ -> \) is broken: a raw JSON sequence
-    // like \\nlc (which should decode to literal \nlc) first gets its
-    // inner \n interpreted as LF, producing \<LF>lc. The bug silently
-    // mangled any Windows path containing \n, \t, \r, \b, \f after an
-    // even number of backslashes — e.g. C:\...\nlc_480.SchDoc, \t1.log,
-    // \reports\... — because Altium's fuzzy path matching obscured the
-    // symptom. Must consume \\ as a single literal \ before evaluating
-    // any other escape on the following character.
+    // Char-by-char JSON unescape with full \uXXXX support. The naive
+    // StringReplace cascade (\t -> tab, \n -> LF, ..., \\ -> \) is broken
+    // for sequences like \\nlc — handles escapes left-to-right so \\
+    // collapses to \ before evaluating the following char.
     Result := '';
     I := 1;
     L := Length(S);
@@ -461,19 +529,55 @@ Begin
         If (Ch = '\') And (I < L) Then
         Begin
             NextCh := Copy(S, I + 1, 1);
-            If NextCh = '\' Then Result := Result + '\'
-            Else If NextCh = 'n' Then Result := Result + #10
-            Else If NextCh = 't' Then Result := Result + #9
-            Else If NextCh = 'r' Then Result := Result + #13
-            Else If NextCh = '"' Then Result := Result + '"'
-            Else If NextCh = '/' Then Result := Result + '/'
-            Else If NextCh = 'b' Then Result := Result + #8
-            Else If NextCh = 'f' Then Result := Result + #12
+            If NextCh = '\' Then Begin Result := Result + '\'; Inc(I, 2); End
+            Else If NextCh = 'n' Then Begin Result := Result + #10; Inc(I, 2); End
+            Else If NextCh = 't' Then Begin Result := Result + #9; Inc(I, 2); End
+            Else If NextCh = 'r' Then Begin Result := Result + #13; Inc(I, 2); End
+            Else If NextCh = '"' Then Begin Result := Result + '"'; Inc(I, 2); End
+            Else If NextCh = '/' Then Begin Result := Result + '/'; Inc(I, 2); End
+            Else If NextCh = 'b' Then Begin Result := Result + #8; Inc(I, 2); End
+            Else If NextCh = 'f' Then Begin Result := Result + #12; Inc(I, 2); End
+            Else If NextCh = 'u' Then
+            Begin
+                // \uXXXX — 4 hex digits. Codepoints <= 255 are emitted as a
+                // single ANSI byte (Pascal native). Higher codepoints can't
+                // be represented in single-byte ANSI; replaced with '?' so
+                // downstream string handling doesn't see truncated bytes.
+                If I + 5 <= L Then
+                Begin
+                    HexStr := Copy(S, I + 2, 4);
+                    D0 := HexDigitValue(Copy(HexStr, 1, 1));
+                    D1 := HexDigitValue(Copy(HexStr, 2, 1));
+                    D2 := HexDigitValue(Copy(HexStr, 3, 1));
+                    D3 := HexDigitValue(Copy(HexStr, 4, 1));
+                    If (D0 >= 0) And (D1 >= 0) And (D2 >= 0) And (D3 >= 0) Then
+                    Begin
+                        Code := (D0 * 4096) + (D1 * 256) + (D2 * 16) + D3;
+                        If Code <= 255 Then
+                            Result := Result + Chr(Code)
+                        Else
+                            Result := Result + '?';
+                        Inc(I, 6);
+                    End
+                    Else
+                    Begin
+                        // Bad hex — keep literal
+                        Result := Result + Ch + NextCh;
+                        Inc(I, 2);
+                    End;
+                End
+                Else
+                Begin
+                    Result := Result + Ch + NextCh;
+                    Inc(I, 2);
+                End;
+            End
             Else
-                // Unknown escape — keep both chars literally. Don't
-                // silently eat characters on malformed input.
+            Begin
+                // Unknown escape — keep both chars literally
                 Result := Result + Ch + NextCh;
-            Inc(I, 2);
+                Inc(I, 2);
+            End;
         End
         Else
         Begin
@@ -552,22 +656,51 @@ Begin
     End;
 End;
 
+{..............................................................................}
+{ JSON envelope builders.                                                       }
+{                                                                               }
+{ All responses include protocol_version so the Python side can detect a       }
+{ stale Pascal-side compile after a wire-format change. BuildErrorResponse     }
+{ takes an optional structured `details` JSON value (pass '' to omit). The     }
+{ Detailed variant lets handlers attach machine-readable failure context       }
+{ (which item in a batch failed, what type was expected, etc).                 }
+{..............................................................................}
+
 Function BuildSuccessResponse(RequestId : String; Data : String) : String;
 Begin
     If Data = '' Then
         Data := 'null';
-    Result := '{"id":"' + RequestId + '","success":true,"data":' + Data + ',"error":null}';
+    Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
+              ',"id":"' + RequestId + '","success":true,"data":' +
+              Data + ',"error":null}';
+End;
+
+Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;
+                                    ErrorMsg : String; DetailsJson : String) : String;
+Var
+    EscMsg : String;
+Begin
+    // Inline minimal escape (EscapeJsonString not yet declared in build order)
+    EscMsg := StringReplace(ErrorMsg, '\', '\\', -1);
+    EscMsg := StringReplace(EscMsg, '"', '\"', -1);
+    EscMsg := StringReplace(EscMsg, #13, '\r', -1);
+    EscMsg := StringReplace(EscMsg, #10, '\n', -1);
+    EscMsg := StringReplace(EscMsg, #9, '\t', -1);
+    If DetailsJson = '' Then
+        Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
+                  ',"id":"' + RequestId + '","success":false,"data":null,' +
+                  '"error":{"code":"' + ErrorCode + '","message":"' + EscMsg +
+                  '","details":null}}'
+    Else
+        Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
+                  ',"id":"' + RequestId + '","success":false,"data":null,' +
+                  '"error":{"code":"' + ErrorCode + '","message":"' + EscMsg +
+                  '","details":' + DetailsJson + '}}';
 End;
 
 Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : String) : String;
 Begin
-    // Inline JSON-escape (EscapeJsonString not yet declared at this point in build order)
-    ErrorMsg := StringReplace(ErrorMsg, '\', '\\', -1);
-    ErrorMsg := StringReplace(ErrorMsg, '"', '\"', -1);
-    ErrorMsg := StringReplace(ErrorMsg, #13, '\r', -1);
-    ErrorMsg := StringReplace(ErrorMsg, #10, '\n', -1);
-    ErrorMsg := StringReplace(ErrorMsg, #9, '\t', -1);
-    Result := '{"id":"' + RequestId + '","success":false,"data":null,"error":{"code":"' + ErrorCode + '","message":"' + ErrorMsg + '"}}';
+    Result := BuildErrorResponseDetailed(RequestId, ErrorCode, ErrorMsg, '');
 End;
 
 Procedure EnsureWorkspaceDir;
@@ -576,6 +709,192 @@ Begin
         WorkspaceDir := ResolveDefaultWorkspaceDir;
     If Not DirectoryExists(WorkspaceDir) Then
         ForceDirectories(WorkspaceDir);
+End;
+
+{..............................................................................}
+{ Per-request IPC helpers.                                                      }
+{                                                                               }
+{ Request files: request_<id>.json — Python writes them, Pascal scans the      }
+{ workspace each polling cycle and processes the first one it finds.           }
+{ Response files: response_<id>.json — Pascal writes them, Python polls for    }
+{ the specific path matching its own request ID.                               }
+{                                                                               }
+{ Per-request files eliminate the stale-response race that the old single-     }
+{ file scheme had: two concurrent callers (e.g. keep-alive + user tool) used   }
+{ to step on each other's response.json. With one file per request, callers    }
+{ poll only their own filename and never see another's payload.                }
+{                                                                               }
+{ The request ID embedded in the filename is restricted to UUID-shape chars    }
+{ (alphanumeric, hyphen, underscore) by IsValidRequestId — anything else is    }
+{ rejected so a malformed ID can't escape the workspace dir via path tricks.   }
+{..............................................................................}
+
+Function IsValidRequestId(Id : String) : Boolean;
+Var
+    I, O : Integer;
+    Ch : String;
+Begin
+    Result := False;
+    If (Length(Id) < 1) Or (Length(Id) > 64) Then Exit;
+    For I := 1 To Length(Id) Do
+    Begin
+        Ch := Copy(Id, I, 1);
+        O := Ord(Ch[1]);
+        If Not (((O >= Ord('0')) And (O <= Ord('9'))) Or
+                ((O >= Ord('a')) And (O <= Ord('z'))) Or
+                ((O >= Ord('A')) And (O <= Ord('Z'))) Or
+                (Ch = '-') Or (Ch = '_')) Then
+            Exit;
+    End;
+    Result := True;
+End;
+
+Function RequestFilePath(RequestId : String) : String;
+Begin
+    Result := WorkspaceDir + 'request_' + RequestId + '.json';
+End;
+
+Function ResponseFilePath(RequestId : String) : String;
+Begin
+    Result := WorkspaceDir + 'response_' + RequestId + '.json';
+End;
+
+{ Pick up the next request. Python writes per-request file request_<id>.json.}
+{ The script enumerates request_*.json files via FindFiles (the documented   }
+{ Altium DelphiScript helper; SysUtils FindFirst is not exposed to scripts)  }
+{ and processes the first one it finds.                                      }
+{                                                                              }
+{ Per-request files on both sides — request_<id>.json + response_<id>.json — }
+{ eliminate any cross-caller race: each caller publishes to its own filename }
+{ and polls only its own response file.                                      }
+Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
+Var
+    Files : TStringList;
+    I, NameLen : Integer;
+    Name, IdPart : String;
+Begin
+    Result := False;
+    FilePath := '';
+    RequestId := '';
+
+    Files := TStringList.Create;
+    Try
+        FindFiles(WorkspaceDir, 'request_*.json', 63, False, Files);
+        For I := 0 To Files.Count - 1 Do
+        Begin
+            Name := ExtractFileName(Files[I]);
+            NameLen := Length(Name);
+            // FindFiles can return uppercase filenames on Windows;
+            // case-insensitive prefix/suffix check.
+            If (NameLen >= 14) And
+               (UpperCase(Copy(Name, 1, 8)) = 'REQUEST_') And
+               (UpperCase(Copy(Name, NameLen - 4, 5)) = '.JSON') Then
+            Begin
+                IdPart := Copy(Name, 9, NameLen - 13);
+                If IsValidRequestId(IdPart) Then
+                Begin
+                    RequestId := IdPart;
+                    FilePath := WorkspaceDir + Name;
+                    Result := True;
+                    Exit;
+                End;
+            End;
+        End;
+    Finally
+        Files.Free;
+    End;
+End;
+
+{ Write the response file directly. Earlier versions did a tmp+RenameFile    }
+{ for atomicity, but DelphiScript's RenameFile silently failed for some      }
+{ paths and the response never reached the final filename. The Python side  }
+{ tolerates a partially-written response (json.load raises, retried until    }
+{ success) so direct write is acceptable.                                    }
+Procedure WriteResponseFile(RequestId : String; JsonContent : String);
+Var
+    FinalPath : String;
+Begin
+    If Not IsValidRequestId(RequestId) Then Exit;
+    FinalPath := ResponseFilePath(RequestId);
+    WriteFileContent(FinalPath, JsonContent);
+End;
+
+{ Wipe leftover request_*.json files at session start so a previous run's   }
+{ orphan can't replay against this session. Per-request response files are  }
+{ left to Python's age-based sweep at attach time.                           }
+Procedure CleanupOrphanResponses;
+Var
+    Files : TStringList;
+    I : Integer;
+Begin
+    Files := TStringList.Create;
+    Try
+        FindFiles(WorkspaceDir, 'request_*.json', 63, False, Files);
+        For I := 0 To Files.Count - 1 Do
+            Try DeleteFile(Files[I]); Except End;
+    Finally
+        Files.Free;
+    End;
+End;
+
+{..............................................................................}
+{ Load runtime config from mcp_config.json. The file lives in the workspace   }
+{ and is the single source of truth for polling tunables. Both Python and    }
+{ Pascal read from it. Missing or corrupt config leaves the defaults set by  }
+{ InitDefaultConfig in place.                                                 }
+{..............................................................................}
+
+Procedure LoadMCPConfig;
+Var
+    ConfigPath, Content, V : String;
+    N : Integer;
+Begin
+    ConfigPath := WorkspaceDir + CONFIG_FILE;
+    If Not FileExists(ConfigPath) Then Exit;
+    Content := ReadFileContent(ConfigPath);
+    If Content = '' Then Exit;
+
+    V := ExtractJsonValue(Content, 'poll_interval_active_ms');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then PollIntervalActiveMs := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'poll_interval_idle_ms');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then PollIntervalIdleMs := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'idle_threshold');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then IdleThreshold := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'auto_shutdown_ms');
+    If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'yield_iterations');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldIterations := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'yield_every_n_active');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldEveryNActive := N; Except End; End;
+End;
+
+{..............................................................................}
+{ Wire-envelope validation. Verifies that an incoming request matches the     }
+{ contract Python emits — non-empty id with valid filename chars, non-empty   }
+{ command, and a present (possibly empty) params object. Returns '' on        }
+{ success, or a short reason string for the dispatcher to surface as          }
+{ MALFORMED_REQUEST. Per-command param validation is the handler's job;       }
+{ this is the universal envelope check.                                       }
+{..............................................................................}
+
+Function ValidateRequestEnvelope(RequestId, Command : String) : String;
+Begin
+    Result := '';
+    If Not IsValidRequestId(RequestId) Then
+    Begin
+        Result := 'invalid request id (must be 1-64 chars of A-Z a-z 0-9 _ -)';
+        Exit;
+    End;
+    If Command = '' Then
+    Begin
+        Result := 'request missing required field: command';
+        Exit;
+    End;
 End;
 
 { Dispatcher and entry points are in Dispatcher.pas (compiles last) }

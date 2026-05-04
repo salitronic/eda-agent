@@ -520,70 +520,66 @@ End;
 { 15. Full IPC Round-Trip Test                                                 }
 {..............................................................................}
 
+Procedure WriteSelfTestRequest(RequestId, Command : String);
+Var
+    Path, Json : String;
+Begin
+    Path := RequestFilePath(RequestId);
+    Json := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
+            ',"id":"' + RequestId + '","command":"' + Command + '","params":"{}"}';
+    WriteFileContent(Path, Json);
+End;
+
 Procedure TestIPCRoundTrip;
 Var
-    RequestPath, ResponsePath, RequestJson, ResponseJson : String;
+    RequestPath, ResponsePath, ResponseJson : String;
     ProcessedOk : Boolean;
 Begin
     EnsureWorkspaceDir;
-    RequestPath := WorkspaceDir + REQUEST_FILE;
-    ResponsePath := WorkspaceDir + RESPONSE_FILE;
+    CleanupOrphanResponses;
 
-    // Clean up any existing files
-    If FileExists(RequestPath) Then DeleteFile(RequestPath);
-    If FileExists(ResponsePath) Then DeleteFile(ResponsePath);
-
-    // Write a request as if Python wrote it
-    RequestJson := '{"id":"ipc-test-1","command":"application.ping","params":"{}"}';
-    WriteFileContent(RequestPath, RequestJson);
-
-    // Verify request file was written
+    WriteSelfTestRequest('ipctest1', 'application.ping');
+    RequestPath := RequestFilePath('ipctest1');
     AssertTrue(FileExists(RequestPath), 'IPC request file exists after write');
 
-    // Process it (like the polling loop would)
     ProcessedOk := ProcessSingleRequest;
     AssertTrue(ProcessedOk, 'ProcessSingleRequest returns True');
-
-    // Request file should have been deleted
     AssertTrue(Not FileExists(RequestPath), 'IPC request file deleted after processing');
 
-    // Read the response
+    ResponsePath := ResponseFilePath('ipctest1');
     ResponseJson := ReadFileContent(ResponsePath);
     AssertNotEmpty(ResponseJson, 'IPC response not empty');
-    AssertContains(ResponseJson, '"id":"ipc-test-1"', 'IPC response has correct id');
+    AssertContains(ResponseJson, '"id":"ipctest1"', 'IPC response has correct id');
     AssertContains(ResponseJson, '"success":true', 'IPC response succeeds');
     AssertContains(ResponseJson, 'pong', 'IPC response has pong data');
-
-    // Clean up
+    AssertContains(ResponseJson, '"protocol_version":' + IntToStr(PROTOCOL_VERSION), 'IPC response has protocol_version');
     If FileExists(ResponsePath) Then DeleteFile(ResponsePath);
 
-    // Test with application.get_version
-    RequestJson := '{"id":"ipc-test-2","command":"application.get_version","params":"{}"}';
-    WriteFileContent(RequestPath, RequestJson);
+    WriteSelfTestRequest('ipctest2', 'application.get_version');
     ProcessedOk := ProcessSingleRequest;
     AssertTrue(ProcessedOk, 'IPC version request processed');
+    ResponsePath := ResponseFilePath('ipctest2');
     ResponseJson := ReadFileContent(ResponsePath);
-    AssertContains(ResponseJson, '"id":"ipc-test-2"', 'IPC version response has correct id');
+    AssertContains(ResponseJson, '"id":"ipctest2"', 'IPC version response has correct id');
     AssertContains(ResponseJson, '"success":true', 'IPC version response succeeds');
     If FileExists(ResponsePath) Then DeleteFile(ResponsePath);
 
-    // Test with an invalid command
-    RequestJson := '{"id":"ipc-test-3","command":"bogus.command","params":"{}"}';
-    WriteFileContent(RequestPath, RequestJson);
+    WriteSelfTestRequest('ipctest3', 'bogus.command');
     ProcessedOk := ProcessSingleRequest;
     AssertTrue(ProcessedOk, 'IPC bogus command processed');
+    ResponsePath := ResponseFilePath('ipctest3');
     ResponseJson := ReadFileContent(ResponsePath);
-    AssertContains(ResponseJson, '"id":"ipc-test-3"', 'IPC error response has correct id');
+    AssertContains(ResponseJson, '"id":"ipctest3"', 'IPC error response has correct id');
     AssertContains(ResponseJson, '"success":false', 'IPC error response fails');
     If FileExists(ResponsePath) Then DeleteFile(ResponsePath);
 
-    // Test with empty request file (should return False)
-    WriteFileContent(RequestPath, '');
+    // Empty request file: dispatcher reads empty body, deletes file, returns False.
+    WriteFileContent(RequestFilePath('ipctest4'), '');
     ProcessedOk := ProcessSingleRequest;
-    AssertTrue(Not ProcessedOk, 'ProcessSingleRequest returns False for empty request');
+    AssertTrue(Not ProcessedOk, 'ProcessSingleRequest returns False for empty request body');
 
-    // Test with no request file (should return False)
-    If FileExists(RequestPath) Then DeleteFile(RequestPath);
+    // No request file at all: ScanForRequestFile finds nothing, returns False.
+    CleanupOrphanResponses;
     ProcessedOk := ProcessSingleRequest;
     AssertTrue(Not ProcessedOk, 'ProcessSingleRequest returns False when no file');
 End;

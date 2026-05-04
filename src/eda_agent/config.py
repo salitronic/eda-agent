@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba
-"""Configuration management for EDA Agent MCP Server."""
+"""Configuration management for EDA Agent MCP Server.
 
+Single source of truth: ``mcp_config.json`` lives in the workspace directory
+and is read by both Python and the Altium DelphiScript at startup. Python
+also writes/updates the file when configuration changes so that the next
+Altium script run picks up the new values.
+"""
+
+import json
 import os
 from pathlib import Path
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -13,15 +21,11 @@ from pydantic import BaseModel, Field
 # ResolveDefaultWorkspaceDir for the reader side.
 WORKSPACE_POINTER_FILE = Path(r"C:\ProgramData\eda-agent\workspace-path.txt")
 
+CONFIG_FILE_NAME = "mcp_config.json"
+
 
 def _default_workspace_dir() -> Path:
-    """Resolve the default workspace directory.
-
-    Uses %USERPROFILE%\\EDA Agent\\workspace on Windows so both the Python
-    MCP server and the Altium DelphiScript use the same location — and
-    it sits alongside the installed scripts in a single visible folder.
-    Can be overridden via the EDA_AGENT_WORKSPACE env var.
-    """
+    """Resolve the default workspace directory."""
     override = os.environ.get("EDA_AGENT_WORKSPACE")
     if override:
         return Path(override)
@@ -32,86 +36,138 @@ def _default_workspace_dir() -> Path:
 
 
 def write_workspace_pointer(workspace_dir: Path) -> None:
-    """Write the workspace path to the pointer file that DelphiScript reads.
-
-    The DelphiScript side has no access to environment variables, so we
-    persist the resolved absolute path to a fixed location that both
-    sides agree on: C:\\ProgramData\\eda-agent\\workspace-path.txt.
-
-    Failures are non-fatal — DelphiScript falls back to C:\\EDA Agent\\
-    workspace\\ if the pointer is missing.
-    """
+    """Write the workspace path to the pointer file that DelphiScript reads."""
     try:
         WORKSPACE_POINTER_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Write with a trailing backslash so the DelphiScript side can
-        # concatenate file names directly.
         path_str = str(workspace_dir)
         if not path_str.endswith("\\"):
             path_str += "\\"
         WORKSPACE_POINTER_FILE.write_text(path_str, encoding="ascii")
     except (OSError, PermissionError):
-        # Not fatal — DelphiScript has a hardcoded fallback.
         pass
 
 
+class MCPRuntimeConfig(BaseModel):
+    """Polling and IPC tunables shared between Python and Pascal.
+
+    The same dict is serialised to ``mcp_config.json`` in the workspace,
+    where the Pascal side reads it via LoadMCPConfig. Both sides are
+    expected to honour these values; defaults match Pascal's
+    InitDefaultConfig so a missing file leaves both sides in sync.
+    """
+
+    # Pascal-side polling tunables (milliseconds)
+    poll_interval_active_ms: int = 10
+    poll_interval_idle_ms: int = 100
+    idle_threshold: int = 20
+    auto_shutdown_ms: int = 600_000  # 10 min
+    yield_iterations: int = 5
+    yield_every_n_active: int = 5
+
+    # Python-side polling
+    py_poll_interval_seconds: float = 0.01
+    py_poll_timeout_seconds: float = 10.0
+    py_keepalive_interval_seconds: int = 30
+
+
 class AltiumConfig(BaseModel):
-    """Configuration settings for EDA Agent MCP Server."""
+    """Top-level configuration."""
 
-    # Workspace directory for JSON communication files
     workspace_dir: Path = Field(default_factory=_default_workspace_dir)
-
-    # Request/response file names
-    request_file: str = "request.json"
-    response_file: str = "response.json"
-
-    # Polling settings
-    poll_interval: float = 0.01  # 10ms between polls — matches server-side active poll
-    # Default timeout: generous to survive large-board operations
-    # (iterating 6000+ tracks, compiling a 500+ component project, etc).
-    # Individual tool calls can override per-invocation when they know
-    # they're cheap.
-    poll_timeout: float = 10.0  # max wait for response
-
-    # Altium process name
     altium_process_name: str = "X2.exe"
-
-    # Coordinate units (mils by default)
     default_units: str = "mils"
+    runtime: MCPRuntimeConfig = Field(default_factory=MCPRuntimeConfig)
 
     @property
-    def request_path(self) -> Path:
-        """Full path to request.json."""
-        return self.workspace_dir / self.request_file
+    def config_file_path(self) -> Path:
+        return self.workspace_dir / CONFIG_FILE_NAME
 
     @property
-    def response_path(self) -> Path:
-        """Full path to response.json."""
-        return self.workspace_dir / self.response_file
+    def poll_interval(self) -> float:
+        return self.runtime.py_poll_interval_seconds
+
+    @property
+    def poll_timeout(self) -> float:
+        return self.runtime.py_poll_timeout_seconds
 
     def ensure_workspace(self) -> None:
-        """Ensure workspace directory exists, and publish its path to the
-        pointer file that the DelphiScript side reads."""
+        """Create workspace dir, publish pointer file, persist runtime config,
+        and emit JSON schemas for the Pascal side to validate against."""
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         write_workspace_pointer(self.workspace_dir)
+        self.write_runtime_config()
+        self._write_schemas()
+
+    def _write_schemas(self) -> None:
+        """Export Pydantic schemas as JSON Schema files in the workspace.
+
+        Importing eda_agent.schemas.commands populates the command registry
+        as a side effect — register_command calls run at module import time.
+        Failures are non-fatal: Pascal falls back to envelope-only validation
+        if the schema files are missing.
+        """
+        try:
+            from .schemas import write_schemas_to
+            from .schemas import commands  # noqa: F401  (registers commands)
+            write_schemas_to(self.workspace_dir)
+        except Exception:
+            # Schema export must not break MCP server startup.
+            pass
+
+    def write_runtime_config(self) -> None:
+        """Write ``mcp_config.json`` so the Pascal side reads the same values.
+
+        Idempotent: if the file already matches what we'd write, no-ops.
+        Failures are non-fatal — Pascal falls back to InitDefaultConfig.
+        """
+        try:
+            payload = self.runtime.model_dump()
+            target = self.config_file_path
+            if target.exists():
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    if existing == payload:
+                        return
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    pass
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(target)
+        except (OSError, PermissionError):
+            pass
+
+    def reload_runtime_config(self) -> None:
+        """Re-read ``mcp_config.json`` from disk into ``self.runtime``.
+
+        Used when a long-running process wants to pick up edits made to the
+        config file by an external tool (or by a fresh ensure_workspace).
+        """
+        path = self.config_file_path
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.runtime = MCPRuntimeConfig(**data)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+            pass
 
 
-# Global configuration instance
 config = AltiumConfig()
 
 
 def get_config() -> AltiumConfig:
-    """Get the global configuration instance."""
     return config
 
 
 def configure(**kwargs) -> None:
-    """Update configuration settings.
+    """Update top-level configuration.
 
-    Also resets the bridge singleton so it picks up the new config.
+    ``runtime`` may be passed as either a MCPRuntimeConfig or a dict.
+    Resets the bridge singleton so it picks up the new config.
     """
     global config
-    config = AltiumConfig(**{**config.model_dump(), **kwargs})
-
-    # Reset bridge singleton so it re-reads the new config on next access
+    base = config.model_dump()
+    base.update(kwargs)
+    config = AltiumConfig(**base)
     from .bridge.altium_bridge import reset_bridge
     reset_bridge()

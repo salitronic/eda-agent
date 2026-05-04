@@ -19,10 +19,21 @@ The simulator mirrors the behavior of:
 import json
 import os
 import re
+import string
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+
+_VALID_ID_CHARS = set(string.ascii_letters + string.digits + "-_")
+
+
+def _is_valid_request_id(s: str) -> bool:
+    """Mirrors Pascal IsValidRequestId — alphanumeric/-/_ only, length 1..64."""
+    if not s or len(s) > 64:
+        return False
+    return all(c in _VALID_ID_CHARS for c in s)
 
 
 # ---------------------------------------------------------------------------
@@ -122,33 +133,43 @@ def _escape_json_string(s: str) -> str:
     return s
 
 
-def _build_success_response(request_id: str, data_json: str) -> str:
-    """Build a success response -- mirrors Main.pas BuildSuccessResponse.
+SIM_PROTOCOL_VERSION = 2
 
-    data_json is a raw JSON fragment (already serialized), or 'null'.
-    """
+
+def _build_success_response(request_id: str, data_json: str) -> str:
+    """Build a success response — mirrors Main.pas BuildSuccessResponse."""
     if not data_json:
         data_json = "null"
     return (
-        '{"id":"' + request_id + '",'
+        '{"protocol_version":' + str(SIM_PROTOCOL_VERSION) + ','
+        '"id":"' + request_id + '",'
         '"success":true,'
         '"data":' + data_json + ','
         '"error":null}'
     )
 
 
-def _build_error_response(request_id: str, error_code: str, error_msg: str) -> str:
-    """Build an error response -- mirrors Main.pas BuildErrorResponse."""
+def _build_error_response(
+    request_id: str,
+    error_code: str,
+    error_msg: str,
+    details_json: str = "",
+) -> str:
+    """Build an error response — mirrors Main.pas BuildErrorResponseDetailed."""
     error_msg = error_msg.replace("\\", "\\\\")
     error_msg = error_msg.replace('"', '\\"')
     error_msg = error_msg.replace("\r", "\\r")
     error_msg = error_msg.replace("\n", "\\n")
     error_msg = error_msg.replace("\t", "\\t")
+    details_field = details_json if details_json else "null"
     return (
-        '{"id":"' + request_id + '",'
+        '{"protocol_version":' + str(SIM_PROTOCOL_VERSION) + ','
+        '"id":"' + request_id + '",'
         '"success":false,'
         '"data":null,'
-        '"error":{"code":"' + error_code + '","message":"' + error_msg + '"}}'
+        '"error":{"code":"' + error_code + '",'
+        '"message":"' + error_msg + '",'
+        '"details":' + details_field + '}}'
     )
 
 
@@ -319,10 +340,9 @@ class AltiumSimulator:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
-        # Clean up IPC files (mirrors CleanupMCPServer)
-        for name in ("request.json", "response.json"):
-            p = self.workspace_dir / name
-            if p.exists():
+        # Clean up any leftover per-request IPC files (mirrors CleanupMCPServer)
+        for pattern in ("request_*.json", "response_*.json"):
+            for p in self.workspace_dir.glob(pattern):
                 try:
                     p.unlink()
                 except OSError:
@@ -333,12 +353,10 @@ class AltiumSimulator:
     # ------------------------------------------------------------------
 
     def _poll_loop(self) -> None:
-        """Main polling loop."""
-        request_path = self.workspace_dir / "request.json"
+        """Main polling loop — scans for any request_<id>.json file."""
         stop_path = self.workspace_dir / "stop"
 
         while self.running:
-            # Check stop file
             if stop_path.exists():
                 try:
                     stop_path.unlink()
@@ -347,66 +365,77 @@ class AltiumSimulator:
                 self.running = False
                 break
 
-            # Process one request if available
-            self._process_single_request(request_path)
+            self._process_single_request()
             time.sleep(self._poll_interval)
 
-    def _process_single_request(self, request_path: Path) -> bool:
-        """Process a single request if one exists.
+    def _process_single_request(self) -> bool:
+        """Mirrors Dispatcher.pas ProcessSingleRequest.
 
-        Mirrors Dispatcher.pas ProcessSingleRequest.
+        Pascal reads request.json (single file), extracts the id from its
+        body, and writes the response to response_<id>.json.
         """
+        request_path = self.workspace_dir / "request.json"
         if not request_path.exists():
             return False
 
         try:
             content = request_path.read_text(encoding="utf-8")
-        except (IOError, OSError):
-            return False
-
-        if not content:
+        except (IOError, OSError, UnicodeDecodeError):
             try:
                 request_path.unlink()
             except OSError:
                 pass
             return False
 
-        try:
-            request_data = json.loads(content)
-        except json.JSONDecodeError:
-            try:
-                request_path.unlink()
-            except OSError:
-                pass
-            return False
-
-        request_id = request_data.get("id", "")
-        command = request_data.get("command", "")
-        params = request_data.get("params", {})
-
-        # Delete request file immediately (mirrors real behavior)
         try:
             request_path.unlink()
         except OSError:
             pass
 
-        if not request_id or not command:
+        if not content:
             return False
 
-        # Process the command
         try:
-            response_content = self._dispatch(command, params, request_id)
-        except Exception as e:
-            response_content = _build_error_response(
-                request_id, "INTERNAL_ERROR",
-                f"Unhandled exception processing: {command}"
-            )
+            request_data = json.loads(content)
+        except json.JSONDecodeError:
+            return False
 
-        # Write the response -- using latin-1 encoding to match real Altium
-        response_path = self.workspace_dir / "response.json"
+        request_id = request_data.get("id", "")
+        command = request_data.get("command", "")
+        params = request_data.get("params", {})
+        proto_ver = request_data.get("protocol_version")
+
+        if not request_id or not _is_valid_request_id(request_id):
+            return False
+
+        if not command:
+            response_content = _build_error_response(
+                request_id, "MALFORMED_REQUEST",
+                "Request missing required field: command",
+            )
+        elif proto_ver is not None and proto_ver != SIM_PROTOCOL_VERSION:
+            response_content = _build_error_response(
+                request_id,
+                "PROTOCOL_VERSION_MISMATCH",
+                f"Client protocol_version={proto_ver} does not match server PROTOCOL_VERSION={SIM_PROTOCOL_VERSION}.",
+                details_json=json.dumps(
+                    {"client_version": proto_ver, "server_version": SIM_PROTOCOL_VERSION}
+                ),
+            )
+        else:
+            try:
+                response_content = self._dispatch(command, params, request_id)
+            except Exception:
+                response_content = _build_error_response(
+                    request_id, "INTERNAL_ERROR",
+                    f"Unhandled exception processing: {command}",
+                )
+
+        response_path = self.workspace_dir / f"response_{request_id}.json"
+        tmp_path = response_path.with_suffix(".json.tmp")
         try:
-            with open(response_path, "w", encoding="latin-1") as f:
-                f.write(response_content)
+            tmp_path.write_text(response_content, encoding="utf-8")
+            tmp_path.replace(response_path)
         except (IOError, OSError):
             pass
 

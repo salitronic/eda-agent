@@ -30,127 +30,114 @@ from tests.test_json_parsing import (
 
 
 class TestRequestFormat:
-    """Test that request.json is written in the format Altium expects."""
+    """Per-request files: request_<id>.json must carry id, command, params,
+    and protocol_version that Pascal can extract via ExtractJsonValue."""
 
     def test_basic_request_structure(self, workspace_dir):
-        """Request must have id, command, and params."""
-        req_path = workspace_dir / "request.json"
-        write_request(req_path, 'test-id', 'application.ping', {})
+        req_path = write_request(workspace_dir, 'testid', 'application.ping', {})
 
-        data = json.loads(req_path.read_text())
-        assert 'id' in data
-        assert 'command' in data
-        assert 'params' in data
-        assert data['id'] == 'test-id'
+        data = json.loads(req_path.read_text(encoding='utf-8'))
+        assert data['id'] == 'testid'
         assert data['command'] == 'application.ping'
         assert data['params'] == {}
+        assert data['protocol_version'] == 2
 
     def test_request_with_params(self, workspace_dir):
-        req_path = workspace_dir / "request.json"
-        write_request(req_path, 'r2', 'generic.query_objects', {
+        req_path = write_request(workspace_dir, 'r2', 'generic.query_objects', {
             'scope': 'active_doc',
             'object_type': 'eNetLabel',
             'filter': 'Text=VCC',
             'properties': 'Text,Location.X,Location.Y',
         })
 
-        data = json.loads(req_path.read_text())
+        data = json.loads(req_path.read_text(encoding='utf-8'))
         assert data['command'] == 'generic.query_objects'
         assert data['params']['object_type'] == 'eNetLabel'
         assert data['params']['filter'] == 'Text=VCC'
 
     def test_request_params_as_flat_json(self, workspace_dir):
-        """Altium's ExtractJsonValue expects params to be a JSON object.
-        The bridge serializes Python dict as a flat JSON object."""
-        req_path = workspace_dir / "request.json"
+        """Altium's ExtractJsonValue expects params as a JSON object."""
         params = {
             'scope': 'project',
             'object_type': 'eSchComponent',
             'filter': 'Designator.Text=R1|LibReference=RC0402',
             'set': 'Comment.Text=100k|Location.X=500',
         }
-        write_request(req_path, 'r3', 'generic.modify_objects', params)
+        req_path = write_request(workspace_dir, 'r3', 'generic.modify_objects', params)
 
-        raw = req_path.read_text()
-        data = json.loads(raw)
-
-        # Verify Altium's parser can extract the inner params
+        data = json.loads(req_path.read_text(encoding='utf-8'))
         params_json = json.dumps(data['params'])
         assert extract_json_value(params_json, 'scope') == 'project'
         assert extract_json_value(params_json, 'object_type') == 'eSchComponent'
         assert extract_json_value(params_json, 'filter') == 'Designator.Text=R1|LibReference=RC0402'
 
     def test_request_id_is_unique(self, workspace_dir):
-        """Each request should have a unique ID."""
         ids = set()
         for _ in range(100):
-            req_id = str(uuid.uuid4())
+            req_id = uuid.uuid4().hex
             ids.add(req_id)
         assert len(ids) == 100
 
     def test_request_with_path_containing_backslashes(self, workspace_dir):
-        """Windows paths in params need double-backslash escaping for JSON."""
-        req_path = workspace_dir / "request.json"
-        write_request(req_path, 'r4', 'project.open', {
+        """Windows paths in params survive JSON encoding."""
+        req_path = write_request(workspace_dir, 'r4', 'project.open', {
             'project_path': 'C:\\Users\\test\\project.PrjPcb',
         })
 
-        data = json.loads(req_path.read_text())
+        data = json.loads(req_path.read_text(encoding='utf-8'))
         assert data['params']['project_path'] == 'C:\\Users\\test\\project.PrjPcb'
 
-        # When Altium's ExtractJsonValue reads this, the \\ in JSON
-        # becomes \\ in the extracted string (it doesn't JSON-decode).
-        # Then StringReplace(path, '\\\\', '\\', -1) normalizes it.
-        raw = req_path.read_text()
         params_json = json.dumps(data['params'])
         extracted = extract_json_value(params_json, 'project_path')
-        # In JSON, the path is stored with escaped backslashes
         assert '\\' in extracted
 
 
 class TestResponseFormat:
-    """Test that response.json conforms to the expected format."""
+    """Per-request response files conform to the new envelope shape:
+    {protocol_version, id, success, data, error{code, message, details}}."""
 
     def test_success_response_structure(self, workspace_dir):
-        resp_path = workspace_dir / "response.json"
-        write_response(resp_path, 'req-1', True, data={'result': 'ok'})
+        resp_path = write_response(workspace_dir, 'req1', True, data={'result': 'ok'})
 
         resp = parse_response(resp_path)
-        validate_success_response(resp, 'req-1')
+        validate_success_response(resp, 'req1')
         assert resp['data'] == {'result': 'ok'}
 
     def test_error_response_structure(self, workspace_dir):
-        resp_path = workspace_dir / "response.json"
-        write_response(resp_path, 'req-1', False, error={
+        resp_path = write_response(workspace_dir, 'req1', False, error={
             'code': 'NOT_FOUND',
             'message': 'Component not found',
+            'details': None,
         })
 
         resp = parse_response(resp_path)
-        validate_error_response(resp, 'req-1', 'NOT_FOUND')
+        validate_error_response(resp, 'req1', 'NOT_FOUND')
 
     def test_altium_success_response_format(self):
-        """Validate the exact string format Altium produces."""
-        result = build_success_response('abc-123', '"pong"')
+        """The exact string format produced by Pascal BuildSuccessResponse."""
+        result = build_success_response('abc123', '"pong"')
         resp = json.loads(result)
         assert resp == {
-            'id': 'abc-123',
+            'protocol_version': 2,
+            'id': 'abc123',
             'success': True,
             'data': 'pong',
             'error': None,
         }
 
     def test_altium_error_response_format(self):
-        """Validate the exact string format Altium produces for errors."""
-        result = build_error_response('abc-123', 'UNKNOWN_COMMAND', 'Unknown category: foo')
+        """The exact string format produced by Pascal BuildErrorResponseDetailed."""
+        result = build_error_response('abc123', 'UNKNOWN_COMMAND', 'Unknown category: foo')
         resp = json.loads(result)
         assert resp == {
-            'id': 'abc-123',
+            'protocol_version': 2,
+            'id': 'abc123',
             'success': False,
             'data': None,
             'error': {
                 'code': 'UNKNOWN_COMMAND',
                 'message': 'Unknown category: foo',
+                'details': None,
             },
         }
 
@@ -222,48 +209,37 @@ class TestCompleteIPCCycles:
 
     def test_ping_cycle(self, workspace_dir):
         """application.ping -> pong"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'application.ping', {})
 
-        # Step 1: Python writes request
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'application.ping', {})
-
-        # Step 2: Verify Altium can parse it
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'id') == req_id
         assert extract_json_value(raw, 'command') == 'application.ping'
 
-        # Step 3: Altium writes response (mocked)
-        response_str = build_success_response(req_id, '"pong"')
-        resp_path.write_text(response_str)
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(build_success_response(req_id, '"pong"'), encoding='utf-8')
 
-        # Step 4: Python reads response
         resp = parse_response(resp_path)
         validate_success_response(resp, req_id)
         assert resp['data'] == 'pong'
 
     def test_query_objects_cycle(self, workspace_dir):
         """generic.query_objects -> objects array"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
-
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'generic.query_objects', {
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'generic.query_objects', {
             'object_type': 'eNetLabel',
             'properties': 'Text,Location.X,Location.Y',
         })
 
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'command') == 'generic.query_objects'
 
-        # Mock response with two objects
         data = ('{"objects":['
                 '{"_doc":"sheet1.SchDoc","Text":"VCC","Location.X":"100","Location.Y":"200"},'
                 '{"_doc":"sheet1.SchDoc","Text":"GND","Location.X":"300","Location.Y":"400"}'
                 '],"count":2}')
-        response_str = build_success_response(req_id, data)
-        resp_path.write_text(response_str)
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(build_success_response(req_id, data), encoding='utf-8')
 
         resp = parse_response(resp_path)
         validate_success_response(resp, req_id)
@@ -273,45 +249,43 @@ class TestCompleteIPCCycles:
 
     def test_error_cycle(self, workspace_dir):
         """unknown.command -> error response"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'unknown.command', {})
 
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'unknown.command', {})
-
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'command') == 'unknown.command'
 
-        # Mock error response
-        response_str = build_error_response(
-            req_id, 'UNKNOWN_COMMAND',
-            'Unknown command category: unknown. Use generic.* for object operations.'
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(
+            build_error_response(
+                req_id, 'UNKNOWN_COMMAND',
+                'Unknown command category: unknown. Use generic.* for object operations.',
+            ),
+            encoding='utf-8',
         )
-        resp_path.write_text(response_str)
 
         resp = parse_response(resp_path)
         validate_error_response(resp, req_id, 'UNKNOWN_COMMAND')
 
     def test_modify_cycle_with_filter_and_set(self, workspace_dir):
         """generic.modify_objects with filter and set params"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
-
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'generic.modify_objects', {
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'generic.modify_objects', {
             'object_type': 'eNetLabel',
             'filter': 'Text=VCC',
             'set': 'Text=VCC_3V3|Location.X=500',
         })
 
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         params_raw = extract_json_value(raw, 'params')
         assert extract_json_value(params_raw, 'filter') == 'Text=VCC'
         assert extract_json_value(params_raw, 'set') == 'Text=VCC_3V3|Location.X=500'
 
-        # Mock response
-        response_str = build_success_response(req_id, '{"matched":3,"sheets_processed":2}')
-        resp_path.write_text(response_str)
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(
+            build_success_response(req_id, '{"matched":3,"sheets_processed":2}'),
+            encoding='utf-8',
+        )
 
         resp = parse_response(resp_path)
         validate_success_response(resp, req_id)
@@ -319,40 +293,40 @@ class TestCompleteIPCCycles:
 
     def test_create_object_cycle(self, workspace_dir):
         """generic.create_object cycle"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
-
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'generic.create_object', {
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'generic.create_object', {
             'object_type': 'eNetLabel',
             'properties': 'Text=VCC|Location.X=100|Location.Y=200',
             'container': 'document',
         })
 
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'command') == 'generic.create_object'
 
-        response_str = build_success_response(req_id, '{"created":true,"object_type":"eNetLabel"}')
-        resp_path.write_text(response_str)
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(
+            build_success_response(req_id, '{"created":true,"object_type":"eNetLabel"}'),
+            encoding='utf-8',
+        )
 
         resp = parse_response(resp_path)
         assert resp['data']['created'] is True
 
     def test_project_with_path_cycle(self, workspace_dir):
         """project.open with Windows path"""
-        req_path = workspace_dir / "request.json"
-        resp_path = workspace_dir / "response.json"
-
-        req_id = str(uuid.uuid4())
-        write_request(req_path, req_id, 'project.open', {
+        req_id = uuid.uuid4().hex
+        req_path = write_request(workspace_dir, req_id, 'project.open', {
             'project_path': 'C:\\Users\\test\\MyProject.PrjPcb',
         })
 
-        raw = req_path.read_text()
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'command') == 'project.open'
 
-        response_str = build_success_response(req_id, '{"success":true}')
-        resp_path.write_text(response_str)
+        resp_path = workspace_dir / f"response_{req_id}.json"
+        resp_path.write_text(
+            build_success_response(req_id, '{"success":true}'),
+            encoding='utf-8',
+        )
 
         resp = parse_response(resp_path)
         validate_success_response(resp, req_id)
@@ -362,53 +336,35 @@ class TestFileIPCEdgeCases:
     """Edge cases in the file-based IPC mechanism."""
 
     def test_empty_request_file(self, workspace_dir):
-        """An empty request file should be ignored.
-        Mirror: Dispatcher.pas:55 — empty content causes exit."""
-        req_path = workspace_dir / "request.json"
-        req_path.write_text('')
-        assert req_path.read_text() == ''
+        """An empty per-request file is dropped by the dispatcher."""
+        req_path = workspace_dir / "request_emptyone.json"
+        req_path.write_text('', encoding='utf-8')
+        assert req_path.read_text(encoding='utf-8') == ''
 
     def test_missing_request_id(self, workspace_dir):
-        """Request without id should be rejected.
-        Mirror: Dispatcher.pas:67 — empty RequestId causes exit."""
-        req_path = workspace_dir / "request.json"
-        req_path.write_text('{"command":"test","params":{}}')
-        raw = req_path.read_text()
+        """Pascal extracts ID from filename now, not body — but body lookup
+        still returns '' for missing id field."""
+        req_path = workspace_dir / "request_someid.json"
+        req_path.write_text('{"command":"test","params":{}}', encoding='utf-8')
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'id') == ''
 
     def test_missing_command(self, workspace_dir):
-        """Request without command should be rejected."""
-        req_path = workspace_dir / "request.json"
-        req_path.write_text('{"id":"test","params":{}}')
-        raw = req_path.read_text()
+        """Request without command is rejected (MALFORMED_REQUEST)."""
+        req_path = workspace_dir / "request_someid.json"
+        req_path.write_text('{"id":"someid","params":{}}', encoding='utf-8')
+        raw = req_path.read_text(encoding='utf-8')
         assert extract_json_value(raw, 'command') == ''
 
-    def test_response_file_overwrite(self, workspace_dir):
-        """Writing a new response overwrites the previous one."""
-        resp_path = workspace_dir / "response.json"
+    def test_concurrent_requests_have_independent_files(self, workspace_dir):
+        """Per-request files: two callers can co-exist without overwriting."""
+        write_request(workspace_dir, 'first', 'application.ping', {})
+        write_request(workspace_dir, 'second', 'application.ping', {})
 
-        write_response(resp_path, 'old', True, data='first')
-        write_response(resp_path, 'new', True, data='second')
-
-        resp = parse_response(resp_path)
-        assert resp['id'] == 'new'
-        assert resp['data'] == 'second'
-
-    def test_concurrent_request_prevention(self, workspace_dir):
-        """Only one request.json should exist at a time.
-        The protocol: Python writes request, Altium deletes it before processing."""
-        req_path = workspace_dir / "request.json"
-        write_request(req_path, 'first', 'application.ping', {})
-        assert req_path.exists()
-
-        # Simulate Altium deleting it
-        req_path.unlink()
-        assert not req_path.exists()
-
-        # Now safe to write next request
-        write_request(req_path, 'second', 'application.ping', {})
-        data = json.loads(req_path.read_text())
-        assert data['id'] == 'second'
+        first = json.loads((workspace_dir / "request_first.json").read_text(encoding='utf-8'))
+        second = json.loads((workspace_dir / "request_second.json").read_text(encoding='utf-8'))
+        assert first['id'] == 'first'
+        assert second['id'] == 'second'
 
 
 class TestResponseJsonWellFormedness:

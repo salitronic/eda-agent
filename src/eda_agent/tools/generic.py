@@ -9,6 +9,7 @@ a pass-through layer for object iteration, property access, and process executio
 
 from typing import Any
 from ..bridge import get_bridge
+from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 
 
@@ -120,7 +121,7 @@ def register_generic_tools(mcp):
         result = await bridge.send_command_async(
             "generic.modify_objects",
             {
-                "scope": scope,
+                "scope": scope_to_wire(scope),
                 "object_type": object_type,
                 "filter": filter,
                 "set": set,
@@ -193,7 +194,7 @@ def register_generic_tools(mcp):
         result = await bridge.send_command_async(
             "generic.delete_objects",
             {
-                "scope": scope,
+                "scope": scope_to_wire(scope),
                 "object_type": object_type,
                 "filter": filter,
             },
@@ -1151,7 +1152,7 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.get_object_count",
-            {"object_type": object_type, "scope": scope, "filter": filter},
+            {"object_type": object_type, "scope": scope_to_wire(scope), "filter": filter},
         )
         return result
 

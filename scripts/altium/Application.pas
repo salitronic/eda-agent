@@ -7,11 +7,13 @@
 Function App_Ping(RequestId : String) : String;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
-    // Altium script cache. The Altium string here comes from whatever was
-    // compiled when the script project was last opened; the Python side
-    // reads the on-disk version and warns on mismatch.
+    // Altium script cache. cast_errors surfaces the silent-cast counter
+    // (see RecordCastError) — non-zero at session end indicates an
+    // interface mismatch worth investigating.
     Result := BuildSuccessResponse(RequestId,
-        '{"pong":true,"script_version":"' + SCRIPT_VERSION + '"}');
+        '{"pong":true,"script_version":"' + SCRIPT_VERSION +
+        '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
+        ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
 End;
 
 Function App_GetVersion(RequestId : String) : String;
@@ -425,11 +427,71 @@ End;
 Function App_SaveAll(RequestId : String) : String;
 Begin
     Try
+        // Iterate every IServerDocument the editor has open and DoFileSave
+        // each modified one. This bypasses WorkspaceManager:SaveAll, which
+        // silently no-ops in some workspace states, and project-walk-based
+        // saves, which skip free documents.
         SaveAllDirty;
         Result := BuildSuccessResponse(RequestId, '{"saved":true}');
     Except
         Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'SaveAllDirty raised an exception');
     End;
+End;
+
+{..............................................................................}
+{ Diagnostic: enumerate the workspace via FindFirst with the given pattern.    }
+{ Reports the FindFirst return code, the count of matches, and the first few  }
+{ filenames so we can confirm whether DelphiScript's directory enumeration    }
+{ actually works with our request_*.json convention.                          }
+{..............................................................................}
+
+Function App_DiagWorkspace(Params : String; RequestId : String) : String;
+Var
+    Pattern, Names, RawPattern, ExceptionMsg : String;
+    Files : TStringList;
+    Count, I : Integer;
+    First : Boolean;
+Begin
+    RawPattern := ExtractJsonValue(Params, 'pattern');
+    If RawPattern = '' Then RawPattern := 'request_*.json';
+    Pattern := RawPattern;
+
+    Count := 0;
+    Names := '';
+    First := True;
+    ExceptionMsg := '';
+
+    Try
+        Files := TStringList.Create;
+        Try
+            // FindFiles is the documented Altium DelphiScript helper for
+            // enumerating files in a directory; FindFirst from SysUtils is
+            // not exposed to scripts.
+            // Signature: FindFiles(folder, pattern, attr, recurse, list)
+            // attr=63 ($3F) is the standard "match anything" mask.
+            FindFiles(WorkspaceDir, Pattern, 63, False, Files);
+            Count := Files.Count;
+            For I := 0 To Files.Count - 1 Do
+            Begin
+                If I >= 10 Then Break;
+                If Not First Then Names := Names + ',';
+                First := False;
+                Names := Names + '"' + EscapeJsonString(ExtractFileName(Files[I])) + '"';
+            End;
+        Finally
+            Files.Free;
+        End;
+    Except
+        ExceptionMsg := 'FindFiles raised an exception';
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"workspace_dir":"' + EscapeJsonString(WorkspaceDir) +
+        '","pattern":"' + EscapeJsonString(Pattern) +
+        '","function":"FindFiles' +
+        '","match_count":' + IntToStr(Count) +
+        ',"first_matches":[' + Names +
+        '],"exception":"' + EscapeJsonString(ExceptionMsg) + '"}');
 End;
 
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
@@ -446,6 +508,7 @@ Begin
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
         'create_document':     Result := App_CreateDocument(Params, RequestId);
         'save_all':            Result := App_SaveAll(RequestId);
+        'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
         'stop_server':         Begin SaveAllDirty; Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);

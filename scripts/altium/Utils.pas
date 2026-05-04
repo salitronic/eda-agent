@@ -63,29 +63,84 @@ Begin
     End;
 End;
 
+{ Hex digit (0-15) to its '0'..'F' character. Used by EscapeJsonString's    }
+{ \uXXXX path for non-ASCII bytes.                                            }
+Function HexNibble(N : Integer) : String;
+Begin
+    If N < 10 Then Result := Chr(Ord('0') + N)
+    Else Result := Chr(Ord('A') + (N - 10));
+End;
+
+Function ByteToHex4(B : Integer) : String;
+Begin
+    Result := '00' + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
+End;
+
 Function EscapeJsonString(S : String) : String;
 Var
     Tmp : String;
+    I, O : Integer;
+    Ch : String;
+    NeedsCharLoop : Boolean;
 Begin
     Result := '';
     // Defensive conversion: DelphiScript lets Variants flow into a
     // parameter declared `String`. If a caller accidentally passes a
     // compound interface (e.g. Comp.Designator returning ISch_Parameter),
-    // the implicit Dispatch→OleStr conversion fails with:
-    //   "Could not convert variant of type (Dispatch) into type (OleStr)"
-    // Wrap the initial assignment so a bad caller gets an empty string
-    // instead of crashing the entire polling loop.
+    // the implicit Dispatch->OleStr conversion fails. Wrap so a bad caller
+    // gets an empty string instead of crashing the polling loop.
     Try
         Tmp := S;
     Except
         Exit;
     End;
-    Tmp := StringReplace(Tmp, '\', '\\', -1);
-    Tmp := StringReplace(Tmp, '"', '\"', -1);
-    Tmp := StringReplace(Tmp, #13, '\r', -1);
-    Tmp := StringReplace(Tmp, #10, '\n', -1);
-    Tmp := StringReplace(Tmp, #9, '\t', -1);
-    Result := Tmp;
+
+    // Fast path: scan once for any byte that needs the slow per-char loop.
+    // The vast majority of escaped strings are pure ASCII (designators,
+    // file paths, layer names) and stay on the fast path.
+    NeedsCharLoop := False;
+    For I := 1 To Length(Tmp) Do
+    Begin
+        O := Ord(Tmp[I]);
+        If (O >= 128) Or ((O < 32) And (O <> 9) And (O <> 10) And (O <> 13)) Then
+        Begin
+            NeedsCharLoop := True;
+            Break;
+        End;
+    End;
+
+    If Not NeedsCharLoop Then
+    Begin
+        Tmp := StringReplace(Tmp, '\', '\\', -1);
+        Tmp := StringReplace(Tmp, '"', '\"', -1);
+        Tmp := StringReplace(Tmp, #13, '\r', -1);
+        Tmp := StringReplace(Tmp, #10, '\n', -1);
+        Tmp := StringReplace(Tmp, #9, '\t', -1);
+        Result := Tmp;
+        Exit;
+    End;
+
+    // Slow path: char-by-char with \u00XX for any non-ASCII byte. Non-ASCII
+    // input is treated as Latin-1 / CP1252 (Pascal's native single-byte
+    // encoding); the escape produces valid JSON consumable as UTF-8 by any
+    // reader. This is the single mechanism that lets us drop the Latin-1
+    // read kludge on the Python side — output is always pure ASCII.
+    For I := 1 To Length(Tmp) Do
+    Begin
+        Ch := Copy(Tmp, I, 1);
+        O := Ord(Ch[1]);
+        If O >= 128 Then
+            Result := Result + '\u' + ByteToHex4(O)
+        Else If O = Ord('\') Then Result := Result + '\\'
+        Else If O = Ord('"') Then Result := Result + '\"'
+        Else If O = 13 Then Result := Result + '\r'
+        Else If O = 10 Then Result := Result + '\n'
+        Else If O = 9 Then Result := Result + '\t'
+        Else If O = 8 Then Result := Result + '\b'
+        Else If O = 12 Then Result := Result + '\f'
+        Else If O < 32 Then Result := Result + '\u' + ByteToHex4(O)
+        Else Result := Result + Ch;
+    End;
 End;
 
 // UnescapeJsonString is defined in Main.pas (compiles first)

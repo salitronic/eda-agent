@@ -2,15 +2,13 @@
 # Copyright (c) 2026 George Saliba
 """End-to-end bridge integration tests.
 
-These tests exercise the real AltiumBridge, the real file-based IPC, and
-the AltiumSimulator lifecycle. Tests that merely verify the simulator
-returns what the simulator defines as its own response have been removed --
-those are tautologies, not behavior tests.
+These tests exercise the real AltiumBridge, the real per-request file IPC,
+and the AltiumSimulator lifecycle.
 
-What remains:
-  - Bridge mechanics (sync/async send, stale-response cleanup, error raising)
+What we verify:
+  - Bridge mechanics (sync/async send, error raising, protocol versioning)
   - Simulator lifecycle (start/stop, malformed/empty request handling)
-  - Latin-1 encoding at the IPC boundary (the one non-obvious behavior)
+  - UTF-8 encoding at the IPC boundary
 """
 
 import asyncio
@@ -19,8 +17,8 @@ import time
 
 import pytest
 
-from tests.altium_simulator import AltiumSimulator
-from eda_agent.bridge.altium_bridge import AltiumBridge, CommandRequest
+from tests.altium_simulator import AltiumSimulator, SIM_PROTOCOL_VERSION
+from eda_agent.bridge.altium_bridge import AltiumBridge, CommandRequest, PROTOCOL_VERSION
 from eda_agent.bridge.exceptions import AltiumCommandError
 
 
@@ -78,23 +76,28 @@ class TestBridgeIntegration:
         assert error.code
         assert error.message
 
-    def test_bridge_clears_stale_response(self, e2e_bridge):
-        """Bridge clears stale response files before sending new request."""
-        # Write a stale response
-        stale_path = e2e_bridge.config.response_path
-        stale_data = {
-            "id": "stale-id-000",
-            "success": True,
-            "data": "stale",
-            "error": None,
-        }
-        stale_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(stale_path, "w") as f:
-            json.dump(stale_data, f)
+    def test_unrelated_response_invisible(self, e2e_bridge):
+        """A foreign caller's response file does not interfere with our poll."""
+        # Per-request files: this file belongs to no current request and the
+        # bridge should never poll for it.
+        ws = e2e_bridge.config.workspace_dir
+        ws.mkdir(parents=True, exist_ok=True)
+        foreign = ws / "response_foreigncaller.json"
+        foreign.write_text(
+            json.dumps({
+                "protocol_version": PROTOCOL_VERSION,
+                "id": "foreigncaller",
+                "success": True,
+                "data": "stale",
+                "error": None,
+            }),
+            encoding="utf-8",
+        )
 
-        # The next command should still work (bridge clears stale response)
         result = e2e_bridge.send_command("application.ping", timeout=5.0)
         assert result == "pong"
+        # The unrelated file is left alone — we never touch responses we don't own.
+        assert foreign.exists()
 
     def test_unknown_command_category_raises(self, e2e_bridge):
         """Completely unknown category -> UNKNOWN_COMMAND error from simulator."""
@@ -110,24 +113,25 @@ class TestBridgeIntegration:
 
 
 # =========================================================================
-# LATIN-1 ENCODING AT THE IPC BOUNDARY
+# UTF-8 ENCODING AT THE IPC BOUNDARY
 # =========================================================================
 
-class TestLatin1Encoding:
-    """Verify the latin-1 boundary that exists in the real pipeline.
+class TestEncoding:
+    """Verify both sides write/read UTF-8 with no encoding ambiguity.
 
-    Real Altium writes response.json in Latin-1 (DelphiScript AnsiString).
-    The bridge reads with encoding='latin-1'. These tests verify that
-    boundary holds.
+    Pascal escapes any non-ASCII byte as \\u00XX so output is pure ASCII;
+    it is therefore valid UTF-8 by construction. Python writes UTF-8.
     """
 
-    def test_response_is_latin1(self, altium_sim):
-        """Verify the simulator writes latin-1 encoded responses."""
-        request_path = altium_sim.workspace_dir / "request.json"
-        response_path = altium_sim.workspace_dir / "response.json"
+    def test_response_is_utf8(self, altium_sim):
+        """Simulator writes UTF-8 responses readable as JSON."""
+        rid = "testencoding001"
+        request_path = altium_sim.workspace_dir / f"request_{rid}.json"
+        response_path = altium_sim.workspace_dir / f"response_{rid}.json"
 
         request_data = {
-            "id": "test-encoding-001",
+            "protocol_version": SIM_PROTOCOL_VERSION,
+            "id": rid,
             "command": "application.ping",
             "params": {},
         }
@@ -141,11 +145,11 @@ class TestLatin1Encoding:
             time.sleep(0.01)
 
         assert response_path.exists()
-        # Read with latin-1 -- this must not raise
-        with open(response_path, "r", encoding="latin-1") as f:
+        with open(response_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        assert data["id"] == "test-encoding-001"
+        assert data["id"] == rid
         assert data["success"] is True
+        assert data["protocol_version"] == SIM_PROTOCOL_VERSION
 
 
 # =========================================================================
@@ -176,16 +180,16 @@ class TestSimulatorLifecycle:
         sim.stop()
 
     def test_cleanup_removes_ipc_files(self, tmp_path):
-        """Simulator cleanup removes request.json and response.json."""
+        """Simulator cleanup removes leftover per-request files on stop."""
         sim = AltiumSimulator(str(tmp_path))
-        (tmp_path / "request.json").write_text("{}", encoding="utf-8")
-        (tmp_path / "response.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "request_leftover.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "response_leftover.json").write_text("{}", encoding="utf-8")
 
         sim.start()
         sim.stop()
 
-        assert not (tmp_path / "request.json").exists()
-        assert not (tmp_path / "response.json").exists()
+        assert not list(tmp_path.glob("request_*.json"))
+        assert not list(tmp_path.glob("response_*.json"))
 
     def test_double_start_is_idempotent(self, tmp_path):
         """Starting twice does not create duplicate threads."""
@@ -201,10 +205,10 @@ class TestSimulatorLifecycle:
         sim = AltiumSimulator(str(tmp_path))
         sim.start()
 
-        (tmp_path / "request.json").write_text("not json at all", encoding="utf-8")
+        (tmp_path / "request_malformed1.json").write_text("not json at all", encoding="utf-8")
         time.sleep(0.1)
 
-        assert not (tmp_path / "request.json").exists()
+        assert not (tmp_path / "request_malformed1.json").exists()
         assert sim.running is True
         sim.stop()
 
@@ -213,10 +217,10 @@ class TestSimulatorLifecycle:
         sim = AltiumSimulator(str(tmp_path))
         sim.start()
 
-        (tmp_path / "request.json").write_text("", encoding="utf-8")
+        (tmp_path / "request_empty1.json").write_text("", encoding="utf-8")
         time.sleep(0.1)
 
-        assert not (tmp_path / "request.json").exists()
+        assert not (tmp_path / "request_empty1.json").exists()
         assert sim.running is True
         sim.stop()
 

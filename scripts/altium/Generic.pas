@@ -59,6 +59,8 @@ Begin
         If PropName = 'Designator' Then Result := C.Designator.Text
         Else If PropName = 'Comment' Then Result := C.Comment.Text;
     Except
+        // Cast unexpectedly failed despite ObjectId check — surface via counter.
+        RecordCastError('GetSchComponentSubText:' + PropName);
         Result := '';
     End;
 End;
@@ -73,7 +75,7 @@ Begin
         If PropName = 'Designator' Then C.Designator.Text := Value
         Else If PropName = 'Comment' Then C.Comment.Text := Value;
     Except
-        // Ignore failures silently
+        RecordCastError('SetSchComponentSubText:' + PropName);
     End;
 End;
 
@@ -668,17 +670,40 @@ Begin
 End;
 
 {..............................................................................}
-{ Helper: Parse scope string — returns scope type and path if specified       }
-{ Scope formats: "active_doc", "project", "project:C:\path", "doc:C:\path"  }
+{ Helper: Parse scope value into type + optional file path.                    }
+{                                                                              }
+{ Wire form (structured, sent by the Python helper) is a JSON object with     }
+{ a "type" field (active_doc / project / doc) and an optional "file_path"     }
+{ field. Top-level scope values arriving from MCP tools always use this form. }
+{                                                                              }
+{ For batch-operation strings (compact key=value;...~~ encoding) the scope    }
+{ is still a plain string token: active_doc / project / doc:path /            }
+{ project:path. ParseScope handles both forms — JSON-object first, then the   }
+{ legacy compact form for batch-op fields.                                    }
 {..............................................................................}
 
 Procedure ParseScope(Scope : String; Var ScopeType : String; Var ScopePath : String);
+Var
+    InnerType, InnerPath : String;
 Begin
     ScopeType := 'active_doc';
     ScopePath := '';
 
     If Scope = '' Then Exit;
 
+    // Structured form: {"type":"...","file_path":"..."}
+    If Copy(Scope, 1, 1) = '{' Then
+    Begin
+        InnerType := ExtractJsonValue(Scope, 'type');
+        InnerPath := ExtractJsonValue(Scope, 'file_path');
+        If InnerType <> '' Then
+            ScopeType := InnerType;
+        If InnerPath <> '' Then
+            ScopePath := InnerPath;
+        Exit;
+    End;
+
+    // Legacy compact form used inside batch-op strings only.
     If Copy(Scope, 1, 4) = 'doc:' Then
     Begin
         ScopeType := 'doc';
@@ -4360,11 +4385,13 @@ Var
     NewObj : ISch_GraphicalObject;
     ActiveDoc : ISch_Document;
     ContainerStr : String;
+    FailuresJson, ItemReason : String;
+    FirstFailure : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'operations is required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'operations is required');
         Exit;
     End;
 
@@ -4373,6 +4400,8 @@ Begin
     OpCount := 0;
     ActiveDoc := SchServer.GetCurrentSchDocument;
     Remaining := Operations;
+    FailuresJson := '';
+    FirstFailure := True;
 
     If ActiveDoc <> Nil Then
         SchServer.ProcessControl.PreProcess(ActiveDoc, '');
@@ -4382,6 +4411,7 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
+            ItemReason := '';
             Scope := GetBatchField(Op, 'scope');
             If Scope = '' Then Scope := 'active_doc';
             ObjTypeStr := GetBatchField(Op, 'object_type');
@@ -4393,54 +4423,73 @@ Begin
             If ObjTypeInt = -1 Then
             Begin
                 Inc(Failed);
-                Continue;
-            End;
-
-            NewObj := SchServer.SchObjectFactory(ObjTypeInt, eCreate_Default);
-            If NewObj = Nil Then
-            Begin
-                Inc(Failed);
-                Continue;
-            End;
-
-            ApplySetProperties(NewObj, PropsStr);
-
-            If ContainerStr = 'component' Then
-            Begin
-                SchLib := SchServer.GetCurrentSchDocument;
-                If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
-                Begin
-                    Component := SchLib.CurrentSchComponent;
-                    If Component <> Nil Then
-                    Begin
-                        Component.AddSchObject(NewObj);
-                        SchRegisterObject(Component, NewObj);
-                        Inc(Created);
-                    End
-                    Else
-                    Begin
-                        SchServer.DestroySchObject(NewObj);
-                        Inc(Failed);
-                    End;
-                End
-                Else
-                Begin
-                    SchServer.DestroySchObject(NewObj);
-                    Inc(Failed);
-                End;
+                ItemReason := 'INVALID_TYPE';
             End
             Else
             Begin
-                SchDoc := ActiveDoc;
-                If SchDoc = Nil Then
+                NewObj := SchServer.SchObjectFactory(ObjTypeInt, eCreate_Default);
+                If NewObj = Nil Then
                 Begin
-                    SchServer.DestroySchObject(NewObj);
                     Inc(Failed);
-                    Continue;
+                    ItemReason := 'CREATE_FAILED';
+                End
+                Else
+                Begin
+                    ApplySetProperties(NewObj, PropsStr);
+
+                    If ContainerStr = 'component' Then
+                    Begin
+                        SchLib := SchServer.GetCurrentSchDocument;
+                        If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
+                        Begin
+                            Component := SchLib.CurrentSchComponent;
+                            If Component <> Nil Then
+                            Begin
+                                Component.AddSchObject(NewObj);
+                                SchRegisterObject(Component, NewObj);
+                                Inc(Created);
+                            End
+                            Else
+                            Begin
+                                SchServer.DestroySchObject(NewObj);
+                                Inc(Failed);
+                                ItemReason := 'NO_COMPONENT';
+                            End;
+                        End
+                        Else
+                        Begin
+                            SchServer.DestroySchObject(NewObj);
+                            Inc(Failed);
+                            ItemReason := 'NO_SCHLIB';
+                        End;
+                    End
+                    Else
+                    Begin
+                        SchDoc := ActiveDoc;
+                        If SchDoc = Nil Then
+                        Begin
+                            SchServer.DestroySchObject(NewObj);
+                            Inc(Failed);
+                            ItemReason := 'NO_SCHEMATIC';
+                        End
+                        Else
+                        Begin
+                            SchDoc.RegisterSchObjectInContainer(NewObj);
+                            SchRegisterObject(SchDoc, NewObj);
+                            Inc(Created);
+                        End;
+                    End;
                 End;
-                SchDoc.RegisterSchObjectInContainer(NewObj);
-                SchRegisterObject(SchDoc, NewObj);
-                Inc(Created);
+            End;
+
+            If ItemReason <> '' Then
+            Begin
+                If Not FirstFailure Then FailuresJson := FailuresJson + ',';
+                FirstFailure := False;
+                FailuresJson := FailuresJson +
+                    '{"index":' + IntToStr(OpCount - 1) +
+                    ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
+                    '","reason":"' + ItemReason + '"}';
             End;
         End;
     Finally
@@ -4452,8 +4501,10 @@ Begin
     End;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"created":' + IntToStr(Created) + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount) + '}');
+        '{"created":' + IntToStr(Created) +
+        ',"failed":' + IntToStr(Failed) +
+        ',"total":' + IntToStr(OpCount) +
+        ',"failures":[' + FailuresJson + ']}');
 End;
 
 {..............................................................................}
@@ -4690,11 +4741,13 @@ Var
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
     Found : Boolean;
+    FailuresJson, ItemReason : String;
+    FirstFailure : Boolean;
 Begin
     AttachStr := ExtractJsonValue(Params, 'attachments');
     If AttachStr = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'attachments is required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'attachments is required');
         Exit;
     End;
 
@@ -4709,6 +4762,8 @@ Begin
     Failed := 0;
     OpCount := 0;
     Remaining := AttachStr;
+    FailuresJson := '';
+    FirstFailure := True;
 
     SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitives');
     Try
@@ -4723,38 +4778,56 @@ Begin
             ModelName := GetBatchField(Op, 'spice_model');
             SimKind := GetBatchField(Op, 'sim_kind');
 
+            ItemReason := '';
+
             If (Designator = '') Or (Primitive = '') Then
             Begin
                 Inc(Failed);
-                Continue;
+                ItemReason := 'MISSING_FIELDS';
+            End
+            Else
+            Begin
+                Found := False;
+                Iter := SchDoc.SchIterator_Create;
+                Try
+                    Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+                    Obj := Iter.FirstSchObject;
+                    While (Obj <> Nil) And Not Found Do
+                    Begin
+                        Comp := Obj;
+                        If Comp.Designator.Text = Designator Then
+                        Begin
+                            SetCompParamText(Comp, 'SpicePrefix', Primitive);
+                            If Value <> '' Then
+                                SetCompParamText(Comp, 'Value', Value);
+                            If ModelName <> '' Then
+                                SetCompParamText(Comp, 'SpiceModel', ModelName);
+                            If SimKind <> '' Then
+                                SetCompParamText(Comp, 'SimulationKind', SimKind);
+                            Found := True;
+                            Inc(Attached);
+                        End;
+                        Obj := Iter.NextSchObject;
+                    End;
+                Finally
+                    SchDoc.SchIterator_Destroy(Iter);
+                End;
+                If Not Found Then
+                Begin
+                    Inc(Failed);
+                    ItemReason := 'COMPONENT_NOT_FOUND';
+                End;
             End;
 
-            Found := False;
-            Iter := SchDoc.SchIterator_Create;
-            Try
-                Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
-                Obj := Iter.FirstSchObject;
-                While (Obj <> Nil) And Not Found Do
-                Begin
-                    Comp := Obj;
-                    If Comp.Designator.Text = Designator Then
-                    Begin
-                        SetCompParamText(Comp, 'SpicePrefix', Primitive);
-                        If Value <> '' Then
-                            SetCompParamText(Comp, 'Value', Value);
-                        If ModelName <> '' Then
-                            SetCompParamText(Comp, 'SpiceModel', ModelName);
-                        If SimKind <> '' Then
-                            SetCompParamText(Comp, 'SimulationKind', SimKind);
-                        Found := True;
-                        Inc(Attached);
-                    End;
-                    Obj := Iter.NextSchObject;
-                End;
-            Finally
-                SchDoc.SchIterator_Destroy(Iter);
+            If ItemReason <> '' Then
+            Begin
+                If Not FirstFailure Then FailuresJson := FailuresJson + ',';
+                FirstFailure := False;
+                FailuresJson := FailuresJson +
+                    '{"index":' + IntToStr(OpCount - 1) +
+                    ',"designator":"' + EscapeJsonString(Designator) +
+                    '","reason":"' + ItemReason + '"}';
             End;
-            If Not Found Then Inc(Failed);
         End;
     Finally
         SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE primitives');
@@ -4762,8 +4835,10 @@ Begin
     End;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"attached":' + IntToStr(Attached) + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount) + '}');
+        '{"attached":' + IntToStr(Attached) +
+        ',"failed":' + IntToStr(Failed) +
+        ',"total":' + IntToStr(OpCount) +
+        ',"failures":[' + FailuresJson + ']}');
 End;
 
 {..............................................................................}

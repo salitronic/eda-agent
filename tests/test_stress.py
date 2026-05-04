@@ -46,10 +46,14 @@ def _build_bridge(workspace, poll_interval: float, timeout: float) -> AltiumBrid
     """
     from unittest.mock import patch
 
+    from eda_agent.config import MCPRuntimeConfig
+
     test_config = AltiumConfig(
         workspace_dir=workspace,
-        poll_interval=poll_interval,
-        poll_timeout=timeout,
+        runtime=MCPRuntimeConfig(
+            py_poll_interval_seconds=poll_interval,
+            py_poll_timeout_seconds=timeout,
+        ),
     )
 
     class FakeProcessManager:
@@ -210,18 +214,25 @@ class TestEncodingEdgeCases:
         finally:
             sim.stop()
 
-    def test_non_latin1_causes_timeout(self, e2e_bridge):
-        """CJK characters cannot encode in Latin-1 -- simulator fails to write,
-        bridge times out. Mirrors real Altium behavior with AnsiString."""
-        with pytest.raises(AltiumTimeoutError):
-            e2e_bridge.send_command("project.set_parameter", {
-                "name": "CJKParam",
-                "value": "\u4f60\u597d\u4e16\u754c",
-            }, timeout=2.0)
+    def test_cjk_round_trips_via_utf8(self, e2e_bridge):
+        """CJK characters round-trip cleanly under UTF-8.
+
+        Old behaviour: Latin-1 encoding would have caused a UnicodeEncodeError
+        on the write side and a bridge timeout. The new envelope is UTF-8
+        on the Python side and \\uXXXX-escaped from Pascal, so any Unicode
+        codepoint in a parameter value comes back intact.
+        """
+        cjk = "\u4f60\u597d\u4e16\u754c"
+        result = e2e_bridge.send_command("project.set_parameter", {
+            "name": "CJKParam",
+            "value": cjk,
+        }, timeout=5.0)
+        assert result["success"] is True
+        assert result["value"] == cjk
 
     def test_null_byte_causes_timeout(self, e2e_bridge):
-        """Null bytes crash the Latin-1 write path -- bridge times out gracefully."""
-        with pytest.raises(AltiumTimeoutError):
+        """Null bytes still crash JSON encoders — bridge times out cleanly."""
+        with pytest.raises((AltiumTimeoutError, ValueError)):
             e2e_bridge.send_command("project.set_parameter", {
                 "name": "NullTest",
                 "value": "hello\x00world",
@@ -251,66 +262,31 @@ class TestEncodingEdgeCases:
 # STALE RESPONSE HANDLING
 # =========================================================================
 
-class TestStaleResponseHandling:
-    """The bridge must clean up stale responses from prior commands."""
+class TestForeignResponseIsolation:
+    """With per-request files, another caller's response file is invisible
+    to our poll. There is no stale-response handling to test — the file
+    we poll for either appears (matching ID) or doesn't."""
 
-    def test_stale_response_deleted(self, tmp_path):
-        """A leftover response.json with wrong ID is deleted and retried."""
+    def test_foreign_response_does_not_disturb_us(self, tmp_path):
+        """A foreign response file in the workspace does not affect our poll."""
         sim = AltiumSimulator(str(tmp_path))
         sim.start()
         try:
             bridge = make_bridge(sim)
-            response_path = sim.workspace_dir / "response.json"
-
-            stale = json.dumps({
-                "id": "stale-old-id",
-                "success": True,
-                "data": "stale_data",
-                "error": None,
-            })
-            response_path.write_text(stale, encoding="latin-1")
+            foreign = sim.workspace_dir / "response_foreigncaller.json"
+            foreign.write_text(
+                json.dumps({
+                    "protocol_version": 2, "id": "foreigncaller",
+                    "success": True, "data": "stale", "error": None,
+                }),
+                encoding="utf-8",
+            )
 
             result = bridge.send_command("application.ping", timeout=5.0)
             assert result == "pong"
+            assert foreign.exists(), "Foreign caller's file must be untouched"
         finally:
             sim.stop()
-
-    def test_multiple_stale_responses(self, tmp_path):
-        """Multiple stale responses in sequence before the correct one arrives."""
-        workspace = Path(tmp_path)
-        workspace.mkdir(exist_ok=True)
-        response_path = workspace / "response.json"
-        request_id = str(uuid.uuid4())
-
-        bridge = make_bare_bridge(workspace, timeout=5.0)
-
-        def writer():
-            for i in range(3):
-                time.sleep(0.05)
-                stale = json.dumps({
-                    "id": f"stale-{i}",
-                    "success": True,
-                    "data": f"stale_{i}",
-                    "error": None,
-                })
-                response_path.write_text(stale, encoding="latin-1")
-
-            time.sleep(0.05)
-            correct = json.dumps({
-                "id": request_id,
-                "success": True,
-                "data": "correct_response",
-                "error": None,
-            })
-            response_path.write_text(correct, encoding="latin-1")
-
-        t = threading.Thread(target=writer, daemon=True)
-        t.start()
-
-        resp = bridge._poll_response(request_id, timeout=5.0)
-        t.join(timeout=2.0)
-        assert resp.success is True
-        assert resp.data == "correct_response"
 
 
 # =========================================================================
@@ -321,35 +297,37 @@ class TestRecovery:
     """Bridge must degrade gracefully when the response file is corrupt."""
 
     def test_corrupt_response_times_out(self, tmp_path):
-        """Non-JSON response -- bridge retries until timeout."""
+        """Non-JSON response — bridge retries until timeout."""
         workspace = Path(tmp_path)
         bridge = make_bare_bridge(workspace, timeout=1.0)
 
-        response_path = workspace / "response.json"
-        response_path.write_text("THIS IS NOT JSON{{{", encoding="latin-1")
+        request_id = uuid.uuid4().hex
+        response_path = workspace / f"response_{request_id}.json"
+        response_path.write_text("THIS IS NOT JSON{{{", encoding="utf-8")
 
         with pytest.raises(AltiumTimeoutError):
-            bridge._poll_response(str(uuid.uuid4()), timeout=1.0)
+            bridge._poll_response(request_id, timeout=1.0)
 
     def test_response_array_instead_of_object(self, tmp_path):
-        """Valid JSON array (not object) -- bridge does not crash."""
+        """Valid JSON array (not object) — bridge does not crash."""
         workspace = Path(tmp_path)
         bridge = make_bare_bridge(workspace, timeout=1.0)
 
-        response_path = workspace / "response.json"
-        response_path.write_text("[1, 2, 3]", encoding="latin-1")
+        request_id = uuid.uuid4().hex
+        response_path = workspace / f"response_{request_id}.json"
+        response_path.write_text("[1, 2, 3]", encoding="utf-8")
 
         with pytest.raises((AltiumTimeoutError, AttributeError, TypeError)):
-            bridge._poll_response(str(uuid.uuid4()), timeout=1.0)
+            bridge._poll_response(request_id, timeout=1.0)
 
     def test_response_missing_fields(self, tmp_path):
-        """Correct id but missing success/data/error -- defaults applied."""
+        """Correct id but missing success/data/error — defaults applied."""
         workspace = Path(tmp_path)
         bridge = make_bare_bridge(workspace, timeout=2.0)
 
-        response_path = workspace / "response.json"
-        request_id = str(uuid.uuid4())
-        response_path.write_text(json.dumps({"id": request_id}), encoding="latin-1")
+        request_id = uuid.uuid4().hex
+        response_path = workspace / f"response_{request_id}.json"
+        response_path.write_text(json.dumps({"id": request_id}), encoding="utf-8")
 
         resp = bridge._poll_response(request_id, timeout=2.0)
         assert resp.id == request_id
@@ -357,15 +335,16 @@ class TestRecovery:
         assert resp.data is None
 
     def test_empty_response_file_times_out(self, tmp_path):
-        """Empty response.json -- bridge retries until timeout."""
+        """Empty response file — bridge retries until timeout."""
         workspace = Path(tmp_path)
         bridge = make_bare_bridge(workspace, timeout=1.0)
 
-        response_path = workspace / "response.json"
-        response_path.write_text("", encoding="latin-1")
+        request_id = uuid.uuid4().hex
+        response_path = workspace / f"response_{request_id}.json"
+        response_path.write_text("", encoding="utf-8")
 
         with pytest.raises(AltiumTimeoutError):
-            bridge._poll_response(str(uuid.uuid4()), timeout=1.0)
+            bridge._poll_response(request_id, timeout=1.0)
 
     def test_simulator_stopped_mid_command(self, tmp_path):
         """Simulator stops while bridge is waiting -- bridge times out gracefully."""
@@ -387,31 +366,38 @@ class TestConcurrency:
     """Race conditions and concurrent access to IPC files."""
 
     def test_partial_write_then_complete(self, tmp_path):
-        """Simulate a partially-written response followed by the full one."""
+        """Simulate a partial response followed by the full one (atomic-rename
+        contract: partial files exist only as ``.json.tmp``; the final
+        ``response_<id>.json`` only ever appears whole)."""
         workspace = Path(tmp_path)
         workspace.mkdir(exist_ok=True)
-        response_path = workspace / "response.json"
 
         bridge = make_bare_bridge(workspace, timeout=5.0)
 
-        request_id = str(uuid.uuid4())
+        request_id = uuid.uuid4().hex
+        final_path = workspace / f"response_{request_id}.json"
 
         def delayed_write():
             time.sleep(0.05)
-            response_path.write_text(
-                '{"id":"' + request_id + '","succ',
-                encoding="latin-1",
+            # Partial — but written to a tmp suffix that the bridge ignores.
+            tmp = final_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                '{"protocol_version":2,"id":"' + request_id + '","succ',
+                encoding="utf-8",
             )
             time.sleep(0.05)
-            response_path.write_text(
+            # Final atomic write — visible to the bridge as one complete file.
+            tmp.write_text(
                 json.dumps({
+                    "protocol_version": 2,
                     "id": request_id,
                     "success": True,
                     "data": "recovered",
                     "error": None,
                 }),
-                encoding="latin-1",
+                encoding="utf-8",
             )
+            tmp.replace(final_path)
 
         writer = threading.Thread(target=delayed_write, daemon=True)
         writer.start()
@@ -422,11 +408,11 @@ class TestConcurrency:
         assert resp.data == "recovered"
 
     def test_corrupt_request_file_cleaned_up(self, tmp_path):
-        """Partial/garbage request.json -- simulator cleans up and continues."""
+        """Partial/garbage per-request file — simulator cleans up and continues."""
         sim = AltiumSimulator(str(tmp_path))
         sim.start()
         try:
-            request_path = sim.workspace_dir / "request.json"
+            request_path = sim.workspace_dir / "request_corrupttest.json"
             request_path.write_text('{"id":"abc","comma', encoding="utf-8")
             time.sleep(0.1)
 

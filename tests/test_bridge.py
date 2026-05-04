@@ -77,36 +77,40 @@ class TestAltiumBridge:
         assert bridge._attached is False
 
     def test_write_request(self, bridge, temp_workspace):
-        """Test writing a request file."""
-        from eda_agent.bridge.altium_bridge import CommandRequest
+        """Test writing a per-request file."""
+        from eda_agent.bridge.altium_bridge import CommandRequest, PROTOCOL_VERSION
 
         bridge.ensure_workspace()
         request = CommandRequest(command="test.command", params={"key": "value"})
         bridge._write_request(request)
 
-        request_path = temp_workspace / "request.json"
+        request_path = temp_workspace / f"request_{request.id}.json"
         assert request_path.exists()
 
-        with open(request_path) as f:
+        with open(request_path, encoding="utf-8") as f:
             data = json.load(f)
             assert data['command'] == "test.command"
             assert data['params'] == {"key": "value"}
             assert data['id'] == request.id
+            assert data['protocol_version'] == PROTOCOL_VERSION
 
     def test_poll_response(self, bridge, temp_workspace):
-        """Test polling for a response file."""
+        """Test polling for a per-request response file."""
+        from eda_agent.bridge.altium_bridge import PROTOCOL_VERSION
+
         bridge.ensure_workspace()
-        request_id = "test-id-123"
+        request_id = "testid123"
 
         response_data = {
+            "protocol_version": PROTOCOL_VERSION,
             "id": request_id,
             "success": True,
             "data": {"result": "success"},
             "error": None
         }
 
-        response_path = temp_workspace / "response.json"
-        with open(response_path, "w") as f:
+        response_path = temp_workspace / f"response_{request_id}.json"
+        with open(response_path, "w", encoding="utf-8") as f:
             json.dump(response_data, f)
 
         response = bridge._poll_response(request_id, timeout=2)
@@ -114,25 +118,31 @@ class TestAltiumBridge:
         assert response.success is True
         assert response.data == {"result": "success"}
 
-    def test_poll_response_wrong_id_deletes_stale(self, bridge, temp_workspace):
-        """Test that polling with wrong ID deletes stale file and times out."""
+    def test_poll_response_unrelated_id_times_out(self, bridge, temp_workspace):
+        """Per-request files mean another caller's response is invisible to us."""
+        from eda_agent.bridge.altium_bridge import PROTOCOL_VERSION
+
         bridge.ensure_workspace()
 
+        # A different caller's response file — we should not even see it.
         response_data = {
-            "id": "different-id",
+            "protocol_version": PROTOCOL_VERSION,
+            "id": "differentid",
             "success": True,
             "data": None,
             "error": None
         }
-
-        response_path = temp_workspace / "response.json"
-        with open(response_path, "w") as f:
+        other_path = temp_workspace / "response_differentid.json"
+        with open(other_path, "w", encoding="utf-8") as f:
             json.dump(response_data, f)
 
         from eda_agent.bridge.exceptions import AltiumTimeoutError
         import pytest
         with pytest.raises(AltiumTimeoutError):
-            bridge._poll_response("expected-id", timeout=1)
+            bridge._poll_response("expectedid", timeout=1)
+
+        # Crucially, the other caller's file is left untouched.
+        assert other_path.exists()
 
 
 class TestCommandRequest:
@@ -140,17 +150,18 @@ class TestCommandRequest:
 
     def test_to_dict(self):
         """Test conversion to dictionary."""
-        from eda_agent.bridge.altium_bridge import CommandRequest
+        from eda_agent.bridge.altium_bridge import CommandRequest, PROTOCOL_VERSION
 
         request = CommandRequest(
             command="test.command",
             params={"x": 100, "y": 200},
-            id="test-id"
+            id="testid"
         )
 
         result = request.to_dict()
         assert result == {
-            "id": "test-id",
+            "protocol_version": PROTOCOL_VERSION,
+            "id": "testid",
             "command": "test.command",
             "params": {"x": 100, "y": 200}
         }

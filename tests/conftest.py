@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.altium_simulator import AltiumSimulator
+from tests.altium_simulator import AltiumSimulator, SIM_PROTOCOL_VERSION
 
 
 @pytest.fixture
@@ -23,24 +23,19 @@ def workspace_dir():
         yield Path(tmpdir)
 
 
-@pytest.fixture
-def request_path(workspace_dir):
-    """Path to the request.json file in the workspace."""
-    return workspace_dir / "request.json"
+def request_path_for(workspace_dir: Path, request_id: str) -> Path:
+    """Path to request_<id>.json in the workspace."""
+    return workspace_dir / f"request_{request_id}.json"
 
 
-@pytest.fixture
-def response_path(workspace_dir):
-    """Path to the response.json file in the workspace."""
-    return workspace_dir / "response.json"
+def response_path_for(workspace_dir: Path, request_id: str) -> Path:
+    """Path to response_<id>.json in the workspace."""
+    return workspace_dir / f"response_{request_id}.json"
 
 
 @pytest.fixture
 def altium_sim(tmp_path):
-    """Start an AltiumSimulator pointing at a temp workspace directory.
-
-    Yields the simulator and stops it on teardown.
-    """
+    """Start an AltiumSimulator pointing at a temp workspace directory."""
     sim = AltiumSimulator(str(tmp_path))
     sim.start()
     yield sim
@@ -52,23 +47,19 @@ def e2e_bridge(altium_sim):
     """Create a real AltiumBridge wired to the simulator's workspace.
 
     Calls the real ``AltiumBridge()`` constructor so every instance attribute
-    (``_ipc_lock``, ``_attach_time``, ``_detach_hint_shown``, keep-alive state,
-    etc.) is initialized identically to production. Bypassing ``__init__`` via
+    is initialized identically to production. Bypassing ``__init__`` via
     ``__new__`` was the source of repeated test breakage as bridge internals
     evolved; don't reintroduce that pattern.
-
-    Patches:
-    - Config workspace_dir to point at the simulator's temp directory
-    - process_manager so ``is_altium_running()`` returns True (no real
-      Altium process needed for pure IPC tests)
     """
-    from eda_agent.config import AltiumConfig
+    from eda_agent.config import AltiumConfig, MCPRuntimeConfig
     from eda_agent.bridge.altium_bridge import AltiumBridge
 
     test_config = AltiumConfig(
         workspace_dir=altium_sim.workspace_dir,
-        poll_interval=0.01,
-        poll_timeout=5.0,
+        runtime=MCPRuntimeConfig(
+            py_poll_interval_seconds=0.01,
+            py_poll_timeout_seconds=5.0,
+        ),
     )
 
     class FakeProcessManager:
@@ -79,50 +70,51 @@ def e2e_bridge(altium_sim):
             from eda_agent.bridge.process_manager import AltiumProcessInfo
             return AltiumProcessInfo(pid=12345, name="X2.exe", exe_path="C:\\X2.exe")
 
-    # Stub get_config so AltiumBridge.__init__ sees our test workspace.
     with patch("eda_agent.bridge.altium_bridge.get_config", return_value=test_config):
         bridge = AltiumBridge()
 
     bridge.process_manager = FakeProcessManager()
     bridge._attached = True
     yield bridge
-    # Make sure the keep-alive thread doesn't outlive the test.
     try:
         bridge.detach()
     except Exception:
         pass
 
 
-def write_request(path: Path, request_id: str, command: str, params: dict) -> None:
-    """Write a request.json file in the exact format the bridge uses.
+def write_request(workspace: Path, request_id: str, command: str, params: dict) -> Path:
+    """Write a request_<id>.json file in the exact format the bridge uses.
 
-    Mirrors: altium_bridge.py CommandRequest.to_dict()
+    Returns the path of the written file.
     """
     data = {
+        "protocol_version": SIM_PROTOCOL_VERSION,
         "id": request_id,
         "command": command,
         "params": params,
     }
+    path = request_path_for(workspace, request_id)
     path.write_text(json.dumps(data), encoding="utf-8")
+    return path
 
 
-def write_response(path: Path, request_id: str, success: bool,
-                   data=None, error=None) -> None:
-    """Write a response.json file in the exact format Altium produces.
-
-    Mirrors: Main.pas BuildSuccessResponse / BuildErrorResponse
-    """
+def write_response(workspace: Path, request_id: str, success: bool,
+                   data=None, error=None) -> Path:
+    """Write a response_<id>.json file in the exact format Altium produces."""
     resp = {
+        "protocol_version": SIM_PROTOCOL_VERSION,
         "id": request_id,
         "success": success,
         "data": data,
         "error": error,
     }
+    path = response_path_for(workspace, request_id)
     path.write_text(json.dumps(resp), encoding="utf-8")
+    return path
 
 
 def parse_response(path: Path) -> dict:
-    """Read and parse a response.json file."""
+    """Read and parse a response_<id>.json file."""
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -131,6 +123,7 @@ def validate_success_response(resp: dict, request_id: str) -> None:
     assert resp["id"] == request_id
     assert resp["success"] is True
     assert resp["error"] is None
+    assert resp.get("protocol_version") == SIM_PROTOCOL_VERSION
 
 
 def validate_error_response(resp: dict, request_id: str,

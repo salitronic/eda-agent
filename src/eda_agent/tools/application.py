@@ -300,6 +300,21 @@ def register_application_tools(mcp):
         return result
 
     @mcp.tool()
+    async def diag_workspace(pattern: str = "request_*.json") -> dict[str, Any]:
+        """Diagnostic: enumerate workspace files via Altium's FindFiles helper.
+
+        Reports workspace_dir, the pattern used, match_count and the first
+        10 matching filenames. Used to validate the per-request file
+        enumeration that the dispatcher relies on.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "application.diag_workspace",
+            {"pattern": pattern},
+            timeout=10.0,
+        )
+
+    @mcp.tool()
     async def get_active_document() -> dict[str, Any]:
         """Get information about the currently active (focused) document.
 

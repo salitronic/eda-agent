@@ -4,6 +4,80 @@
 { Library.pas - Library management functions for the Altium integration bridge                }
 {..............................................................................}
 
+{ Set the part ownership fields on a primitive so the lib editor knows     }
+{ which part of the component it belongs to. Per Altium's official         }
+{ createcomp_in_lib.pas reference, primitives without OwnerPartId /        }
+{ OwnerPartDisplayMode are added to the component's collection but the    }
+{ editor can't display them — symbols appear empty.                        }
+Procedure SetOwnerPart(Obj : ISch_GraphicalObject; Component : ISch_Component);
+Begin
+    If Obj = Nil Then Exit;
+    If Component <> Nil Then
+    Begin
+        Try Obj.OwnerPartId := Component.CurrentPartID; Except End;
+        Try Obj.OwnerPartDisplayMode := Component.DisplayMode; Except End;
+    End
+    Else
+    Begin
+        Try Obj.OwnerPartId := 1; Except End;
+        Try Obj.OwnerPartDisplayMode := 0; Except End;
+    End;
+End;
+
+{ Resolve the target component for a Lib_Add* primitive helper.             }
+{                                                                              }
+{ SchLib.CurrentSchComponent in DelphiScript reflects the editor's selected }
+{ component, which doesn't update when we add a new component via           }
+{ AddSchComponent (the setter is a no-op). Trusting it would attach        }
+{ primitives to whatever the editor was showing first (usually the default  }
+{ Component_1 placeholder), leaving every newly-created symbol empty.       }
+{                                                                              }
+{ Use the global LastCreatedLibComponent we set in Lib_CreateSymbol         }
+{ instead, falling back to CurrentSchComponent only if nothing has been     }
+{ created in this session.                                                  }
+Function GetTargetLibComponent(SchLib : ISch_Lib) : ISch_Component;
+Begin
+    Result := LastCreatedLibComponent;
+    If Result = Nil Then
+    Begin
+        If SchLib <> Nil Then
+            Result := SchLib.CurrentSchComponent;
+    End;
+End;
+
+{ Mark the focused doc (assumed to be the SchLib we're editing) as dirty   }
+{ via its full path, then run SaveAllDirty so the lib lands on disk.       }
+{ Client.NumDocuments is undeclared in DelphiScript, so we resolve through }
+{ the workspace's focused-doc path lookup instead of iterating Client.     }
+Procedure MarkLibDirty(SchLib : ISch_Lib);
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    FullPath : String;
+    ServerDoc : IServerDocument;
+Begin
+    If SchLib = Nil Then Exit;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then
+        Begin
+            FullPath := '';
+            Try FullPath := Doc.DM_FullPath; Except End;
+            If FullPath <> '' Then
+            Begin
+                ServerDoc := Client.GetDocumentByPath(FullPath);
+                If ServerDoc <> Nil Then
+                Begin
+                    Try ServerDoc.SetModified(True); Except End;
+                    Try ServerDoc.DoFileSave(''); Except End;
+                End;
+            End;
+        End;
+    End;
+End;
+
 Function Lib_CreateSymbol(Params : String; RequestId : String) : String;
 Var
     Name, DesignatorPrefix, Description : String;
@@ -30,10 +104,16 @@ Begin
         Exit;
     End;
 
-    // Create new component
+    // Create new component. Per Altium's createcomp_in_lib.pas reference,
+    // CurrentPartID and DisplayMode must be set BEFORE adding primitives —
+    // primitives carry OwnerPartId/OwnerPartDisplayMode that link them to
+    // a specific part of the component. Without this scaffold, primitives
+    // are added but the lib editor can't display them (symbol shows empty).
     Component := SchServer.SchObjectFactory(eSchComponent, eCreate_Default);
     If Component <> Nil Then
     Begin
+        Component.CurrentPartID := 1;
+        Component.DisplayMode := 0;
         Component.LibReference := Name;
         Component.Designator.Text := DesignatorPrefix + '?';
         Component.ComponentDescription := Description;
@@ -41,9 +121,24 @@ Begin
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SchLib.AddSchComponent(Component);
         SchServer.ProcessControl.PostProcess(SchLib, '');
-        SchLib.CurrentSchComponent := Component;
 
-        SaveDocByPath(SchLib.DocumentName);
+        // Broadcast as a new component (source=nil, dest=c_BroadCast). This
+        // is the pattern in Altium's createcomp_in_lib.pas — different from
+        // the per-primitive SchRegisterObject(Container, Obj) which sends
+        // from the container.
+        Try
+            SchServer.RobotManager.SendMessage(
+                Nil, Nil, SCHM_PrimitiveRegistration,
+                Component.I_ObjectAddress);
+        Except End;
+
+        SchLib.CurrentSchComponent := Component;
+        LastCreatedLibComponent := Component;
+
+        // Refresh the library editor view so the new component is visible.
+        Try SchLib.GraphicallyInvalidate; Except End;
+
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId, '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
     End
     Else
@@ -75,7 +170,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -106,11 +201,12 @@ Begin
         Else Pin.Electrical := eElectricPassive;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        SetOwnerPart(Pin, Component);
         Component.AddSchObject(Pin);
         SchRegisterObject(Component, Pin);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
-        SaveDocByPath(SchLib.DocumentName);
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"' + EscapeJsonString(Designator) + '"}');
     End
     Else
@@ -136,7 +232,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -153,11 +249,12 @@ Begin
         Rect.IsSolid := False;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        SetOwnerPart(Rect, Component);
         Component.AddSchObject(Rect);
         SchRegisterObject(Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
-        SaveDocByPath(SchLib.DocumentName);
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -186,7 +283,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -203,11 +300,12 @@ Begin
         Line.LineWidth := Width;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        SetOwnerPart(Line, Component);
         Component.AddSchObject(Line);
         SchRegisterObject(Component, Line);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
-        SaveDocByPath(SchLib.DocumentName);
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -437,7 +535,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -454,6 +552,7 @@ Begin
             Impl.UseComponentLibrary := False;
             Impl.LibraryIdentifier := LibraryName;
         End;
+        SetOwnerPart(Impl, Component);
         Component.AddSchObject(Impl);
         SchRegisterObject(Component, Impl);
 
@@ -482,7 +581,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -494,6 +593,7 @@ Begin
     Begin
         Impl.ModelName := ModelName;
         Impl.ModelType := 'PCB3DModel';
+        SetOwnerPart(Impl, Component);
         Component.AddSchObject(Impl);
         SchRegisterObject(Component, Impl);
 
@@ -528,7 +628,14 @@ Begin
         Begin
             Doc := Workspace.DM_FocusedDocument;
             If Doc <> Nil Then
-                LibPath := Doc.DM_FileName;
+            Begin
+                // DM_FileName returns just the basename;
+                // CreateLibCompInfoReader needs the full path or it
+                // silently returns an empty reader (which is exactly the
+                // bug that made lib_get_components always report 0).
+                Try LibPath := Doc.DM_FullPath; Except End;
+                If LibPath = '' Then LibPath := Doc.DM_FileName;
+            End;
         End;
     End;
 
@@ -812,6 +919,7 @@ Begin
                     Begin
                         NewParam.Name := ParamName;
                         NewParam.Text := ParamValue;
+                        SetOwnerPart(NewParam, Component);
                         Component.AddSchObject(NewParam);
                         SchRegisterObject(Component, NewParam);
                         Inc(Created);
@@ -828,7 +936,7 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End;
 
-    SaveDocByPath(SchLib.DocumentName);
+    MarkLibDirty(SchLib);
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
         ',"created":' + IntToStr(Created) +
@@ -950,7 +1058,7 @@ Begin
     End;
 
     SchLib.GraphicallyInvalidate;
-    SaveDocByPath(SchLib.DocumentName);
+    MarkLibDirty(SchLib);
 
     Result := BuildSuccessResponse(RequestId,
         '{"renamed":' + IntToStr(Renamed) +
@@ -1078,7 +1186,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -1095,11 +1203,12 @@ Begin
         Arc.LineWidth := Width;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        SetOwnerPart(Arc, Component);
         Component.AddSchObject(Arc);
         SchRegisterObject(Component, Arc);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
-        SaveDocByPath(SchLib.DocumentName);
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
@@ -1136,7 +1245,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -1194,11 +1303,12 @@ Begin
             Polygon.Vertex[I] := Point(MilsToCoord(XValues[I-1]), MilsToCoord(YValues[I-1]));
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        SetOwnerPart(Polygon, Component);
         Component.AddSchObject(Polygon);
         SchRegisterObject(Component, Polygon);
         SchServer.ProcessControl.PostProcess(SchLib, '');
 
-        SaveDocByPath(SchLib.DocumentName);
+        MarkLibDirty(SchLib);
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"vertices":' + IntToStr(VertexCount) + '}');
     End
@@ -1246,7 +1356,7 @@ Begin
     SchEndModify(Component);
     SchServer.ProcessControl.PostProcess(SchLib, '');
 
-    SaveDocByPath(SchLib.DocumentName);
+    MarkLibDirty(SchLib);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"component":"' + EscapeJsonString(CompName) +
         '","description":"' + EscapeJsonString(Description) + '"}');
@@ -1274,7 +1384,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -1386,7 +1496,7 @@ Begin
 
     SchLib.CurrentSchComponent := NewComp;
 
-    SaveDocByPath(SchLib.DocumentName);
+    MarkLibDirty(SchLib);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"source":"' + EscapeJsonString(SourceName) +
         '","new_name":"' + EscapeJsonString(NewName) + '"}');
@@ -1428,7 +1538,7 @@ Begin
         Exit;
     End;
 
-    Component := SchLib.CurrentSchComponent;
+    Component := GetTargetLibComponent(SchLib);
     If Component = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
@@ -1485,6 +1595,8 @@ Begin
             Else If ElecType = 'hiz' Then Pin.Electrical := eElectricHiZ
             Else Pin.Electrical := eElectricPassive;
 
+            SetOwnerPart(Pin, Component);
+
             Component.AddSchObject(Pin);
             SchRegisterObject(Component, Pin);
             Inc(Added);
@@ -1493,7 +1605,7 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End;
 
-    SaveDocByPath(SchLib.DocumentName);
+    MarkLibDirty(SchLib);
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)

@@ -3160,13 +3160,6 @@ Begin
     FinalResp := BuildSuccessResponse(RequestId,
         '{"unrouted_nets":[' + JsonItems + '],"net_count":' + IntToStr(NetTotal)
         + ',"total_unrouted":' + IntToStr(Count) + '}');
-
-    { DelphiScript corrupts long string Result values on return from this     }
-    { handler — the caller gets the RequestId argument instead of the JSON.  }
-    { Bypass: write the response file directly here and set the sentinel     }
-    { that tells Dispatcher.ProcessSingleRequest to skip its own write.       }
-    WriteFileContent(WorkspaceDir + RESPONSE_FILE, FinalResp);
-    ResponseAlreadyWritten := True;
     Result := FinalResp;
 End;
 
