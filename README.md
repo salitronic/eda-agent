@@ -272,6 +272,18 @@ That last one uses `pcb_get_rule_properties`, which returns the actual numeric g
 
 Bulk tools like `obj_batch_modify`, `pcb_move_components`, and `sch_place_components` finish the whole operation in one IPC round-trip.
 
+## Safety model
+
+eda-agent edits a live EDA session, so a number of tools are necessarily destructive in the same way your delete key is. Automated MCP catalogues sometimes flag the server on the raw count of destructive-class tools; here is what actually bounds the blast radius:
+
+- **Local only.** Tools operate on the EDA application over a local file-based IPC bridge. The server has no network egress, reads no credentials, and executes no arbitrary code on the host.
+- **Checkpoints.** `app_checkpoint` / `app_restore_checkpoint` snapshot the open project before risky operations, and `app_list_checkpoints` shows what you can roll back to.
+- **Allow-listable surface.** Every write tool is separately named, so MCP clients can allow-list read-only operation (`*_get_*`, `audit_*`, `review_*`, render and export tools) and deny or require approval on everything else. A sensible policy: allow read/audit/render, require approval on writes, deny destructive tools you do not use.
+- **Minimal toolset mode.** `--toolset minimal` (or `EDA_AGENT_TOOLSET=minimal`) advertises only `tool_catalog` and `tool_invoke` for clients that cap tool counts.
+- **Back up first.** The scripting engine underneath can be crashed by edge cases (see [Known limitations](#known-limitations)); treat any design you point the agent at as you would before running any script on it.
+
+Vulnerability reports: see [SECURITY.md](SECURITY.md).
+
 ## Known limitations
 
 **This tool is experimental. Please read this section before using on a design you haven't backed up.**

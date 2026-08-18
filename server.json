@@ -1,0 +1,10 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "name": "io.github.salitronic/eda-agent",
+  "description": "Drive a live Altium Designer, KiCad or EasyEDA Pro session with AI. 300+ tools: schematic, PCB, library and project automation, design review, audits, rendering, auto-placement, panelization.",
+  "repository": {
+    "url": "https://github.com/salitronic/eda-agent",
+    "source": "github"
+  },
+  "version": "0.5.0"
+}
