@@ -24,6 +24,56 @@ Begin
     Result := Coord * 25.4 / 10000000;
 End;
 
+Function CoordWithinTol(A, B, Tol : Integer) : Boolean;
+Begin
+    Result := Abs(A - B) <= Tol;
+End;
+
+{ True if (X,Y) is within Tol of the segment (X1,Y1)-(X2,Y2). Orthogonal }
+{ schematic wires (the common case) are exact. Diagonal segments use a   }
+{ bounding-box test so we never need a 64-bit multiply.                  }
+Function PointNearSegment(X, Y, X1, Y1, X2, Y2, Tol : Integer) : Boolean;
+Var
+    Lo, Hi : Integer;
+Begin
+    Result := False;
+    If (X1 = X2) And (Y1 = Y2) Then
+    Begin
+        Result := CoordWithinTol(X, X1, Tol) And CoordWithinTol(Y, Y1, Tol);
+        Exit;
+    End;
+    If X1 = X2 Then
+    Begin
+        If Not CoordWithinTol(X, X1, Tol) Then Exit;
+        Lo := Y1;
+        If Y2 < Lo Then Lo := Y2;
+        Hi := Y1;
+        If Y2 > Hi Then Hi := Y2;
+        Result := (Y >= Lo - Tol) And (Y <= Hi + Tol);
+        Exit;
+    End;
+    If Y1 = Y2 Then
+    Begin
+        If Not CoordWithinTol(Y, Y1, Tol) Then Exit;
+        Lo := X1;
+        If X2 < Lo Then Lo := X2;
+        Hi := X1;
+        If X2 > Hi Then Hi := X2;
+        Result := (X >= Lo - Tol) And (X <= Hi + Tol);
+        Exit;
+    End;
+    Lo := X1;
+    If X2 < Lo Then Lo := X2;
+    Hi := X1;
+    If X2 > Hi Then Hi := X2;
+    If (X < Lo - Tol) Or (X > Hi + Tol) Then Exit;
+    Lo := Y1;
+    If Y2 < Lo Then Lo := Y2;
+    Hi := Y1;
+    If Y2 > Hi Then Hi := Y2;
+    Result := (Y >= Lo - Tol) And (Y <= Hi + Tol);
+End;
+
 Function BoolToJsonStr(Value : Boolean) : String;
 Begin
     If Value Then Result := 'true'
@@ -891,6 +941,190 @@ Begin
     End;
 End;
 
+
+{..............................................................................}
+{ LAYER NAMES THAT COME FROM A CALLER.                                         }
+{                                                                              }
+{ GetLayerFromString above matches canonical space-free tokens ONLY, and its    }
+{ Else branch answers eTopLayer for EVERY name it does not recognise. Handlers  }
+{ fed that result straight into an object's Layer, so "Internal Plane 1" - the  }
+{ exact spelling pcb_get_layer_stackup PRINTS - placed the object on the TOP    }
+{ layer while the response echoed the REQUESTED name, so nothing looked wrong.  }
+{ Measured on a real board: two full-board pours on different nets both landed  }
+{ on TopLayer, each answering "placed":true, and shorted the board.             }
+{                                                                              }
+{ ResolveLayerId answers eNoLayer rather than guessing. Every handler that      }
+{ takes a layer name from the caller MUST resolve through it, MUST report       }
+{ eNoLayer as an error, and MUST echo the RESOLVED layer rather than the        }
+{ string it was handed. Silently retargeting the top layer is the bug.          }
+{                                                                              }
+{ Resolution order, first hit wins:                                            }
+{   1. the copper stack's own layer names - exactly what get_layer_stackup      }
+{      reports - compared with spaces stripped and case folded, so a renamed    }
+{      plane or signal layer resolves;                                          }
+{   2. the mechanical layers' names, read the same way; they are not part of    }
+{      the FirstLayer/NextLayer walk;                                           }
+{   3. the canonical token, but ONLY when GetLayerString round-trips it. That   }
+{      round-trip is the guard: without it the eTopLayer Else branch comes      }
+{      back as a confident wrong answer for any typo at all;                    }
+{   4. Mechanical17..1024, which have no canonical token.                       }
+{..............................................................................}
+
+{ Spaces stripped and case folded: the form every comparison below uses, so    }
+{ "Internal Plane 1", "InternalPlane1" and "internalplane1" are one name.      }
+
+Function NormalizeLayerName(S : String) : String;
+Begin
+    Result := UpperCase(StripChar(Trim(S), ' '));
+End;
+
+Function ResolveLayerIdInStack(LayerStack : IPCB_LayerStack_V7; LayerName : String) : TLayer;
+Var
+    Obj : IPCB_LayerObject_V7;
+    Stripped, Wanted, ThisName : String;
+    Candidate, Lyr, Hit : TLayer;
+    MechNum : Integer;
+Begin
+    Result := eNoLayer;
+    Stripped := StripChar(Trim(LayerName), ' ');
+    If Stripped = '' Then Exit;
+    Wanted := UpperCase(Stripped);
+
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.FirstLayer; Except Obj := Nil; End;
+        While Obj <> Nil Do
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If NormalizeLayerName(ThisName) = Wanted Then
+            Begin
+                Hit := eNoLayer;
+                Try Hit := Obj.LayerID; Except Hit := eNoLayer; End;
+                If Hit <> eNoLayer Then
+                Begin
+                    Result := Hit;
+                    Exit;
+                End;
+            End;
+            Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
+        End;
+
+        For Lyr := eMechanical1 To eMechanical16 Do
+        Begin
+            Obj := Nil;
+            Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+            If Obj <> Nil Then
+            Begin
+                ThisName := '';
+                Try ThisName := Obj.Name; Except ThisName := ''; End;
+                If NormalizeLayerName(ThisName) = Wanted Then
+                Begin
+                    Result := Lyr;
+                    Exit;
+                End;
+            End;
+        End;
+    End;
+
+    Candidate := GetLayerFromString(Stripped);
+    If UpperCase(GetLayerString(Candidate)) = Wanted Then
+    Begin
+        Result := Candidate;
+        Exit;
+    End;
+
+    If Copy(Wanted, 1, 4) = 'MECH' Then
+    Begin
+        MechNum := ParseMechLayerNumber(Stripped);
+        If MechNum > 0 Then Result := MechLayerFromNumber(MechNum);
+    End;
+End;
+
+{ The same resolution for the handlers that hold an IPCB_Board rather than a   }
+{ stack. A board whose stack cannot be read still resolves canonical tokens.   }
+
+Function ResolveLayerId(Board : IPCB_Board; LayerName : String) : TLayer;
+Var
+    LayerStack : IPCB_LayerStack_V7;
+Begin
+    LayerStack := Nil;
+    If Board <> Nil Then
+    Begin
+        Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    End;
+    Result := ResolveLayerIdInStack(LayerStack, LayerName);
+End;
+
+{ The names this board actually answers to, appended to an UNKNOWN_LAYER       }
+{ message so the caller can correct the call without a second round trip.      }
+{ Bounded: the stack's own names, then the mechanical layers' names.           }
+
+Function BoardLayerNamesHint(Board : IPCB_Board) : String;
+Var
+    LayerStack : IPCB_LayerStack_V7;
+    Obj : IPCB_LayerObject_V7;
+    Names, ThisName : String;
+    Lyr : TLayer;
+    Count : Integer;
+Begin
+    Names := '';
+    Count := 0;
+    LayerStack := Nil;
+    If Board <> Nil Then
+    Begin
+        Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    End;
+
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.FirstLayer; Except Obj := Nil; End;
+        While (Obj <> Nil) And (Count < 64) Do
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If ThisName <> '' Then
+            Begin
+                If Names <> '' Then Names := Names + ', ';
+                Names := Names + ThisName;
+                Inc(Count);
+            End;
+            Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
+        End;
+
+        For Lyr := eMechanical1 To eMechanical16 Do
+        Begin
+            If Count < 64 Then
+            Begin
+                Obj := Nil;
+                Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+                If Obj <> Nil Then
+                Begin
+                    ThisName := '';
+                    Try ThisName := Obj.Name; Except ThisName := ''; End;
+                    If ThisName <> '' Then
+                    Begin
+                        If Names <> '' Then Names := Names + ', ';
+                        Names := Names + ThisName;
+                        Inc(Count);
+                    End;
+                End;
+            End;
+        End;
+    End;
+
+    If Names = '' Then
+        Result := 'Valid names are canonical tokens such as TopLayer, '
+            + 'BottomLayer, MidLayer1, InternalPlane1, TopOverlay, TopPaste, '
+            + 'TopSolder, MultiLayer, KeepOutLayer, Mechanical1.'
+    Else
+        Result := 'Layers on this board: ' + Names
+            + '. Canonical tokens are also accepted (TopLayer, MidLayer1, '
+            + 'InternalPlane1, TopOverlay, TopPaste, TopSolder, MultiLayer, '
+            + 'KeepOutLayer, Mechanical1..16).';
+End;
 {..............................................................................}
 { Paired mechanical layer kinds.                                               }
 {                                                                              }

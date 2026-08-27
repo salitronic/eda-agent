@@ -170,6 +170,15 @@ INTERACTION_OVERRIDES = {
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog
     "pcb_add_teardrops": MODAL,      # Teardrop dialog
     "pcb_remove_teardrops": MODAL,   # Teardrop dialog
+    # PCB:DesignRuleCheck raises the "Design Rule Checker [mil]" setup
+    # dialog and the worker blocks behind it until a human clicks
+    # (observed: 30+ min dead loop, 1800 s client timeout). Altium
+    # exposes no non-interactive DRC trigger, so the tool refuses
+    # unless called with allow_modal=True -- but the tool's only
+    # functional path IS the modal one, and that is what this axis
+    # reports. pcb_get_clearance_violations reads stored violations
+    # instead and stays readonly.
+    "pcb_run_drc": MODAL,            # Design Rule Checker dialog
     # Succeeds but leaves the job incomplete.
     "pcb_place_components": PARTIAL,  # geometry only; needs pcb_build_from_project for nets
     # "diff" homograph: _READONLY_SUBSTRINGS carries "_diff_" for
@@ -189,6 +198,12 @@ INTERACTION_OVERRIDES = {
     # (mutates). State the truth explicitly rather than depending on a
     # side effect of another rule.
     "design_visual_review": READONLY,
+    # Reports a pin's root, its electrical connection point, and every
+    # object sitting on each. Pure inspection -- it exists precisely so a
+    # caller can debug connectivity WITHOUT touching the sheet. The obj_
+    # prefix defaults to "silent" (mutating), which is the opposite of
+    # the truth here, so say so explicitly.
+    "obj_explain_pin": READONLY,
     # part_fetch writes library files when given download_dir. The
     # "parts" category is offline, and offline falls back to READONLY,
     # which would advertise a tool that touches the filesystem as

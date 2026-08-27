@@ -451,6 +451,49 @@ def register_audit_tools(mcp):
             "audit.find_orphan_net_labels", {})
 
     @mcp.tool()
+    async def audit_find_net_label_conflicts() -> dict[str, Any]:
+        """Find net labels that silently merge, short, or do nothing.
+
+        Three failure modes that all look correct on a printed sheet:
+
+        1. ``conflicting_labels`` -- two labels with DIFFERENT text at
+           the same Location (x, y), not merely overlapping text boxes.
+           Altium merges both names into one net and one name wins; the
+           losing net ceases to exist and everything on it is absorbed.
+           This is a real short between two named nets, and the usual
+           symptom is "net X has zero pins" while some unrelated pin
+           turns up on net Y. Adjacent labels on a 100-mil pin pitch
+           are not conflicts.
+
+        2. ``labels_on_pin_root`` -- a label sitting on a pin's
+           ``Location`` instead of its electrical end. ``Location`` is
+           the BODY-side root; a pin connects at
+           ``Location + PinLength`` along ``Orientation``
+           (0=right, 1=up, 2=left, 3=down). A label on the root is
+           inert, so the sheet reads as fully wired while the pin
+           floats on an auto-generated net. Each item reports the
+           label's coordinates AND the ``connect_x_mils`` /
+           ``connect_y_mils`` the label should move to.
+
+        3. ``duplicate_labels`` -- same text twice at one point.
+           Harmless electrically, but it is clutter and it hides
+           class 1 underneath.
+
+        Complements ``audit_find_orphan_net_labels``, which only asks
+        whether a wire sits under the label and therefore reports
+        genuinely-connected labels (those on a pin end, with no wire)
+        as orphans.
+
+        Returns:
+            Dict with ``{checked, conflicts, on_pin_root, duplicates,
+            conflicting_labels[], labels_on_pin_root[],
+            duplicate_labels[]}``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "audit.find_net_label_conflicts", {})
+
+    @mcp.tool()
     async def audit_find_visible_supplier_pn() -> dict[str, Any]:
         """Find schematic components with a VISIBLE supplier-PN
         parameter.

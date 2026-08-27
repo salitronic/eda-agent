@@ -83,6 +83,7 @@ LINT_SEVERITY: dict[str, str] = {
     # break the board or block fab ----
     "find_designator_collisions":        "critical",
     "find_orphan_net_labels":            "critical",
+    "find_net_label_conflicts":          "critical",
     "find_orphan_power_objects":         "critical",
     "find_placeholder_values":           "critical",
     "find_invalid_regions":              "critical",
@@ -140,6 +141,7 @@ LINT_AUDIT_LIST: list[tuple[str, str]] = [
     ("find_non_embedded_images",        "audit.find_non_embedded_images"),
     ("find_visible_supplier_pn",        "audit.find_visible_supplier_pn"),
     ("find_orphan_net_labels",          "audit.find_orphan_net_labels"),
+    ("find_net_label_conflicts",        "audit.find_net_label_conflicts"),
     ("find_orphan_power_objects",       "audit.find_orphan_power_objects"),
     ("find_placeholder_values",         "audit.find_placeholder_values"),
     # --- pcb ---

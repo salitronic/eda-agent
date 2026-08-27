@@ -46,6 +46,79 @@ def coord_to_mm(coord: int) -> float:
     return coord * 25.4 / 10000000
 
 
+def coord_within_tol(a: int, b: int, tol: int) -> bool:
+    """Mirror: Utils.pas CoordWithinTol."""
+    return abs(a - b) <= tol
+
+
+def point_near_segment(
+    x: int, y: int, x1: int, y1: int, x2: int, y2: int, tol: int
+) -> bool:
+    """Mirror: Utils.pas PointNearSegment."""
+    if x1 == x2 and y1 == y2:
+        return coord_within_tol(x, x1, tol) and coord_within_tol(y, y1, tol)
+    if x1 == x2:
+        if not coord_within_tol(x, x1, tol):
+            return False
+        lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
+        return lo - tol <= y <= hi + tol
+    if y1 == y2:
+        if not coord_within_tol(y, y1, tol):
+            return False
+        lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
+        return lo - tol <= x <= hi + tol
+    lo_x, hi_x = (x1, x2) if x1 <= x2 else (x2, x1)
+    if x < lo_x - tol or x > hi_x + tol:
+        return False
+    lo_y, hi_y = (y1, y2) if y1 <= y2 else (y2, y1)
+    return lo_y - tol <= y <= hi_y + tol
+
+
+class TestCoordWithinTol:
+    def test_equal_is_inside(self):
+        assert coord_within_tol(10000, 10000, 10000)
+
+    def test_one_mil_away_is_inside_one_mil_tol(self):
+        assert coord_within_tol(0, 10000, 10000)
+
+    def test_two_mils_away_is_outside_one_mil_tol(self):
+        assert not coord_within_tol(0, 20000, 10000)
+
+
+class TestPointNearSegment:
+    """Orthogonal schematic wires are exact; diagonals use bbox."""
+
+    def test_point_on_horizontal_wire(self):
+        # 7300,5900 to 7700,5900 in internal units (x10000)
+        assert point_near_segment(
+            7500 * 10000, 5900 * 10000,
+            7300 * 10000, 5900 * 10000,
+            7700 * 10000, 5900 * 10000,
+            10000,
+        )
+
+    def test_label_400_mil_away_is_not_on_the_wire(self):
+        # The bbox-leak this exists to catch: I_PHASE_B_OUT at (7300,5900)
+        # must not count as sitting on R22 pin 2 at (7700,5900) just
+        # because the label text box covers that pin.
+        assert not point_near_segment(
+            7700 * 10000, 5900 * 10000,
+            7300 * 10000, 5900 * 10000,
+            7300 * 10000, 5900 * 10000,  # degenerate = a point
+            10000,
+        )
+
+    def test_vertical_wire_includes_endpoints(self):
+        assert point_near_segment(
+            1000, 0, 1000, 0, 1000, 5000, 1)
+        assert point_near_segment(
+            1000, 5000, 1000, 0, 1000, 5000, 1)
+
+    def test_off_axis_point_is_rejected_for_orthogonal_wire(self):
+        assert not point_near_segment(
+            1000 + 20, 2500, 1000, 0, 1000, 5000, 1)
+
+
 # ---------------------------------------------------------------------------
 # String/type conversion mirrors, Utils.pas
 # ---------------------------------------------------------------------------

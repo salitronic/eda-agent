@@ -9070,6 +9070,10 @@ async function runLint() {
       group: "sch",
       label: "Net labels not on any wire (silent phantom net)",
     },
+    find_net_label_conflicts: {
+      group: "sch",
+      label: "Net labels that merge, short, or sit on a pin root",
+    },
     find_orphan_power_objects: {
       group: "sch",
       label: "Power port markers not on any wire (phantom power)",

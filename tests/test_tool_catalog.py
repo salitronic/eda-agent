@@ -48,7 +48,7 @@ def test_catalog_lists_everything_by_default(mcp):
 
 def test_filter_by_category(mcp):
     res = _payload(_call(mcp, category="audit"))
-    assert res["count"] == 31
+    assert res["count"] == 32
     assert all(t["category"] == "audit" for t in res["tools"])
 
 

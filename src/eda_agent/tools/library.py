@@ -2893,6 +2893,45 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
+    async def lib_set_pin_owner_part(
+        pin_designators: str,
+        owner_part_id: int,
+        component_name: str = "",
+    ) -> dict[str, Any]:
+        """Reassign pins of a multi-part symbol to a sub-part, or to Part Zero.
+
+        ``owner_part_id=0`` is Altium's Part Zero: the pin belongs to
+        the package as a whole instead of to one sub-part. That is the
+        documented placement for a multi-part component's supply pins.
+        A sub-part-owned supply pin is redrawn at every instance origin,
+        and where the gate pitch is only twice the pin length those
+        copies land on each other and the netlist merges the two rails.
+
+        Changes the library only. Placed instances pick it up on the
+        next Update From Libraries, which produces an ECO.
+
+        Args:
+            pin_designators: comma-separated pin numbers, e.g. "3,12".
+            owner_part_id: 0 for Part Zero, or 1..part_count.
+            component_name: library reference of the symbol to edit.
+                Empty falls back to the editor's current component.
+
+        Returns:
+            Dictionary with "component", "owner_part_id", the
+            "pins_changed" list and its "count".
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "pin_designators": pin_designators,
+            "owner_part_id": int(owner_part_id),
+        }
+        if str(component_name).strip():
+            params["component_name"] = component_name
+        return await bridge.send_command_async(
+            "library.set_pin_owner_part", params
+        )
+
+    @mcp.tool()
     async def lib_export_kicad_symbol(
         component_name: str = "",
         output_path: str = "",

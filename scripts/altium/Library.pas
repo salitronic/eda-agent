@@ -734,6 +734,7 @@ Var
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Pad : IPCB_Pad;
+    PadLayer : TLayer;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
@@ -760,6 +761,21 @@ Begin
         Exit;
     End;
 
+    { Layer FIRST (the rounded-rect setters below are layer-aware): a drilled  }
+    { pad is through-hole (MultiLayer); a hole-less pad is SMD on a single      }
+    { layer (the named layer, default Top). Resolved before PreProcess so an    }
+    { unresolvable name ends the call rather than reaching the old eTopLayer    }
+    { fallback and putting a silkscreen pad on top copper.                      }
+    If HoleSize > 0 Then PadLayer := eMultiLayer
+    Else If LayerStr = '' Then PadLayer := eTopLayer
+    Else PadLayer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If PadLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
 
     Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
@@ -773,15 +789,7 @@ Begin
         Pad.HoleSize := MilsToCoord(HoleSize);
         Pad.Rotation := Rotation;
 
-        { Layer FIRST (the rounded-rect setters below are layer-aware): a      }
-        { drilled pad is through-hole (MultiLayer); a hole-less pad is SMD on   }
-        { a single layer (the named layer, default Top).                       }
-        If HoleSize > 0 Then
-            Pad.Layer := eMultiLayer
-        Else If LayerStr <> '' Then
-            Pad.Layer := GetLayerFromString(LayerStr)
-        Else
-            Pad.Layer := eTopLayer;
+        Pad.Layer := PadLayer;
 
         { Shape. roundrect = the modern IPC default: set the layer-stack shape }
         { then the corner-radius percentage (Altium stores RR radius as a %).  }
@@ -813,10 +821,11 @@ End;
 { singular Lib_AddFootprintPad field set / defaults exactly).                 }
 Function Lib_AddFootprintPads(Params : String; RequestId : String) : String;
 Var
-    PadsStr, Op, Remaining, Shape, LayerStr : String;
+    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
     X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
     Rotation : Double;
+    PadLayer : TLayer;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Pad : IPCB_Pad;
@@ -845,6 +854,7 @@ Begin
     Added := 0;
     Failed := 0;
     OpCount := 0;
+    BadLayers := '';
     Remaining := PadsStr;
 
     PCBServer.PreProcess;
@@ -864,6 +874,21 @@ Begin
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
 
+            { Resolve the layer BEFORE creating anything. GetLayerFromString    }
+            { answered eTopLayer for every name it did not know, so one         }
+            { "Top Overlay" in a batch silently put that pad on top copper.     }
+            If HoleSize > 0 Then PadLayer := eMultiLayer
+            Else If LayerStr = '' Then PadLayer := eTopLayer
+            Else PadLayer := ResolveLayerId(Board, LayerStr);
+            If PadLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
             Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
             If Pad = Nil Then
             Begin
@@ -881,12 +906,7 @@ Begin
 
             { Layer FIRST (roundrect setters are layer-aware): drilled ->       }
             { through-hole (MultiLayer); hole-less -> SMD on a single layer.    }
-            If HoleSize > 0 Then
-                Pad.Layer := eMultiLayer
-            Else If LayerStr <> '' Then
-                Pad.Layer := GetLayerFromString(LayerStr)
-            Else
-                Pad.Layer := eTopLayer;
+            Pad.Layer := PadLayer;
 
             If Shape = 'rectangular' Then Pad.TopShape := eRectangular
             Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
@@ -908,6 +928,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
@@ -944,7 +965,13 @@ Begin
     { Empty -> silkscreen (the safe default); any named layer is honoured so   }
     { courtyard/assembly tracks can go on Mechanical layers, not just overlay. }
     If LayerStr = '' Then Layer := eTopOverlay
-    Else Layer := GetLayerFromString(LayerStr);
+    Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
 
@@ -975,7 +1002,7 @@ End;
 { layer (TopOverlay default / BottomOverlay), mirroring the singular handler. }
 Function Lib_AddFootprintTracks(Params : String; RequestId : String) : String;
 Var
-    TracksStr, Op, Remaining, LayerStr : String;
+    TracksStr, Op, Remaining, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
     X1, Y1, X2, Y2, Width : Integer;
     PcbLib : IPCB_Library;
@@ -1007,6 +1034,7 @@ Begin
     Added := 0;
     Failed := 0;
     OpCount := 0;
+    BadLayers := '';
     Remaining := TracksStr;
 
     PCBServer.PreProcess;
@@ -1025,7 +1053,15 @@ Begin
             { Empty -> silkscreen (the safe default); any named layer is        }
             { honoured so courtyard/assembly tracks can go on Mechanical layers.}
             If LayerStr = '' Then Layer := eTopOverlay
-            Else Layer := GetLayerFromString(LayerStr);
+            Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+            If Layer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
 
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
@@ -1052,6 +1088,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
@@ -1089,7 +1126,13 @@ Begin
     { Empty -> silkscreen (the safe default); any named layer is honoured so   }
     { pin-1 / assembly arcs can go on Mechanical layers, not just overlay.      }
     If LayerStr = '' Then Layer := eTopOverlay
-    Else Layer := GetLayerFromString(LayerStr);
+    Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
 
@@ -1233,7 +1276,13 @@ Begin
     End;
 
     Board := PcbLib.Board;
-    Layer := GetLayerFromString(LayerStr);
+    Layer := ResolveLayerId(Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -4772,7 +4821,8 @@ Begin
                 ',"y":' + IntToStr(CoordToMils(Pin.Location.Y)) +
                 ',"orientation":' + IntToStr(Pin.Orientation) +
                 ',"length":' + IntToStr(CoordToMils(Pin.PinLength)) +
-                ',"hidden":' + BoolToJsonStr(Pin.IsHidden) + '}';
+                ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
+                ',"owner_part_id":' + IntToStr(Pin.OwnerPartId) + '}';
             Inc(PinCount);
 
             Pin := PinIterator.NextSchObject;
@@ -6434,6 +6484,134 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"pins_processed":' + IntToStr(Processed) + '}');
+End;
+
+{..............................................................................}
+{ Lib_SetPinOwnerPart - reassign named pins of a multi-part symbol to a       }
+{ sub-part, or to Part Zero (owner_part_id=0) so ONE pin is shared by the     }
+{ whole package rather than redrawn at every sub-part origin. Part Zero is    }
+{ Altium's documented placement for a multi-part component's supply pins.     }
+{ Params: component_name (optional, defaults to the editor's current symbol), }
+{         pin_designators (required, comma-separated), owner_part_id (req).   }
+{..............................................................................}
+Function Lib_SetPinOwnerPart(Params : String; RequestId : String) : String;
+Var
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    Iter : ISch_Iterator;
+    Pin : ISch_Pin;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    SrvDoc : IServerDocument;
+    WantName, WantPins, OwnerStr, Haystack, Changed, LibPath : String;
+    OwnerId, ChangedCount : Integer;
+    First : Boolean;
+Begin
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+
+    WantPins := ExtractJsonValue(Params, 'pin_designators');
+    OwnerStr := ExtractJsonValue(Params, 'owner_part_id');
+    If (WantPins = '') Or (OwnerStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'pin_designators and owner_part_id are required');
+        Exit;
+    End;
+    OwnerId := StrToIntDef(OwnerStr, -1);
+    If OwnerId < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'owner_part_id must be 0 or greater');
+        Exit;
+    End;
+
+    { Resolve through the library, never off the editor's current component:  }
+    { SchIterator_Create is undeclared on a component fetched that way.       }
+    WantName := ExtractJsonValue(Params, 'component_name');
+    If WantName = '' Then
+    Begin
+        Component := GetTargetLibComponent(SchLib);
+        If Component <> Nil Then
+            Try
+                WantName := Component.LibReference;
+            Except
+                WantName := '';
+            End;
+    End;
+    If WantName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected; pass component_name to name one');
+        Exit;
+    End;
+
+    Component := SchLib.GetState_SchComponentByLibRef(WantName);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+            'Component not found in library: ' + WantName);
+        Exit;
+    End;
+
+    Haystack := ',' + WantPins + ',';
+    ChangedCount := 0;
+    Changed := '';
+    First := True;
+
+    SchServer.ProcessControl.PreProcess(SchLib, '');
+    Try
+        Iter := Component.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(ePin));
+            Pin := Iter.FirstSchObject;
+            While Pin <> Nil Do
+            Begin
+                If Pos(',' + Pin.Designator + ',', Haystack) > 0 Then
+                Begin
+                    Try
+                        Pin.OwnerPartId := OwnerId;
+                        If Not First Then Changed := Changed + ',';
+                        First := False;
+                        Changed := Changed + '"' + EscapeJsonString(Pin.Designator) + '"';
+                        ChangedCount := ChangedCount + 1;
+                    Except End;
+                End;
+                Pin := Iter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(Iter);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchLib, '');
+    End;
+
+    LibPath := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            Doc := Workspace.DM_FocusedDocument;
+            If Doc <> Nil Then LibPath := Doc.DM_FullPath;
+        End;
+    Except End;
+    Try
+        If LibPath <> '' Then
+        Begin
+            SrvDoc := Client.GetDocumentByPath(LibPath);
+            If SrvDoc <> Nil Then SrvDoc.SetModified(True);
+        End;
+    Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"component":"' + EscapeJsonString(WantName) +
+        '","owner_part_id":' + IntToStr(OwnerId) +
+        ',"pins_changed":[' + Changed + ']' +
+        ',"count":' + IntToStr(ChangedCount) + '}');
 End;
 
 {..............................................................................}
@@ -9198,6 +9376,7 @@ Begin
         'add_symbol_polygon': Result := Lib_AddSymbolPolygon(Params, RequestId);
         'set_component_description': Result := Lib_SetComponentDescription(Params, RequestId);
         'get_pin_list':       Result := Lib_GetPinList(Params, RequestId);
+        'set_pin_owner_part': Result := Lib_SetPinOwnerPart(Params, RequestId);
         'copy_component':     Result := Lib_CopyComponent(Params, RequestId);
         'move_components':    Result := Lib_MoveComponents(Params, RequestId);
         'move_footprints':    Result := Lib_MoveFootprints(Params, RequestId);

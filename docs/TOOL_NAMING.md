@@ -174,7 +174,8 @@ sch_add_directive, sch_get_directives, sch_get_constraint_groups,
 sch_place_harness_connector, sch_place_cross_sheet_connector,
 sch_place_text_frame, sch_generate_toc, sch_set_net_tie,
 sch_increment_designators, sch_toggle_pin_visibility, sch_set_component_part_id,
-sch_place_probe, sch_add_datafile_link.
+sch_set_component_unique_id, sch_replicate_component, sch_place_probe,
+sch_add_datafile_link.
 
 ### sim -> sim_
 

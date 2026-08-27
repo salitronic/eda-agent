@@ -1034,8 +1034,8 @@ Var
     ViolationCount : Integer;
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
-    JsonItems : String;
-    First : Boolean;
+    JsonItems, AllowStr : String;
+    First, AllowModal : Boolean;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -1044,11 +1044,28 @@ Begin
         Exit;
     End;
 
-    // Run DRC via the documented process. Per TR0124 Server Process
-    // Reference v1.5, the correct identifier is "PCB:DesignRuleCheck"
-    // (not "PCB:RunDRC" which doesn't exist). Called with no params,
-    // it runs the rule check; with InspectViolation=True it would open
-    // the violation viewer instead.
+    { PCB:DesignRuleCheck is the documented process (TR0124 Server Process  }
+    { Reference v1.5; "PCB:RunDRC" does not exist) -- but it raises the      }
+    { MODAL "Design Rule Checker" setup dialog and BLOCKS this              }
+    { single-threaded polling loop until a human clicks it. Observed: one   }
+    { call left the loop dead for 30+ min, the client timed out at 1800 s,  }
+    { and a scripting-engine access violation sat hidden behind the dialog. }
+    { No documented parameter suppresses that dialog, so the trigger is     }
+    { OPT-IN: the caller must pass allow_modal=true and accept the block.   }
+    { Everything else reads the violations already stored on the board --   }
+    { see PCB_GetClearanceViolations, which never triggers a run.           }
+    AllowStr := LowerCase(ExtractJsonValue(Params, 'allow_modal'));
+    AllowModal := (AllowStr = 'true') Or (AllowStr = '1');
+    If Not AllowModal Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MODAL_BLOCKED',
+            'PCB:DesignRuleCheck opens the modal Design Rule Checker dialog and '
+            + 'blocks the bridge until a human closes it. Pass allow_modal=true '
+            + 'to accept that block, or call pcb.get_clearance_violations to read '
+            + 'the violations left on the board by the last DRC run.');
+        Exit;
+    End;
+
     ResetParameters;
     RunProcess('PCB:DesignRuleCheck');
 
@@ -1078,6 +1095,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(ViolationCount) + ','
+        + '"drc_triggered":true,'
         + '"violations":[' + JsonItems + ']}');
 End;
 
@@ -3471,11 +3489,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -3497,7 +3515,7 @@ Begin
 
     SaveDocByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -3527,11 +3545,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -3561,7 +3579,47 @@ Begin
 
     SaveDocByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
+End;
+
+{..............................................................................}
+{ ResolveStackLayerObject - The IPCB_LayerObject_V7 a caller meant, or Nil.    }
+{                                                                              }
+{ Thin wrapper over ResolveLayerIdInStack (Utils.pas), which is the ONE place  }
+{ a caller-supplied layer name is turned into a TLayer. Keeping the name walk  }
+{ here as well would let the two copies drift, and the drift is exactly what   }
+{ costs a board: GetLayerFromString answers eTopLayer for every name it does   }
+{ not know, so any handler still resolving on its own writes to the top layer  }
+{ and reports success.                                                          }
+{..............................................................................}
+
+Function ResolveStackLayerObject(LayerStack : IPCB_LayerStack_V7; LayerName : String) : IPCB_LayerObject_V7;
+Var
+    Resolved : TLayer;
+Begin
+    Result := Nil;
+    If LayerStack = Nil Then Exit;
+    Resolved := ResolveLayerIdInStack(LayerStack, LayerName);
+    If Resolved = eNoLayer Then Exit;
+    Try Result := LayerStack.LayerObject_V7[Resolved]; Except Result := Nil; End;
+End;
+
+{ The dielectric type of a layer in the same vocabulary modify_layer accepts,  }
+{ so a read-back can be compared against what the caller asked for. An empty   }
+{ result means the property could not be read at all.                          }
+
+Function DielectricTypeToken(LayerObj : IPCB_LayerObject_V7) : String;
+Begin
+    Result := '';
+    Try
+        If LayerObj.Dielectric.DielectricType = eNoDielectric Then Result := 'none'
+        Else If LayerObj.Dielectric.DielectricType = eCore Then Result := 'core'
+        Else If LayerObj.Dielectric.DielectricType = ePrePreg Then Result := 'prepreg'
+        Else If LayerObj.Dielectric.DielectricType = eSurfaceMaterial Then Result := 'surface'
+        Else Result := 'other';
+    Except
+        Result := '';
+    End;
 End;
 
 {..............................................................................}
@@ -3579,7 +3637,10 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     LayerName, NewName, TypeStr, Material : String;
     ThickStr, HeightStr, ConstStr : String;
-    TargetLayer : TLayer;
+    ResolvedName, NameBack, TypeBack, MaterialBack : String;
+    AppliedJson, RejectedJson : String;
+    ThickBack, HeightBack, ConstBack : Double;
+    AllOk : Boolean;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -3595,14 +3656,6 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
-        Exit;
-    End;
-
     LayerStack := Board.LayerStack_V7;
     If LayerStack = Nil Then
     Begin
@@ -3610,13 +3663,20 @@ Begin
         Exit;
     End;
 
-    LayerObj := LayerStack.LayerObject_V7[TargetLayer];
+    LayerObj := ResolveStackLayerObject(LayerStack, LayerName);
     If LayerObj = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
-            'Layer ' + LayerName + ' is not present in the current stack');
+            'Layer ' + LayerName + ' is not present in the current stack. Use a '
+            + 'name exactly as pcb_get_layer_stackup reports it, or a canonical '
+            + 'token such as InternalPlane1.');
         Exit;
     End;
+
+    { The name the stack knows this layer by, captured before a rename lands, }
+    { so the response identifies the layer that was actually written.         }
+    ResolvedName := LayerName;
+    Try ResolvedName := LayerObj.Name; Except End;
 
     NewName := ExtractJsonValue(Params, 'name');
     ThickStr := ExtractJsonValue(Params, 'copper_thickness_mils');
@@ -3654,9 +3714,255 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    { Read back rather than trusting the write. Every assignment above is late }
+    { bound and carries its own Except, so a refused write raises nothing and  }
+    { answering "success" from the fact that nothing escaped reports success   }
+    { for doing nothing - which is how a whole stackup came to be recorded as  }
+    { set while the board still read zeros. Only a value that comes back       }
+    { MATCHING counts as applied; every other field is named in "rejected".    }
+    AppliedJson := '';
+    RejectedJson := '';
+    AllOk := True;
+
+    If NewName <> '' Then
+    Begin
+        NameBack := '';
+        Try NameBack := LayerObj.Name; Except NameBack := ''; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"name":"' + EscapeJsonString(NameBack) + '"';
+        If NameBack <> NewName Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"name"';
+            AllOk := False;
+        End;
+    End;
+
+    If ThickStr <> '' Then
+    Begin
+        ThickBack := -1;
+        Try ThickBack := LayerObj.CopperThickness / 10000; Except ThickBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"copper_thickness_mils":' + FloatToJsonStr(ThickBack);
+        If Abs(ThickBack - StrToIntDef(ThickStr, 0)) > 0.01 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"copper_thickness_mils"';
+            AllOk := False;
+        End;
+    End;
+
+    If TypeStr <> '' Then
+    Begin
+        TypeBack := DielectricTypeToken(LayerObj);
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_type":"' + EscapeJsonString(TypeBack) + '"';
+        If TypeBack <> TypeStr Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_type"';
+            AllOk := False;
+        End;
+    End;
+
+    If HeightStr <> '' Then
+    Begin
+        HeightBack := -1;
+        Try HeightBack := LayerObj.Dielectric.DielectricHeight / 10000; Except HeightBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_height_mils":' + FloatToJsonStr(HeightBack);
+        If Abs(HeightBack - StrToIntDef(HeightStr, 0)) > 0.01 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_height_mils"';
+            AllOk := False;
+        End;
+    End;
+
+    If ConstStr <> '' Then
+    Begin
+        ConstBack := -1;
+        Try ConstBack := LayerObj.Dielectric.DielectricConstant; Except ConstBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_constant":' + FloatToJsonStr(ConstBack);
+        If Abs(ConstBack - StrToFloatDef(ConstStr, 1.0)) > 0.001 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_constant"';
+            AllOk := False;
+        End;
+    End;
+
+    If Material <> '' Then
+    Begin
+        MaterialBack := '';
+        Try MaterialBack := LayerObj.Dielectric.DielectricMaterial; Except MaterialBack := ''; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_material":"' + EscapeJsonString(MaterialBack) + '"';
+        If MaterialBack <> Material Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_material"';
+            AllOk := False;
+        End;
+    End;
+
+    { Only persist a change that actually took. Saving a board whose write was }
+    { refused writes the unchanged stackup back over itself, and the fresh     }
+    { file timestamp then reads as a completed edit.                           }
+    If AllOk Then SaveDocByPath(Board.FileName);
+
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":' + BoolToJsonStr(AllOk) + ','
+        + '"layer":"' + EscapeJsonString(ResolvedName) + '",'
+        + '"applied":{' + AppliedJson + '},'
+        + '"rejected":[' + RejectedJson + ']}');
+End;
+
+{..............................................................................}
+{ PCB_SetPlaneNet - Give an internal plane layer its net.                     }
+{                                                                              }
+{ An Altium internal plane is a NEGATIVE layer: the copper is everywhere       }
+{ except where the plane is cleared, and the net association lives on the      }
+{ LAYER itself rather than on any poured object. A polygon poured on a plane   }
+{ layer is a different thing entirely and does not connect the plane, which is }
+{ why plane nets were being attempted with pcb_place_polygon_rect - there was  }
+{ no other way to reach them, pcb_modify_layer having no net parameter.        }
+{                                                                              }
+{ THE WRITE PATH IS NOT CONFIRMED. The DelphiScript reference carried in this  }
+{ repo (docs/altium-delphiscript/) documents no plane-net accessor at all, so  }
+{ the layer object's Net property is attempted under Try/Except and then READ  }
+{ BACK. If this script binding does not carry that property, the write raises  }
+{ nothing and the read-back disagrees, and the call answers success=false with }
+{ applied=false rather than claiming a write that did not land - the same      }
+{ honesty contract pcb_modify_layer and pcb_set_layer_color already keep. The  }
+{ board is saved only when the read-back agrees.                               }
+{                                                                              }
+{ Params: layer (required, plane name or InternalPlaneN), net (required)       }
+{..............................................................................}
+
+Function PCB_SetPlaneNet(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    NetObj : IPCB_Net;
+    LayerStr, NetStr, ResolvedName, NetBack, NoteStr : String;
+    TargetLayer : TLayer;
+    Applied : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    If LayerStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'layer required, for example "InternalPlane1" or the plane''s name '
+            + 'as pcb_get_layer_stackup reports it');
+        Exit;
+    End;
+
+    NetStr := ExtractJsonValue(Params, 'net');
+    If NetStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net required');
+        Exit;
+    End;
+
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If (TargetLayer < eInternalPlane1) Or (TargetLayer > eInternalPlane16) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_PLANE',
+            'Layer ' + GetLayerString(TargetLayer) + ' is not an internal plane. '
+            + 'Only InternalPlane1..InternalPlane16 carry a net on the layer. '
+            + 'For a signal layer, pour copper with pcb_place_polygon_rect '
+            + 'instead.');
+        Exit;
+    End;
+
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    LayerObj := Nil;
+    Try LayerObj := LayerStack.LayerObject_V7[TargetLayer]; Except LayerObj := Nil; End;
+    If LayerObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
+            'Layer ' + GetLayerString(TargetLayer) + ' is not present in the '
+            + 'current stack. Add it with pcb_add_layer first.');
+        Exit;
+    End;
+
+    NetObj := FindNetByName(Board, NetStr);
+    If NetObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NET_NOT_FOUND',
+            'No net named "' + NetStr + '" exists on this board. Read '
+            + 'pcb_get_nets for the names it does carry; a plane can only be '
+            + 'tied to a net the board already knows.');
+        Exit;
+    End;
+
+    { The name the stack knows this plane by, so the response names the layer }
+    { that was written rather than the string the caller happened to pass.    }
+    ResolvedName := GetLayerString(TargetLayer);
+    Try ResolvedName := LayerObj.Name; Except End;
+
+    PCBServer.PreProcess;
+    Try
+        Try LayerObj.Net := NetObj; Except End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    NetBack := '';
+    Try
+        If LayerObj.Net <> Nil Then NetBack := LayerObj.Net.Name;
+    Except
+        NetBack := '';
+    End;
+
+    Applied := (NetBack <> '') And (UpperCase(NetBack) = UpperCase(NetStr));
+
+    If Applied Then
+    Begin
+        SaveDocByPath(Board.FileName);
+        NoteStr := '';
+    End
+    Else
+        NoteStr := 'The plane still reads back as "' + NetBack + '". The net '
+            + 'was NOT assigned. This build may not expose a plane net through '
+            + 'the script binding; assign it in the Layer Stack Manager '
+            + '(Design > Layer Stack Manager, the plane row''s Net Name '
+            + 'column). The board was not saved.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr(Applied) + ','
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer_name":"' + EscapeJsonString(ResolvedName) + '",'
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"net_readback":"' + EscapeJsonString(NetBack) + '",'
+        + '"applied":' + BoolToJsonStr(Applied) + ','
+        + '"note":"' + EscapeJsonString(NoteStr) + '"}');
 End;
 
 {..............................................................................}
@@ -3976,11 +4282,11 @@ Begin
         Exit;
     End;
 
-    LayerID := GetLayerFromString(LayerStr);
+    LayerID := ResolveLayerId(Board, LayerStr);
     If LayerID = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerStr);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -4044,7 +4350,13 @@ Begin
         Exit;
     End;
 
-    LayerID := GetLayerFromString(LayerStr);
+    LayerID := ResolveLayerId(Board, LayerStr);
+    If LayerID = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     Visible := (LowerCase(VisibleStr) = 'true') Or (VisibleStr = '1');
 
     Board.LayerIsDisplayed[LayerID] := Visible;
@@ -4053,7 +4365,7 @@ Begin
     // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
 
     Result := BuildSuccessResponse(RequestId,
-        '{"layer":"' + EscapeJsonString(LayerStr) + '",'
+        '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
         + '"visible":' + BoolToJsonStr(Visible) + '}');
 End;
 
@@ -4094,6 +4406,7 @@ Var
     XStr, YStr, NetStr, SizeStr, HoleSizeStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
     ViaX, ViaY, ViaSize, ViaHole : Integer;
+    LowLayer, HighLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -4121,6 +4434,26 @@ Begin
     ViaSize := StrToIntDef(SizeStr, 50);    // Default 50 mils pad size
     ViaHole := StrToIntDef(HoleSizeStr, 28); // Default 28 mils hole
 
+    { Resolve BEFORE PreProcess: an unresolvable name has to end the call, and }
+    { returning from inside the Try would skip PostProcess.                    }
+    If LowLayerStr = '' Then LowLayer := eTopLayer
+    Else LowLayer := ResolveLayerId(Board, LowLayerStr);
+    If LowLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown low_layer name: ' + LowLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If HighLayerStr = '' Then HighLayer := eBottomLayer
+    Else HighLayer := ResolveLayerId(Board, HighLayerStr);
+    If HighLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown high_layer name: ' + HighLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
@@ -4137,15 +4470,8 @@ Begin
         Via.HoleSize := MilsToCoord(ViaHole);
 
         // Set layers
-        If LowLayerStr <> '' Then
-            Via.LowLayer := GetLayerFromString(LowLayerStr)
-        Else
-            Via.LowLayer := eTopLayer;
-
-        If HighLayerStr <> '' Then
-            Via.HighLayer := GetLayerFromString(HighLayerStr)
-        Else
-            Via.HighLayer := eBottomLayer;
+        Via.LowLayer := LowLayer;
+        Via.HighLayer := HighLayer;
 
         // Assign net
         If NetStr <> '' Then
@@ -4170,7 +4496,9 @@ Begin
         + '"x":' + IntToStr(ViaX) + ','
         + '"y":' + IntToStr(ViaY) + ','
         + '"size":' + IntToStr(ViaSize) + ','
-        + '"hole_size":' + IntToStr(ViaHole) + '}');
+        + '"hole_size":' + IntToStr(ViaHole) + ','
+        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -4185,6 +4513,7 @@ Var
     X1Str, Y1Str, X2Str, Y2Str, WidthStr, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
     TX1, TY1, TX2, TY2, TWidth : Integer;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -4213,6 +4542,15 @@ Begin
     TY2 := StrToIntDef(Y2Str, 0);
     TWidth := StrToIntDef(WidthStr, 10);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
@@ -4229,10 +4567,7 @@ Begin
         Track.y2 := MilsToCoord(TY2);
         Track.Width := MilsToCoord(TWidth);
 
-        If LayerStr <> '' Then
-            Track.Layer := GetLayerFromString(LayerStr)
-        Else
-            Track.Layer := eTopLayer;
+        Track.Layer := TargetLayer;
 
         If NetStr <> '' Then
         Begin
@@ -4276,8 +4611,9 @@ Var
     TracksStr, TrackStr, Remaining, Field : String;
     PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
     TX1, TY1, TX2, TY2, TWidth : Integer;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, BadLayers : String;
     FoundNet : IPCB_Net;
+    TrackLayer : TLayer;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
     { string arrays as function locals corrupt the function return slot   }
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
@@ -4299,6 +4635,7 @@ Begin
 
     Placed := 0;
     Failed := 0;
+    BadLayers := '';
     Remaining := TracksStr;
 
     PCBServer.PreProcess;
@@ -4360,6 +4697,20 @@ Begin
             LayerStr := F5;
             NetStr := F6;
 
+            { An unresolvable name used to fall through to eTopLayer, so one   }
+            { typo in a batch quietly stacked that track on the top layer.     }
+            { Skip it and name the layer in the response instead.              }
+            If LayerStr = '' Then TrackLayer := eTopLayer
+            Else TrackLayer := ResolveLayerId(Board, LayerStr);
+            If TrackLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -4373,10 +4724,7 @@ Begin
             Track.y2 := MilsToCoord(TY2);
             Track.Width := MilsToCoord(TWidth);
 
-            If LayerStr <> '' Then
-                Track.Layer := GetLayerFromString(LayerStr)
-            Else
-                Track.Layer := eTopLayer;
+            Track.Layer := TrackLayer;
 
             If NetStr <> '' Then
             Begin
@@ -4401,7 +4749,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ','
-        + '"failed":' + IntToStr(Failed) + '}');
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
 End;
 
 {..............................................................................}
@@ -4416,6 +4765,7 @@ Var
     XCStr, YCStr, RadStr, SAStr, EAStr, WidthStr, LayerStr : String;
     ArcXC, ArcYC, ArcRad, ArcWidth : Integer;
     ArcSA, ArcEA : Double;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -4445,6 +4795,15 @@ Begin
     ArcEA := StrToFloatDef(EAStr, 360);
     ArcWidth := StrToIntDef(WidthStr, 10);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
@@ -4462,10 +4821,7 @@ Begin
         Arc.EndAngle := ArcEA;
         Arc.LineWidth := MilsToCoord(ArcWidth);
 
-        If LayerStr <> '' Then
-            Arc.Layer := GetLayerFromString(LayerStr)
-        Else
-            Arc.Layer := eTopLayer;
+        Arc.Layer := TargetLayer;
 
         Board.AddPCBObject(Arc);
 
@@ -4500,6 +4856,7 @@ Var
     TextStr, XStr, YStr, LayerStr, HeightStr, RotStr : String;
     TX, TY, THeight : Integer;
     TRot : Double;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -4532,6 +4889,15 @@ Begin
     THeight := StrToIntDef(HeightStr, 60);
     TRot := StrToFloatDef(RotStr, 0);
 
+    If LayerStr = '' Then TargetLayer := eTopOverlay
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         TextObj := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
@@ -4548,10 +4914,7 @@ Begin
         TextObj.Size := MilsToCoord(THeight);
         TextObj.Rotation := TRot;
 
-        If LayerStr <> '' Then
-            TextObj.Layer := GetLayerFromString(LayerStr)
-        Else
-            TextObj.Layer := eTopOverlay;
+        TextObj.Layer := TargetLayer;
 
         Board.AddPCBObject(TextObj);
 
@@ -4585,6 +4948,7 @@ Var
     X1Str, Y1Str, X2Str, Y2Str, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
     FX1, FY1, FX2, FY2 : Integer;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -4611,6 +4975,15 @@ Begin
     FX2 := StrToIntDef(X2Str, 0);
     FY2 := StrToIntDef(Y2Str, 0);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
@@ -4627,10 +5000,7 @@ Begin
         Fill.Y2Location := MilsToCoord(FY2);
         Fill.Rotation := 0;
 
-        If LayerStr <> '' Then
-            Fill.Layer := GetLayerFromString(LayerStr)
-        Else
-            Fill.Layer := eTopLayer;
+        Fill.Layer := TargetLayer;
 
         If NetStr <> '' Then
         Begin
@@ -5199,6 +5569,16 @@ End;
 {..............................................................................}
 { PCB_GetClearanceViolations - Get clearance violations for a net             }
 { Params: net (optional) - if specified, only show violations for this net   }
+{                                                                            }
+{ READ-ONLY: this reports the eViolationObject records ALREADY on the board  }
+{ (left by the last DRC run, batch or online). It does NOT trigger a DRC.    }
+{ It used to call RunProcess('PCB:DesignRuleCheck'), which raises the modal  }
+{ "Design Rule Checker" setup dialog and wedged the whole bridge for 30+ min }
+{ on a 241-component board -- a "get" tool must never do that. A fresh run   }
+{ is PCB_RunDRC with allow_modal=true, which is opt-in for that reason.      }
+{ Because nothing is triggered here, violation_count = 0 means "no stored    }
+{ violations", which on a board where DRC has never run is NOT a pass; the   }
+{ response says so via drc_triggered / note.                                 }
 {..............................................................................}
 
 Function PCB_GetClearanceViolations(Params : String; RequestId : String) : String;
@@ -5220,11 +5600,8 @@ Begin
 
     FilterNet := ExtractJsonValue(Params, 'net');
 
-    // First run DRC to refresh violations -- correct documented process
-    // is PCB:DesignRuleCheck per TR0124, not PCB:RunDRC.
-    ResetParameters;
-    RunProcess('PCB:DesignRuleCheck');
-
+    { No DRC trigger here -- see the header. Iterating eViolationObject is   }
+    { a pure board read: it opens no dialog and cannot block the loop.       }
     JsonItems := '';
     First := True;
     Count := 0;
@@ -5257,6 +5634,9 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(Count) + ','
+        + '"drc_triggered":false,'
+        + '"note":"Existing violations only -- no DRC was run. 0 does not mean '
+        + 'the board passes if DRC has never been run on it.",'
         + '"violations":[' + JsonItems + ']}');
 End;
 
@@ -5482,10 +5862,14 @@ Begin
     TargetX := StrToIntDef(XStr, 0);
     TargetY := StrToIntDef(YStr, 0);
 
-    If LayerStr <> '' Then
-        TargetLayer := GetLayerFromString(LayerStr)
-    Else
-        TargetLayer := eTopLayer;
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     // Map object type string to filter
     If ObjTypeStr = 'track' Then
@@ -6037,6 +6421,7 @@ Var
     FoundPoly : IPCB_Polygon;
     FoundNet : IPCB_Net;
     Found : Boolean;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -6061,6 +6446,18 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'Invalid index value');
         Exit;
+    End;
+
+    TargetLayer := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        TargetLayer := ResolveLayerId(Board, LayerStr);
+        If TargetLayer = eNoLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+            Exit;
+        End;
     End;
 
     // Find the polygon at the specified index
@@ -6107,8 +6504,8 @@ Begin
         End;
 
         // Modify layer
-        If LayerStr <> '' Then
-            FoundPoly.Layer := GetLayerFromString(LayerStr);
+        If TargetLayer <> eNoLayer Then
+            FoundPoly.Layer := TargetLayer;
 
         // Modify hatch style
         If HatchStr <> '' Then
@@ -6134,6 +6531,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"modified":true,'
         + '"index":' + IntToStr(TargetIdx) + ','
+        + '"layer":"' + EscapeJsonString(GetLayerString(FoundPoly.Layer)) + '",'
         + '"name":"' + EscapeJsonString(FoundPoly.Name) + '"}');
 End;
 
@@ -6576,6 +6974,7 @@ Var
     NetStr, LayerStr, PourOverStr : String;
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -6597,6 +6996,20 @@ Begin
     Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
     Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
 
+    { The layer is resolved BEFORE anything is created. "Internal Plane 1"    }
+    { used to reach GetLayerFromString, miss the canonical table, and come     }
+    { back as eTopLayer - so a PGND pour and a VBUS_PROT pour both landed on   }
+    { the top layer, each answering placed:true with layer echoing the        }
+    { REQUESTED plane name. That is a board-wide short.                       }
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
@@ -6607,8 +7020,7 @@ Begin
             Exit;
         End;
 
-        If LayerStr = '' Then LayerStr := 'TopLayer';
-        Polygon.Layer := GetLayerFromString(LayerStr);
+        Polygon.Layer := TargetLayer;
 
         Polygon.PolyHatchStyle := ePolySolid;
 
@@ -6655,7 +7067,7 @@ Begin
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -6702,9 +7114,21 @@ Begin
         Try FoundNet := FindNetByName(Board,NetStr); Except End;
 
     If LowLayerStr = '' Then LowLayer := eTopLayer
-    Else LowLayer := GetLayerFromString(LowLayerStr);
+    Else LowLayer := ResolveLayerId(Board, LowLayerStr);
+    If LowLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown low_layer name: ' + LowLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     If HighLayerStr = '' Then HighLayer := eBottomLayer
-    Else HighLayer := GetLayerFromString(HighLayerStr);
+    Else HighLayer := ResolveLayerId(Board, HighLayerStr);
+    If HighLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown high_layer name: ' + HighLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PlacedCount := 0;
     PCBServer.PreProcess;
@@ -6745,6 +7169,8 @@ Begin
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"pitch":' + IntToStr(Pitch) + ','
+        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -6835,6 +7261,7 @@ Var
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -6855,6 +7282,15 @@ Begin
     Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
     Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
@@ -6865,8 +7301,7 @@ Begin
             Exit;
         End;
 
-        If LayerStr = '' Then LayerStr := 'TopLayer';
-        Region.Layer := GetLayerFromString(LayerStr);
+        Region.Layer := TargetLayer;
 
         { IPCB_Region uses MainContour + SetOutlineContour (NOT the polygon
           Segments API). Note that the contour X[I]/Y[I] arrays are
@@ -6898,7 +7333,7 @@ Begin
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -7034,6 +7469,7 @@ Var
     Dim : IPCB_Dimension;
     X1, Y1, X2, Y2, TextX, TextY : Integer;
     Orient, LayerStr : String;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -7050,6 +7486,13 @@ Begin
     Orient := LowerCase(ExtractJsonValue(Params, 'orientation'));
 
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     { Auto-detect orientation if unset: whichever axis has the larger delta. }
     If Orient = '' Then
     Begin
@@ -7080,7 +7523,7 @@ Begin
             Exit;
         End;
 
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eLinearDimension;
         Dim.X1Location := MilsToCoord(X1);
         Dim.Y1Location := MilsToCoord(Y1);
@@ -7124,6 +7567,7 @@ Var
     X, Y, XSize, YSize, HoleSize : Integer;
     Shape, NameStr, NetStr, LayerStr : String;
     FoundNet : IPCB_Net;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -7143,6 +7587,13 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     If LayerStr = '' Then LayerStr := 'TopLayer';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     If Shape = '' Then Shape := 'round';
 
     PCBServer.PreProcess;
@@ -7160,7 +7611,7 @@ Begin
         Pad.TopXSize := MilsToCoord(XSize);
         Pad.TopYSize := MilsToCoord(YSize);
         Pad.HoleSize := MilsToCoord(HoleSize);
-        Pad.Layer := GetLayerFromString(LayerStr);
+        Pad.Layer := TargetLayer;
         If NameStr <> '' Then Pad.Name := NameStr;
 
         If Shape = 'rect' Then Pad.TopShape := eRectangular
@@ -7187,7 +7638,7 @@ Begin
         + '"x_size":' + IntToStr(XSize) + ',"y_size":' + IntToStr(YSize) + ','
         + '"hole_size":' + IntToStr(HoleSize) + ','
         + '"shape":"' + EscapeJsonString(Shape) + '",'
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"name":"' + EscapeJsonString(NameStr) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -7217,6 +7668,7 @@ Var
     Rotation : Double;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr, LoadStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName, BoardPathStr : String;
+    CompLayer : TLayer;
 Begin
     { Target a specific board by path when several PcbDocs are open, so a    }
     { placement can't silently land on the wrong (focused) board. Empty      }
@@ -7255,6 +7707,13 @@ Begin
     End;
     If LibRef = '' Then LibRef := Footprint;
     If LayerStr = '' Then LayerStr := 'TopLayer';
+    CompLayer := ResolveLayerId(Board, LayerStr);
+    If CompLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -7270,7 +7729,7 @@ Begin
         LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                  + '|SourceComponentLibrary=' + LibPath;
         Comp.LoadFromLibrary(LoadStr);
-        Comp.Layer := GetLayerFromString(LayerStr);
+        Comp.Layer := CompLayer;
         Comp.x := MilsToCoord(X);
         Comp.y := MilsToCoord(Y);
         Comp.Rotation := Rotation;
@@ -7383,9 +7842,10 @@ Var
     Net : IPCB_Net;
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
-    UniqueIdStr, PadNetsStr, PadName, NetName : String;
+    UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
     X, Y, PlacedCount, FailedCount, SepPos : Integer;
     Rotation : Double;
+    CompLayer : TLayer;
 Begin
     BoardPathStr  := ExtractJsonValue(Params, 'board_path');
     PlacementsStr := ExtractJsonValue(Params, 'placements');
@@ -7398,6 +7858,7 @@ Begin
 
     PlacedCount := 0;
     FailedCount := 0;
+    BadLayers := '';
 
     PCBServer.PreProcess;
     Try
@@ -7436,6 +7897,15 @@ Begin
             End;
             If LibRef = '' Then LibRef := Footprint;
             If LayerStr = '' Then LayerStr := 'TopLayer';
+            CompLayer := ResolveLayerId(Board, LayerStr);
+            If CompLayer = eNoLayer Then
+            Begin
+                FailedCount := FailedCount + 1;
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
 
             Comp := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
             If Comp = Nil Then
@@ -7448,7 +7918,7 @@ Begin
             LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                      + '|SourceComponentLibrary=' + LibPath;
             Comp.LoadFromLibrary(LoadStr);
-            Comp.Layer := GetLayerFromString(LayerStr);
+            Comp.Layer := CompLayer;
             Comp.x := MilsToCoord(X);
             Comp.y := MilsToCoord(Y);
             Comp.Rotation := Rotation;
@@ -7495,6 +7965,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount)
         + ',"failed":' + IntToStr(FailedCount)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(PlacedCount + FailedCount) + '}');
 End;
 
@@ -7534,6 +8005,7 @@ Var
     Dim : IPCB_Dimension;
     Cx, Cy, X1, Y1, X2, Y2, Radius : Integer;
     LayerStr : String;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -7551,6 +8023,13 @@ Begin
     Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -7561,7 +8040,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create angular dimension');
             Exit;
         End;
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eAngularDimension;
         Dim.X1Location := MilsToCoord(Cx);
         Dim.Y1Location := MilsToCoord(Cy);
@@ -7593,6 +8072,7 @@ Var
     Dim : IPCB_Dimension;
     Cx, Cy, Radius : Integer;
     LayerStr : String;
+    TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -7606,6 +8086,13 @@ Begin
     Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -7616,7 +8103,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create radial dimension');
             Exit;
         End;
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eRadialDimension;
         Dim.X1Location := MilsToCoord(Cx);
         Dim.Y1Location := MilsToCoord(Cy);
@@ -7678,10 +8165,14 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     MirrorStr := LowerCase(ExtractJsonValue(Params, 'mirror'));
 
-    If LayerStr <> '' Then
-        TargetLayer := GetLayerFromString(LayerStr)
-    Else
-        TargetLayer := eTopLayer;
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     Emb := PCBServer.PCBObjectFactory(eEmbeddedBoardObject, eNoDimension, eCreate_Default);
     If Emb = Nil Then
@@ -7716,6 +8207,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"child_path":"' + EscapeJsonString(ChildPath) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"rows":' + IntToStr(Rows) + ',"cols":' + IntToStr(Cols)
         + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
 End;
@@ -9459,11 +9951,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -9514,7 +10006,7 @@ Begin
     PairKind := MechPairKindFromLayerKind(KindId);
     PartnerName := ExtractJsonValue(Params, 'partner_layer');
     PartnerLayer := eNoLayer;
-    If PartnerName <> '' Then PartnerLayer := GetLayerFromString(PartnerName);
+    If PartnerName <> '' Then PartnerLayer := ResolveLayerId(Board, PartnerName);
 
     If (PartnerKind >= 0) And (PartnerLayer = eNoLayer) Then
     Begin
@@ -9859,7 +10351,7 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     ListStr, RecStr, Remaining, Token : String;
-    Desig, XStr, YStr, RotStr, LayerStr : String;
+    Desig, XStr, YStr, RotStr, LayerStr, BadLayers : String;
     PipePos, CommaPos, FieldIdx, Applied, Failed : Integer;
     TargetLayer : TLayer;
 Begin
@@ -9879,6 +10371,7 @@ Begin
 
     Applied := 0;
     Failed := 0;
+    BadLayers := '';
     Remaining := ListStr;
     While Length(Remaining) > 0 Do
     Begin
@@ -9932,6 +10425,20 @@ Begin
             Continue;
         End;
 
+        TargetLayer := eNoLayer;
+        If LayerStr <> '' Then
+        Begin
+            TargetLayer := ResolveLayerId(Board, LayerStr);
+            If TargetLayer = eNoLayer Then
+            Begin
+                Failed := Failed + 1;
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+        End;
+
         PCBServer.PreProcess;
         Try
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
@@ -9939,9 +10446,8 @@ Begin
             If XStr <> '' Then Comp.x := MilsToCoord(StrToIntDef(XStr, 0));
             If YStr <> '' Then Comp.y := MilsToCoord(StrToIntDef(YStr, 0));
             If RotStr <> '' Then Comp.Rotation := StrToFloatDef(RotStr, 0);
-            If LayerStr <> '' Then
+            If TargetLayer <> eNoLayer Then
             Begin
-                TargetLayer := GetLayerFromString(LayerStr);
                 If Comp.Layer <> TargetLayer Then Comp.Layer := TargetLayer;
             End;
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
@@ -9954,7 +10460,8 @@ Begin
 
     SaveDocByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"applied":' + IntToStr(Applied) + ',"failed":' + IntToStr(Failed) + '}');
+        '{"applied":' + IntToStr(Applied) + ',"failed":' + IntToStr(Failed) + ','
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
 End;
 
 {..............................................................................}
@@ -10101,7 +10608,14 @@ Begin
     Amp := StrToIntDef(ExtractJsonValue(Params, 'amplitude_mils'), 40);
     WidthMils := StrToIntDef(ExtractJsonValue(Params, 'width_mils'), 6);
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then Layer := GetLayerFromString(LayerStr) Else Layer := eTopLayer;
+    If LayerStr = '' Then Layer := eTopLayer
+    Else Layer := ResolveLayerId(Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     If (AddLen <= 0) Or (Amp <= 0) Then
     Begin
@@ -10641,7 +11155,14 @@ Begin
     End;
 
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then MechL := GetLayerFromString(LayerStr) Else MechL := eMechanical1;
+    If LayerStr = '' Then MechL := eMechanical1
+    Else MechL := ResolveLayerId(Board, LayerStr);
+    If MechL = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     Copied := 0;
 
     PCBServer.PreProcess;
@@ -11074,7 +11595,14 @@ Begin
     BR := Outline.BoundingRectangle;
 
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then Lyr := GetLayerFromString(LayerStr) Else Lyr := eTopLayer;
+    If LayerStr = '' Then Lyr := eTopLayer
+    Else Lyr := ResolveLayerId(Board, LayerStr);
+    If Lyr = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     PadSize := StrToIntDef(ExtractJsonValue(Params, 'pad_size_mils'), 20);
     Pitch := StrToIntDef(ExtractJsonValue(Params, 'pitch_mils'), 50);
     Clearance := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 15);
@@ -11180,7 +11708,13 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Net not found: ' + NetStr);
         Exit;
     End;
-    TargetLayer := GetLayerFromString(LayerStr);
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown target_layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     ViaSize := StrToIntDef(ExtractJsonValue(Params, 'via_size_mils'), 50);
     ViaHole := StrToIntDef(ExtractJsonValue(Params, 'via_hole_mils'), 28);
     Moved := 0; ViasAdded := 0;
@@ -11754,6 +12288,7 @@ Begin
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
+        'set_plane_net':           Result := PCB_SetPlaneNet(Params, RequestId);
         'set_mech_layer_kind':     Result := PCB_SetMechLayerKind(Params, RequestId);
         'get_layer_display':       Result := PCB_GetLayerDisplay(Params, RequestId);
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);

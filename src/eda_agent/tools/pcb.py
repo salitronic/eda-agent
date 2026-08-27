@@ -663,30 +663,45 @@ def register_pcb_tools(mcp):
     async def pcb_get_clearance_violations(
         net: str = "",
     ) -> dict[str, Any]:
-        """Run DRC and return clearance / other violations, optionally
-        filtered to one net.
+        """Read the violations ALREADY on the board, optionally filtered
+        to one net. Does NOT run DRC.
 
-        Sibling of ``pcb_run_drc`` -- same underlying DRC trigger, but
-        accepts a ``net`` filter so the agent can drill into a single
-        net's violations without scrolling through the whole board's
-        DRC report. Useful when investigating a specific high-speed
-        signal or power rail.
+        This is a pure board read: it walks the ``eViolationObject``
+        records the last DRC run (batch or online) left behind. It
+        opens no dialog and cannot block the bridge. Use it as the
+        default way to inspect violations.
+
+        It used to trigger ``PCB:DesignRuleCheck`` first, which raises
+        Altium's MODAL "Design Rule Checker" setup dialog: on a
+        241-component board that wedged the whole bridge for 30+ min
+        until the client timed out. A "get" tool must not do that, so
+        the trigger is gone. ``pcb_run_drc(allow_modal=True)`` is now
+        the only way to force a fresh run.
+
+        CAVEAT -- ``violation_count: 0`` means "no violations are
+        stored on this board", NOT "the board passes". If DRC has
+        never been run in this Altium session, there is nothing to
+        read and the answer is 0 either way. The response carries
+        ``drc_triggered: false`` and a ``note`` saying so. To get
+        fresh data, run DRC from Altium's UI (Tools > Design Rule
+        Check) or call ``pcb_run_drc(allow_modal=True)`` and be ready
+        to click the dialog.
 
         Filter is substring-matched against the violation's Description
         and Name, so it catches both "Net USB_DP and Net GND" clearance
         warnings and net-named via antennas.
 
-        Returns the same enriched payload as ``pcb_run_drc`` -- each
-        violation carries ``x_mils`` / ``y_mils`` / ``layer`` for the
-        agent to navigate to, plus ``primitive1`` / ``primitive2``
+        Each violation carries ``x_mils`` / ``y_mils`` / ``layer`` for
+        the agent to navigate to, plus ``primitive1`` / ``primitive2``
         objects with ``{detail, type, net, layer, x_mils, y_mils}``.
 
         Args:
             net: Net name to filter by (substring match). Empty string
-                returns ALL violations (equivalent to ``pcb_run_drc``).
+                returns ALL stored violations.
 
         Returns:
-            Dict with ``{violation_count, violations}``. Capped at 200.
+            Dict with ``{violation_count, drc_triggered, note,
+            violations}``. Capped at 200.
         """
         bridge = get_bridge()
         params = {"net": net} if net else {}
@@ -694,12 +709,35 @@ def register_pcb_tools(mcp):
             "pcb.get_clearance_violations", params, timeout=90.0)
 
     @mcp.tool()
-    async def pcb_run_drc() -> dict[str, Any]:
-        """Run Design Rule Check (DRC) on the active PCB.
+    async def pcb_run_drc(allow_modal: bool = False) -> dict[str, Any]:
+        """Run Design Rule Check (DRC) on the active PCB. MODAL --
+        BLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.
 
-        Executes the DRC and returns up to 100 violations with full
-        location data, so the agent can jump straight to the offending
-        spot instead of guessing from the description.
+        DANGER: Altium has no non-interactive DRC trigger exposed to
+        DelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL "Design
+        Rule Checker [mil]" setup dialog and the worker sits behind it
+        until a HUMAN clicks Cancel/OK. Nothing else on the bridge
+        runs meanwhile: one observed call left the loop dead for 30+
+        min, the client timed out at 1800 s, and every in-flight job
+        was stranded. No parameter suppresses the dialog, so this tool
+        refuses to fire unless the caller passes ``allow_modal=True``,
+        which is a promise that a human is at the keyboard.
+
+        PREFER ``pcb_get_clearance_violations`` -- it reads the
+        violations already stored on the board, runs no DRC, and
+        cannot block.
+
+        PATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board
+        (many components, zero tracks, everything unrouted) checks
+        every pad pair against every rule and is enormously slow for
+        an answer that is already known -- "nothing is routed yet".
+        Check ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``
+        first; if track count is 0, do not run DRC.
+
+        With ``allow_modal=True`` it executes the DRC and returns up
+        to 100 violations with full location data, so the agent can
+        jump straight to the offending spot instead of guessing from
+        the description.
 
         Per-violation shape:
           - ``name``, ``description``, ``rule``: text from Altium
@@ -717,12 +755,34 @@ def register_pcb_tools(mcp):
         nets in conflict; use ``x_mils`` / ``y_mils`` to drive
         ``proj_cross_probe`` or the dashboard's Drawing tab to the site.
 
+        Args:
+            allow_modal: Must be True to actually run DRC, and it
+                means "I accept that the bridge blocks on a modal
+                dialog until a human clicks it". Default False
+                refuses without touching Altium.
+
         Returns:
-            Dict with ``violation_count`` (full count even if > 100)
-            and ``violations`` array (first 100).
+            Dict with ``violation_count`` (full count even if > 100),
+            ``drc_triggered``, and ``violations`` array (first 100).
+            With ``allow_modal=False``: ``{ok: False, reason: ...}``
+            and no bridge call at all.
         """
+        if not allow_modal:
+            return {
+                "ok": False,
+                "reason": (
+                    "pcb_run_drc opens Altium's MODAL Design Rule Checker "
+                    "dialog and blocks the whole bridge until a human "
+                    "closes it (observed: 30+ min dead loop, client "
+                    "timeout). Refusing by default. Use "
+                    "pcb_get_clearance_violations to read the violations "
+                    "already on the board, or pass allow_modal=True if a "
+                    "human is at the keyboard to dismiss the dialog."),
+                "drc_triggered": False,
+            }
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.run_drc", {})
+        result = await bridge.send_command_async(
+            "pcb.run_drc", {"allow_modal": "true"})
         return result
 
     @mcp.tool()
@@ -3775,6 +3835,44 @@ def register_pcb_tools(mcp):
         if dielectric_material:
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
+        return result
+
+    @mcp.tool()
+    async def pcb_set_plane_net(layer: str, net: str) -> dict[str, Any]:
+        """Tie an internal plane layer to a net.
+
+        An Altium internal plane is a NEGATIVE layer: the copper is
+        everywhere except where the plane is cleared, and the net lives on
+        the LAYER, not on a poured object. Pouring a polygon on a plane
+        layer is a different thing and does not connect the plane, so this
+        is the tool for "make Internal Plane 1 the PGND plane" --
+        ``pcb_place_polygon_rect`` is not.
+
+        The net must already exist on the board (see ``pcb_get_nets``).
+        The layer must be an internal plane; a signal layer is refused
+        with ``NOT_A_PLANE``. Layer names are resolved against the real
+        stack, so both "Internal Plane 1" (as ``pcb_get_layer_stackup``
+        prints it) and "InternalPlane1" work, and a name this board does
+        not have is refused with ``UNKNOWN_LAYER`` rather than silently
+        retargeting another layer.
+
+        The assignment is READ BACK before reporting. If the read-back
+        disagrees the call answers ``success: false`` with ``applied:
+        false`` and a note, and the board is NOT saved.
+
+        Args:
+            layer: Internal plane layer, e.g. "InternalPlane1" or the name
+                the stackup reports for it
+            net: Existing net name to tie the plane to, e.g. "PGND"
+
+        Returns:
+            Dictionary with "success", "layer" (the RESOLVED layer),
+            "layer_name", "net", "net_readback", "applied" and "note".
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.set_plane_net", {"layer": layer, "net": net}
+        )
         return result
 
     @mcp.tool()

@@ -4125,6 +4125,256 @@ End;
 
 
 { Dispatcher entry for `audit.*` commands.                                    }
+{..............................................................................}
+{ Audit_FindNetLabelConflicts                                                 }
+{                                                                              }
+{ Three related failure modes that all look fine on a printed sheet:          }
+{                                                                              }
+{  1. CONFLICT: two net labels with DIFFERENT text at the same (x, y).        }
+{     Altium merges both names into one net and one name wins. The losing     }
+{     net silently ceases to exist and everything on it is absorbed. This is  }
+{     a real short between two named nets.                                    }
+{                                                                              }
+{  2. ON_PIN_ROOT: a label sitting on a pin Location rather than on its       }
+{     electrical end. Pin.Location is the BODY-side root; the pin connects at }
+{     Location + PinLength along Orientation. A label on the root is inert,   }
+{     so the sheet reads as wired while the pin floats on an auto-net.        }
+{                                                                              }
+{  3. DUPLICATE: two labels with the SAME text at one point. Harmless         }
+{     electrically, but it is clutter and it hides class 1 underneath.        }
+{                                                                              }
+{ Orientation convention matches Generic.pas: 0=right(+x) 1=up(+y)            }
+{ 2=left(-x) 3=down(-y).                                                      }
+{..............................................................................}
+
+Function Audit_FindNetLabelConflicts(Params, RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    DocI : Integer;
+    Document : IDocument;
+    Sheet : ISch_Document;
+    Iter, SpatIter, PinIter : ISch_Iterator;
+    Obj, Hit : ISch_GraphicalObject;
+    NetLbl, OtherLbl : ISch_NetLabel;
+    Pin : ISch_Pin;
+    DocKind, SheetName, LabelText, OtherText : String;
+    PinDesig, PinNum, OwnerDesig : String;
+    Loc, PinLoc, OtherLoc : TLocation;
+    LX, LY, PX, PY, CX, CY, PinLen, PinOrient : Integer;
+    Tol : Integer;
+    Total, NConf, NRoot, NDup : Integer;
+    ConfJson, RootJson, DupJson, EntryJson : String;
+    FirstC, FirstR, FirstD : Boolean;
+    FoundConf, FoundDup, FoundRoot : Boolean;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project focused');
+        Exit;
+    End;
+
+    Total := 0;
+    NConf := 0;
+    NRoot := 0;
+    NDup := 0;
+    ConfJson := '';
+    RootJson := '';
+    DupJson := '';
+    FirstC := True;
+    FirstR := True;
+    FirstD := True;
+    Tol := MilsToCoord(1);
+
+    For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Document := Nil;
+        Try Document := Project.DM_LogicalDocuments(DocI); Except End;
+        If Document = Nil Then Continue;
+        DocKind := '';
+        Try DocKind := Document.DM_DocumentKind; Except End;
+        If DocKind <> 'SCH' Then Continue;
+        Sheet := Nil;
+        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        If Sheet = Nil Then Continue;
+        SheetName := '';
+        Try SheetName := Document.DM_FileName; Except End;
+
+        Iter := Sheet.SchIterator_Create;
+        If Iter = Nil Then Continue;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eNetLabel));
+            Obj := Iter.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                Try
+                    Inc(Total);
+                    NetLbl := Obj;
+                    Loc := NetLbl.GetState_Location;
+                    LX := Loc.X;
+                    LY := Loc.Y;
+                    LabelText := '';
+                    Try LabelText := NetLbl.Text; Except End;
+
+                    FoundConf := False;
+                    FoundDup := False;
+                    OtherText := '';
+
+                    SpatIter := Sheet.SchIterator_Create;
+                    If SpatIter <> Nil Then
+                    Begin
+                        Try
+                            SpatIter.AddFilter_ObjectSet(MkSet(eNetLabel));
+                            { AddFilter_Area matches text bounding boxes, not }
+                            { Location. Adjacent 100-mil pin-pitch labels in  }
+                            { a column otherwise report as conflicts.         }
+                            SpatIter.AddFilter_Area(LX - Tol, LY - Tol, LX + Tol, LY + Tol);
+                            Hit := SpatIter.FirstSchObject;
+                            While Hit <> Nil Do
+                            Begin
+                                If Hit <> Obj Then
+                                Begin
+                                    OtherLbl := Hit;
+                                    Try
+                                        OtherLoc := OtherLbl.GetState_Location;
+                                        If CoordWithinTol(OtherLoc.X, LX, Tol) And
+                                           CoordWithinTol(OtherLoc.Y, LY, Tol) Then
+                                        Begin
+                                            If OtherLbl.Text <> LabelText Then
+                                            Begin
+                                                FoundConf := True;
+                                                If OtherText = '' Then OtherText := OtherLbl.Text;
+                                            End
+                                            Else
+                                                FoundDup := True;
+                                        End;
+                                    Except End;
+                                End;
+                                Hit := SpatIter.NextSchObject;
+                            End;
+                        Finally
+                            Sheet.SchIterator_Destroy(SpatIter);
+                        End;
+                    End;
+
+                    If FoundConf Then
+                    Begin
+                        Inc(NConf);
+                        If Not FirstC Then ConfJson := ConfJson + ',';
+                        FirstC := False;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('conflicts_with', OtherText) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY));
+                        ConfJson := ConfJson + JsonObj(EntryJson);
+                    End;
+
+                    If FoundDup Then
+                    Begin
+                        Inc(NDup);
+                        If Not FirstD Then DupJson := DupJson + ',';
+                        FirstD := False;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY));
+                        DupJson := DupJson + JsonObj(EntryJson);
+                    End;
+
+                    FoundRoot := False;
+                    PinDesig := '';
+                    PinNum := '';
+                    OwnerDesig := '';
+                    CX := 0;
+                    CY := 0;
+                    PinIter := Sheet.SchIterator_Create;
+                    If PinIter <> Nil Then
+                    Begin
+                        Try
+                            PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                            PinIter.AddFilter_Area(LX - Tol, LY - Tol, LX + Tol, LY + Tol);
+                            Hit := PinIter.FirstSchObject;
+                            While Hit <> Nil Do
+                            Begin
+                                Try
+                                    Pin := Hit;
+                                    PinLoc := Pin.GetState_Location;
+                                    PX := PinLoc.X;
+                                    PY := PinLoc.Y;
+                                    If (Abs(PX - LX) <= Tol) And (Abs(PY - LY) <= Tol) Then
+                                    Begin
+                                        PinLen := 0;
+                                        PinOrient := 0;
+                                        Try PinLen := Pin.PinLength; Except End;
+                                        Try PinOrient := Pin.Orientation; Except End;
+                                        CX := PX;
+                                        CY := PY;
+                                        If PinOrient = 0 Then CX := PX + PinLen
+                                        Else If PinOrient = 1 Then CY := PY + PinLen
+                                        Else If PinOrient = 2 Then CX := PX - PinLen
+                                        Else If PinOrient = 3 Then CY := PY - PinLen;
+                                        If (CX <> PX) Or (CY <> PY) Then
+                                        Begin
+                                            FoundRoot := True;
+                                            Try PinNum := Pin.Designator; Except End;
+                                            Try OwnerDesig := Pin.OwnerSchComponent.Designator.Text; Except End;
+                                        End;
+                                    End;
+                                Except End;
+                                Hit := PinIter.NextSchObject;
+                            End;
+                        Finally
+                            Sheet.SchIterator_Destroy(PinIter);
+                        End;
+                    End;
+
+                    If FoundRoot Then
+                    Begin
+                        Inc(NRoot);
+                        If Not FirstR Then RootJson := RootJson + ',';
+                        FirstR := False;
+                        PinDesig := OwnerDesig + '.' + PinNum;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('pin', PinDesig) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY)) + ',' +
+                            JsonInt('connect_x_mils', CoordToMils(CX)) + ',' +
+                            JsonInt('connect_y_mils', CoordToMils(CY));
+                        RootJson := RootJson + JsonObj(EntryJson);
+                    End;
+                Except End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(Iter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonInt('checked', Total) + ',' +
+            JsonInt('conflicts', NConf) + ',' +
+            JsonInt('on_pin_root', NRoot) + ',' +
+            JsonInt('duplicates', NDup) + ',' +
+            JsonRaw('conflicting_labels', '[' + ConfJson + ']') + ',' +
+            JsonRaw('labels_on_pin_root', '[' + RootJson + ']') + ',' +
+            JsonRaw('duplicate_labels', '[' + DupJson + ']')
+        ));
+End;
+
+
 Function HandleAuditCommand(Action : String; Params : String;
                              RequestId : String) : String;
 Begin
@@ -4176,6 +4426,8 @@ Begin
         Result := Audit_FindVisibleSupplierPN(Params, RequestId)
     Else If Action = 'find_orphan_net_labels' Then
         Result := Audit_FindOrphanNetLabels(Params, RequestId)
+    Else If Action = 'find_net_label_conflicts' Then
+        Result := Audit_FindNetLabelConflicts(Params, RequestId)
     Else If Action = 'find_orphan_power_objects' Then
         Result := Audit_FindOrphanPowerObjects(Params, RequestId)
     Else If Action = 'find_placeholder_values' Then

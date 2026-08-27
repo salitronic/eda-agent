@@ -193,12 +193,110 @@ Begin
     End;
 End;
 
+{ Indexed vertex access for the polyline family (eWire, eBus, eLine,          }
+{ ePolyline, ...). Recognises `Vertex<N>.X` / `Vertex<N>.Y`, `VertexLast.X` / }
+{ `VertexLast.Y` (N = VerticesCount) and a compact all-vertex dump `Vertices` }
+{ formatted `x1,y1;x2,y2` with no trailing separator. Names match case-       }
+{ insensitively. Altium's vertex array is 1-based, so GetState_Vertex(1) is   }
+{ the first vertex and matches what Location.X / Location.Y report. Values    }
+{ come back in mils through CoordToMils, exactly like Location.X, so a caller }
+{ can compare a vertex against a Location value directly. Objects with no     }
+{ vertex array, out-of-range or non-numeric indices and malformed names all   }
+{ return '' -- the same thing GetSchProperty yields for an unknown property.  }
+{ Nothing here raises.                                                        }
+Function GetSchVertexProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    U : String;
+    Axis : String;
+    IdxStr : String;
+    Ch : String;
+    Dump : String;
+    Cnt : Integer;
+    Idx : Integer;
+    I : Integer;
+    Vtx : TLocation;
+    Ok : Boolean;
+Begin
+    Result := '';
+    U := UpperCase(Trim(PropName));
+
+    { Bulk dump. VerticesCount itself stays on the caller's fast path. }
+    If U = 'VERTICES' Then
+    Begin
+        Cnt := 0;
+        Try Cnt := Obj.GetState_VerticesCount; Except End;
+        If Cnt < 1 Then Exit;
+        Dump := '';
+        For I := 1 To Cnt Do
+        Begin
+            Ok := False;
+            Try
+                Vtx := Obj.GetState_Vertex(I);
+                Ok := True;
+            Except
+                Ok := False;
+            End;
+            If Not Ok Then Exit;
+            If I > 1 Then Dump := Dump + ';';
+            Dump := Dump + IntToStr(CoordToMils(Vtx.X)) + ',' + IntToStr(CoordToMils(Vtx.Y));
+        End;
+        Result := Dump;
+        Exit;
+    End;
+
+    { 'VERTEX' + index + '.X' / '.Y'. Shortest legal form is 'VERTEX1.X' (9). }
+    If Length(U) < 9 Then Exit;
+    If Copy(U, 1, 6) <> 'VERTEX' Then Exit;
+    Axis := Copy(U, Length(U) - 1, 2);
+    If (Axis <> '.X') And (Axis <> '.Y') Then Exit;
+    { Everything between the 'VERTEX' prefix and the trailing '.X' / '.Y'. }
+    IdxStr := Copy(U, 7, Length(U) - 8);
+    If IdxStr = '' Then Exit;
+
+    Cnt := 0;
+    Try Cnt := Obj.GetState_VerticesCount; Except End;
+    If Cnt < 1 Then Exit;
+
+    If IdxStr = 'LAST' Then
+        Idx := Cnt
+    Else
+    Begin
+        { Digits only. Rejects 'Vertex.1.X', 'VertexA.X', 'Vertex 1.X', '-1'. }
+        { DelphiScript quirk (see ClassifyPassivePrefix): index a string with }
+        { a 1-char Copy rather than S[I], which is not a Char here.           }
+        For I := 1 To Length(IdxStr) Do
+        Begin
+            Ch := Copy(IdxStr, I, 1);
+            If (Ch < '0') Or (Ch > '9') Then Exit;
+        End;
+        Idx := StrToIntDef(IdxStr, 0);
+    End;
+
+    If (Idx < 1) Or (Idx > Cnt) Then Exit;
+
+    Ok := False;
+    Try
+        Vtx := Obj.GetState_Vertex(Idx);
+        Ok := True;
+    Except
+        Ok := False;
+    End;
+    If Not Ok Then Exit;
+
+    If Axis = '.X' Then
+        Result := IntToStr(CoordToMils(Vtx.X))
+    Else
+        Result := IntToStr(CoordToMils(Vtx.Y));
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
     L : ISch_Line;
+    Comp : ISch_Component;
     Crn : TLocation;
     Have : Boolean;
+    POrient, PLen, PCoord : Integer;
 Begin
     Result := '';
     Try
@@ -253,6 +351,16 @@ Begin
         Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
         Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
+        Else If PropName = 'CurrentPartID' Then
+        Begin
+            Comp := Obj;
+            Try Result := IntToStr(Comp.CurrentPartID); Except Result := ''; End;
+        End
+        Else If PropName = 'PartCount' Then
+        Begin
+            Comp := Obj;
+            Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+        End
 
         // Sub-object string properties (compound interfaces, typed cast required).
         // Designator dispatches by ObjectId, ISch_Component carries the live designator
@@ -294,6 +402,33 @@ Begin
         // Coord properties (returned in mils)
         Else If PropName = 'Width'       Then Result := IntToStr(CoordToMils(Obj.Width))
         Else If PropName = 'PinLength'   Then Result := IntToStr(CoordToMils(Obj.PinLength))
+
+        // ConnectionX / ConnectionY: the pin's ELECTRICAL end, i.e. the
+        // point a wire or net label must sit on to attach. Pin.Location is
+        // the BODY-side root, so callers were deriving this by hand and
+        // getting it wrong. Orientation is the direction the electrical end
+        // points away from the body: 0=right(+x) 1=up(+y) 2=left(-x)
+        // 3=down(-y). Same convention as the pin dump in Proj_GetComponentInfo.
+        Else If PropName = 'ConnectionX' Then
+        Begin
+            POrient := 0; PLen := 0; PCoord := 0;
+            Try POrient := Obj.Orientation; Except End;
+            Try PLen := Obj.PinLength; Except End;
+            Try PCoord := Obj.Location.X; Except End;
+            If POrient = 0 Then PCoord := PCoord + PLen
+            Else If POrient = 2 Then PCoord := PCoord - PLen;
+            Result := IntToStr(CoordToMils(PCoord));
+        End
+        Else If PropName = 'ConnectionY' Then
+        Begin
+            POrient := 0; PLen := 0; PCoord := 0;
+            Try POrient := Obj.Orientation; Except End;
+            Try PLen := Obj.PinLength; Except End;
+            Try PCoord := Obj.Location.Y; Except End;
+            If POrient = 1 Then PCoord := PCoord + PLen
+            Else If POrient = 3 Then PCoord := PCoord - PLen;
+            Result := IntToStr(CoordToMils(PCoord));
+        End
         Else If PropName = 'XSize'       Then Result := IntToStr(CoordToMils(Obj.XSize))
         Else If PropName = 'YSize'       Then Result := IntToStr(CoordToMils(Obj.YSize))
 
@@ -316,6 +451,17 @@ Begin
         Else If PropName = 'Vertex.1.Y'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(1).Y))
         Else If PropName = 'Vertex.2.X'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(2).X))
         Else If PropName = 'Vertex.2.Y'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(2).Y))
+        // Indexed / bulk vertex access, delegated so the parsing stays out
+        // of this chain: Vertex<N>.X, Vertex<N>.Y, VertexLast.X,
+        // VertexLast.Y and `Vertices` (a compact `x1,y1;x2,y2` dump).
+        // Matched case-insensitively and placed AFTER the exact-match
+        // forms above so Vertex.1.X / Vertex.2.X and VerticesCount keep
+        // their current behaviour. GetSchVertexProperty returns '' for
+        // anything it cannot resolve, which is what an unknown PropName
+        // yields here anyway.
+        Else If (UpperCase(Copy(PropName, 1, 6)) = 'VERTEX')
+             Or (UpperCase(PropName) = 'VERTICES') Then
+            Result := GetSchVertexProperty(Obj, PropName)
 
         // Boolean properties
         Else If PropName = 'IsHidden'    Then Result := BoolToJsonStr(Obj.IsHidden)
@@ -342,6 +488,7 @@ Var
     Crn : TLocation;
     R : ISch_Rectangle;
     L : ISch_Line;
+    Comp : ISch_Component;
     Matched : Boolean;
 Begin
     { Measured on a live document: callers using modify_objects /             }
@@ -364,13 +511,34 @@ Begin
         Begin
             Loc := Obj.Location;
             Loc.X := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Location := Loc;
+            { A COMPONENT owns child primitives (pins, designator, comment). }
+            { Assigning Location moves only the component record and leaves  }
+            { every pin at its old coordinate, silently desynchronising the  }
+            { symbol from its own pins, and it 16-bit-truncates coords.      }
+            { MoveToXY is the documented whole-component move and is already }
+            { what the placement path (Gen_PlaceComponents) uses. Any        }
+            { exception propagates to the outer handler as Result = -1       }
+            { rather than being swallowed, so a failed move is never         }
+            { reported as applied.                                           }
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
+            Else
+                Obj.Location := Loc;
         End
         Else If PropName = 'Location.Y' Then
         Begin
             Loc := Obj.Location;
             Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Location := Loc;
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
+            Else
+                Obj.Location := Loc;
         End
         // Corner lives on ISch_Rectangle and ISch_Line only (not on the base
         // ISch_GraphicalObject, the compiler rejects Obj.Corner regardless
@@ -423,6 +591,33 @@ Begin
         // is what ISch_Component actually exposes -- both accepted.
         Else If (PropName = 'ComponentDescription') Or (PropName = 'Description') Then
             Obj.ComponentDescription := Value
+        { UniqueId is how Altium groups multi-part sub-parts into one physical
+          component for ECO. The UniqueId property setter remints when the
+          value is already in the document; SetState_UniqueId is the SDK
+          writer (same property) and is the path to try first. }
+        Else If PropName = 'UniqueId' Then
+        Begin
+            Comp := Obj;
+            Try Comp.SetState_UniqueId(Value); Except End;
+            Try Comp.UniqueId := Value; Except End;
+        End
+        Else If PropName = 'CurrentPartID' Then
+        Begin
+            Comp := Obj;
+            Try Comp.SetState_CurrentPartID(StrToIntDef(Value, 1)); Except End;
+            Try Comp.CurrentPartID := StrToIntDef(Value, 1); Except End;
+        End
+        Else If PropName = 'PartCount' Then
+        Begin
+            { LoadComponentFromLibrary stamps PartCount=4 on this UL
+              TLV9024PWR even though the SchLib reports part_count=5.
+              Without a write path the supply unit cannot be selected.
+              Do NOT call SetState_PartCount: that identifier is not on
+              ISch_Component in this DelphiScript, and undeclared
+              identifiers raise a modal that bypasses Try/Except. }
+            Comp := Obj;
+            Try Comp.PartCount := StrToIntDef(Value, 1); Except End;
+        End
 
         // Sub-object string properties (compound interfaces, typed cast required)
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
@@ -555,10 +750,33 @@ End;
 {..............................................................................}
 
 Procedure ApplySetProperties(Obj : ISch_GraphicalObject; SetStr : String);
+{ Location.X and Location.Y arriving in the SAME pipe-combined set used to be }
+{ applied as two independent SetSchProperty writes. Measured on a live        }
+{ eSchComponent: `Location.X=1200|Location.Y=7600` moved X and left Y at its  }
+{ old value. Each write re-reads Obj.Location, and the copy handed back after }
+{ the first move still carried the PREVIOUS coordinates, so writing it back   }
+{ reverted the move that had just been made. Same class of bug as the         }
+{ Location.X + Orientation interaction documented in SetSchProperty.          }
+{                                                                             }
+{ Fix: parse the whole set FIRST, coalesce both axes into ONE positional      }
+{ write, then apply every remaining property. A component gets MoveToXY so    }
+{ its child pins travel with the body (see SetSchProperty); everything else   }
+{ owns no child primitives, so a plain Location assignment is correct for it  }
+{ (a net label in particular must NOT go through MoveToXY -- it has no        }
+{ MoveToXY and is not a component).                                           }
 Var
     Remaining, Assignment, PropName, PropValue : String;
     PipePos, EqPos : Integer;
+    Loc : TLocation;
+    Comp : ISch_Component;
+    HasX, HasY : Boolean;
+    NewX, NewY : Integer;
 Begin
+    { Pass 1: collect the positional assignments without applying anything. }
+    HasX := False;
+    HasY := False;
+    NewX := 0;
+    NewY := 0;
     Remaining := SetStr;
     While Remaining <> '' Do
     Begin
@@ -578,6 +796,61 @@ Begin
         If EqPos = 0 Then Continue;
         PropName := Copy(Assignment, 1, EqPos - 1);
         PropValue := Copy(Assignment, EqPos + 1, Length(Assignment));
+
+        If PropName = 'Location.X' Then
+        Begin
+            HasX := True;
+            NewX := StrToIntDef(PropValue, 0);
+        End
+        Else If PropName = 'Location.Y' Then
+        Begin
+            HasY := True;
+            NewY := StrToIntDef(PropValue, 0);
+        End;
+    End;
+
+    { One positional write covering whichever axes were supplied. }
+    If HasX Or HasY Then
+    Begin
+        Try
+            Loc := Obj.Location;
+            If HasX Then Loc.X := MilsToCoord(NewX);
+            If HasY Then Loc.Y := MilsToCoord(NewY);
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
+            Else
+                Obj.Location := Loc;
+        Except
+            NotePropertyDiag('failed', 'Location');
+        End;
+    End;
+
+    { Pass 2: every non-positional property, in the order it was given. }
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+
+        EqPos := Pos('=', Assignment);
+        If EqPos = 0 Then Continue;
+        PropName := Copy(Assignment, 1, EqPos - 1);
+        PropValue := Copy(Assignment, EqPos + 1, Length(Assignment));
+
+        { Already applied above as part of the coalesced positional write. }
+        If (PropName = 'Location.X') Or (PropName = 'Location.Y') Then Continue;
 
         SetSchProperty(Obj, PropName, PropValue);
     End;
@@ -1620,23 +1893,71 @@ End;
 {..............................................................................}
 { BATCH MODIFY: Multiple modify operations in a single IPC call.             }
 {                                                                            }
-{ Params: operations, pipe-separated list of operations, each semicolon-    }
-{   separated as: scope;object_type;filter;set                               }
-{   Example: "project;eParameter;Name=Engineer;Text=John|                    }
-{             project;eParameter;Name=Revision;Text=2.0"                     }
+{ Params: operations. Preferred wire format is the '~~' batch format shared  }
+{   with batch_delete / place_wires:                                         }
+{     scope=active_doc;object_type=eNetLabel;filter=Text=VBUS;set=Location.Y=6400~~... }
 {                                                                            }
-{ This processes ALL operations on the Altium side in one round-trip,        }
-{ dramatically faster than multiple individual modify_objects calls.          }
+{ LEGACY format (still accepted when the payload contains no '~~'):          }
+{   pipe-separated operations, each semicolon-separated as                   }
+{   scope;object_type;filter;set                                             }
+{                                                                            }
+{ The legacy format was BROKEN for any op whose filter or set contained a    }
+{ '|', which is the documented separator INSIDE both of those fields.        }
+{ Measured on a live document: an op list of 4 eSchComponent moves followed  }
+{ by 8 eNetLabel moves reported operations_processed=4 and silently dropped  }
+{ the other 8, and a lone eNetLabel op with a two-condition filter reported  }
+{ operations_processed=0 while the identical filter matched through          }
+{ obj_query and obj_batch_delete. Cause: the top-level split on '|' tore     }
+{ each such op into fragments, and every fragment after the first had fewer  }
+{ than three ';' so it hit `Continue` and vanished without a trace. It was   }
+{ never an object-type allowlist -- eNetLabel was always accepted.           }
+{                                                                            }
+{ '~~' cannot appear in an Altium name, filter or property string (see the   }
+{ batch helper notes in Main.pas), so the new format is unambiguous.         }
+{                                                                            }
+{ Every op is now evaluated independently and reports its own matched count  }
+{ in "results", so an op that matches nothing is REPORTED rather than being  }
+{ silently counted as fine.                                                  }
 {..............................................................................}
+
+{ Split one legacy 'scope;object_type;filter;set' operation. Returns False  }
+{ when the fragment does not carry all four fields, which is how a torn      }
+{ legacy payload is detected.                                                }
+Function SplitLegacyModifyOp(OpStr : String; Var Scope : String;
+    Var ObjTypeStr : String; Var FilterStr : String; Var SetStr : String) : Boolean;
+Var
+    Rest : String;
+    SemiPos : Integer;
+Begin
+    Result := False;
+    Rest := OpStr;
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    Scope := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    ObjTypeStr := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    FilterStr := Copy(Rest, 1, SemiPos - 1);
+    SetStr := Copy(Rest, SemiPos + 1, Length(Rest));
+    Result := True;
+End;
 
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
-    Operations, OpStr, Remaining : String;
+    Operations, OpStr, Remaining, OpResult, Note : String;
     Scope, ObjTypeStr, FilterStr, SetStr : String;
     ScopeType, ScopePath : String;
-    ObjTypeInt, PipePos, SemiPos : Integer;
-    TotalMatched, OpCount, OpMatched : Integer;
-    ResultJson : String;
+    ObjTypeInt, PipePos : Integer;
+    TotalMatched, OpCount, OpSkipped, OpMatched : Integer;
+    ResultJson, ResultsJson : String;
+    UseTilde : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -1647,8 +1968,11 @@ Begin
 
     TotalMatched := 0;
     OpCount := 0;
+    OpSkipped := 0;
     ResultJson := '';
+    ResultsJson := '';
     Remaining := Operations;
+    UseTilde := Pos('~~', Operations) > 0;
 
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }
@@ -1656,67 +1980,106 @@ Begin
 
     While Length(Remaining) > 0 Do
     Begin
-        // Split on pipe to get next operation
-        PipePos := Pos('|', Remaining);
-        If PipePos = 0 Then
+        Scope := '';
+        ObjTypeStr := '';
+        FilterStr := '';
+        SetStr := '';
+        Note := '';
+
+        If UseTilde Then
         Begin
-            OpStr := Remaining;
-            Remaining := '';
+            OpStr := NextBatchOp(Remaining);
+            If OpStr = '' Then Break;
+            Scope := GetBatchField(OpStr, 'scope');
+            ObjTypeStr := GetBatchField(OpStr, 'object_type');
+            FilterStr := GetBatchField(OpStr, 'filter');
+            SetStr := GetBatchField(OpStr, 'set');
         End
         Else
         Begin
-            OpStr := Copy(Remaining, 1, PipePos - 1);
-            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            { Legacy '|' framing. Kept so an older Python client keeps      }
+            { working, but a fragment that lost fields to a '|' inside a    }
+            { filter or set is now COUNTED and reported instead of being    }
+            { dropped in silence.                                           }
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                OpStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                OpStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+            If OpStr = '' Then Continue;
+            If Not SplitLegacyModifyOp(OpStr, Scope, ObjTypeStr, FilterStr, SetStr) Then
+                Note := 'malformed_operation';
         End;
 
-        If OpStr = '' Then Continue;
+        If Scope = '' Then Scope := 'active_doc';
 
-        // Parse operation: scope;object_type;filter;set
-        // Split on semicolons
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        Scope := Copy(OpStr, 1, SemiPos - 1);
-        OpStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
-
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        ObjTypeStr := Copy(OpStr, 1, SemiPos - 1);
-        OpStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
-
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        FilterStr := Copy(OpStr, 1, SemiPos - 1);
-        SetStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
-
-        If (ObjTypeStr = '') Or (SetStr = '') Then Continue;
-
-        ParseScope(Scope, ScopeType, ScopePath);
-        { lib_component scope: select the symbol; skip the op if it's gone. }
-        If Not ApplyLibComponentScope(ScopeType, ScopePath) Then Continue;
-        ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
-        If ObjTypeInt = -1 Then Continue;
-
-        // Execute this operation
+        { Every op is evaluated on its own merits from here down. A reason  }
+        { to skip is RECORDED, never silently swallowed: silent-drop is     }
+        { what made the original bug invisible.                             }
         OpMatched := 0;
-        If ScopeType = 'project' Then
+        ObjTypeInt := -1;
+        ScopeType := '';
+        ScopePath := '';
+
+        If Note = '' Then
         Begin
-            IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0);
-        End
-        Else If ScopeType = 'doc' Then
-        Begin
-            ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
-        End
-        Else
-        Begin
-            ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
+            If ObjTypeStr = '' Then Note := 'missing_object_type'
+            Else If SetStr = '' Then Note := 'missing_set';
         End;
 
-        Inc(OpCount);
+        If Note = '' Then
+        Begin
+            ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            If ObjTypeInt = -1 Then Note := 'unknown_object_type';
+        End;
+
+        If Note = '' Then
+        Begin
+            ParseScope(Scope, ScopeType, ScopePath);
+            { lib_component scope: select the symbol; report if it's gone. }
+            If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+                Note := 'lib_component_not_found';
+        End;
+
+        If Note = '' Then
+        Begin
+            OpResult := '';
+            If ScopeType = 'project' Then
+                OpResult := IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0)
+            Else If ScopeType = 'doc' Then
+                OpResult := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else
+                OpResult := ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
+
+            OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+            TotalMatched := TotalMatched + OpMatched;
+            If OpMatched = 0 Then Note := 'no_objects_matched';
+            Inc(OpCount);
+        End
+        Else
+            Inc(OpSkipped);
+
+        { Per-op row so a zero-match or skipped op is visible to the caller. }
+        If ResultsJson <> '' Then ResultsJson := ResultsJson + ',';
+        ResultsJson := ResultsJson +
+            '{"object_type":"' + EscapeJsonString(ObjTypeStr) + '"' +
+            ',"filter":"' + EscapeJsonString(FilterStr) + '"' +
+            ',"matched":' + IntToStr(OpMatched) +
+            ',"note":"' + EscapeJsonString(Note) + '"}';
     End;
 
     { Surface unknown / failed property writes so they stop being silent. }
     ResultJson :=
         '{"operations_processed":' + IntToStr(OpCount) +
+        ',"operations_skipped":' + IntToStr(OpSkipped) +
+        ',"total_matched":' + IntToStr(TotalMatched) +
+        ',"results":[' + ResultsJson + ']' +
         ',"properties":' + RenderPropertyDiagJson + '}';
     Result := BuildSuccessResponse(RequestId, ResultJson);
 End;
@@ -1764,6 +2127,8 @@ Function Gen_HighlightNet(Params : String; RequestId : String) : String;
 Var
     NetName : String;
     ClearExisting : String;
+    Context : String;
+    FocusedKind : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
     Net : IPCB_Net;
@@ -1773,9 +2138,13 @@ Var
     Obj : ISch_GraphicalObject;
     Matched : Integer;
     TargetUpper, ObjNet : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PreferSch : Boolean;
 Begin
     NetName := ExtractJsonValue(Params, 'net_name');
     ClearExisting := ExtractJsonValue(Params, 'clear_existing');
+    Context := ExtractJsonValue(Params, 'context');
     TargetUpper := UpperCase(NetName);
 
     If NetName = '' Then
@@ -1786,6 +2155,23 @@ Begin
 
     Board := GetPCBBoardAnywhere;
     SchDoc := SchServer.GetCurrentSchDocument;
+
+    { GetPCBBoardAnywhere returns a board even when a schematic is the    }
+    { focused document, so a schematic highlight would silently paint the }
+    { PCB instead. Prefer the focused doc, or an explicit context param.  }
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := Doc.DM_DocumentKind; Except End;
+    End;
+    PreferSch := (UpperCase(Context) = 'SCHEMATIC') Or
+        ((UpperCase(Context) <> 'PCB') And (FocusedKind = 'SCH'));
+    If PreferSch And (SchDoc <> Nil) Then
+        Board := Nil;
 
     { PCB path, use the documented IPCB_Net.IsHighlighted property set    }
     { directly on the net object. The earlier RunProcess('PCB:NetColor-    }
@@ -1841,12 +2227,23 @@ Begin
     {     time from the labels / ports attached to the wire segment.     }
     {     We skip them, selecting the net labels is enough to make the  }
     {     user eyeball-trace the wires.                                  }
+    {                                                                    }
+    { Do NOT wrap this in ProcessControl.PreProcess. The MCP poller     }
+    { already owns the script engine; PreProcess + a debugger break     }
+    { (or an undeclared-identifier modal on .Selection) deadlocks       }
+    { Altium. Selection-only paint is not an undoable edit. Clear via   }
+    { Sch:DeSelectAll, then set Selection=True on matches only -- never }
+    { Selection=False inside the iterator (that path raises a modal     }
+    { that bypasses Try/Except on sub-objects).                         }
     If SchDoc <> Nil Then
     Begin
         Matched := 0;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
-        Try
-            SchIter := SchDoc.SchIterator_Create;
+        If (ClearExisting = '') Or (ClearExisting = 'true') Then
+            SchDeselectAllObjects(SchDoc);
+
+        SchIter := SchDoc.SchIterator_Create;
+        If SchIter <> Nil Then
+        Begin
             Try
                 SchIter.AddFilter_ObjectSet(MkSet(eNetLabel, ePowerObject,
                     ePort, eSheetEntry));
@@ -1863,16 +2260,12 @@ Begin
                     Begin
                         Try Obj.Selection := True; Except End;
                         Matched := Matched + 1;
-                    End
-                    Else If (ClearExisting = '') Or (ClearExisting = 'true') Then
-                        Try Obj.Selection := False; Except End;
+                    End;
                     Obj := SchIter.NextSchObject;
                 End;
             Finally
                 SchDoc.SchIterator_Destroy(SchIter);
             End;
-        Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
         End;
         Try SchDoc.GraphicallyInvalidate; Except End;
 
@@ -4951,6 +5344,203 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"designator":"' + EscapeJsonString(Designator)
         + '","part_id":' + IntToStr(PartId) + '}');
+End;
+
+{..............................................................................}
+{ Gen_SetComponentUniqueId - Stamp ISch_Component.UniqueId.                     }
+{ ECO groups sub-parts of a multi-gate symbol (quad comparator, dual           }
+{ op-amp) into one physical footprint only when they share UniqueId. Four      }
+{ copies of part 1 with four UniqueIds become four TSSOP packages.             }
+{ Params: designator, unique_id                                                }
+{..............................................................................}
+
+Function Gen_SetComponentUniqueId(Params : String; RequestId : String) : String;
+Var
+    Designator, UniqueIdStr, AfterId : String;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    Found : Boolean;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    UniqueIdStr := ExtractJsonValue(Params, 'unique_id');
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator required');
+        Exit;
+    End;
+
+    If UniqueIdStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'unique_id required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    AfterId := '';
+    Iterator := SchDoc.SchIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj := Iterator.FirstSchObject;
+    While (Obj <> Nil) And Not Found Do
+    Begin
+        Comp := Obj;
+        If Comp.Designator.Text = Designator Then
+        Begin
+            SchServer.ProcessControl.PreProcess(SchDoc, 'Set UniqueId');
+            Try Comp.SetState_UniqueId(UniqueIdStr); Except End;
+            Try Comp.UniqueId := UniqueIdStr; Except End;
+            Try AfterId := Comp.UniqueId; Except AfterId := ''; End;
+            SchServer.ProcessControl.PostProcess(SchDoc, 'Set UniqueId');
+            Found := True;
+        End;
+        Obj := Iterator.NextSchObject;
+    End;
+    SchDoc.SchIterator_Destroy(Iterator);
+    SchDoc.GraphicallyInvalidate;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator)
+        + '","unique_id":"' + EscapeJsonString(UniqueIdStr)
+        + '","unique_id_after":"' + EscapeJsonString(AfterId) + '"}');
+End;
+
+{..............................................................................}
+{ Gen_ReplicateSchComponent - Duplicate a placed schematic component via       }
+{ ISch_Component.Replicate. Live 2026-08-21: Replicate + AddSchObject minted   }
+{ a new UniqueId (NPZTIRAT vs master UCOMP2MP). This stamps UniqueId with      }
+{ SetState_UniqueId AFTER Replicate and BEFORE AddSchObject, then again after  }
+{ register if Add reminted. Returns staged UniqueId readbacks.                 }
+{ Params: designator, part_id, x, y, new_designator                            }
+{..............................................................................}
+
+Function Gen_ReplicateSchComponent(Params : String; RequestId : String) : String;
+Var
+    Designator, NewDesig, MasterId, CopyId : String;
+    IdAfterReplicate, IdAfterSetPreAdd, IdAfterAdd, Shared : String;
+    PartId, X, Y : Integer;
+    HaveXY : Boolean;
+    SchDoc : ISch_Document;
+    Comp, NewComp : ISch_Component;
+    NewObj : ISch_GraphicalObject;
+    Found : Boolean;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    NewDesig := ExtractJsonValue(Params, 'new_designator');
+    PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+    HaveXY := (ExtractJsonValue(Params, 'x') <> '') And (ExtractJsonValue(Params, 'y') <> '');
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    Found := False;
+    MasterId := '';
+    Iterator := SchDoc.SchIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj := Iterator.FirstSchObject;
+    While (Obj <> Nil) And Not Found Do
+    Begin
+        Comp := Obj;
+        If Comp.Designator.Text = Designator Then
+        Begin
+            Found := True;
+            Try MasterId := Comp.UniqueId; Except MasterId := ''; End;
+        End
+        Else
+            Obj := Iterator.NextSchObject;
+    End;
+    SchDoc.SchIterator_Destroy(Iterator);
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Replicate component');
+    NewObj := Nil;
+    Try NewObj := Comp.Replicate; Except NewObj := Nil; End;
+    If NewObj = Nil Then
+    Begin
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+        Result := BuildErrorResponse(RequestId, 'REPLICATE_FAILED',
+            'ISch_Component.Replicate returned nil for ' + Designator);
+        Exit;
+    End;
+    NewComp := NewObj;
+    Try IdAfterReplicate := NewComp.UniqueId; Except IdAfterReplicate := ''; End;
+    If MasterId <> '' Then
+    Begin
+        Try NewComp.SetState_UniqueId(MasterId); Except End;
+        Try NewComp.UniqueId := MasterId; Except End;
+    End;
+    Try IdAfterSetPreAdd := NewComp.UniqueId; Except IdAfterSetPreAdd := ''; End;
+    If PartId >= 1 Then
+    Begin
+        Try NewComp.SetState_CurrentPartID(PartId); Except End;
+        Try NewComp.CurrentPartID := PartId; Except End;
+    End;
+    If NewDesig <> '' Then
+        Try NewComp.Designator.Text := NewDesig; Except End;
+    If HaveXY Then
+        Try NewComp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    { AddSchObject remints UniqueId when that id is already on the sheet
+      (live 2026-08-26: XVRAPPYA -> ASFAVKKE even after SetState_UniqueId
+      pre-add). SCHM_PrimitiveRegistration does the same. Attach via
+      RegisterSchObjectInContainer, then re-stamp UniqueId while still
+      inside this PreProcess. Do not send SCHM_PrimitiveRegistration. }
+    Try SchDoc.AddSchObject(NewComp); Except End;
+    Try SchDoc.RegisterSchObjectInContainer(NewComp); Except End;
+    Try IdAfterAdd := NewComp.UniqueId; Except IdAfterAdd := ''; End;
+    If (MasterId <> '') And (IdAfterAdd <> MasterId) Then
+    Begin
+        Try NewComp.SetState_UniqueId(MasterId); Except End;
+        Try NewComp.UniqueId := MasterId; Except End;
+    End;
+    Try CopyId := NewComp.UniqueId; Except CopyId := ''; End;
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+    SchDoc.GraphicallyInvalidate;
+
+    If CopyId = MasterId Then Shared := 'true' Else Shared := 'false';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"source_designator":"' + EscapeJsonString(Designator)
+        + '","new_designator":"' + EscapeJsonString(NewDesig)
+        + '","part_id":' + IntToStr(PartId)
+        + ',"source_unique_id":"' + EscapeJsonString(MasterId)
+        + '","copy_unique_id":"' + EscapeJsonString(CopyId)
+        + '","unique_id_after_replicate":"' + EscapeJsonString(IdAfterReplicate)
+        + '","unique_id_after_set_pre_add":"' + EscapeJsonString(IdAfterSetPreAdd)
+        + '","unique_id_after_add":"' + EscapeJsonString(IdAfterAdd)
+        + '","shared":' + Shared + '}');
 End;
 
 {..............................................................................}
@@ -8676,10 +9266,337 @@ Begin
         + KindStr + '"}');
 End;
 
+{..............................................................................}
+{ Gen_ExplainPin                                                              }
+{                                                                              }
+{ Answers "why is this pin on that net?" -- the question proj_get_nets can    }
+{ state a verdict on but never justify. Given a designator and pin number,    }
+{ reports the pin's ROOT (Pin.Location, body side) and its CONNECTION point   }
+{ (Location + PinLength along Orientation), then lists every schematic object }
+{ sitting on each of those two points.                                        }
+{                                                                              }
+{ Reading the result:                                                         }
+{  - objects under "at_connection" are what actually drive the pin's net.     }
+{    Two net labels with different text there is a short.                     }
+{  - objects under "at_root" are electrically INERT. A net label there is the }
+{    classic "sheet looks wired but the pin floats" bug.                      }
+{  - an empty "at_connection" with a populated "at_root" means the label      }
+{    needs to move by PinLength along the pin's orientation.                  }
+{                                                                              }
+{ Params: designator (required), pin (required, the pin NUMBER not name).     }
+{..............................................................................}
+
+Function Gen_ExplainPin(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    DocI : Integer;
+    Document : IDocument;
+    Sheet : ISch_Document;
+    CompIter, PinIter, SpatIter : ISch_Iterator;
+    CompObj, PinObj, Hit : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Pin : ISch_Pin;
+    WantDesig, WantPin, DocKind, SheetName : String;
+    FoundSheet, PinName, PinNumStr : String;
+    Loc : TLocation;
+    RX, RY, CX, CY, PinLen, PinOrient : Integer;
+    Tol, ObjId : Integer;
+    ConnJson, RootJson, Detail : String;
+    FirstC, FirstR, Found, HitOk : Boolean;
+    Pass : Integer;
+    PX, PY, HitX, HitY, EndX, EndY : Integer;
+    OtherLen, OtherOri, VtxI, VtxN : Integer;
+    ItemText : String;
+    V1, V2 : TLocation;
+Begin
+    WantDesig := ExtractJsonValue(Params, 'designator');
+    WantPin := ExtractJsonValue(Params, 'pin');
+    If (WantDesig = '') Or (WantPin = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'designator and pin are both required');
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project focused');
+        Exit;
+    End;
+
+    Found := False;
+    FoundSheet := '';
+    PinName := '';
+    PinNumStr := '';
+    RX := 0; RY := 0; CX := 0; CY := 0;
+    PinLen := 0; PinOrient := 0;
+    Tol := MilsToCoord(1);
+    Sheet := Nil;
+
+    For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        If Found Then Break;
+        Document := Nil;
+        Try Document := Project.DM_LogicalDocuments(DocI); Except End;
+        If Document = Nil Then Continue;
+        DocKind := '';
+        Try DocKind := Document.DM_DocumentKind; Except End;
+        If DocKind <> 'SCH' Then Continue;
+        Sheet := Nil;
+        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        If Sheet = Nil Then Continue;
+        SheetName := '';
+        Try SheetName := Document.DM_FileName; Except End;
+
+        CompIter := Sheet.SchIterator_Create;
+        If CompIter = Nil Then Continue;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            CompObj := CompIter.FirstSchObject;
+            While (CompObj <> Nil) And (Not Found) Do
+            Begin
+                Try
+                    Comp := CompObj;
+                    If Comp.Designator.Text = WantDesig Then
+                    Begin
+                        PinIter := Comp.SchIterator_Create;
+                        If PinIter <> Nil Then
+                        Begin
+                            Try
+                                PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                                PinObj := PinIter.FirstSchObject;
+                                While (PinObj <> Nil) And (Not Found) Do
+                                Begin
+                                    Try
+                                        Pin := PinObj;
+                                        PinNumStr := '';
+                                        Try PinNumStr := Pin.Designator; Except End;
+                                        If PinNumStr = WantPin Then
+                                        Begin
+                                            Found := True;
+                                            FoundSheet := SheetName;
+                                            Try PinName := Pin.Name; Except End;
+                                            Loc := Pin.GetState_Location;
+                                            RX := Loc.X;
+                                            RY := Loc.Y;
+                                            Try PinLen := Pin.PinLength; Except End;
+                                            Try PinOrient := Pin.Orientation; Except End;
+                                            CX := RX;
+                                            CY := RY;
+                                            If PinOrient = 0 Then CX := RX + PinLen
+                                            Else If PinOrient = 1 Then CY := RY + PinLen
+                                            Else If PinOrient = 2 Then CX := RX - PinLen
+                                            Else If PinOrient = 3 Then CY := RY - PinLen;
+                                        End;
+                                    Except End;
+                                    If Not Found Then PinObj := PinIter.NextSchObject;
+                                End;
+                            Finally
+                                Comp.SchIterator_Destroy(PinIter);
+                            End;
+                        End;
+                    End;
+                Except End;
+                If Not Found Then CompObj := CompIter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(CompIter);
+        End;
+    End;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PIN_NOT_FOUND',
+            'No pin ' + WantPin + ' on component ' + WantDesig);
+        Exit;
+    End;
+
+    ConnJson := '';
+    RootJson := '';
+    FirstC := True;
+    FirstR := True;
+
+    { Pass 0 = connection point (live), Pass 1 = root (inert). }
+    For Pass := 0 To 1 Do
+    Begin
+        If Pass = 0 Then
+        Begin
+            PX := CX;
+            PY := CY;
+        End
+        Else
+        Begin
+            PX := RX;
+            PY := RY;
+        End;
+
+        SpatIter := Sheet.SchIterator_Create;
+        If SpatIter = Nil Then Continue;
+        Try
+            SpatIter.AddFilter_ObjectSet(
+                MkSet(eNetLabel, eWire, ePowerObject, eJunction, ePin, ePort));
+            { AddFilter_Area matches BOUNDING BOXES. Net-label text extends }
+            { hundreds of mils from Location, so a 1-mil square still hits  }
+            { labels whose Location is far away. Always re-check Location   }
+            { (or pin electrical end, or wire vertices) after the filter.   }
+            SpatIter.AddFilter_Area(PX - Tol, PY - Tol, PX + Tol, PY + Tol);
+            Hit := SpatIter.FirstSchObject;
+            While Hit <> Nil Do
+            Begin
+                Try
+                    ObjId := Hit.ObjectId;
+                    ItemText := '';
+                    HitOk := False;
+                    HitX := 0;
+                    HitY := 0;
+                    If (ObjId = eNetLabel) Or (ObjId = ePowerObject) Or
+                       (ObjId = ePort) Or (ObjId = eJunction) Then
+                    Begin
+                        Loc := Hit.GetState_Location;
+                        HitX := Loc.X;
+                        HitY := Loc.Y;
+                        HitOk := CoordWithinTol(HitX, PX, Tol) And
+                                 CoordWithinTol(HitY, PY, Tol);
+                    End
+                    Else If ObjId = ePin Then
+                    Begin
+                        Loc := Hit.GetState_Location;
+                        HitX := Loc.X;
+                        HitY := Loc.Y;
+                        OtherLen := 0;
+                        OtherOri := 0;
+                        Try OtherLen := Hit.PinLength; Except End;
+                        Try OtherOri := Hit.Orientation; Except End;
+                        EndX := HitX;
+                        EndY := HitY;
+                        If OtherOri = 0 Then EndX := HitX + OtherLen
+                        Else If OtherOri = 1 Then EndY := HitY + OtherLen
+                        Else If OtherOri = 2 Then EndX := HitX - OtherLen
+                        Else If OtherOri = 3 Then EndY := HitY - OtherLen;
+                        If CoordWithinTol(EndX, PX, Tol) And
+                           CoordWithinTol(EndY, PY, Tol) Then
+                        Begin
+                            HitOk := True;
+                            HitX := EndX;
+                            HitY := EndY;
+                        End
+                        Else If CoordWithinTol(HitX, PX, Tol) And
+                                CoordWithinTol(HitY, PY, Tol) Then
+                            HitOk := True;
+                    End
+                    Else If ObjId = eWire Then
+                    Begin
+                        VtxN := 0;
+                        Try VtxN := Hit.GetState_VerticesCount; Except End;
+                        VtxI := 1;
+                        While (VtxI < VtxN) And (Not HitOk) Do
+                        Begin
+                            Try
+                                V1 := Hit.GetState_Vertex(VtxI);
+                                V2 := Hit.GetState_Vertex(VtxI + 1);
+                                If PointNearSegment(PX, PY, V1.X, V1.Y,
+                                    V2.X, V2.Y, Tol) Then
+                                Begin
+                                    HitOk := True;
+                                    HitX := PX;
+                                    HitY := PY;
+                                End;
+                            Except End;
+                            VtxI := VtxI + 1;
+                        End;
+                    End;
+
+                    If HitOk Then
+                    Begin
+                        If ObjId = eNetLabel Then
+                        Begin
+                            Try ItemText := Hit.Text; Except End;
+                            Detail := JsonStr('kind', 'net_label') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = ePowerObject Then
+                        Begin
+                            Try ItemText := Hit.Text; Except End;
+                            Detail := JsonStr('kind', 'power_object') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = ePort Then
+                        Begin
+                            Try ItemText := Hit.Name; Except End;
+                            Detail := JsonStr('kind', 'port') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = eWire Then
+                            Detail := JsonStr('kind', 'wire') + ',' +
+                                      JsonStr('text', '')
+                        Else If ObjId = eJunction Then
+                            Detail := JsonStr('kind', 'junction') + ',' +
+                                      JsonStr('text', '')
+                        Else If ObjId = ePin Then
+                        Begin
+                            Try ItemText := Hit.Designator; Except End;
+                            Detail := JsonStr('kind', 'pin') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else
+                            Detail := JsonStr('kind', 'other') + ',' +
+                                      JsonStr('text', '');
+                        Detail := Detail + ',' +
+                                  JsonInt('x_mils', CoordToMils(HitX)) + ',' +
+                                  JsonInt('y_mils', CoordToMils(HitY));
+
+                        If Pass = 0 Then
+                        Begin
+                            If Not FirstC Then ConnJson := ConnJson + ',';
+                            FirstC := False;
+                            ConnJson := ConnJson + JsonObj(Detail);
+                        End
+                        Else
+                        Begin
+                            If Not FirstR Then RootJson := RootJson + ',';
+                            FirstR := False;
+                            RootJson := RootJson + JsonObj(Detail);
+                        End;
+                    End;
+                Except End;
+                Hit := SpatIter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(SpatIter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonStr('designator', WantDesig) + ',' +
+            JsonStr('pin', WantPin) + ',' +
+            JsonStr('pin_name', PinName) + ',' +
+            JsonStr('sheet', FoundSheet) + ',' +
+            JsonInt('orientation', PinOrient) + ',' +
+            JsonInt('pin_length_mils', CoordToMils(PinLen)) + ',' +
+            JsonInt('root_x_mils', CoordToMils(RX)) + ',' +
+            JsonInt('root_y_mils', CoordToMils(RY)) + ',' +
+            JsonInt('connect_x_mils', CoordToMils(CX)) + ',' +
+            JsonInt('connect_y_mils', CoordToMils(CY)) + ',' +
+            JsonRaw('at_connection', '[' + ConnJson + ']') + ',' +
+            JsonRaw('at_root', '[' + RootJson + ']')
+        ));
+End;
+
+
 Function HandleGenericCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
         'query_objects':    Result := Gen_QueryObjects(Params, RequestId);
+        'explain_pin':      Result := Gen_ExplainPin(Params, RequestId);
         'modify_objects':   Result := Gen_ModifyObjects(Params, RequestId);
         'create_object':    Result := Gen_CreateObject(Params, RequestId);
         'delete_objects':   Result := Gen_DeleteObjects(Params, RequestId);
@@ -8743,6 +9660,8 @@ Begin
         'increment_designators': Result := Gen_IncrementDesignators(Params, RequestId);
         'toggle_pin_visibility': Result := Gen_TogglePinVisibility(Params, RequestId);
         'set_component_part_id':      Result := Gen_SetComponentPartId(Params, RequestId);
+        'set_component_unique_id':    Result := Gen_SetComponentUniqueId(Params, RequestId);
+        'replicate_sch_component':    Result := Gen_ReplicateSchComponent(Params, RequestId);
         'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
         'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
         'get_simulation_readiness':   Result := Gen_GetSimulationReadiness(Params, RequestId);

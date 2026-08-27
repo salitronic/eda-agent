@@ -147,8 +147,8 @@ def test_every_stated_stage_count_matches_the_pipeline():
                                  f"pipeline has {expected}")
 
     assert seen >= 6, (
-        f"only found {seen} stated stage counts across {len(
-            _STAGE_COUNT_CLAIM_FILES)} files; the wording changed and "
+        f"only found {seen} stated stage counts across "
+        f"{len(_STAGE_COUNT_CLAIM_FILES)} files; the wording changed and "
         f"this guard is no longer watching them")
     assert not wrong, (
         "these state a stage count the pipeline does not have, and two "

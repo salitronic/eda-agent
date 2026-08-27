@@ -39,6 +39,13 @@ def register_generic_tools(mcp):
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject"
             properties: Comma-separated property names to return, e.g.:
                 "Text,Location.X,Location.Y" for net labels
+                "Designator,Name,ConnectionX,ConnectionY" for pins.
+                ConnectionX/ConnectionY are the pin's ELECTRICAL end --
+                the point a wire or net label must sit on to attach.
+                Location is the BODY-side root and is NOT the connection
+                point; deriving the end by hand from Orientation and
+                PinLength is a common source of wrong conclusions about
+                what is wired.
                 "Designator.Text,Comment.Text,LibReference" for components
             scope: Document scope:
                 "active_doc", current sheet only (default)
@@ -78,6 +85,70 @@ def register_generic_tools(mcp):
             "generic.query_objects",
             params,
         )
+        return result
+
+    @mcp.tool()
+    async def obj_explain_pin(designator: str, pin: str) -> dict[str, Any]:
+        """Explain WHY a schematic pin is on the net it is on.
+
+        ``proj_get_nets`` gives the verdict but never the evidence, so a
+        surprising net assignment can only be debugged by reconstructing
+        Altium's connectivity by hand from raw geometry. This returns the
+        evidence directly.
+
+        Reports the pin's ROOT (``Pin.Location``, body side) and its
+        CONNECTION point (``Location + PinLength`` along ``Orientation``),
+        then lists every schematic object sitting on each point.
+
+        Reading the result:
+
+        - ``at_connection`` is what actually drives the pin's net. Two net
+          labels with different ``text`` there is a short between two named
+          nets, and the usual symptom is one of them reporting zero pins.
+        - ``at_root`` is electrically INERT. A net label there is the
+          classic "sheet looks wired but the pin floats on an auto-net" bug.
+        - An empty ``at_connection`` with a populated ``at_root`` means the
+          label must move by ``pin_length_mils`` along the pin's
+          orientation; the target is given as ``connect_x_mils`` /
+          ``connect_y_mils``.
+
+        Hits are filtered by the object's Location (or a pin's electrical
+        end, or a wire vertex), not by bounding box. Altium's
+        ``AddFilter_Area`` matches text boxes, which extend hundreds of
+        mils from a net label; without the Location check this tool
+        reports labels that are merely nearby.
+
+        Args:
+            designator: Component designator, e.g. "U10".
+            pin: Pin NUMBER (not pin name), e.g. "5".
+
+        Returns:
+            Dict with ``{designator, pin, pin_name, sheet, orientation,
+            pin_length_mils, root_x_mils, root_y_mils, connect_x_mils,
+            connect_y_mils, compiled_net, at_connection[], at_root[]}``.
+            Each object entry carries ``{kind, text, x_mils, y_mils}``
+            where kind is one of net_label, power_object, port, wire,
+            junction, pin, other. ``compiled_net`` is the pin's net from
+            the compiled netlist, so geometry and compile can be compared
+            in one response.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.explain_pin",
+            {"designator": designator, "pin": pin},
+        )
+        if isinstance(result, dict) and "error" not in result:
+            try:
+                conn = await bridge.send_command_async(
+                    "project.get_connectivity",
+                    {"designator": designator},
+                )
+                for p in conn.get("pins", []) if isinstance(conn, dict) else []:
+                    if str(p.get("pin_number")) == str(pin):
+                        result["compiled_net"] = p.get("net")
+                        break
+            except Exception:
+                pass
         return result
 
     @mcp.tool()
@@ -386,7 +457,11 @@ def register_generic_tools(mcp):
                   (e.g., "Location.X=300|Location.Y=-100|Orientation=2")
 
         Returns:
-            Dictionary with operations_processed count
+            Dictionary with operations_processed, operations_skipped,
+            total_matched, and a per-operation `results` list. Each result
+            row carries its own `matched` count plus a `note` -- an op that
+            matched nothing reports note="no_objects_matched" instead of
+            being silently counted as successful.
 
         Example, edit pins across THREE different library symbols in ONE call:
             obj_batch_modify(operations=[
@@ -435,7 +510,14 @@ def register_generic_tools(mcp):
                  "filter": "Name=Title", "set": "Text=Power Supply"},
             ])
         """
-        # Build pipe-separated operations string: scope;type;filter;set|scope;type;filter;set|...
+        # Operations use the '~~' batch framing shared with obj_batch_delete.
+        # The old framing joined operations with '|' -- the SAME character
+        # that separates conditions inside `filter` and assignments inside
+        # `set`. Any op with a two-condition filter or a two-property set was
+        # torn into fragments on the Altium side and the fragments after the
+        # first were dropped without a trace (observed: 4 eSchComponent ops
+        # followed by 8 eNetLabel ops reported operations_processed=4).
+        # '~~' cannot occur in an Altium name, filter, or property string.
         op_strings = []
         for op in operations:
             scope = op.get("scope", "active_doc")
@@ -444,7 +526,10 @@ def register_generic_tools(mcp):
             set_str = op.get("set", "")
             if not obj_type or not set_str:
                 continue
-            op_strings.append(f"{scope};{obj_type};{filt};{set_str}")
+            op_strings.append(
+                f"scope={scope};object_type={obj_type};"
+                f"filter={filt};set={set_str}"
+            )
 
         if not op_strings:
             return {"error": "No valid operations provided", "operations_processed": 0}
@@ -452,7 +537,7 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.batch_modify",
-            {"operations": "|".join(op_strings)},
+            {"operations": "~~".join(op_strings)},
         )
         return result
 
@@ -612,15 +697,23 @@ def register_generic_tools(mcp):
     async def obj_highlight_net(
         net_name: str,
         clear_existing: bool = True,
+        context: str = "",
     ) -> dict[str, Any]:
-        """Highlight a net by name in the active schematic or PCB document.
+        """Highlight a net by name in the focused schematic or PCB document.
 
         PCB path sets IPCB_Net.IsHighlighted on the matched net (the
-        documented property). Schematic path walks wires / net labels /
-        power ports / pins / sheet entries on the active sheet and
-        marks those whose NetName matches as Selection=True, the
-        closest thing Altium exposes to a "highlight" on schematic
-        without interactive commands.
+        documented property). Schematic path walks net labels / power
+        ports / ports / sheet entries on the active sheet and marks
+        those whose name matches as Selection=True, the closest thing
+        Altium exposes to a "highlight" on schematic without interactive
+        commands.
+
+        If a schematic is the focused document, this paints the
+        schematic even when a PcbDoc is also open. Pass
+        ``context="pcb"`` or ``context="schematic"`` to force one side.
+        The previous behaviour always preferred the PCB whenever any
+        board was loaded, which made a schematic Find-Net look like it
+        did nothing.
 
         Args:
             net_name: Exact net name to highlight (e.g., "VCC", "GND",
@@ -629,18 +722,23 @@ def register_generic_tools(mcp):
                 primitive carries that net name on the active sheet
                 (check other sheets).
             clear_existing: Clear existing highlights first (default True).
+            context: Empty (default, follow the focused document),
+                "schematic", or "pcb".
 
         Returns:
             Dict with success, net, context ("pcb" or "schematic"), and
             `highlighted` (count of matches, 1 for PCB, N for sch).
         """
         bridge = get_bridge()
+        params = {
+            "net_name": net_name,
+            "clear_existing": "true" if clear_existing else "false",
+        }
+        if context:
+            params["context"] = context
         result = await bridge.send_command_async(
             "generic.highlight_net",
-            {
-                "net_name": net_name,
-                "clear_existing": "true" if clear_existing else "false",
-            },
+            params,
         )
         return result
 
@@ -1893,6 +1991,78 @@ def register_generic_tools(mcp):
         return await bridge.send_command_async(
             "generic.set_component_part_id",
             {"designator": designator, "part_id": str(part_id)},
+        )
+
+    @mcp.tool()
+    async def sch_set_component_unique_id(
+        designator: str,
+        unique_id: str,
+    ) -> dict[str, Any]:
+        """Set UniqueId on a placed schematic component.
+
+        ECO treats sub-parts of a multi-gate symbol (quad comparator,
+        dual op-amp) as one physical footprint only when they share
+        UniqueId. Four copies of part 1 with four UniqueIds become four
+        packages.
+
+        Args:
+            designator: Component reference as drawn (e.g. "U_COMP2B").
+            unique_id: Target UniqueId, usually copied from the A unit.
+
+        Returns:
+            Dict with success, designator, unique_id, unique_id_after.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.set_component_unique_id",
+            {"designator": designator, "unique_id": unique_id},
+        )
+
+    @mcp.tool()
+    async def sch_replicate_component(
+        designator: str,
+        part_id: int = 0,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        new_designator: str = "",
+    ) -> dict[str, Any]:
+        """Copy a placed schematic part and share the master's UniqueId.
+
+        ECO groups multi-part packages (quad comparators, dual op-amps)
+        only when every unit has the same UniqueId. Writing UniqueId
+        after the copy is already on the sheet remints a new id if that
+        value is already present. This path stamps UniqueId on the
+        replica *before* AddSchObject, which is the share that sticks.
+
+        Finds the first instance whose designator matches, Replicates
+        it, optionally switches CurrentPartID, optionally moves it, and
+        keeps the master's UniqueId.
+
+        Args:
+            designator: Source instance to copy (e.g. "U8").
+            part_id: 1-based CurrentPartID for the copy. 0 = keep source.
+            x, y: Placement in mils. Omit both to leave the replica
+                where Replicate dropped it.
+            new_designator: Designator for the copy. Empty keeps the
+                source designator (required for multi-part packing).
+
+        Returns:
+            Dict with success, source/copy UniqueIds, part_id, and
+            ``shared`` (true when the copy kept the master's UniqueId).
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"designator": designator}
+        if part_id >= 1:
+            params["part_id"] = str(part_id)
+        if x is not None:
+            params["x"] = str(x)
+        if y is not None:
+            params["y"] = str(y)
+        if new_designator:
+            params["new_designator"] = new_designator
+        return await bridge.send_command_async(
+            "generic.replicate_sch_component",
+            params,
         )
 
     @mcp.tool()
