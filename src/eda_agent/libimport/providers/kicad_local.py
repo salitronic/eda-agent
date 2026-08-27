@@ -53,10 +53,45 @@ __all__ = ["KicadLocalProvider"]
 #: and named ``NAME_0_1`` / ``NAME_1_1``, which are not parts.
 _SYMBOL_RE = re.compile(r'^\s{0,2}\(symbol\s+"([^"]+)"', re.M)
 
-_WINDOWS_ROOTS = (
-    r"C:\Program Files\KiCad",
-    r"C:\Program Files (x86)\KiCad",
-)
+def _windows_kicad_roots() -> tuple[str, ...]:
+    """Where KiCad's Windows installer puts a tree.
+
+    Its NSIS installer takes ``/currentuser``, which lands under
+    LOCALAPPDATA and is invisible to anything that only looks in
+    Program Files. Kept as a module-level tuple because
+    ``--bare-machine`` blanks it.
+    """
+    roots = [
+        os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "KiCad"),
+        os.path.join(
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            "KiCad"),
+    ]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots.append(os.path.join(local, "Programs", "KiCad"))
+    return tuple(roots)
+
+
+_WINDOWS_ROOTS = _windows_kicad_roots()
+
+
+def _version_key(path: Path) -> tuple[int, ...]:
+    """Sort 10.0 above 9.0.
+
+    The directory names are dotted version numbers, so sorting them as
+    strings puts "9.0" above "10.0" and a machine with both installed
+    silently resolves to the older one. Non-numeric entries sort last.
+    """
+    parts: list[int] = []
+    for chunk in path.name.split("."):
+        if not chunk.isdigit():
+            return (-1,)
+        parts.append(int(chunk))
+    return tuple(parts) if parts else (-1,)
+
+
 _POSIX_ROOTS = (
     "/usr/share/kicad",
     "/usr/local/share/kicad",
@@ -70,14 +105,21 @@ def _library_dir(kind: str, env_vars: tuple[str, ...]) -> Optional[Path]:
         if raw and Path(raw).is_dir():
             return Path(raw)
 
-    candidates: list[Path] = []
+    # Versioned subdirectories (10.0, 9.0, ...). Rank them across ALL
+    # roots at once, not within each one: ranking per-root would let a
+    # machine-wide KiCad 9 win over a per-user KiCad 10 purely because
+    # Program Files is searched first.
+    found: list[tuple[tuple[int, ...], Path]] = []
     for root in _WINDOWS_ROOTS:
         base = Path(root)
         if base.is_dir():
-            # Versioned subdirectories (10.0, 9.0, ...); newest first so
-            # a machine with several installs uses the current one.
-            for version in sorted(base.iterdir(), reverse=True):
-                candidates.append(version / "share" / "kicad" / kind)
+            for version in base.iterdir():
+                found.append(
+                    (_version_key(version),
+                     version / "share" / "kicad" / kind))
+    found.sort(key=lambda item: item[0], reverse=True)
+
+    candidates: list[Path] = [path for _, path in found]
     for root in _POSIX_ROOTS:
         candidates.append(Path(root) / kind)
 

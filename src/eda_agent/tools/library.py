@@ -2926,7 +2926,7 @@ def register_library_tools(mcp):
             "owner_part_id": int(owner_part_id),
         }
         if str(component_name).strip():
-            params["component_name"] = component_name
+            params["component_name"] = str(component_name).strip()
         return await bridge.send_command_async(
             "library.set_pin_owner_part", params
         )

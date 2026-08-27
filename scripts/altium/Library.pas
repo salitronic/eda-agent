@@ -6500,11 +6500,8 @@ Var
     Component : ISch_Component;
     Iter : ISch_Iterator;
     Pin : ISch_Pin;
-    Workspace : IWorkspace;
-    Doc : IDocument;
-    SrvDoc : IServerDocument;
-    WantName, WantPins, OwnerStr, Haystack, Changed, LibPath : String;
-    OwnerId, ChangedCount : Integer;
+    WantName, WantPins, OwnerStr, Haystack, Changed : String;
+    OwnerId, ChangedCount, PartTotal : Integer;
     First : Boolean;
 Begin
     SchLib := SchServer.GetCurrentSchDocument;
@@ -6515,6 +6512,9 @@ Begin
     End;
 
     WantPins := ExtractJsonValue(Params, 'pin_designators');
+    { "3, 12" would otherwise build ',3, 12,' and match nothing, returning }
+    { count 0 as if the pins did not exist.                                }
+    WantPins := StringReplace(WantPins, ' ', '', MkSet(rfReplaceAll));
     OwnerStr := ExtractJsonValue(Params, 'owner_part_id');
     If (WantPins = '') Or (OwnerStr = '') Then
     Begin
@@ -6558,6 +6558,28 @@ Begin
         Exit;
     End;
 
+    { An OwnerPartId above the symbol's part count is accepted by the       }
+    { assignment but maps to no displayable part, so the pin silently       }
+    { disappears from every sub-part view. Refuse rather than corrupt. Part }
+    { Zero is always legal. PartCount reads high by one on some symbols,    }
+    { which only makes this bound permissive, never wrong.                  }
+    PartTotal := 0;
+    Try PartTotal := Component.PartCount; Except End;
+    If PartTotal < 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PART_COUNT',
+            'Could not read PartCount for ' + WantName + '; refusing to '
+            + 'assign an unvalidated owner_part_id');
+        Exit;
+    End;
+    If OwnerId > PartTotal Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'owner_part_id ' + IntToStr(OwnerId) + ' exceeds PartCount '
+            + IntToStr(PartTotal) + ' for ' + WantName);
+        Exit;
+    End;
+
     Haystack := ',' + WantPins + ',';
     ChangedCount := 0;
     Changed := '';
@@ -6590,22 +6612,7 @@ Begin
         SchServer.ProcessControl.PostProcess(SchLib, '');
     End;
 
-    LibPath := '';
-    Try
-        Workspace := GetWorkspace;
-        If Workspace <> Nil Then
-        Begin
-            Doc := Workspace.DM_FocusedDocument;
-            If Doc <> Nil Then LibPath := Doc.DM_FullPath;
-        End;
-    Except End;
-    Try
-        If LibPath <> '' Then
-        Begin
-            SrvDoc := Client.GetDocumentByPath(LibPath);
-            If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-        End;
-    Except End;
+    MarkLibDirty(SchLib);
 
     Result := BuildSuccessResponse(RequestId,
         '{"component":"' + EscapeJsonString(WantName) +
