@@ -443,8 +443,19 @@ def resolve_matches(
     """Greedy MIS: keep highest-score matches whose components are unused.
 
     Score order: specificity > pattern-component count > pattern-edge
-    count. Ties are broken by deterministic tuple ordering so the same
-    plan always returns the same arbitration result.
+    count > motif name. Two matches of the SAME motif on different parts
+    score identically on every one of those, so the score alone does not
+    order them; the remaining tie is broken by the match's own identity
+    (its claimed components, then its mapping).
+
+    That last tiebreak is not decoration. Without it the stable sort fell
+    back on the order ``find_all_matches`` produced, which comes from
+    NetworkX's VF2 enumeration over sets of ``("C", refdes)`` tuples --
+    and a tuple containing a string hashes differently in every process,
+    because Python randomises string hashes. Two interchangeable bypass
+    caps then swapped positions from run to run. Caught by comparing a
+    corpus sweep against itself: identical code, 67 findings one run and
+    74 the next.
 
     IC-anchored motifs share their ``ic_anchor`` U with other matches;
     only their passives are exclusively claimed.
@@ -464,7 +475,21 @@ def resolve_matches(
             match.motif_name,
         )
 
-    matches_sorted = sorted(matches, key=score, reverse=True)
+    def identity(match: Match) -> tuple:
+        return (
+            match.motif_name,
+            tuple(sorted(match.components)),
+            tuple(sorted((str(pat), str(host))
+                         for pat, host in match.mapping.items())),
+        )
+
+    # Two passes, relying on sort stability: identity ascending first, then
+    # score descending. Equal-scoring matches therefore arrive in identity
+    # order, which does not depend on how the matcher happened to enumerate
+    # them. One pass with reverse=True cannot do this -- it would reverse the
+    # identity tiebreak along with the score.
+    matches_sorted = sorted(sorted(matches, key=identity),
+                            key=score, reverse=True)
     used: set[str] = set()
     kept: list[Match] = []
     for match in matches_sorted:

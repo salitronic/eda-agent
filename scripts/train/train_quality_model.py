@@ -54,6 +54,14 @@ _FEATURE_NAMES = (
     "aspect_ratio_penalty",
     "total_wire_length",
     "port_count",
+    # The human-law features (quality.raw_features). Absent from a pair
+    # logged before they existed, and read as 0.0 there, which is why a
+    # model must be fitted on pairs that all carry them: mixing old and new
+    # rows would teach that the new features are always zero.
+    "alignment_penalty",
+    "shunt_on_side",
+    "long_wires",
+    "row_bands_per_part",
 )
 
 
@@ -141,19 +149,81 @@ def _normalise_features(
     return out, means, stds
 
 
+def _split_by_design(
+    rows: list[dict[str, Any]], fraction: float, seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Hold out a fraction of designs (by plan_hash), deterministically."""
+    if fraction <= 0.0:
+        return rows, []
+    import random
+
+    designs = sorted({r.get("plan_hash") or "" for r in rows})
+    rng = random.Random(seed)
+    rng.shuffle(designs)
+    n_held = max(1, int(round(len(designs) * fraction)))
+    held = set(designs[:n_held])
+    train = [r for r in rows if (r.get("plan_hash") or "") not in held]
+    test = [r for r in rows if (r.get("plan_hash") or "") in held]
+    return train, test
+
+
+def _apply_normalisation(
+    rows: list[dict[str, Any]], means: list[float], stds: list[float],
+) -> list[tuple[list[float], list[float], str]]:
+    """Normalise rows with the TRAINING means and stds, never their own."""
+    out = []
+    F = len(_FEATURE_NAMES)
+    for row in rows:
+        a = _feature_vector(row["features_a"])
+        b = _feature_vector(row["features_b"])
+        out.append((
+            [(a[i] - means[i]) / stds[i] for i in range(F)],
+            [(b[i] - means[i]) / stds[i] for i in range(F)],
+            row["winner"],
+        ))
+    return out
+
+
+# Features that measure ILLEGAL geometry. A layout can never look more
+# human for having more of them, so their weights are projected to be
+# non-positive after every step. Without this, pairs whose engine side is
+# always clean fingerprint the human side by these alone: a fit on 380
+# corpus pairs gave wires_through_bodies +0.60 per standard deviation, a
+# weight that would REWARD a candidate for drawing through a body.
+_NONPOSITIVE = frozenset({"wires_through_bodies", "body_overlaps"})
+
+
 def _train(
     pairs: list[tuple[list[float], list[float], str]],
     *,
     epochs: int = 2000,
     lr: float = 0.05,
     l2: float = 0.01,
+    frozen: frozenset = frozenset(),
+    prior: "list[float] | None" = None,
+    all_nonpositive: bool = False,
 ) -> tuple[list[float], list[float]]:
     """Pure-Python Adam-style logistic regression on Bradley-Terry loss.
-
     Returns (final_weights, loss_history).
+
+    ``frozen`` names features held at weight 0. A feature that takes the
+    same value on every engine candidate cannot rank engine candidates,
+    which is the only thing the fitted weights are ever used for; left free
+    it fits the human side's fingerprint instead (shunt_on_side came out
+    +1.99 when every engine candidate had 0 of it).
     """
     F = len(_FEATURE_NAMES)
-    w = [0.0] * F
+    frozen_idx = {i for i, n in enumerate(_FEATURE_NAMES) if n in frozen}
+    nonpos_idx = ({i for i, n in enumerate(_FEATURE_NAMES) if n in _NONPOSITIVE}
+                  | (set(range(F)) if all_nonpositive else set()))
+    # ``prior`` is where L2 pulls the weights TO. Toward zero, a feature the
+    # pairs cannot discriminate on (crossings: both sides mostly have none)
+    # ends at zero and best-of stops penalising it; measured, a fit pulled
+    # to zero raised crossings 0.45x to 2.57x of human on held-out sheets
+    # while buying alignment. Pulled toward the hand-tuned weights instead,
+    # the data can only move a weight it has evidence about.
+    w0 = list(prior) if prior is not None else [0.0] * F
+    w = list(w0)
     # Adam moments.
     m = [0.0] * F
     v = [0.0] * F
@@ -190,7 +260,7 @@ def _train(
                     grad[i] -= 0.5 * -(1.0 - pb) * diff[i]
         # L2 regularisation.
         for i in range(F):
-            grad[i] += l2 * w[i]
+            grad[i] += l2 * (w[i] - w0[i])
             total_loss += 0.5 * l2 * w[i] * w[i]
         # Adam update.
         for i in range(F):
@@ -199,6 +269,10 @@ def _train(
             m_hat = m[i] / (1.0 - beta1 ** epoch)
             v_hat = v[i] / (1.0 - beta2 ** epoch)
             w[i] -= lr * m_hat / (math.sqrt(v_hat) + eps)
+            if i in frozen_idx:
+                w[i] = 0.0
+            elif i in nonpos_idx and w[i] > 0.0:
+                w[i] = 0.0
         history.append(total_loss)
     return w, history
 
@@ -240,6 +314,61 @@ def _eval_accuracy(
     }
 
 
+
+#: A corpus this one-sided teaches only "pick the majority", and a model
+#: that learns that is indistinguishable from a constant.
+_MAX_WINNER_SHARE = 0.85
+#: Fewer distinct designs than this and the model cannot generalise off
+#: the sheets it was fitted on.
+_MIN_DISTINCT_DESIGNS = 10
+#: A vote cast this soon after the previous one was not a judgement about
+#: two rendered layouts.
+_MIN_VOTE_GAP_S = 2.0
+_MAX_FAST_VOTE_SHARE = 0.5
+
+
+def _corpus_problems(rows: list[dict[str, Any]]) -> list[str]:
+    """Reasons this corpus cannot support a model. Empty means fine.
+
+    MEASURED on the corpus that produced the 58% model: one design, a
+    297/15 winner split, and 228 of 311 votes under two seconds apart.
+    Every one of these is individually fatal and none was checked.
+    """
+    problems: list[str] = []
+    if not rows:
+        return ["the corpus is empty"]
+
+    designs = {r.get("plan_hash") for r in rows if r.get("plan_hash")}
+    if designs and len(designs) < _MIN_DISTINCT_DESIGNS:
+        problems.append(
+            f"only {len(designs)} distinct design(s) across {len(rows)} pairs; "
+            f"a model fitted here cannot generalise off them. Draw pairs "
+            f"from many designs (the synthetic corpus has thousands)")
+
+    winners = [r.get("winner") for r in rows if r.get("winner") in ("a", "b")]
+    if winners:
+        top = max(winners.count("a"), winners.count("b"))
+        share = top / len(winners)
+        if share > _MAX_WINNER_SHARE:
+            problems.append(
+                f"{share:.0%} of votes went to one side ({top}/{len(winners)}); "
+                f"there is nothing to learn beyond picking that side. "
+                f"Randomise which variant is shown first, and generate "
+                f"variants that are close rather than one deliberately worse")
+
+    stamps = sorted(r["ts"] for r in rows if isinstance(r.get("ts"), (int, float)))
+    if len(stamps) > 2:
+        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+        fast = sum(1 for g in gaps if g < _MIN_VOTE_GAP_S)
+        if fast / len(gaps) > _MAX_FAST_VOTE_SHARE:
+            problems.append(
+                f"{fast}/{len(gaps)} votes were cast under "
+                f"{_MIN_VOTE_GAP_S:g}s apart; those were not judgements "
+                f"about two rendered layouts. Require the render to be "
+                f"opened before a vote is accepted")
+    return problems
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--in", dest="input_path", type=Path,
@@ -251,6 +380,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--l2", type=float, default=0.01)
     parser.add_argument("--min-pairs", type=int, default=5,
                         help="Refuse to fit until at least this many pairs are logged.")
+    parser.add_argument("--holdout", type=float, default=0.0,
+                        help="fraction of DESIGNS (by plan_hash) held out; "
+                             "accuracy is reported on them separately, and "
+                             "that is the number to trust")
+    parser.add_argument("--seed", type=int, default=20260904)
+    parser.add_argument("--force", action="store_true",
+                        help="Fit even when the corpus fails the sanity "
+                             "checks. Inspect the reported accuracy before "
+                             "trusting the result.")
     args = parser.parse_args(argv)
 
     rows = _load_rows(args.input_path)
@@ -262,11 +400,37 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    pairs, means, stds = _normalise_features(rows)
+    problems = _corpus_problems(rows)
+    if problems and not args.force:
+        print(
+            f"Refusing to fit a model from {args.input_path}:",
+            file=sys.stderr,
+        )
+        for line in problems:
+            print(f"  - {line}", file=sys.stderr)
+        print(
+            "\nA pair count is not a corpus. Fix the collection protocol "
+            "and re-vote, or pass --force to fit anyway and inspect the "
+            "accuracy before trusting it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Hold out whole DESIGNS, never individual pairs. Pairs from one design
+    # share its human canvas and most of its candidates, so a random split
+    # of pairs leaks the held-out sheet into training and the reported
+    # accuracy says nothing about a sheet the model has not seen.
+    train_rows, held_rows = _split_by_design(rows, args.holdout, args.seed)
+    pairs, means, stds = _normalise_features(train_rows)
     w, history = _train(
         pairs, epochs=args.epochs, lr=args.lr, l2=args.l2,
     )
     metrics = _eval_accuracy(pairs, w)
+    if held_rows:
+        held_pairs = _apply_normalisation(held_rows, means, stds)
+        metrics["holdout"] = _eval_accuracy(held_pairs, w)
+        metrics["holdout"]["n_designs"] = len(
+            {r.get("plan_hash") for r in held_rows})
 
     # The "raw" weight (per-feature, untransformed) is what the
     # pipeline applies at inference: divide each normalised weight
@@ -301,8 +465,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     args.output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if "holdout" in metrics:
+        h = metrics["holdout"]
+        print(f"\n  HELD-OUT accuracy = {h['accuracy']:.1%} "
+              f"({h['n_correct']}/{h['n_pairs']} pairs over "
+              f"{h['n_designs']} designs the model never saw)")
     print(
-        f"\nTrained on {len(rows)} pairs in {len(history)} epochs.\n"
+        f"\nTrained on {len(train_rows)} pairs in {len(history)} epochs.\n"
         f"  final_loss = {payload['final_loss']:.4f}\n"
         f"  accuracy   = {metrics['accuracy']:.1%}  "
         f"({metrics['n_correct']}/{metrics['n_pairs']})\n"

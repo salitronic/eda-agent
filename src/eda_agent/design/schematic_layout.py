@@ -91,6 +91,26 @@ _FR_COOL_FLOOR = 0.05     # fraction of the initial temperature kept at the end
 
 # A wire whose pin bounding box spans more than this is promoted to a
 # net label even when the base tier rule says "wire".
+#
+# MEASURED against 2662 nets on the human-drawn KiCad demo sheets, split
+# by whether the draughtsman labelled them. Span does discriminate: the
+# median LABELLED net spans 2800 mils and the median unlabelled one 500,
+# so the criterion is sound. At 3000 this gate fires on 47.6% of what a
+# human labels, and humans label about half the nets on a sheet while
+# still drawing a wire on nearly all of them -- the idiom is a short
+# stub plus a label, not a long wire.
+#
+# On span ALONE the corpus separates best around 800 mils, but that is
+# not a recommendation to move this number: span alone is a known sprawl
+# trap here, and the measurement above ignores whatever else a gate
+# pairs with span.
+#
+# NOTE THIS IS NOT THE PIPELINE'S GATE. build_canvas_from_plan uses
+# pipeline._LABEL_SPAN_MILS; this module's neat-layout engine is not run
+# in that hot path (see the NOTE in build_best_canvas_from_plan). Tuning
+# this constant will not move the engine's wire length, which was
+# confirmed by measuring it: patching this value to 2000 and 1500
+# changed six sheets' totals by exactly nothing.
 _DEFAULT_LABEL_SPAN_MILS = 3000
 # Target bounding span for a functional block after compaction. Kept below the
 # label-span gate so a small block's intra-block nets stay wire-traceable
@@ -894,7 +914,7 @@ def order_signal_flow(
     # Longest-path rank via Kahn-style topological relaxation. Cycles are
     # broken by the coarse-x ordering above (edges only go to higher x).
     rank: dict[str, int] = {r: 0 for r in refdes}
-    for r in left_seed:
+    for r in sorted(left_seed):
         rank[r] = 0
 
     order = sorted(refdes, key=lambda r: (indeg[r], coarse[r].x, r))
@@ -910,7 +930,10 @@ def order_signal_flow(
             break
     del order
 
-    for r in right_seed:
+    # SORTED, and this one changes the answer: max_rank is recomputed
+    # from the ranks this loop is writing, so a different visit order
+    # gives different ranks. A set of refdes visits in hash order.
+    for r in sorted(right_seed):
         max_rank = max(rank.values()) if rank else 0
         rank[r] = max(rank[r], max_rank)
 
@@ -1241,6 +1264,7 @@ def snap_and_legalize(
     grid_mils: int,
     geometry: Mapping[str, Sequence[PinSlot]],
     sheet: str = "main",
+    body_half: Mapping[str, int] | None = None,
 ) -> dict[str, PlacedSymbol]:
     """Snap centres to the grid, clamp to the sheet, remove body overlaps.
 
@@ -1256,16 +1280,24 @@ def snap_and_legalize(
             pin_counts[pr.refdes] = pin_counts.get(pr.refdes, 0) + 1
     sheet_of = {p.refdes: p.sheet for p in plan.parts}
 
-    half = {r: _bbox_half(pin_counts.get(r, 2)) for r in refdes}
+    # Real drawn bodies when the caller knows them; the pin-count
+    # estimate otherwise. The estimate keys on the PLAN's pin count, so
+    # it undersizes a large part wired on a few pins and oversizes a
+    # passive by about five times.
+    from eda_agent.design.force_directed import _half_map
+
+    half = _half_map({r: pin_counts.get(r, 2) for r in refdes}, body_half)
 
     def snap(v: float) -> int:
         return int(round(v / grid_mils) * grid_mils)
 
     pos: dict[str, list[int]] = {}
     for r in refdes:
-        h = half[r]
-        x = max(SHEET_ORIGIN_X_MILS + h, min(SHEET_MAX_X_MILS - h, snap(positions[r].x)))
-        y = max(SHEET_ORIGIN_Y_MILS + h, min(SHEET_MAX_Y_MILS - h, snap(positions[r].y)))
+        # A PAIR per part: _half_map reports (hx, hy) so a tall thin body is
+        # not separated horizontally by its height.
+        hx, hy = half[r]
+        x = max(SHEET_ORIGIN_X_MILS + hx, min(SHEET_MAX_X_MILS - hx, snap(positions[r].x)))
+        y = max(SHEET_ORIGIN_Y_MILS + hy, min(SHEET_MAX_Y_MILS - hy, snap(positions[r].y)))
         pos[r] = [x, y]
 
     # Deterministic shove: push overlapping pairs apart along cheaper axis.
@@ -1280,9 +1312,10 @@ def snap_and_legalize(
                     continue
                 ax, ay = pos[a]
                 bx, by = pos[b]
-                need = half[a] + half[b] + grid_mils
-                ox = need - abs(ax - bx)
-                oy = need - abs(ay - by)
+                # PER AXIS, so a tall thin part is not separated
+                # horizontally by its height.
+                ox = half[a][0] + half[b][0] + grid_mils - abs(ax - bx)
+                oy = half[a][1] + half[b][1] + grid_mils - abs(ay - by)
                 if ox <= 0 or oy <= 0:
                     continue
                 any_overlap = True
@@ -1303,8 +1336,8 @@ def snap_and_legalize(
                 delta[b][axis] += sign * step
         for r in refdes:
             for axis in (0, 1):
-                lo = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + half[r]
-                hi = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - half[r]
+                lo = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + half[r][axis]
+                hi = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - half[r][axis]
                 new = pos[r][axis] + delta[r][axis]
                 pos[r][axis] = snap(max(lo, min(hi, new)))
         if not any_overlap:
@@ -1316,13 +1349,13 @@ def snap_and_legalize(
         rot = rotations.get(r, 0)
         slots = geometry.get(r, [])
         pins = _world_pins((x, y), rot, slots)
-        h = half[r]
+        hx, hy = half[r]
         if pins:
-            xs = [px for px, _ in pins.values()] + [x - h, x + h]
-            ys = [py for _, py in pins.values()] + [y - h, y + h]
+            xs = [px for px, _ in pins.values()] + [x - hx, x + hx]
+            ys = [py for _, py in pins.values()] + [y - hy, y + hy]
             bbox = (min(xs), min(ys), max(xs), max(ys))
         else:
-            bbox = (x - h, y - h, x + h, y + h)
+            bbox = (x - hx, y - hy, x + hx, y + hy)
         placed[r] = PlacedSymbol(
             refdes=r,
             sheet=sheet_of.get(r, sheet),

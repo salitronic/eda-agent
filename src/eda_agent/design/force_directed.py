@@ -38,6 +38,60 @@ SHEET_ORIGIN_X_MILS = 1000
 SHEET_ORIGIN_Y_MILS = 1000
 SHEET_MAX_X_MILS = 10500
 SHEET_MAX_Y_MILS = 7500
+#: A4 as this package measures it. The constants above are A4 less the
+#: frame margins, and every other paper size is offset by the same absolute
+#: amounts, so A4 reproduces them exactly.
+_A4_WIDTH_MILS = 11500
+_A4_HEIGHT_MILS = 7600
+
+
+def sheet_bounds(plan, sheet_name=None) -> tuple[int, int, int, int]:
+    """``(min_x, min_y, max_x, max_y)`` for the sheet the plan declares.
+
+    The module constants are A4 less a margin, and every placement pass
+    clamped to them whatever paper the plan asked for. MEASURED on the
+    corpus: 272 of 1465 sheets (19%) are larger than A4 -- 166 A3, 27 B, 24
+    A2, 5 A1 -- and every one of them was confined to the A4 window.
+
+    That is not only wasted room. On an A3 RF board carrying six modules
+    7600 mils wide, the A4 window leaves a usable band 1900 mils across, so
+    the parts CANNOT be separated and the shove left four of them stacked
+    exactly on top of one another; the same sheet drawn by hand has none.
+
+    Falls back to the constants when the plan says nothing, so a caller
+    that does not pass a plan behaves exactly as before.
+    """
+    try:
+        sheets = list(getattr(plan, "sheets", ()) or ())
+        chosen = None
+        for sh in sheets:
+            if sheet_name is None or sh.name == sheet_name:
+                chosen = sh
+                break
+        if chosen is None:
+            chosen = sheets[0] if sheets else None
+        if chosen is None:
+            raise ValueError
+        from eda_agent.design.canvas import Sheet as _CanvasSheet
+
+        dims = _CanvasSheet(name=chosen.name, size=chosen.size)
+        w, h = int(dims.width_mils), int(dims.height_mils)
+        if w <= 0 or h <= 0:
+            raise ValueError
+    except Exception:                   # noqa: BLE001 - best effort
+        return (SHEET_ORIGIN_X_MILS, SHEET_ORIGIN_Y_MILS,
+                SHEET_MAX_X_MILS, SHEET_MAX_Y_MILS)
+    # THE SAME RULE SUGIYAMA ALREADY USED. ``sugiyama._layout_max`` had
+    # been sheet-aware all along, so the base placer sized to the paper
+    # while this module did not. A flat margin here kept A4 identical but
+    # disagreed with it everywhere else (y to 10690 on A3 where sugiyama
+    # allows 11590), and two notions of "the sheet" in one pipeline lets
+    # the placer put a part exactly where the shove then drags it back.
+    # A4 reproduces the constants by construction; A5 correctly gets
+    # SMALLER bounds, which a floor at the constants would not.
+    return (SHEET_ORIGIN_X_MILS, SHEET_ORIGIN_Y_MILS,
+            w - (_A4_WIDTH_MILS - SHEET_MAX_X_MILS),
+            h - (_A4_HEIGHT_MILS - SHEET_MAX_Y_MILS))
 
 # Snap grid for final coordinates. Altium's default schematic snap is
 # 100 mil; sticking to it keeps placed pins on Altium's electrical grid.
@@ -80,6 +134,16 @@ _SHOVE_MAX_ROUNDS = 50
 # (OVERLAP_MARGIN_MILS == 25) doesn't immediately re-flag a kissing
 # pair. A few mils of slop is cheaper than re-running the solver.
 _SHOVE_CLEARANCE_MILS = 50
+
+#: Room to leave BETWEEN two drawn bodies, mils. MEASURED over 528 human
+#: sheets and 103802 part pairs: the gap between two drawn bodies is never
+#: negative (0.0% of pairs overlap) and its 5th percentile is 320 mils.
+#: This is the ONE knob for how tightly a sheet packs, and it only became
+#: one knob once `bodies_overlap` replaced the six separate answers -- the
+#: resnaps used to ask for no clearance at all and leaned on `_bbox_half`
+#: carrying a 366-mil pad on a body that measures 84.
+_BODY_CLEARANCE_MILS = 300
+
 # Mass-weighted split: lighter mass moves more. The bias is capped so
 # an extremely heavy IC against a very light passive still moves a
 # little (avoids degenerate cases where one part is pinned and the
@@ -109,10 +173,32 @@ _EDGE_BIAS_BY_ROLE: dict[str, str] = {
 # rail port glyphs that flank the part still have breathing room without
 # colliding with neighbouring parts. The values include a typical
 # stub-length + label-height pad.
-_BBOX_HALF_2PIN_MILS = 450    # 2-pin passives -- tight: body ~300, small stub margin
-_BBOX_HALF_3PIN_MILS = 550
-_BBOX_HALF_ICMIN_MILS = 800   # 4+ pin parts -- body ~600, plus stubs both sides
-_BBOX_HALF_ICBIG_MILS = 1200  # 16+ pin parts
+#
+# THESE ARE NOW THE FALLBACK, not the sizing. ``_half_map`` takes a
+# per-refdes measured extent and the pipeline supplies one for every part
+# whose symbol it could read; a part with no readable symbol lands here.
+# Retuned to what a person actually leaves, measured over 528 human
+# sheets and 103802 part pairs: the gap between two DRAWN bodies is never
+# negative (0.0% of pairs overlap) and its 5th percentile is 320 mils for
+# the pair, about 150 each, so the keep-out is the drawn body plus 150.
+# Applied to the median drawn body per bucket that gives the values
+# below, and they agree with the separations those pairs are actually
+# drawn at (2+2 430 mils, 3+3 500, 4-15 850, 16+ 1100) to within a grid
+# step. Kept on the 100-mil grid: a half that is not a whole number of
+# grid steps puts the sheet-edge limit (MAX_X - half) between two grid
+# lines and the shove snaps the part to the wrong side of its own bound.
+# THE DRAWN BODY, and only that. Medians of the real half-extent over
+# 9084 human-drawn symbols, rounded up to the 100-mil grid (a half that is
+# not a whole number of grid steps puts the sheet-edge limit at
+# MAX_X - half between two grid lines, and the shove then snaps the part
+# to the wrong side of its own bound). The room to leave AROUND a body is
+# `_BODY_CLEARANCE_MILS`, which is a separate question and now has a
+# single answer; these values used to carry it as a hidden pad, five
+# times over on a two-pin passive and not at all on a large IC.
+_BBOX_HALF_2PIN_MILS = 100    # measured median 80
+_BBOX_HALF_3PIN_MILS = 200    # measured median 150
+_BBOX_HALF_ICMIN_MILS = 300   # measured median 300
+_BBOX_HALF_ICBIG_MILS = 1000  # measured median 1000
 
 # Reproducible jitter so the layout is deterministic across runs.
 _RANDOM_SEED = 0x5EDA_A6EE
@@ -216,6 +302,109 @@ def _rotation_for_part(part: Part, plan_nets: list[Net]) -> int:
         # ends up on top) is the generic fix; this is the interim.
         return 270
     return 0
+
+
+def _half_map(pin_count: dict, body_half=None) -> dict:
+    """Per-refdes half-extent: the real drawn body when it is known.
+
+    ``body_half`` maps refdes to a measured half-extent, either a scalar
+    or an ``(hx, hy)`` pair; the result is always a pair. Anything missing
+    falls back to the pin-count estimate, so a caller that knows nothing
+    behaves exactly as before.
+
+    PER AXIS, because a single value has to be the LARGER of the two to be
+    safe, and that separates a tall thin IC horizontally by its height.
+    Measured: feeding the shove one scalar `max(hx, hy)` cleared the
+    containment on the sheet it was tested against and broke three
+    placement tests by over-separating; per-axis clears the same
+    containment and breaks none.
+
+    NOTHING IN THE PIPELINE SUPPLIES IT TODAY, deliberately, and the
+    reason is worth having written down because it is not obvious.
+
+    Placing with real bodies as one extra candidate won zero of twenty
+    demo sheets. Tighter sizing DOES help, but only when the WHOLE
+    pipeline is placed with it: patching these constants globally and
+    letting every candidate compete under them took buck_conv from 299
+    to 217 against a human 213, and complex_hierarchy from six
+    horizontal bands to three where the human drew two. It pays because
+    it raises the ceiling on BANDING, which is what wants tight
+    packing.
+
+    ONE CANDIDATE CANNOT REPRODUCE THAT, and three attempts to make it
+    are what established why. The global patch let EVERY candidate
+    compete under tight sizing (base, force-directed, pin-side,
+    aspect, compaction, shared-axis, banded) and the 217 was the best
+    of that search. Adding one tightly-placed candidate to a search
+    whose other candidates are still loose changes nothing, because one
+    of the loose ones still wins.
+
+    Where the sizing bites also depends on the plan, which is what made
+    the first two attempts look like the parameter was being ignored.
+    Measured spreads with and without it: royer1 6100x5300 to
+    3400x5000 and complex_hierarchy 3000x3400 to 2300x2300, both
+    force-directed. An ANCHORED plan goes through Sugiyama, which does
+    not consult sizing at all, so buck_conv barely moves (5000x2000 to
+    5100x2000) and its gain comes from the overlap shove in
+    build_canvas_from_plan instead. Supply it to one placer and not the
+    other and nothing happens.
+
+    So capturing this means running the whole candidate search twice,
+    once under each sizing, and taking the best. That is a second full
+    layout, not a second candidate, and it roughly doubles the time an
+    interactive layout takes. Worth about 27% on buck_conv, so somebody
+    should decide whether that trade is wanted before building it.
+
+    AND IT IS NOT ONLY A SCORE TRADE. Widening the benchmark's caps
+    surfaced power-supply-2, where the estimate undersizes IC31 by more
+    than half (1200 assumed against 2800 real), the shove separates
+    small parts to 1650 and leaves five of them INSIDE the IC, and the
+    emitted sheet carries illegal geometry rather than a poor score.
+    Two substitutions were tried and both failed:
+
+      * measured extents outright fixed those five overlaps and cut the
+        sheet 11498 to 3570, and orphaned two power glyphs on the 555
+        blinker, because tighter passive spacing changed which port
+        spokes survive the cross-net guard. Trading body overlaps for
+        floating power objects is not a fix.
+
+      * max(estimate, measured), which can only ever enlarge a part and
+        so cannot move passives closer, made power-supply-2
+        UNLAYOUTABLE: the engine declines it entirely. No output is
+        worse than flawed output.
+
+    The sizing is entangled with port-spoke survival and with placement
+    feasibility, and a substitution reaches both. Whatever fixes this
+    has to hold overlaps, spokes and feasibility at once.
+
+    The override survives because it is what that change needs and
+    because it collapses three copies of the same sizing expression
+    into one. The measurement that says the estimate is wrong in both
+    directions is above _BBOX_HALF_2PIN_MILS.
+
+    Why it has to be per part rather than a better bucket: the count
+    this keys on is the PLAN's, so a 40-pin connector wired on 8 pins
+    is sized as a small part. See the table above _BBOX_HALF_2PIN_MILS.
+    """
+    known = body_half or {}
+    out = {}
+    for refdes in pin_count:
+        measured = known.get(refdes)
+        if isinstance(measured, (tuple, list)):
+            # A degenerate axis falls back on its own: a net tie measures 0
+            # wide and must not be sized to nothing on that axis.
+            est = _bbox_half(pin_count.get(refdes, 2))
+            out[refdes] = (int(measured[0]) or est, int(measured[1]) or est)
+        elif measured:
+            out[refdes] = (int(measured), int(measured))
+        else:
+            # None, 0 or an empty pair: no usable measurement. Falsy rather
+            # than `is None` on purpose, so a degenerate body (a net tie, or
+            # graphics this reader does not understand) keeps the estimate
+            # instead of collapsing to zero.
+            est = _bbox_half(pin_count.get(refdes, 2))
+            out[refdes] = (est, est)
+    return out
 
 
 def _bbox_half(pin_count: int) -> int:
@@ -325,6 +514,7 @@ def _force_directed_layout(
     plan: DesignPlan,
     ic_pin_offsets: dict[str, dict[str, tuple[int, int]]] | None = None,
     pin_attract_k: float = _SPRING_K_PIN,
+    body_half=None,
 ) -> list[PlacedPart]:
     """Run the spring/repulsion solver and return PlacedPart per part.
 
@@ -344,7 +534,7 @@ def _force_directed_layout(
 
     pin_count = _pin_count_per_part(plan)
     mass = {r: _mass(pin_count.get(r, 2)) for r in pin_count}
-    bbox_half = {r: _bbox_half(pin_count.get(r, 2)) for r in pin_count}
+    bbox_half = _half_map(pin_count, body_half)
 
     pos = _initial_positions(plan, pin_count)
     velocity = {r: [0.0, 0.0] for r in pos}
@@ -372,9 +562,16 @@ def _force_directed_layout(
     # Centroid springs for every connected pair EXCEPT those an IC-pin
     # attractor already handles (so a discrete isn't pulled to both the IC's
     # centre and its pin -- the pin wins).
-    spring_pairs = {
+    # SORTED, not a set. A set of refdes tuples iterates in string-hash
+    # order, which Python randomises per process, and this solver SUMS
+    # forces over the pairs in iteration order. Float addition is not
+    # associative, so the same plan settled into a different layout from
+    # one run to the next: a sweep run twice gave 67 clean sheets and then
+    # 74. A single pytest process cannot see it, because the hash seed is
+    # fixed for the life of the process.
+    spring_pairs = sorted(
         pair for pair in _connected_pairs(plan) if pair not in attract_pairs
-    }
+    )
 
     refdes_list = list(pos.keys())
     dt = _DT
@@ -429,7 +626,7 @@ def _force_directed_layout(
                 if dist2 > _REPEL_CUTOFF_MILS * _REPEL_CUTOFF_MILS:
                     continue
                 dist = math.sqrt(dist2)
-                min_sep = bbox_half[a] + bbox_half[b] + 200
+                min_sep = max(bbox_half[a]) + max(bbox_half[b]) + 200
                 if dist < min_sep:
                     f = (min_sep - dist) * 0.25
                 else:
@@ -452,7 +649,7 @@ def _force_directed_layout(
 
         for r in pos:
             x, y = pos[r]
-            half = bbox_half[r]
+            half, half_y = bbox_half[r]
             if x < SHEET_ORIGIN_X_MILS + half:
                 forces[r][0] += (SHEET_ORIGIN_X_MILS + half - x) * _BOUNDARY_K
             elif x > SHEET_MAX_X_MILS - half:
@@ -481,9 +678,9 @@ def _force_directed_layout(
         y = pos[part.refdes][1]
         x = int(round(x / SNAP_GRID_MILS) * SNAP_GRID_MILS)
         y = int(round(y / SNAP_GRID_MILS) * SNAP_GRID_MILS)
-        half = bbox_half[part.refdes]
-        x = max(SHEET_ORIGIN_X_MILS + half, min(SHEET_MAX_X_MILS - half, x))
-        y = max(SHEET_ORIGIN_Y_MILS + half, min(SHEET_MAX_Y_MILS - half, y))
+        hx, hy = bbox_half[part.refdes]
+        x = max(SHEET_ORIGIN_X_MILS + hx, min(SHEET_MAX_X_MILS - hx, x))
+        y = max(SHEET_ORIGIN_Y_MILS + hy, min(SHEET_MAX_Y_MILS - hy, y))
         placed.append(
             PlacedPart(
                 refdes=part.refdes,
@@ -496,28 +693,119 @@ def _force_directed_layout(
     return placed
 
 
+def bodies_overlap(
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    half_a,
+    half_b,
+    clearance: int = _BODY_CLEARANCE_MILS,
+) -> bool:
+    """True when two bodies are closer than they are allowed to be.
+
+    THE ONE PLACE this question is answered, and it needed to be: it was
+    answered in six, each with its own arithmetic and its own idea of how
+    much room to leave. The shove used the bbox sum plus 50 mils, the
+    motif splat the same, the priors resnaps and the array pass the bbox
+    sum plus NOTHING, and the crystal cluster the sum plus 200.
+
+    That mattered more than a tidy-up, because the zero-clearance callers
+    are only safe while ``_bbox_half`` carries an implicit pad -- it
+    holds a 2-pin passive 450 mils out when its body measures 84 -- so
+    the resnaps are relying on a number that has nothing to do with the
+    question they are asking. Sizing parts by their real drawn body,
+    which is a large measured improvement on every other count, made
+    every one of those checks touch-tight and put six pairs of bodies
+    into contact on the big-body sample. Whatever the sizing becomes,
+    it has to reach all of these together.
+
+    Half-extents may be a scalar or an ``(hx, hy)`` pair; a scalar is
+    taken as square. Strict inequality, so a KISSING pair (delta equals
+    the sum) is not an overlap: that mirrors the audit's semantics and
+    is what makes a grid snap onto the boundary safe.
+    """
+    ahx, ahy = half_a if isinstance(half_a, (tuple, list)) else (half_a, half_a)
+    bhx, bhy = half_b if isinstance(half_b, (tuple, list)) else (half_b, half_b)
+    return (abs(ax - bx) < ahx + bhx + clearance
+            and abs(ay - by) < ahy + bhy + clearance)
+
+
 def _overlap_pair(
     ax: float,
     ay: float,
     bx: float,
     by: float,
-    half_a: int,
-    half_b: int,
-    clearance: int,
+    half_a,
+    half_b,
+    clearance: int = _BODY_CLEARANCE_MILS,
 ) -> tuple[float, float] | None:
     """Return the (dx, dy) overlap-along-axis distances, or None.
 
-    AABB overlap test. Each axis returns ``(ha + hb + clearance) - |delta|``;
+    AABB overlap test, PER AXIS. Each axis returns
+    ``(ha + hb + clearance) - |delta|`` using that axis's half-extents;
     if either axis returns <= 0 the parts do not overlap and ``None`` is
     returned. When both are positive the smaller of the two indicates
     the cheapest direction to separate.
+
+    Same test as :func:`bodies_overlap`, which is what every other pass
+    asks; this one exists because the shove needs the DISTANCES and not
+    just the answer. The two must agree, so change them together.
     """
-    needed = half_a + half_b + clearance
-    overlap_x = needed - abs(ax - bx)
-    overlap_y = needed - abs(ay - by)
+    ax_half = half_a if isinstance(half_a, (tuple, list)) else (half_a, half_a)
+    bx_half = half_b if isinstance(half_b, (tuple, list)) else (half_b, half_b)
+    overlap_x = ax_half[0] + bx_half[0] + clearance - abs(ax - bx)
+    overlap_y = ax_half[1] + bx_half[1] + clearance - abs(ay - by)
     if overlap_x <= 0 or overlap_y <= 0:
         return None
     return overlap_x, overlap_y
+
+
+def _axis_fits(half_a, half_b, min_x, min_y, max_x, max_y,
+               clearance: int = _BODY_CLEARANCE_MILS) -> tuple[bool, bool]:
+    """Can this pair be separated along x, along y, inside the sheet?
+
+    Putting one part at each wall gives the widest gap the paper allows,
+    ``(max - min) - ha - hb``, and the pair needs ``ha + hb + clearance``
+    of it. So an axis works only when the sheet spans at least
+    ``2 * (ha + hb) + clearance``.
+
+    Asking this at all is what MEASURING the real body exposed. On an A3
+    RF board carrying six modules each drawn 7600 mils wide, separating
+    two of them on x needs 7900 and six of them 39500, where the paper
+    offers 14540: x is arithmetically impossible. Stacked on y the same
+    six fit easily, 6 x 1424 against 9590, and that is what the person
+    drew. The shove used to pick its axis by overlap depth alone, push on
+    the impossible one, fail, and leave two modules on top of each other.
+    Undersized halves hid it: the old requirement was 2450 and always
+    fit.
+
+    Both False means the pair cannot be separated on this paper at all;
+    the caller leaves them where they are and the residual count reports
+    it.
+    """
+    ahx, ahy = half_a if isinstance(half_a, (tuple, list)) else (half_a, half_a)
+    bhx, bhy = half_b if isinstance(half_b, (tuple, list)) else (half_b, half_b)
+    return (
+        (max_x - min_x) >= 2 * (ahx + bhx) + clearance,
+        (max_y - min_y) >= 2 * (ahy + bhy) + clearance,
+    )
+
+
+def _cheapest_feasible_push(ox: float, oy: float,
+                            fits: tuple[bool, bool]) -> float:
+    """Shallowest overlap AMONG THE AXES THE SHEET CAN ACCOMMODATE.
+
+    The shove gives the cheapest axis a full push and the other a half
+    one; choosing by depth alone spends the full push on an axis that
+    cannot work. Returns the PUSH VALUE rather than an axis index so
+    that a tie still gives BOTH axes full weight, which is what a pair
+    sitting exactly on top of another needs to come apart diagonally.
+    Returns ``inf`` when neither axis fits, so no axis is favoured and
+    the caller skips both.
+    """
+    candidates = [v for v, ok in ((ox, fits[0]), (oy, fits[1])) if ok]
+    return min(candidates) if candidates else float("inf")
 
 
 def _shove_split(
@@ -566,6 +854,7 @@ def _shove_split(
 def _hard_shove_pass(
     plan: DesignPlan,
     placed: list[PlacedPart],
+    body_half=None,
 ) -> tuple[list[PlacedPart], int]:
     """Audit-aware deterministic shove.
 
@@ -584,7 +873,14 @@ def _hard_shove_pass(
 
     pin_count = _pin_count_per_part(plan)
     mass = {r: _mass(pin_count.get(r, 2)) for r in pin_count}
-    bbox_half = {r: _bbox_half(pin_count.get(r, 2)) for r in pin_count}
+    bbox_half = _half_map(pin_count, body_half)
+    # THE SHEET THE PLAN ASKED FOR. The constants are A4 less a margin,
+    # and clamping an A3 board into them leaves too little room to
+    # separate anything: on an A3 RF board with six modules 7600 mils
+    # wide the usable band is 1900 across, and this pass left four of
+    # them stacked exactly on top of one another. 272 of 1465 corpus
+    # sheets are larger than A4.
+    min_x, min_y, max_x, max_y = sheet_bounds(plan)
     part_by_refdes = {p.refdes: p for p in plan.parts}
 
     pos: dict[str, list[float]] = {
@@ -609,7 +905,6 @@ def _hard_shove_pass(
                 ovl = _overlap_pair(
                     ax, ay, bx, by,
                     bbox_half[a], bbox_half[b],
-                    _SHOVE_CLEARANCE_MILS,
                 )
                 if ovl is None:
                     continue
@@ -619,8 +914,11 @@ def _hard_shove_pass(
                 frac_a, frac_b = _shove_split(
                     plan, part_by_refdes, mass, pin_count, a, b
                 )
+                fits = _axis_fits(bbox_half[a], bbox_half[b],
+                                  min_x, min_y, max_x, max_y)
+                cheap = _cheapest_feasible_push(ox, oy, fits)
                 for axis, push in ((0, ox), (1, oy)):
-                    if push <= 0:
+                    if push <= 0 or not fits[axis]:
                         continue
                     if axis == 0:
                         sign_v = 1.0 if (bx - ax) >= 0 else -1.0
@@ -630,11 +928,11 @@ def _hard_shove_pass(
                         sign_v = 1.0 if (by - ay) >= 0 else -1.0
                         if (by - ay) == 0:
                             sign_v = 1.0 if a < b else -1.0
-                    weight = 1.0 if push == min(ox, oy) else 0.5
-                    lo_a = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[a]
-                    hi_a = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[a]
-                    lo_b = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[b]
-                    hi_b = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[b]
+                    weight = 1.0 if push == cheap else 0.5
+                    lo_a = (min_x if axis == 0 else min_y) + bbox_half[a][axis]
+                    hi_a = (max_x if axis == 0 else max_y) - bbox_half[a][axis]
+                    lo_b = (min_x if axis == 0 else min_y) + bbox_half[b][axis]
+                    hi_b = (max_x if axis == 0 else max_y) - bbox_half[b][axis]
                     a_blocked = (
                         pos[a][axis] <= lo_a + 0.5
                         if sign_v > 0
@@ -657,10 +955,15 @@ def _hard_shove_pass(
 
         for r in pos:
             for axis in (0, 1):
-                lo = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[r]
-                hi = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[r]
+                lo = (min_x if axis == 0 else min_y) + bbox_half[r][axis]
+                hi = (max_x if axis == 0 else max_y) - bbox_half[r][axis]
                 new = pos[r][axis] + delta[r][axis]
-                pos[r][axis] = max(lo, min(hi, new))
+                # A part WIDER than the sheet cannot be clamped inside it:
+                # lo exceeds hi and max(lo, min(hi, x)) then collapses
+                # EVERY such part onto lo, which is how identical
+                # positions come out of a pass whose whole job is to
+                # separate things.
+                pos[r][axis] = new if lo > hi else max(lo, min(hi, new))
 
         residual = overlaps_this_round
         if overlaps_this_round == 0:
@@ -668,11 +971,13 @@ def _hard_shove_pass(
 
     snapped: dict[str, list[int]] = {}
     for r in pos:
-        half = bbox_half[r]
+        hx, hy = bbox_half[r]
         x = int(round(pos[r][0] / SNAP_GRID_MILS) * SNAP_GRID_MILS)
         y = int(round(pos[r][1] / SNAP_GRID_MILS) * SNAP_GRID_MILS)
-        x = max(SHEET_ORIGIN_X_MILS + half, min(SHEET_MAX_X_MILS - half, x))
-        y = max(SHEET_ORIGIN_Y_MILS + half, min(SHEET_MAX_Y_MILS - half, y))
+        if min_x + hx <= max_x - hx:
+            x = max(min_x + hx, min(max_x - hx, x))
+        if min_y + hy <= max_y - hy:
+            y = max(min_y + hy, min(max_y - hy, y))
         snapped[r] = [x, y]
 
     for _ in range(_SHOVE_MAX_ROUNDS):
@@ -686,17 +991,35 @@ def _hard_shove_pass(
                     continue
                 ax, ay = snapped[a]
                 bx, by = snapped[b]
-                if abs(ax - bx) < (bbox_half[a] + bbox_half[b]) and abs(ay - by) < (bbox_half[a] + bbox_half[b]):
+                if bodies_overlap(ax, ay, bx, by,
+                                  bbox_half[a], bbox_half[b]):
                     any_overlap = True
-                    needed = bbox_half[a] + bbox_half[b]
+                    # One separation distance for the pair, taken from the
+                    # axis they are already furthest apart on: that is the
+                    # axis this loop will push along, and mixing the two
+                    # halves into ox and oy separately made the cheaper-axis
+                    # choice below compare distances measured against
+                    # different bars.
+                    # WITH the clearance, because the test just above is
+                    # `bodies_overlap`, which includes it. A push sized
+                    # from the bodies alone is SHORTER than the distance
+                    # that test demands, so every round computed a
+                    # negative push, moved nothing, and the pass reported
+                    # a residual overlap it could never clear.
+                    needed = _BODY_CLEARANCE_MILS + (
+                        bbox_half[a][0] + bbox_half[b][0]
+                        if abs(ax - bx) >= abs(ay - by)
+                        else bbox_half[a][1] + bbox_half[b][1])
                     ox = needed - abs(ax - bx)
                     oy = needed - abs(ay - by)
                     frac_a, frac_b = _shove_split(
                         plan, part_by_refdes, mass, pin_count, a, b
                     )
-                    cheaper = min(ox, oy)
+                    i_fits = _axis_fits(bbox_half[a], bbox_half[b],
+                                        min_x, min_y, max_x, max_y)
+                    cheaper = _cheapest_feasible_push(ox, oy, i_fits)
                     for axis, push in ((0, ox), (1, oy)):
-                        if push <= 0:
+                        if push <= 0 or not i_fits[axis]:
                             continue
                         if axis == 0:
                             sign_v = 1 if (bx - ax) >= 0 else -1
@@ -712,10 +1035,10 @@ def _hard_shove_pass(
                             push_grid = int(math.ceil(push_grid / SNAP_GRID_MILS) * SNAP_GRID_MILS)
                         if push_grid <= 0:
                             continue
-                        lo_a_i = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[a]
-                        hi_a_i = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[a]
-                        lo_b_i = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[b]
-                        hi_b_i = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[b]
+                        lo_a_i = (min_x if axis == 0 else min_y) + bbox_half[a][axis]
+                        hi_a_i = (max_x if axis == 0 else max_y) - bbox_half[a][axis]
+                        lo_b_i = (min_x if axis == 0 else min_y) + bbox_half[b][axis]
+                        hi_b_i = (max_x if axis == 0 else max_y) - bbox_half[b][axis]
                         a_blk = snapped[a][axis] <= lo_a_i if sign_v > 0 else snapped[a][axis] >= hi_a_i
                         b_blk = snapped[b][axis] >= hi_b_i if sign_v > 0 else snapped[b][axis] <= lo_b_i
                         fa, fb = frac_a, frac_b
@@ -732,10 +1055,11 @@ def _hard_shove_pass(
                         idelta[b][axis] += sign_v * move_b
         for r in snapped:
             for axis in (0, 1):
-                lo = (SHEET_ORIGIN_X_MILS if axis == 0 else SHEET_ORIGIN_Y_MILS) + bbox_half[r]
-                hi = (SHEET_MAX_X_MILS if axis == 0 else SHEET_MAX_Y_MILS) - bbox_half[r]
+                lo = (min_x if axis == 0 else min_y) + bbox_half[r][axis]
+                hi = (max_x if axis == 0 else max_y) - bbox_half[r][axis]
                 new = snapped[r][axis] + idelta[r][axis]
-                new = max(lo, min(hi, new))
+                if lo <= hi:
+                    new = max(lo, min(hi, new))
                 snapped[r][axis] = int(round(new / SNAP_GRID_MILS) * SNAP_GRID_MILS)
         if not any_overlap:
             residual = 0
@@ -759,7 +1083,8 @@ def _hard_shove_pass(
         for i in range(len(out))
         for j in range(i + 1, len(out))
         if out[i].sheet == out[j].sheet
-        and abs(out[i].x_mils - out[j].x_mils) < (bbox_half[out[i].refdes] + bbox_half[out[j].refdes])
-        and abs(out[i].y_mils - out[j].y_mils) < (bbox_half[out[i].refdes] + bbox_half[out[j].refdes])
+        and bodies_overlap(
+            out[i].x_mils, out[i].y_mils, out[j].x_mils, out[j].y_mils,
+            bbox_half[out[i].refdes], bbox_half[out[j].refdes])
     )
     return out, residual

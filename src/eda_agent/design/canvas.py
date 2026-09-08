@@ -269,6 +269,11 @@ class BusEntry:
 # A planner picks a sheet via the `size` string; the dimensions follow.
 _SHEET_DIMENSIONS: dict[str, tuple[int, int]] = {
     "A4": (11500, 7600),
+    # A5 is 210 x 148 mm. Absent from this table it fell back to A4,
+    # which is 81% MORE area than the sheet has: five of the KiCad demo
+    # sheets are A5, and their layouts were being judged against a
+    # frame they were not drawn on.
+    "A5": (8270, 5830),
     "A3": (16540, 11690),
     "A2": (23390, 16540),
     "A1": (33110, 23390),
@@ -278,6 +283,14 @@ _SHEET_DIMENSIONS: dict[str, tuple[int, int]] = {
     "C": (22000, 17000),
     "D": (34000, 22000),
     "E": (44000, 34000),
+    # KiCad writes the US series by these names, and they are the same
+    # sheets as ANSI A / A / B above: Letter is 11 x 8.5 in, Legal is
+    # 14 x 8.5, Ledger (Tabloid) is 17 x 11. Without them a US-locale
+    # schematic silently falls back to A4, which is the same hole A5
+    # was in.
+    "USLETTER": (11000, 8500),
+    "USLEGAL": (14000, 8500),
+    "USLEDGER": (17000, 11000),
 }
 
 

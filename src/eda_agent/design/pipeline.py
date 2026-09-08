@@ -32,6 +32,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
+from eda_agent.design.arrays import resnap_repeated_arrays
 from eda_agent.design.canvas import (
     POWER_RAIL_CLUSTER_RADIUS_MILS,
     Junction,
@@ -57,12 +58,18 @@ from eda_agent.design._wiring import (
 )
 from eda_agent.design.composer import compose_layout
 from eda_agent.design.force_directed import _hard_shove_pass
-from eda_agent.design.layout import compute_layout, order_rail_columns
+from eda_agent.design.layout import (
+    compute_layout,
+    correct_two_pin_rotation,
+    order_rail_columns,
+)
 from eda_agent.design.plan import DesignPlan, Net, PartStatus
 from eda_agent.design.priors import (
+    align_to_neighbour_axes,
     apply_placement_priors,
     load_priors,
     resnap_crystal_clusters,
+    resnap_decoupling_bank,
     resnap_motif_clusters,
 )
 from eda_agent.design.quality import LayoutScore, score_canvas
@@ -95,7 +102,7 @@ _LABEL_SPAN_MILS = 2400
 _WIRED_ROLES = frozenset({"switch", "high_current", "power_path"})
 
 
-def _placement_pass(plan, result):  # type: ignore[no-untyped-def]
+def _placement_pass(plan, result, motif_half=None):  # type: ignore[no-untyped-def]
     """Run motif composer + Sugiyama-fallback placement.
 
     Three-layer placement strategy:
@@ -110,7 +117,7 @@ def _placement_pass(plan, result):  # type: ignore[no-untyped-def]
     3. Wiring + port-routing then sees a sensible placement and
        produces clean schematic output.
     """
-    composer_result = compose_layout(plan)
+    composer_result = compose_layout(plan, motif_half=motif_half)
     if composer_result.motif_matches:
         result.notes.append(PipelineNote(
             severity="info",
@@ -257,7 +264,8 @@ def build_canvas_from_plan(
     # Surface symbol-extraction failures up front so the user sees them
     # without scanning the canvas.
     missing: set[tuple[str, str]] = set(refs) - set(symbols.keys())
-    for lib_path, lib_ref in missing:
+    # Sorted so the failure list reads the same way twice.
+    for lib_path, lib_ref in sorted(missing):
         result.failures.append(PipelineNote(
             severity="error",
             text=(
@@ -275,7 +283,8 @@ def build_canvas_from_plan(
     if layout_overrides:
         placements = list(layout_overrides.values())
     else:
-        placements = _placement_pass(plan, result)
+        placements = _placement_pass(
+            plan, result, motif_half=_oversized_half_map(plan, symbols))
     if placement_hints:
         # First application: give the post-passes (priors / shove /
         # resnap / ordering / recenter) the hinted geometry to work
@@ -298,8 +307,20 @@ def build_canvas_from_plan(
         # or supplied via EDA_AGENT_PRIORS). When no priors exist (fresh
         # install with no edits yet), this is a no-op.
         priors = load_priors()
+    # Real half-extents, computed once and used by every pass that places a
+    # part at an offset from another. A canonical offset is a constant and
+    # cannot know how big the anchor is drawn.
+    body_half: dict[str, tuple[int, int]] = {}
+    for part in plan.parts:
+        model = symbols.get((part.lib_path or "", part.lib_ref))
+        if model is None:
+            continue
+        bb = model.body_bbox
+        body_half[part.refdes] = (max(1, (bb.x_max - bb.x_min) // 2),
+                                  max(1, (bb.y_max - bb.y_min) // 2))
     if priors:
-        placements = apply_placement_priors(placements, plan, priors)
+        placements = apply_placement_priors(placements, plan, priors,
+                                            body_half=body_half)
         result.notes.append(PipelineNote(
             severity="info",
             text=f"applied placement priors ({len(priors)} role pairs)",
@@ -313,7 +334,34 @@ def build_canvas_from_plan(
         # x column with rotation that puts their bodies on the same line).
         # Run the audit-aware shove one more time so the wiring stage sees
         # a clean placement.
-        placements, residual_overlaps = _hard_shove_pass(plan, placements)
+        # The REAL body, per axis. This is the pass responsible for parts
+        # not sitting on top of one another, and it was the only one still
+        # guessing: `_bbox_half(pin_count)` tops out at 1200 mils, so a
+        # large IC read as far smaller than it is drawn and the base
+        # placement's overlaps survived it. Traced stage by stage on a
+        # PAL/NTSC decoder: compose_layout produced 7 parts wholly inside
+        # U10 and the shove cleared 3 of them; with the real body it clears
+        # all of them.
+        # ONLY WHERE THE REAL BODY IS BIGGER than the estimate. The
+        # estimate is wrong in both directions (a 2-pin cap measures 80
+        # against an assumed 450, a large IC 3300 against an assumed
+        # 1200), but only the under-statement causes the defect this
+        # fixes: a part ends up inside a body the shove thought was
+        # smaller. Correcting the over-statement as well changes the
+        # spacing of every small part, which moved a timing resistor to
+        # the wrong side of its IC and cost a bus its crossing gate.
+        from eda_agent.design.force_directed import _bbox_half
+        _pins: dict[str, int] = {}
+        for _n in plan.nets:
+            for _pr in _n.pins:
+                _pins[_pr.refdes] = _pins.get(_pr.refdes, 0) + 1
+        shove_half = {}
+        for refdes, (hx, hy) in body_half.items():
+            est = _bbox_half(_pins.get(refdes, 2))
+            if hx > est or hy > est:
+                shove_half[refdes] = (max(hx, est), max(hy, est))
+        placements, residual_overlaps = _hard_shove_pass(
+            plan, placements, body_half=shove_half)
         if residual_overlaps:
             result.notes.append(PipelineNote(
                 severity="warning",
@@ -328,14 +376,63 @@ def build_canvas_from_plan(
         # (400 mils off the crystal) as overlapping and scatters them --
         # undoing the symmetric prior. Re-snap them to the crystal's
         # post-shove position so XIN/XOUT stay short.
-        placements = resnap_crystal_clusters(plan, placements)
+        # Stand shunt passives upright, which is what humans draw (96% of
+        # their decoupling caps against 0% of the engine's) and what the
+        # layout code already intends: it writes rotation 270 to mean
+        # "upright" on the assumption that symbols are natively
+        # pins-left-right, and 53 of 101 real 2-pin symbols are not.
+        #
+        # BEFORE the resnaps, which position parts relative to one another
+        # from their CENTRES. Rotating a cap afterwards moves its pins
+        # without moving its centre, so a cap the resnap placed clear ends
+        # up with its pin against the crystal's.
+        #
+        # This waited on the stub clip honouring foreign pins over its
+        # minimum length: upright caps point a ground pin somewhere new,
+        # and while the floor could land a stub on a foreign pin, the mcu
+        # benchmark lost net XIN to a short. Decline rate at the time of
+        # switching on: 8.3% of 587 public sheets.
+        _symbol_by_refdes = {
+            part.refdes: symbols.get((part.lib_path or "", part.lib_ref))
+            for part in plan.parts}
+        placements = correct_two_pin_rotation(
+            plan, placements, _symbol_by_refdes)
+        placements = resnap_crystal_clusters(
+            plan, placements, symbol_by_refdes=_symbol_by_refdes)
 
         # 2c''. Same repair for every OTHER self-contained motif (pi
         # filter, diode bridge, voltage divider, RC filters): the shove
         # scatters those tight clusters too, but only crystals had a
         # resnap. Restore each motif's canonical shape around its
         # post-shove centroid.
-        placements = resnap_motif_clusters(plan, placements)
+        placements = resnap_motif_clusters(plan, placements,
+                                           body_half=body_half)
+
+        # 2c'''. Decoupling banks, for the same reason and after the same
+        # pass. The shove judges each cap alone, so it breaks the aligned
+        # column the priors laid out: measured over 154 public sheets, the
+        # priors stage leaves a 400 mil pitch with 89% of caps sharing an
+        # axis, matching the 450 and 88% humans draw, and the shove then
+        # spreads it to 1000 with 34% aligned.
+        placements = resnap_decoupling_bank(plan, placements,
+                                            body_half=body_half)
+
+        # 2c-v. General alignment. The resnaps above each restore ONE known
+        # shape; the overlap shove broke alignment for every part, not only
+        # those. Measured on the stratified sample: humans 77.8% of parts
+        # sharing an axis with another, priors 65.5%, shove 54.5%, resnaps
+        # 61.5%.
+        # 2c-vi. Repeated subcircuits as a line, BEFORE the general aligner
+        # so the aligner tidies whatever the array pass did not claim.
+        # Measured over 707 corpus sheets: 81 (11%) repeat a subcircuit three
+        # or more times, and 71% of those arrays are a single row or column.
+        placements = resnap_repeated_arrays(plan, placements,
+                                            body_half=body_half)
+
+        placements = align_to_neighbour_axes(plan, placements,
+                                             body_half=body_half)
+
+
 
         # 2c'''. Column potential-ordering. Within each vertical stack of
         # 2-pin rail parts, potential must descend top to bottom (power at
@@ -366,6 +463,17 @@ def build_canvas_from_plan(
 
     # 3. Canvas construction. Sheets come from the plan; instances are
     # PlacedPart + SymbolModel pairs.
+    # Again on EVERY path. The best-of variants rebuild through
+    # layout_overrides and skip the block above entirely, so a correction
+    # placed only there reached the base candidate alone (measured:
+    # decoupling caps went from 0% upright to 11%, not the ~98% humans
+    # draw). The target is derived from the plan, so this is a no-op over
+    # placements already corrected.
+    placements = correct_two_pin_rotation(
+        plan, placements,
+        {part.refdes: symbols.get((part.lib_path or "", part.lib_ref))
+         for part in plan.parts})
+
     canvas = result.canvas
     for sheet in plan.sheets:
         canvas.add_sheet(Sheet(
@@ -481,6 +589,18 @@ def build_canvas_from_plan(
     from eda_agent.design.buses import apply_bus_drawing
     apply_bus_drawing(canvas, plan)
 
+    # LABELS AGAIN, because the bus drawer moved copper under them. The
+    # per-pin stubs it lays reach the bus line, which is further than the
+    # stub each replaces, so a label that _wire_sheet had already cleared
+    # can end up sitting on one. Measured on the mcu benchmark: the D7
+    # stub went from (4000,6300)-(4100,6300) to (4100,6300)-(3700,6300)
+    # and swallowed the GPIO4_M label at (3900,6300), which is a
+    # cross-net short and blocks the emit. The pass is idempotent and
+    # only slides a label along its OWN net's copper, so re-running it
+    # costs nothing where nothing moved.
+    for _sheet in plan.sheets:
+        _move_labels_off_foreign_copper(canvas, _sheet.name)
+
     # 4c. Collision-free designator/value text. Libraries stamp text at a
     # fixed offset from the symbol origin, so defaults collide with wires
     # / neighbours on any dense sheet. Pure geometry over the finished
@@ -535,8 +655,37 @@ def _selection_rank_cost(res: "PipelineResult", plan: DesignPlan) -> float:
     Without these terms selection is convention roulette: whichever
     variant shaves wire-mils wins, however unprofessionally it draws.
     """
+    # A net that vanished costs more than any drawing fault, because the
+    # netlist is then WRONG rather than ugly.
+    #
+    # Every other term here is a matter of taste, so all of them are
+    # smaller than one dropped net. The rank had no connectivity term at
+    # all, which meant an emptier candidate could win outright: a net
+    # drawn as labels pays 150 per forced demotion plus its span at wire
+    # rate, and a net not drawn at all paid nothing while also shedding
+    # the length and crossings its wires would have added.
+    #
+    # MEASURED, and the measurement is the reason for the wording above:
+    # this term has never yet changed a selection. It was added while
+    # chasing nets the engine emitted with no wire, label or port, and
+    # those turned out to come from the bus drawer erasing a member it
+    # could not draw (see buses._geometry_covering_every_endpoint), not
+    # from ranking -- every candidate on the affected sheets dropped the
+    # same net, so the penalty was constant and cancelled. It is kept as
+    # the backstop that was missing: a scorer that cannot see a missing
+    # net will happily rank one first.
+    named = ({w.net for w in res.canvas.wires}
+             | {l.text for l in res.canvas.labels}
+             | {p.text for p in res.canvas.power_ports})
+    orphaned = sum(
+        1 for net in plan.nets
+        if net.name not in named
+        and any(pr.refdes in {i.refdes for i in res.canvas.instances}
+                for pr in net.pins)
+    )
     return (
-        150.0 * res.forced_label_count
+        2000.0 * orphaned
+        + 150.0 * res.forced_label_count
         + 100.0 * _count_polarity_inversions(res.canvas, plan)
         + 120.0 * _count_pin_side_violations(res.canvas, plan)
         + 0.01 * res.span_labelled_mils
@@ -574,18 +723,39 @@ def _count_pin_side_violations(
     for net in plan.nets:
         if _is_power_net(net) or _is_ground_net(net):
             continue  # rails reach everything; side carries no meaning
-        ics = [pr for pr in net.pins if pin_counts.get(pr.refdes, 0) >= 4]
+        # ONE IC, counted by REFDES rather than by pin entry. A net that
+        # reaches the same IC on two of its own pins -- THRES tied to
+        # TRIG on a 555, the single most common wiring on that part --
+        # used to make this test skip the net entirely, so the timing
+        # capacitor could sit on the wrong side of the chip and the
+        # ranking never knew. Measured on the 555 blinker: the winning
+        # layout put C1 700 mils to the RIGHT of a chip whose THRES and
+        # TRIG pins are both on the left, and this function reported
+        # zero violations.
+        ic_refs = {pr.refdes for pr in net.pins
+                   if pin_counts.get(pr.refdes, 0) >= 4}
         sats = [pr for pr in net.pins if pin_counts.get(pr.refdes, 0) <= 3]
-        if len(ics) != 1 or not sats:
+        if len(ic_refs) != 1 or not sats:
             continue
-        ic_ref = ics[0]
-        ic_cx = _center_x(ic_ref.refdes)
-        ep = canvas.pin_world(ic_ref.refdes, ic_ref.pin)
-        if ic_cx is None or ep is None:
+        ic_refdes = next(iter(ic_refs))
+        ic_cx = _center_x(ic_refdes)
+        if ic_cx is None:
             continue
-        pin_side = (ep.x > ic_cx) - (ep.x < ic_cx)
-        if pin_side == 0:
+        # Every pin the net reaches the IC on has to agree about the
+        # side; a net entering from both sides genuinely has none.
+        sides = set()
+        for pr in net.pins:
+            if pr.refdes != ic_refdes:
+                continue
+            ep = canvas.pin_world(pr.refdes, pr.pin)
+            if ep is None:
+                continue
+            side = (ep.x > ic_cx) - (ep.x < ic_cx)
+            if side:
+                sides.add(side)
+        if len(sides) != 1:
             continue
+        pin_side = sides.pop()
         for sat in sats:
             sat_cx = _center_x(sat.refdes)
             if sat_cx is None:
@@ -972,6 +1142,16 @@ def build_best_canvas_from_plan(
         # helps, and loses to Sugiyama on clean signal chains. ic_pin_offsets
         # empty (no ICs) reproduces the old centroid FD exactly.
         ic_off = _ic_pin_offsets(plan, extractor)
+        # EVERY candidate sized the same way, or the loose ones win: a
+        # single tightly-sized candidate offered into a search whose
+        # others are loose changes nothing, measured.
+        _refs = list({(pp.lib_path, pp.lib_ref)
+                      for pp in plan.parts if pp.lib_path})
+        try:
+            _big = _oversized_half_map(
+                plan, extractor.extract_many(_refs) if _refs else {})
+        except Exception:                       # noqa: BLE001
+            _big = {}
         # FD is chaotic in the pin-attractor stiffness -- one value lands a
         # clean side-grouped layout while a neighbouring value sprawls. Rather
         # than trust a single tuned constant (overfitting to one board), SWEEP a
@@ -988,7 +1168,7 @@ def build_best_canvas_from_plan(
         for k in ks:
             fd_placed = _compute_layout(
                 plan, engine="force_directed", ic_pin_offsets=ic_off,
-                pin_attract_k=k)
+                pin_attract_k=k, motif_half=_big)
             fd_cand = build_canvas_from_plan(
                 plan, extractor,
                 layout_overrides={p.refdes: p for p in fd_placed},
@@ -1020,7 +1200,8 @@ def build_best_canvas_from_plan(
     try:
         if ic_off:
             from eda_agent.design.layout import compute_layout as _cl2
-            ps_placed = _cl2(plan, engine="sugiyama", ic_pin_offsets=ic_off)
+            ps_placed = _cl2(plan, engine="sugiyama", ic_pin_offsets=ic_off,
+                             motif_half=_big)
             ps_cand = build_canvas_from_plan(
                 plan, extractor,
                 layout_overrides={p.refdes: p for p in ps_placed},
@@ -1068,6 +1249,112 @@ def build_best_canvas_from_plan(
         ),
     ))
 
+    # Shared-axis variant. The engine's alignment penalty runs a median
+    # 0.555 against 0.164 for humans on the same netlists, so parts that
+    # very nearly share a row or column are straightened onto one. It is
+    # scored like every other variant and only wins when the total
+    # improves.
+    # Two tolerances, because how far apart "nearly aligned" is depends
+    # on the sheet: a tight one straightens a dense cluster without
+    # disturbing it, a loose one catches parts a sparse layout left
+    # further apart. Both are scored, so the wrong one for a given sheet
+    # simply loses.
+    align_tries = 0
+    compact_tries = 0
+    band_tries = 0
+    try:
+        seen_variants: list[dict[str, tuple[int, int]]] = []
+        for tol in (400, 900):
+            current = [_canvas_instance_to_placement(i)
+                       for i in base.canvas.instances]
+            aligned = _align_placements(current, tol=tol)
+            # A rebuild is the expensive part of a candidate, and this
+            # one is worth nothing when the pass moved nothing: on a
+            # layout that is already straight, or where no two parts are
+            # within tolerance, both tolerances reproduce the input.
+            # Class-D takes 294 seconds to lay out, so two wasted
+            # rebuilds there are not free.
+            shape = {p.refdes: (p.x_mils, p.y_mils) for p in aligned}
+            if shape == {p.refdes: (p.x_mils, p.y_mils) for p in current}:
+                continue
+            if shape in seen_variants:
+                continue
+            seen_variants.append(shape)
+            align_tries += 1
+            align_cand = build_canvas_from_plan(
+                plan, extractor,
+                layout_overrides={p.refdes: p for p in aligned},
+                placement_hints=placement_hints, port_hints=port_hints,
+                strict_shorts=strict_shorts,
+            )
+            if not align_cand.canvas.instances:
+                continue
+            # Compete for BEST without replacing BASE, the way the
+            # aspect variants do. Replacing base moved the starting
+            # point the later variants are generated from, and measured
+            # over 27 sheets that made 4 of them WORSE even though this
+            # candidate can only be accepted when it scores better: the
+            # regression was the changed search trajectory, not the
+            # candidate.
+            align_score = score_canvas(align_cand.canvas, plan)
+            align_rank = (0 if align_cand.ok else 1,
+                          align_score.total + _convention_cost(align_cand))
+            if align_rank < best_rank:
+                best_score = align_score
+                best_result = align_cand
+                best_label = f"shared_axis_{tol}"
+                best_rank = align_rank
+    except Exception as al_exc:                    # noqa: BLE001
+        base.notes.append(PipelineNote(
+            severity="warning",
+            text=("shared-axis alternative failed and was skipped: "
+                  f"{type(al_exc).__name__}: {al_exc}"),
+        ))
+
+    # Compaction variants, for the same reason and on the same terms as
+    # the shared-axis pass: offered, scored, kept only when better.
+    #
+    # THESE DO NOT COST WHAT THEY LOOK LIKE THEY COST. Up to four extra
+    # rebuilds per layout reads as expensive, and measured across the
+    # sheets of the human benchmark it is not: median 0.93x the previous
+    # wall time, 146s down to 135s in total. A denser or straighter
+    # layout routes more cheaply, and the winner is what the closing
+    # polish rebuild starts from, so a better candidate pays for its own
+    # rebuild. Do not drop these passes to save time without measuring
+    # again.
+    try:
+        for factor in (0.8, 0.6):
+            squeezed = _compact_placements(
+                [_canvas_instance_to_placement(i)
+                 for i in base.canvas.instances],
+                factor,
+            )
+            compact_tries += 1
+            compact_cand = build_canvas_from_plan(
+                plan, extractor,
+                layout_overrides={p.refdes: p for p in squeezed},
+                placement_hints=placement_hints, port_hints=port_hints,
+                strict_shorts=strict_shorts,
+            )
+            if not compact_cand.canvas.instances:
+                continue
+            compact_score = score_canvas(compact_cand.canvas, plan)
+            compact_rank = (
+                0 if compact_cand.ok else 1,
+                compact_score.total + _convention_cost(compact_cand),
+            )
+            if compact_rank < best_rank:
+                best_score = compact_score
+                best_result = compact_cand
+                best_label = f"compact_{factor}"
+                best_rank = compact_rank
+    except Exception as co_exc:                    # noqa: BLE001
+        base.notes.append(PipelineNote(
+            severity="warning",
+            text=("compaction alternative failed and was skipped: "
+                  f"{type(co_exc).__name__}: {co_exc}"),
+        ))
+
     # Aspect-rescaling variants. Tall layouts (aspect >> 1) often
     # compress better at square 1.0 or modest 1.33; wide layouts at
     # 0.75 or 0.66. Each variant is scored independently and the
@@ -1106,6 +1393,44 @@ def build_best_canvas_from_plan(
             best_label = f"aspect={aspect}"
             best_rank = variant_rank
 
+    # Banding: the engine uses more horizontal rows than a human for the
+    # same netlist, which is one cause behind three gaps at once.
+    #
+    # APPLIED TO THE WINNER, not to the base. Banding the pre-variant
+    # placement produced nothing that could win; banding the layout the
+    # other variants settled on took royer1 from 883 to 635. The rows a
+    # layout should snap to depend on where the parts ended up.
+    try:
+        banded = _band_placements(
+            [_canvas_instance_to_placement(i)
+             for i in best_result.canvas.instances])
+        current = {(i.refdes, _canvas_instance_to_placement(i).x_mils,
+                    _canvas_instance_to_placement(i).y_mils)
+                   for i in best_result.canvas.instances}
+        if banded and {(p.refdes, p.x_mils, p.y_mils) for p in banded} != current:
+            band_tries += 1
+            band_cand = build_canvas_from_plan(
+                plan, extractor,
+                layout_overrides={p.refdes: p for p in banded},
+                placement_hints=placement_hints, port_hints=port_hints,
+                strict_shorts=strict_shorts,
+            )
+            if band_cand.canvas.instances:
+                band_score = score_canvas(band_cand.canvas, plan)
+                band_rank = (0 if band_cand.ok else 1,
+                             band_score.total + _convention_cost(band_cand))
+                if band_rank < best_rank:
+                    best_score = band_score
+                    best_result = band_cand
+                    best_label = "banded"
+                    best_rank = band_rank
+    except Exception as bd_exc:                    # noqa: BLE001
+        best_result.notes.append(PipelineNote(
+            severity="warning",
+            text=("banding alternative failed and was skipped: "
+                  f"{type(bd_exc).__name__}: {bd_exc}"),
+        ))
+
     # NOTE: the deterministic neat-layout engine (schematic_layout.py) was
     # trialled here as an extra positions-only variant, but it consistently
     # lost to the Sugiyama-based placer that the canvas already uses: feeding
@@ -1113,7 +1438,11 @@ def build_best_canvas_from_plan(
     # and the canvas re-routes them with more crossings. It stays available as
     # a standalone preview (design_layout_schematic) and via
     # `_neat_engine_overrides`; it is not run in this hot path.
-    n_variants = 1 + len(target_aspects)
+    # Counted, not assumed: the shared-axis pass skips its rebuild when
+    # it moves nothing, so the number of variants actually tried varies
+    # per sheet and this note would otherwise overstate it.
+    n_variants = (1 + len(target_aspects) + align_tries
+                  + compact_tries + band_tries)
     best_result.notes.append(PipelineNote(
         severity="info",
         text=(
@@ -1164,18 +1493,34 @@ def build_best_canvas_from_plan(
                     severity="info",
                     text="convention polish applied to selected layout",
                 ))
-                return polished
-            best_result.notes.append(PipelineNote(
-                severity="info",
-                text=(
-                    "convention polish rejected (would regress: "
-                    f"crossings {best_score.wire_crossings}->"
-                    f"{pol_score.wire_crossings}, buses "
-                    f"{len(best_result.canvas.buses)}->"
-                    f"{len(polished.canvas.buses)}, score "
-                    f"{best_score.total:.0f}->{pol_score.total:.0f})"
-                ),
-            ))
+                # ADOPT it, do not return it. This used to return here,
+                # which skipped the repair-port stub upgrade below on every
+                # board where the polish was accepted -- the pass simply
+                # never ran, and said nothing, because its note is written
+                # only when it moves something. Found when a stub change
+                # flipped the mcu benchmark onto the polished path and the
+                # upgrade's own test went from 36 glyphs moved to none;
+                # calling the pass by hand on the returned canvas still
+                # moved 33, which is what showed the canvas was fine and
+                # the pass had not run.
+                best_result = polished
+            else:
+                # ELSE, not a fall-through. While the branch above returned,
+                # this note was unreachable on an accepted polish; adopting
+                # instead of returning made it fire alongside "applied", so
+                # the same run claimed the polish was both applied and
+                # rejected.
+                best_result.notes.append(PipelineNote(
+                    severity="info",
+                    text=(
+                        "convention polish rejected (would regress: "
+                        f"crossings {best_score.wire_crossings}->"
+                        f"{pol_score.wire_crossings}, buses "
+                        f"{len(best_result.canvas.buses)}->"
+                        f"{len(polished.canvas.buses)}, score "
+                        f"{best_score.total:.0f}->{pol_score.total:.0f})"
+                    ),
+                ))
     except Exception as pol_exc:
         best_result.notes.append(PipelineNote(
             severity="warning",
@@ -1307,6 +1652,167 @@ def _canvas_instance_to_placement(inst):  # type: ignore[no-untyped-def]
     )
 
 
+def _band_placements(placements, per_row: int = 3, grid_mils: int = 100):
+    """Pull parts into a small number of horizontal bands.
+
+    WHY. Grouping part centres into bands 300 mils apart across ten
+    human-drawn sheets, a person puts a median 4.3 parts in a row and
+    this engine puts 1.8, and it used MORE bands than the human on
+    every sheet measured. royer1 is the extreme: seventeen parts drawn
+    as one row by hand, spread over nine by the engine.
+
+    REPLICATED on 1046 layouts from 1325 hand-drawn sheets pulled from
+    172 public hardware repositories, filtered to files the KiCad
+    editor itself wrote and deduplicated: median 4.3 parts per row, the
+    same figure the demo sheets gave. This is how professionals draw,
+    not how KiCad's demo authors draw.
+
+    That single difference drives three separate gaps. More bands is
+    longer vertical runs (length), parts sharing no y (alignment), and
+    ground pins beyond the port clustering radius so each takes its own
+    glyph (ports).
+
+    Parts keep their x; only the band's y is imposed, so left-to-right
+    signal order survives. Scored like every other candidate: measured
+    over six sheets it beat the engine's existing best on royer1 (883
+    to 635) and buck_conv (333 to 299) and lost on three, where
+    squeezing rows together collided bodies or added crossings.
+    """
+    import math
+
+    from eda_agent.design.layout import PlacedPart
+
+    if len(placements) < 2:
+        return list(placements)
+    order = sorted(placements, key=lambda p: (p.y_mils, p.x_mils, p.refdes))
+    n_bands = max(1, math.ceil(len(order) / max(1, per_row)))
+    size = math.ceil(len(order) / n_bands)
+    out = []
+    for start in range(0, len(order), size):
+        group = order[start:start + size]
+        ys = sorted(p.y_mils for p in group)
+        target = int(round(ys[len(ys) // 2] / grid_mils) * grid_mils)
+        out.extend(
+            PlacedPart(refdes=p.refdes, sheet=p.sheet, x_mils=p.x_mils,
+                       y_mils=target, rotation=p.rotation)
+            for p in group
+        )
+    return out
+
+
+def _compact_placements(placements, factor: float, grid_mils: int = 100):
+    """Pull every part toward the centroid by ``factor``.
+
+    WHY. Measured on six human-drawn sheets, this engine's placement
+    covers 2.0 to 6.4 times the AREA of the human's for the same
+    netlist (royer1: 4260 x 1231 mils by hand against 6220 x 5380
+    here), and wire length follows from that directly. The parts are
+    kept apart by force_directed._BBOX_HALF_*, a half-extent guessed
+    from PIN COUNT that starts at 450 mils for a two-pin passive whose
+    real drawn body is nearer 60 x 20.
+
+    This does not fix that estimate, which is used by the shove and the
+    spring model alike. It offers the scorer a denser arrangement and
+    lets it decide. Probed over six sheets at 0.85, 0.70 and 0.55, some
+    factor won on two of them (royer1 583 to 498, buck_conv 443 to 267)
+    and every factor lost on the other four, by colliding bodies or
+    adding crossings. The caller tries 0.8 and 0.6, which bracket the
+    winning range without a third rebuild.
+
+    Uniform, because squeezing one axis is what the aspect variants
+    already do.
+    """
+    from eda_agent.design.layout import PlacedPart
+
+    if not placements:
+        return list(placements)
+    cx = sum(p.x_mils for p in placements) / len(placements)
+    cy = sum(p.y_mils for p in placements) / len(placements)
+
+    def snap(v: float) -> int:
+        return int(round(v / grid_mils) * grid_mils)
+
+    return [
+        PlacedPart(refdes=p.refdes, sheet=p.sheet,
+                   x_mils=snap(cx + (p.x_mils - cx) * factor),
+                   y_mils=snap(cy + (p.y_mils - cy) * factor),
+                   rotation=p.rotation)
+        for p in placements
+    ]
+
+
+def _align_placements(placements, grid_mils: int = 100, tol: int = 400):
+    """Nudge near-aligned parts onto a shared row, then a shared column.
+
+    WHY. Measured against 36 human-drawn KiCad demo sheets, this engine's
+    alignment penalty has a median of 0.555 against the humans' 0.164,
+    and it is worse on 30 of the 36. On a three-part sheet a human puts
+    two resistors on one y with the cap centred below; the engine spread
+    the same three over 1500 x 1100 mils with no two sharing an axis.
+
+    Rows first, because a schematic reads left to right and a shared row
+    is the commoner idiom; parts left alone by that pass then get a
+    chance at a shared column. A part is only moved when a neighbour is
+    already within ``tol``, so this straightens a layout rather than
+    rearranging it.
+
+    SAFE BY CONSTRUCTION, not by care: the caller scores this variant
+    like every other and keeps it only when the total improves, so a
+    nudge that collides two bodies or lengthens a wire simply loses.
+    """
+    from eda_agent.design.layout import PlacedPart
+
+    if len(placements) < 2:
+        return list(placements)
+
+    def snap(v: float) -> int:
+        return int(round(v / grid_mils) * grid_mils)
+
+    moved: dict[str, list[int]] = {
+        p.refdes: [p.x_mils, p.y_mils] for p in placements
+    }
+
+    def cluster(refs, axis: int) -> list[list[str]]:
+        """Consecutive runs whose coordinate stays within tol of the run."""
+        groups: list[list[str]] = []
+        for ref in sorted(refs, key=lambda r: moved[r][axis]):
+            if groups and abs(moved[ref][axis]
+                              - moved[groups[-1][0]][axis]) <= tol:
+                groups[-1].append(ref)
+            else:
+                groups.append([ref])
+        return groups
+
+    by_sheet: dict[str, list[str]] = {}
+    for part in placements:
+        by_sheet.setdefault(part.sheet, []).append(part.refdes)
+
+    for refs in by_sheet.values():
+        singles: list[str] = []
+        for group in cluster(refs, 1):          # rows: shared y
+            if len(group) < 2:
+                singles.extend(group)
+                continue
+            ys = sorted(moved[r][1] for r in group)
+            target = snap(ys[len(ys) // 2])
+            for ref in group:
+                moved[ref][1] = target
+        for group in cluster(singles, 0):       # columns: shared x
+            if len(group) < 2:
+                continue
+            xs = sorted(moved[r][0] for r in group)
+            target = snap(xs[len(xs) // 2])
+            for ref in group:
+                moved[ref][0] = target
+
+    return [
+        PlacedPart(refdes=p.refdes, sheet=p.sheet,
+                   x_mils=moved[p.refdes][0], y_mils=moved[p.refdes][1],
+                   rotation=p.rotation)
+        for p in placements
+    ]
+
+
 def _rescale_placements(placements, target_aspect: float):
     """Rescale placements so the bbox approximates target_aspect = w/h.
 
@@ -1400,10 +1906,16 @@ def _detect_routing_shorts(
     # instance's pin world coords. Aliased pin IDs (designator vs name)
     # both map to the same coordinate, so we deduplicate by storing the
     # pin's canonical designator only.
-    points: dict[tuple[int, int], list[tuple[str, str, str]]] = {}
+    #
+    # KEYED BY SHEET as well as position. A hierarchical design lays every
+    # sheet out in the same coordinate space, so a pin on one sheet and a
+    # wire on another routinely share a point and cannot merge. Sheet-blind,
+    # this reported those as shorts and blocked the emit for the whole
+    # board: the mcu benchmark splits into four sheets and lost two.
+    points: dict[tuple[str, int, int], list[tuple[str, str, str]]] = {}
     for inst in canvas.instances:
         for endpoint in inst.all_pin_endpoints():
-            key = (endpoint.x, endpoint.y)
+            key = (inst.sheet, endpoint.x, endpoint.y)
             net_name = pin_to_net.get((inst.refdes, endpoint.pin_id), "")
             points.setdefault(key, []).append(
                 (inst.refdes, endpoint.pin_id, net_name)
@@ -1424,7 +1936,9 @@ def _detect_routing_shorts(
             if n.name == wire.net
             for pr in n.pins
         }
-        for (px, py), pin_entries in points.items():
+        for (p_sheet, px, py), pin_entries in points.items():
+            if p_sheet != wire.sheet:
+                continue
             if not _point_on_segment(px, py, wire.x1, wire.y1,
                                      wire.x2, wire.y2):
                 continue
@@ -1462,15 +1976,32 @@ def _detect_routing_shorts(
     # wire sits at its point, so a label of net A landing on a FOREIGN pin or
     # on a FOREIGN net's wire merges A into that net -- a short Altium realises
     # on compile that neither the wire-vs-pin check above nor ERC reports.
+    # PER SHEET. Two objects at the same coordinates on DIFFERENT sheets
+    # cannot merge: a hierarchical design lays every sheet out in the same
+    # coordinate space, so coincidences across sheets are ordinary and
+    # meaningless. Reporting them blocks the emit for nothing, and it is
+    # not a rare corner: the mcu benchmark splits into four sheets, and a
+    # geometry change elsewhere put a label on 'memory' onto a wire on
+    # 'io', costing two false shorts and the whole board's emit.
+    # A BUS NAME IS NOT A FOREIGN NET. The bus line carries a label like
+    # 'D[0..7]' and runs past the very wires it collects, so a plain text
+    # comparison calls every one of those a cross-net short and blocks
+    # the emit for a bus that improves the drawing.
+    from eda_agent.design.buses import bus_name_covers
+
     label_shorts: list[tuple[str, str, int, int]] = []
     for lb in canvas.labels:
-        for refdes, pin_id, pin_net in points.get((lb.x, lb.y), []):
-            if pin_net and pin_net != lb.text:
+        for refdes, pin_id, pin_net in points.get((lb.sheet, lb.x, lb.y), []):
+            if (pin_net and pin_net != lb.text
+                    and not bus_name_covers(lb.text, pin_net)):
                 label_shorts.append(
                     (lb.text, f"pin {refdes}.{pin_id} (net {pin_net!r})",
                      lb.x, lb.y))
         for wire in canvas.wires:
-            if not wire.net or wire.net == lb.text:
+            if (not wire.net or wire.net == lb.text
+                    or bus_name_covers(lb.text, wire.net)):
+                continue
+            if wire.sheet != lb.sheet:
                 continue
             if _point_on_segment(lb.x, lb.y, wire.x1, wire.y1,
                                   wire.x2, wire.y2):
@@ -1564,6 +2095,117 @@ def _validate_canvas_against_plan(
         ))
 
 
+# Half-size, in mils, of the obstacle box put on a pin belonging to another
+# net. Wires run on a 100 mil grid, so anything under 50 stops a stub passing
+# THROUGH the pin while leaving the grid lines either side of it usable.
+_PIN_OBSTACLE_HALF = 40
+
+
+def _move_labels_off_foreign_copper(canvas, sheet_name: str) -> int:
+    """Slide any net label that sits on ANOTHER net's wire along its own.
+
+    A net label bonds through the copper beneath it, so it must sit on its
+    own net's wire; sitting on a different net's wire is a short Altium
+    merges on compile, and the emit is blocked for it. The label points are
+    chosen per pin, before the sheet's other nets are routed, so nothing
+    upstream can see the conflict.
+
+    The label is moved to the point on ITS OWN net's copper that is nearest
+    to where it was and clear of every other net's, so it keeps bonding and
+    stays as close as possible to the pin it names. A label with nowhere
+    clear to go is left where it is for the shorts check to report.
+
+    Found when standing shunt passives upright shifted the geometry: six
+    labels on the mcu benchmark landed on foreign wires that had never
+    touched them before. The conflict was always reachable; the rotation
+    change only dealt a hand that hit it.
+
+    Returns how many labels moved.
+    """
+    def on_seg(px, py, x1, y1, x2, y2) -> bool:
+        if x1 == x2:
+            return px == x1 and min(y1, y2) <= py <= max(y1, y2)
+        if y1 == y2:
+            return py == y1 and min(x1, x2) <= px <= max(x1, x2)
+        return False
+
+    wires = [w for w in canvas.wires if w.sheet == sheet_name]
+    if not wires:
+        return 0
+    by_net: dict[str, list] = {}
+    for w in wires:
+        by_net.setdefault(w.net, []).append(w)
+
+    moved = 0
+    for idx, label in enumerate(canvas.labels):
+        if label.sheet != sheet_name:
+            continue
+        foreign = [w for w in wires if w.net and w.net != label.text]
+        if not any(on_seg(label.x, label.y, w.x1, w.y1, w.x2, w.y2)
+                   for w in foreign):
+            continue
+        own = by_net.get(label.text, [])
+        best = None
+        for w in own:
+            # Candidate points along this segment, on the wire grid.
+            if w.x1 == w.x2:
+                lo, hi = sorted((w.y1, w.y2))
+                pts = [(w.x1, y) for y in range(lo, hi + 1, 100)]
+            elif w.y1 == w.y2:
+                lo, hi = sorted((w.x1, w.x2))
+                pts = [(x, w.y1) for x in range(lo, hi + 1, 100)]
+            else:
+                continue
+            for (px, py) in pts:
+                if any(on_seg(px, py, f.x1, f.y1, f.x2, f.y2) for f in foreign):
+                    continue
+                d = abs(px - label.x) + abs(py - label.y)
+                if best is None or d < best[0]:
+                    best = (d, px, py)
+        if best is None:
+            continue
+        canvas.labels[idx] = replace(label, x=best[1], y=best[2])
+        moved += 1
+    return moved
+
+
+# How many offender nets the cross-net cull weighs before committing. One
+# is the old behaviour (always the worst). Each extra candidate costs a
+# full trial cull, and the loop repeats until the sheet is clean.
+_CULL_CANDIDATES = 4
+
+
+def _pick_cull_candidate(offenders: dict, try_cull):
+    """Which offender net to cull: the first that strands no pin.
+
+    ``offenders`` maps net name to how many cross-net meetings it is in;
+    ``try_cull(name)`` reports what culling it would cost without doing it,
+    as ``(segments, label_points, stranded, is_rail)``.
+
+    Culling a net strands a pin when no length of that pin's stub clears the
+    other nets' copper, and the sheet is then declined outright. WHICH net is
+    culled decides whether that happens, and the worst offender is only the
+    best first guess: measured over 587 public sheets, weighing the worst
+    four instead of taking the worst took stranded-pin declines from 19 to 5
+    and the overall decline rate from 7.8% to 6.1%.
+
+    Falls back to the worst offender when every candidate strands someone, so
+    the loop always makes progress. Returns ``(name, attempt)``.
+    """
+    ranked = sorted(offenders, key=lambda n: (-offenders[n], n))
+    fallback = None
+    for candidate in ranked[:_CULL_CANDIDATES]:
+        attempt = try_cull(candidate)
+        if attempt[2] == 0:
+            return candidate, attempt
+        if fallback is None:
+            fallback = (candidate, attempt)
+    if fallback is None:                    # _CULL_CANDIDATES <= 0
+        worst = ranked[0]
+        return worst, try_cull(worst)
+    return fallback
+
+
 def _wire_sheet(
     *,
     canvas: SchematicCanvas,
@@ -1595,6 +2237,39 @@ def _wire_sheet(
     # Stagger counter per (refdes, direction) so two adjacent same-
     # direction stubs don't share an L-bend column.
     stagger_counter: dict[tuple[str, int, int], int] = {}
+
+    # Every placed pin on the sheet, as (box, net). A pin's hotspot sits at
+    # the far end of the pin, OUTSIDE its body rect, so ``body_obstacles``
+    # does not cover it and a stub was free to run straight through another
+    # net's pin. Altium auto-merges there, so the sheet was drawn and only
+    # then rejected by the shorts check, emitting nothing.
+    #
+    # MEASURED before writing this: of 190 shorting segments over the 94
+    # declined sheets, 173 are STUBS and 17 are routed segments. Handing the
+    # same pins to the ROUTER instead was tried first and moved the decline
+    # rate 16.0% -> 15.8% while costing 40% more build time, which is what
+    # sent me to count where the offending segments came from.
+    #
+    # Outcome over 587 public sheets: declines 94 -> 75 (16.0% -> 12.8%),
+    # genuine cross-net shorts among them 73 -> 47, stub shorts 173 -> 81.
+    # Stranded-pin declines rose 6 -> 15, which is the cost: a stub clipped
+    # short has less room to clear other copper. Net 19 more sheets emit.
+    # Quality did not pay for it -- on the 40 sheets both versions lay out,
+    # mean engine score 941 -> 917, two sheets much better, one slightly
+    # worse, 37 unchanged -- and the build got faster (190s -> 156s), since
+    # a stub that does not short saves the fallback and cull work.
+    _plan_pin_net: dict[tuple[str, str], str] = {}
+    for _n in plan.nets:
+        for _pr in _n.pins:
+            _plan_pin_net[(_pr.refdes, _pr.pin)] = _n.name
+    pin_boxes: list[tuple[tuple[int, int, int, int], str]] = []
+    for inst in instances:
+        for ep in inst.all_pin_endpoints():
+            pin_boxes.append((
+                (ep.x - _PIN_OBSTACLE_HALF, ep.y - _PIN_OBSTACLE_HALF,
+                 ep.x + _PIN_OBSTACLE_HALF, ep.y + _PIN_OBSTACLE_HALF),
+                _plan_pin_net.get((inst.refdes, ep.pin_id), ""),
+            ))
 
     # Per-net action list: (pin_ref, (end_x, end_y), pin_orient)
     sheet_net_actions: dict[
@@ -1638,15 +2313,27 @@ def _wire_sheet(
             stagger_counter[stagger_key] = (
                 stagger_counter.get(stagger_key, 0) + 1
             )
+            # A pin on THIS net is not an obstacle: a stub that reaches it
+            # is a connection, not a short. Foreign pins go in as HARD
+            # obstacles, which the minimum stub length may not override:
+            # a foreign pin one grid step along the stub's path is exactly
+            # where the floor would otherwise land the stub end.
+            foreign_pin_boxes = [
+                box for box, box_net in pin_boxes if box_net != net.name
+            ]
             (hot_x, hot_y), (end_x, end_y) = _stub_endpoints(
                 endpoint.x, endpoint.y, endpoint.orientation,
                 endpoint.length,
-                obstacles=body_obstacles,
+                obstacles=body_obstacles + foreign_pin_boxes,
                 extra_length_mils=extra,
+                hard_obstacles=foreign_pin_boxes,
             )
             _stub = (hot_x, hot_y, end_x, end_y, net.name)
-            sheet_wire_segments.append(_stub)
-            stub_segments.add(_stub)
+            # A zero-length stub is not a wire. It means the clip found no
+            # room at all, and the pin's own hotspot serves as the stub end.
+            if (hot_x, hot_y) != (end_x, end_y):
+                sheet_wire_segments.append(_stub)
+                stub_segments.add(_stub)
             net_actions.append((pin_ref, (end_x, end_y), endpoint.orientation))
         if net_actions:
             sheet_net_actions[net.name] = net_actions
@@ -1791,9 +2478,20 @@ def _wire_sheet(
             # centroid + spoke routing can't run a wire through them
             # (Altium auto-merges coincident endpoints; ERC wouldn't
             # catch the resulting silent short).
+            # A PIN WITH NO NET IS STILL COPPER. The `pn and` guard here
+            # let the router treat an unnetted pin as empty space, while
+            # the shorts detector forbids a wire through ANY foreign pin
+            # and names that case explicitly (a stray connection into the
+            # part's auto-named net). So the router was permitted to make
+            # exactly the short the checker then blocks the emit for.
+            # Measured on the mcu benchmark: a GND wire ran through
+            # U1.28, whose plan net is none, and declined the sheet. This
+            # is not a rare shape either: about 22% of placed pins carry
+            # no plan net, because DesignPlan.Net needs two pins and a
+            # pin on its own rail glyph cannot be expressed.
             other_net_pin_points = [
                 (x, y) for (x, y, pn) in pin_world_coords
-                if pn and pn != net.name
+                if pn != net.name
             ]
             # Look up the actual sheet bounds for clamping. The Sheet
             # object always carries width_mils / height_mils set from
@@ -1865,43 +2563,76 @@ def _wire_sheet(
     # back leaves its pin on a floating label, which is a hard failure: the
     # netlist would be wrong, so best-of must move to another variant rather
     # than emit it.
-    while True:
-        offenders = _cross_net_meeting_counts(sheet_wire_segments)
-        if not offenders:
-            break
-        worst = max(offenders, key=lambda n: (offenders[n], n))
-        worst_net = next((n for n in nets if n.name == worst), None)
-        is_rail = worst_net is not None and (
-            _is_power_net(worst_net) or _is_ground_net(worst_net))
-        others = [s for s in sheet_wire_segments if s[4] != worst]
-        stranded = 0
-        label_points: list[tuple[tuple[int, int], int]] = []
+    def _try_cull(candidate: str):
+        """What culling ``candidate`` would cost, without doing it.
+
+        Returns ``(segments, label_points, stranded, is_rail)``. Pure, so the
+        loop below can weigh several candidates and pick one that strands
+        nobody instead of committing to the worst offender on sight.
+        """
+        cand_net = next((n for n in nets if n.name == candidate), None)
+        rail = cand_net is not None and (
+            _is_power_net(cand_net) or _is_ground_net(cand_net))
+        kept = [s for s in sheet_wire_segments if s[4] != candidate]
+        n_stranded = 0
+        points: list[tuple[tuple[int, int], int]] = []
         # Rails keep the original all-segments drop: they are drawn with
         # glyphs, and _repair_floating_power_pins below bonds every pin
         # the cull bared with a coincident port. Holding stubs back for
         # them only orphans the cluster glyph the spoke used to reach.
-        for stub in ([] if is_rail else [
+        for stub in ([] if rail else [
                 s for s in sheet_wire_segments
-                if s[4] == worst and s in stub_segments]):
+                if s[4] == candidate and s in stub_segments]):
             hot_x, hot_y, end_x, end_y, _ = stub
             dx = (end_x > hot_x) - (end_x < hot_x)
             dy = (end_y > hot_y) - (end_y < hot_y)
             span = max(abs(end_x - hot_x), abs(end_y - hot_y))
             placed = False
-            # Longest stub first, shortening toward the pin. A shorter
-            # stub reaches past less foreign copper, so a pin whose full
-            # stub is blocked usually still gets a short one, which is
-            # all the label needs to bond.
-            for length in range(span, 0, -100):
-                cand = (hot_x, hot_y,
-                        hot_x + dx * length, hot_y + dy * length, worst)
-                if worst not in _cross_net_meeting_counts(others + [cand]):
-                    others.append(cand)
-                    label_points.append(((cand[2], cand[3]), 0))
-                    placed = True
+            # The pin's own direction first, then the two PERPENDICULAR
+            # escapes. A stub bonds at the pin end whichever way it
+            # leaves, so a pin whose natural direction is blocked at
+            # every length is not actually stranded while a sideways
+            # stub is clear; declaring it stranded declines the whole
+            # sheet. The reverse direction is never tried, because that
+            # runs back through the component body.
+            for ddx, ddy in ([(dx, dy)]
+                             + ([(0, 1), (0, -1)] if dx else [(1, 0), (-1, 0)])):
+                # Longest stub first, shortening toward the pin. A shorter
+                # stub reaches past less foreign copper, so a pin whose full
+                # stub is blocked usually still gets a short one, which is
+                # all the label needs to bond.
+                for length in range(span, 0, -100):
+                    trial = (hot_x, hot_y,
+                             hot_x + ddx * length, hot_y + ddy * length,
+                             candidate)
+                    if candidate not in _cross_net_meeting_counts(kept + [trial]):
+                        kept.append(trial)
+                        points.append(((trial[2], trial[3]), 0))
+                        placed = True
+                        break
+                if placed:
                     break
             if not placed:
-                stranded += 1
+                n_stranded += 1
+        return kept, points, n_stranded, rail
+
+    while True:
+        offenders = _cross_net_meeting_counts(sheet_wire_segments)
+        if not offenders:
+            break
+        # WEIGH THE CANDIDATES, do not just take the worst. Culling a net
+        # strands a pin when no length of its stub clears the other nets'
+        # copper, and the sheet is then declined outright: 41% of the
+        # remaining declines over 587 public sheets are that. Which net is
+        # culled decides whether it happens, and the worst offender is only
+        # the best FIRST guess. So try the worst few and keep the first that
+        # strands nobody, falling back to the worst when they all do.
+        #
+        # Bounded at _CULL_CANDIDATES: each trial re-runs the meeting count
+        # per stub length, and this loop already repeats until the sheet is
+        # clean.
+        worst, (others, label_points, stranded, is_rail) = _pick_cull_candidate(
+            offenders, _try_cull)
         sheet_wire_segments[:] = others
 
         # Label each pin at its (possibly shortened) stub end so every
@@ -1956,14 +2687,95 @@ def _wire_sheet(
         ))
 
     # Flush wires to canvas + detect junctions on the assembled list.
-    wire_objects = [
-        WireSegment(x1=x1, y1=y1, x2=x2, y2=y2, sheet=sheet_name, net=net_name)
-        for (x1, y1, x2, y2, net_name) in sheet_wire_segments
-    ]
+    #
+    # DEDUPLICATED. Separate stages can route the same span for the same
+    # net: a rail spoke and a stub, most often. Measured on the demo
+    # sheets, 5 of 541 emitted segments were exact repeats, up to 8% of
+    # one sheet's wire length. Drawn twice they cost length twice and
+    # land as two coincident wires in the editor. Direction is folded
+    # out too, so A->B and B->A count as one.
+    # AND COLLINEAR OVERLAPS ARE MERGED, not just exact repeats. Two
+    # same-net segments lying partly on top of each other draw the
+    # shared span twice: measured across 21 demo sheets, 25 such pairs
+    # and 7950 mils of doubled wire. The control says this is a defect
+    # rather than an idiom -- the same detector finds ZERO on the
+    # human-drawn sheets, in 426 wires.
+    #
+    # Only genuine overlaps are merged, not segments that merely touch
+    # end to end, so the change removes doubled wire without rewriting
+    # anyone's topology. Junction detection below still runs on the RAW
+    # list, so merging cannot lose a dot.
+    lanes: dict[tuple[str, str, int], list[list[int]]] = {}
+    for (x1, y1, x2, y2, net_name) in sheet_wire_segments:
+        if x1 == x2:
+            key, lo, hi = (net_name, "v", x1), min(y1, y2), max(y1, y2)
+        elif y1 == y2:
+            key, lo, hi = (net_name, "h", y1), min(x1, x2), max(x1, x2)
+        else:
+            key, lo, hi = (net_name, "d", 0), 0, 0
+        lanes.setdefault(key, []).append([lo, hi, x1, y1, x2, y2])
+
+    wire_objects = []
+    for (net_name, kind, fixed), spans in lanes.items():
+        if kind == "d":
+            for _lo, _hi, x1, y1, x2, y2 in spans:
+                wire_objects.append(WireSegment(
+                    x1=x1, y1=y1, x2=x2, y2=y2, sheet=sheet_name,
+                    net=net_name))
+            continue
+        merged: list[list[int]] = []
+        for lo, hi, *_ in sorted(spans):
+            if merged and lo < merged[-1][1]:      # strict: touching stays
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        for lo, hi in merged:
+            if kind == "v":
+                seg = (fixed, lo, fixed, hi)
+            else:
+                seg = (lo, fixed, hi, fixed)
+            wire_objects.append(WireSegment(
+                x1=seg[0], y1=seg[1], x2=seg[2], y2=seg[3],
+                sheet=sheet_name, net=net_name))
     canvas.add_wires(wire_objects)
+    _move_labels_off_foreign_copper(canvas, sheet_name)
     # Pass the net tag so a junction dot is only placed where SAME-net wires
     # meet -- a dot at a cross-net wire crossing would short the two nets.
+    #
+    # THEN FILTERED AGAINST THE MERGED GEOMETRY. Detection runs on the
+    # raw segments so a merge cannot lose a dot, but a dot at a former
+    # collinear join is left sitting inside one continuous wire once
+    # those two segments become one, and a dot where two wire ENDS meet
+    # marks a corner rather than a branch. Measured before this: 18 such
+    # dots across 21 sheets, 0 missing.
+    #
+    # A branch is counted in ARMS: a wire ending at the point is one arm,
+    # a wire passing through it is two. Three arms is a real T or cross;
+    # two is a corner or a join and needs no dot.
+    def _arms_at(px: int, py: int, net: str) -> int:
+        arms = 0
+        for w in wire_objects:
+            if w.net != net:
+                continue
+            if (px, py) in ((w.x1, w.y1), (w.x2, w.y2)):
+                arms += 1
+            elif w.x1 == w.x2 and px == w.x1 and (
+                    min(w.y1, w.y2) < py < max(w.y1, w.y2)):
+                arms += 2
+            elif w.y1 == w.y2 and py == w.y1 and (
+                    min(w.x1, w.x2) < px < max(w.x1, w.x2)):
+                arms += 2
+        return arms
+
     for jx, jy in _detect_junctions(sheet_wire_segments):
+        nets_here = {w.net for w in wire_objects
+                     if (jx, jy) in ((w.x1, w.y1), (w.x2, w.y2))
+                     or (w.x1 == w.x2 and jx == w.x1
+                         and min(w.y1, w.y2) <= jy <= max(w.y1, w.y2))
+                     or (w.y1 == w.y2 and jy == w.y1
+                         and min(w.x1, w.x2) <= jx <= max(w.x1, w.x2))}
+        if not any(_arms_at(jx, jy, net) >= 3 for net in nets_here):
+            continue
         canvas.add_junctions([Junction(x=jx, y=jy, sheet=sheet_name)])
 
 
@@ -1982,6 +2794,46 @@ def _cluster_radius_for_net(
       convention -- a decoupling row on a 400-mil column pitch reads as
       clean parallel columns. The old shared 1000-mil radius merged the
       row into one port with a wandering spoke trunk beneath it.
+
+      THE CONVENTION CLAIM ABOVE IS NOT WHAT HUMANS DO. Measured on 95
+      ground rails across the KiCad demo sheets: the median sheet draws
+      0.65 ground glyphs per rail pin, and only 22% of rails use one
+      glyph per pin. Power rails share harder still, 0.50 and 17% of
+      161 rails. Replicated on 891 ground rails and 1311 power rails
+      from 172 public hardware repositories: 0.65 and 0.50, the same
+      two figures to two decimal places. Sharing is the norm and per-pin drops are the
+      exception, which is a large part of why this engine emits about
+      twice the glyphs a human does.
+
+      A WIDER RADIUS ALSO SCORES BETTER, measured over eight sheets:
+      at 1000 the glyph count falls 47 to 38 and the total improves
+      3411 to 3287, buying that with 10100 mils of extra wire and no
+      change in crossings.
+
+      AND A WIDER RADIUS IS NOT THE MECHANISM ANYWAY. Rendering the
+      rectifier sheet beside this engine's layout of it: the person
+      ran a return WIRE along the bottom of the sheet, collected every
+      ground pin onto it, and hung ONE symbol off that wire. This
+      emitter starts from the opposite end, placing a symbol per
+      cluster and routing spokes out to the pins, so the glyph count
+      follows how spread the pins are and no radius makes one symbol
+      serve a sheet-wide rail.
+
+      AND A RAIL TRUNK ONLY PAYS ON A COMPACT LAYOUT. Prototyped by
+      replacing every glyph on a rail with one glyph, a trunk wire and
+      a drop per pin: DSI_CSI 294 to 228 and the jetson baseboard 237
+      to 228, but rectifier 218 to 421 and sallen_key 449 to 1141. The
+      drops cost more wire than the glyphs save.
+
+      A person's trunk has SHORT drops because their parts sit in few
+      rows; this engine spreads the same netlist over roughly twice as
+      many rows (see _band_placements), so every drop is long. Row
+      count is upstream of glyph count, and a rail-as-wire feature
+      bolted onto a spread layout makes the drawing worse.
+
+      Left at 300. The reason 1000 was abandoned is a wandering spoke
+      trunk, and a trunk that wanders is exactly what a score made of
+      crossings, length and glyph count cannot see.
     * POWER: wide (1000). A rail bar carries its NET NAME, which is
       typically wider than a decap column pitch; per-pin bars overlap
       their names ("USB_3VUSB_3V3"), so nearby rail pins share one bar.
@@ -2541,6 +3393,60 @@ def _repair_floating_power_pins(
                 and (p.x, p.y) not in keep
             )
         ]
+
+
+#: How far the pin-count bucket may be wrong about a part before its
+#: real drawn size is used instead. See `_oversized_half_map`.
+_SIZING_TOLERANCE_MILS = 300
+
+
+def _oversized_half_map(plan: DesignPlan, symbols: dict) -> dict:
+    """Real half-extents for the parts the pin-count bucket UNDER-states.
+
+    ``_bbox_half`` keys on the PLAN's pin count, so a 40-pin connector
+    wired on 8 pins is sized as a small part however large it is drawn,
+    and an 80-pin IC drawn 3800 by 6800 mils is sized at 1000. That is
+    how parts end up drawn INSIDE other parts: every pass asks the
+    bucket, and the bucket is wrong about exactly the parts big enough
+    to swallow a neighbour.
+
+    ONLY the under-statement is corrected, which is the difference
+    between this and supplying measured extents outright. Measured
+    twice, the full substitution makes the drawing WORSE: crossings 0.21
+    to 0.24 of the human's, long wires 1.43 to 1.96, alignment 0.82 to
+    0.69. The force-directed stiffness sweep plus best-of selection
+    amplifies a per-part sizing change into large uncorrelated swings,
+    and a uniform bucket does not have that problem. Correcting only the
+    parts the bucket gets badly wrong leaves the common case uniform.
+    """
+    from eda_agent.design.force_directed import _bbox_half
+
+    pins: dict[str, int] = {}
+    for net in plan.nets:
+        for pr in net.pins:
+            pins[pr.refdes] = pins.get(pr.refdes, 0) + 1
+    out: dict[str, tuple[int, int]] = {}
+    for part in plan.parts:
+        model = symbols.get((part.lib_path or "", part.lib_ref))
+        if model is None:
+            continue
+        bb = model.body_bbox
+        hx = max(1, (bb.x_max - bb.x_min) // 2)
+        hy = max(1, (bb.y_max - bb.y_min) // 2)
+        est = _bbox_half(pins.get(part.refdes, 2))
+        # BADLY wrong, not merely wrong. Almost every two-pin symbol
+        # measures a little over its bucket -- 150 against 100 on the y
+        # axis is typical -- and correcting those re-sizes most of the
+        # sheet, which moves every part and lands the stiffness sweep on
+        # a different minimum (measured: crossings 0.21 to 0.45 of the
+        # human's, long wires 1.43 to 1.84). The parts that actually
+        # cause the defect are the ones the bucket is wrong about by
+        # HUNDREDS of mils: an 80-pin IC drawn 1750 by 3300 and bucketed
+        # at 1000 is what a neighbour ends up inside.
+        if (hx - est >= _SIZING_TOLERANCE_MILS
+                or hy - est >= _SIZING_TOLERANCE_MILS):
+            out[part.refdes] = (max(hx, est), max(hy, est))
+    return out
 
 
 def _ic_pin_offsets(

@@ -13,6 +13,11 @@ all pairs). Tests assert behavioural properties:
 
 from __future__ import annotations
 
+import os
+import pathlib
+
+import pytest
+
 from eda_agent.design.layout import (
     SHEET_MAX_X_MILS,
     SHEET_MAX_Y_MILS,
@@ -1227,3 +1232,445 @@ def test_no_stranded_parts_rule_noop_when_all_connected() -> None:
     )
     assert promoted == []
     assert reps == {"VCC": "port", "VMID": "wire", "GND": "port"}
+
+
+# ---------------------------------------------------------------------------
+# Part sizing: the real drawn body when it is known, the estimate otherwise.
+# ---------------------------------------------------------------------------
+
+def test_a_measured_body_wins_over_the_pin_count_estimate():
+    """The estimate keys on the PLAN's pin count, so it is wrong in both
+    directions at once.
+
+    Measured on pic_sockets: two capacitors sized 450 against a real 80,
+    and a 40-pin connector wired on 8 pins sized 800 against a real
+    1050. The second is the one that puts wires through bodies.
+    """
+    from eda_agent.design.force_directed import _bbox_half, _half_map
+
+    # A PAIR per part now: a single value has to be the larger of the two
+    # axes to be safe, and that separates a tall thin IC horizontally by
+    # its height. A scalar measurement still means "square".
+    pin_count = {"C6": 2, "P3": 8}
+    out = _half_map(pin_count, {"C6": 280, "P3": 1250})
+    assert out == {"C6": (280, 280), "P3": (1250, 1250)}
+    assert _half_map(pin_count, {"C6": (120, 300), "P3": (1250, 400)}) == {
+        "C6": (120, 300), "P3": (1250, 400)}
+    # And those differ from what the estimate would have said.
+    assert _bbox_half(2) != 280 and _bbox_half(8) != 1250
+
+
+def test_a_part_with_no_measured_body_keeps_the_estimate():
+    """A symbol that will not extract must not become size zero."""
+    from eda_agent.design.force_directed import _bbox_half, _half_map
+
+    out = _half_map({"C6": 2, "U1": 20}, {"C6": 280})
+    assert out["C6"] == (280, 280)
+    assert out["U1"] == (_bbox_half(20), _bbox_half(20))
+
+
+def test_no_measurements_at_all_reproduces_the_old_behaviour():
+    """The override has to be invisible when absent, or every caller
+    that does not supply one changes layout."""
+    from eda_agent.design.force_directed import _bbox_half, _half_map
+
+    pin_count = {"R1": 2, "R2": 3, "U1": 8, "U2": 40}
+    assert _half_map(pin_count, None) == {
+        r: (_bbox_half(n), _bbox_half(n)) for r, n in pin_count.items()}
+    assert _half_map(pin_count, {}) == _half_map(pin_count, None)
+
+
+def test_a_zero_measurement_falls_back_rather_than_collapsing():
+    """A degenerate body (a net tie, or graphics this reader does not
+    know) must not size a part to nothing."""
+    from eda_agent.design.force_directed import _bbox_half, _half_map
+
+    out = _half_map({"NT1": 2}, {"NT1": 0})
+    assert out["NT1"] == (_bbox_half(2), _bbox_half(2))
+
+
+def test_the_shove_honours_a_measured_body():
+    """The helper is only useful if the shove actually reads it.
+
+    The separation is derived from the constant rather than written in,
+    because this test failed for the wrong reason once: it hard-coded 700
+    mils as "overlapping under the estimate", and when the estimate was
+    retuned from 450 to 200 that gap stopped overlapping, so the
+    fixture no longer created the hazard the test exists to catch and the
+    FIRST assertion was what failed.
+    """
+    from eda_agent.design.force_directed import (
+        _BBOX_HALF_2PIN_MILS, _BODY_CLEARANCE_MILS, _hard_shove_pass)
+    from eda_agent.design.layout import PlacedPart
+
+    reach = 2 * _BBOX_HALF_2PIN_MILS + _BODY_CLEARANCE_MILS
+    # Inside the estimate's reach AND on the 100-mil grid: the shove
+    # snaps its output, so an off-grid starting gap comes back moved by
+    # the snap alone and the second assertion fails for the wrong reason.
+    gap = ((reach - 100) // 100) * 100
+    plan = _plan_with_n_parts(2)
+    placed = [
+        PlacedPart(refdes="R1", sheet="main", x_mils=3000, y_mils=3000,
+                   rotation=0),
+        PlacedPart(refdes="R2", sheet="main", x_mils=3000 + gap, y_mils=3000,
+                   rotation=0),
+    ]
+
+    estimated, _ = _hard_shove_pass(plan, placed)
+    moved = {p.refdes: (p.x_mils, p.y_mils) for p in estimated}
+    assert moved["R1"] != (3000, 3000) or moved["R2"] != (3000 + gap, 3000), (
+        "the estimate should consider these overlapping and separate them")
+
+    small = 10                                # real bodies, comfortably clear
+    assert 2 * small + _BODY_CLEARANCE_MILS < gap
+    measured, residual = _hard_shove_pass(
+        plan, placed, {"R1": small, "R2": small})
+    kept = {p.refdes: (p.x_mils, p.y_mils) for p in measured}
+    assert kept["R1"] == (3000, 3000) and kept["R2"] == (3000 + gap, 3000), (
+        "with real bodies these do not overlap and must be left alone")
+    assert residual == 0
+
+
+def test_the_solver_does_not_accumulate_forces_in_hash_order():
+    """A TRIPWIRE, not a proof. The proof is the test below it.
+
+    ``spring_pairs`` was a set of refdes tuples and the solver adds a
+    force per pair. Set iteration follows string hash order, string
+    hashes are randomised per process, and floating-point addition is
+    not associative, so the accumulated force differed between runs.
+    The layout then diverged over the solver's iterations, and the
+    pipeline amplified sub-grid noise into a different WINNING
+    candidate.
+
+    MEASURED on rp2040 before the fix: 954, 1070 and 2112 in three
+    separate processes; 1314.2 at hash seed 12345 against 2119.9 at
+    seed 0. After it, 1954.8 everywhere.
+
+    This assertion is cheap and shallow. A behavioural test needs a
+    sheet big enough for two candidates to sit close enough that float
+    noise flips the choice: an 8-part ring, a 30-part synthetic mesh,
+    and five real demo sheets ALL failed to reproduce it, and the first
+    version of this guard passed happily against the reverted bug.
+
+    AND THE SUITE CANNOT SEE THIS BUG AT ALL. Measured, with the bug
+    put back: 1301 of 1302 tests pass at hash seeds 0, 12345 and
+    987654, and the single failure is this assertion. pytest runs in
+    one process, one process has one hash seed for its lifetime, so no
+    test inside it can observe a divergence BETWEEN processes. That is
+    why this went unnoticed, and why the reproducer below has to spawn
+    subprocesses rather than call the layout directly.
+    """
+    import inspect
+
+    from eda_agent.design import force_directed
+
+    source = inspect.getsource(force_directed._force_directed_layout)
+    assert "spring_pairs = sorted(" in source, (
+        "spring_pairs must be ordered before the solver sums over it")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("EDA_AGENT_SLOW"),
+    reason="takes about 4 minutes; set EDA_AGENT_SLOW=1 to run it")
+@pytest.mark.skipif(
+    not pathlib.Path(
+        "C:/Program Files/KiCad/10.0/share/kicad/demos").is_dir(),
+    reason="KiCad demo projects are not installed here")
+def test_a_real_sheet_places_the_same_under_two_hash_seeds():
+    """The only thing found that actually reproduces the divergence.
+
+    Two subprocesses, deliberately different PYTHONHASHSEED. One
+    process cannot see this at all, because it reuses a single seed for
+    its lifetime, which is exactly why it went unnoticed: every
+    in-process determinism check I ran passed while three separate runs
+    of the same sheet scored 954, 1070 and 2112.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent("""
+        import sys, pathlib
+        from eda_agent.design.human_benchmark import compare_sheet
+        demos = pathlib.Path("C:/Program Files/KiCad/10.0/share/kicad/demos")
+        sheet = next(demos.rglob("rp2040.kicad_sch"))
+        result = compare_sheet(
+            sheet.read_text(encoding="utf-8", errors="replace"), str(sheet))
+        print(f"{result.engine_total:.1f}")
+    """)
+
+    def run(seed: str) -> str:
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        out = subprocess.run([sys.executable, "-c", script], env=env,
+                             capture_output=True, text=True, timeout=900)
+        assert out.returncode == 0, out.stderr[-800:]
+        return out.stdout.strip()
+
+    assert run("0") == run("12345"), (
+        "the same sheet laid out differently under two hash seeds")
+
+
+# ------- the shove is sized by the real body where the estimate is small ----
+
+def test_only_an_understated_body_is_corrected_in_the_shove():
+    """The pin-count estimate is wrong in BOTH directions, and only one of
+    them causes the defect.
+
+    Measured on real symbols: a 2-pin capacitor is estimated at 450 and
+    really about 80; a large IC is estimated at 1200 and really 3300. Only
+    the under-statement puts a part inside another part's body, because the
+    shove then thinks the big part is small. Correcting the over-statement
+    as well packs every small part tighter, which moved a timing resistor to
+    the wrong side of its IC and cost a bus its crossing gate.
+
+    MEASURED over 15 sheets holding a body bigger than the estimate can
+    express: 22 body overlaps and 8 parts wholly inside another. Correcting
+    both directions gave 10 and 5 and broke three placement tests;
+    correcting only the under-statement gives 6 and 5 and breaks none.
+    """
+    import inspect
+
+    from eda_agent.design import pipeline
+
+    source = inspect.getsource(pipeline.build_canvas_from_plan)
+    assert "if hx > est or hy > est:" in source, (
+        "the shove must be given the real body only where it is LARGER "
+        "than the pin-count estimate")
+    assert "body_half=shove_half" in source
+
+
+def test_half_map_reports_a_pair_so_a_tall_part_is_not_spread_sideways():
+    """One value has to be the larger axis to be safe, and a tall thin IC
+    would then be separated horizontally by its height."""
+    from eda_agent.design.force_directed import _half_map
+
+    out = _half_map({"U1": 20}, {"U1": (400, 3300)})
+    assert out["U1"] == (400, 3300)
+
+
+# --------------- the placer uses the sheet the plan declares ---------------
+
+def _sized_plan(size: str):
+    from eda_agent.design.plan import DesignPlan
+
+    return DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": size}],
+        "parts": [{"refdes": "R1", "lib_ref": "R", "lib_path": "/x.SchLib"}],
+        "nets": [{"name": "N", "pins": [{"refdes": "R1", "pin": "1"},
+                                        {"refdes": "R1", "pin": "2"}]}],
+    })
+
+
+def test_a4_reproduces_the_constants_exactly():
+    """78% of corpus sheets are A4, and their placement must not move.
+
+    The bounds are the paper less the same absolute frame offsets A4 has,
+    so A4 comes out at the constants by construction. A naive "paper less a
+    1000 mil margin" would have been 900 short on height and moved every
+    one of those sheets.
+    """
+    from eda_agent.design.force_directed import (
+        SHEET_MAX_X_MILS, SHEET_MAX_Y_MILS, SHEET_ORIGIN_X_MILS,
+        SHEET_ORIGIN_Y_MILS, sheet_bounds,
+    )
+
+    expected = (SHEET_ORIGIN_X_MILS, SHEET_ORIGIN_Y_MILS,
+                SHEET_MAX_X_MILS, SHEET_MAX_Y_MILS)
+    assert sheet_bounds(_sized_plan("A4")) == expected
+    assert sheet_bounds(None) == expected, "no plan means the old constants"
+    # A5 is genuinely smaller, and gets smaller bounds. Pinning it to the
+    # A4 constants would let the shove push a part off the paper.
+    _, _, a5_x, a5_y = sheet_bounds(_sized_plan("A5"))
+    assert a5_x < SHEET_MAX_X_MILS and a5_y < SHEET_MAX_Y_MILS
+
+
+def test_the_shove_and_sugiyama_agree_on_where_the_sheet_ends():
+    """Two notions of the sheet in one pipeline is a latent bug.
+
+    ``sugiyama._layout_max`` was already sheet-aware; the force-directed
+    placer and the shove were not. Given DIFFERENT margins, the base placer
+    could put a part where the shove then drags it back: on A3 sugiyama
+    allows y to 11590 and a flat 1000 mil margin would have stopped at
+    10690.
+    """
+    from eda_agent.design.force_directed import sheet_bounds
+    from eda_agent.design.sugiyama import _layout_max
+
+    for size in ("A5", "A4", "A3", "A2", "B", "USLETTER"):
+        plan = _sized_plan(size)
+        _, _, max_x, max_y = sheet_bounds(plan)
+        assert (max_x, max_y) == _layout_max(plan), size
+
+
+def test_a_bigger_sheet_gives_the_placer_more_room():
+    """MEASURED: 272 of 1465 corpus sheets are larger than A4 (166 A3, 27 B,
+    24 A2, 5 A1) and every one was confined to the A4 window."""
+    from eda_agent.design.force_directed import SHEET_MAX_X_MILS, sheet_bounds
+
+    _, _, a3_x, a3_y = sheet_bounds(_sized_plan("A3"))
+    _, _, a2_x, a2_y = sheet_bounds(_sized_plan("A2"))
+    assert a3_x > SHEET_MAX_X_MILS and a2_x > a3_x
+    assert a2_y > a3_y
+
+
+def test_a_part_wider_than_its_sheet_is_left_where_it_is():
+    """Clamping it would collapse every such part onto one coordinate.
+
+    ``max(lo, min(hi, x))`` with lo > hi returns lo whatever x is, so a pass
+    whose whole job is separating parts produced identical positions: on an
+    A3 RF board with six modules 7600 mils wide, four ended up stacked.
+    """
+    from eda_agent.design.force_directed import _hard_shove_pass
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.plan import DesignPlan
+
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": "A", "lib_path": "/x.SchLib"}
+                  for r in ("A1", "A2")],
+        "nets": [{"name": "N", "pins": [{"refdes": "A1", "pin": "1"},
+                                        {"refdes": "A2", "pin": "1"}]}],
+    })
+    # SAME y, so only x can tell them apart: on different rows the y clamp
+    # keeps them distinct and the collapse in x is masked.
+    before = [PlacedPart(refdes="A1", sheet="main", x_mils=3000, y_mils=4000,
+                         rotation=0),
+              PlacedPart(refdes="A2", sheet="main", x_mils=8000, y_mils=4000,
+                         rotation=0)]
+    # Half-width 6000 on a 9500-wide window: lo (7000) exceeds hi (4500), so
+    # a clamp returns lo for every x it is given.
+    out, _residual = _hard_shove_pass(plan, before,
+                                      body_half={"A1": (6000, 200),
+                                                 "A2": (6000, 200)})
+    places = {p.refdes: p.x_mils for p in out}
+    assert places["A1"] != places["A2"], (
+        "two parts wider than the sheet were collapsed onto one x")
+
+
+def test_the_shove_places_on_the_sheet_the_plan_declares():
+    """Not the module constants.
+
+    An A3 board was confined to the A4 window, which on one RF sheet left a
+    usable band 1900 mils across for six modules 7600 mils wide.
+    """
+    from eda_agent.design.force_directed import (
+        SHEET_MAX_X_MILS, _hard_shove_pass, sheet_bounds,
+    )
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.plan import DesignPlan
+
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A3"}],
+        "parts": [{"refdes": r, "lib_ref": "R", "lib_path": "/x.SchLib"}
+                  for r in ("R1", "R2")],
+        "nets": [{"name": "N", "pins": [{"refdes": "R1", "pin": "1"},
+                                        {"refdes": "R2", "pin": "1"}]}],
+    })
+    _, _, max_x, _ = sheet_bounds(plan)
+    assert max_x > SHEET_MAX_X_MILS, "A3 must be wider than the constants"
+    # A part parked beyond the A4 window but well inside A3 must stay there.
+    beyond = SHEET_MAX_X_MILS + 2000
+    before = [PlacedPart(refdes="R1", sheet="main", x_mils=2000, y_mils=3000,
+                         rotation=0),
+              PlacedPart(refdes="R2", sheet="main", x_mils=beyond, y_mils=3000,
+                         rotation=0)]
+    out = {p.refdes: p.x_mils for p in _hard_shove_pass(plan, before)[0]}
+    assert out["R2"] > SHEET_MAX_X_MILS, (
+        f"R2 was dragged back to {out['R2']}, inside the A4 window, on an "
+        f"A3 sheet")
+
+
+def test_the_two_overlap_tests_agree():
+    """``bodies_overlap`` and ``_overlap_pair`` must answer alike.
+
+    Every pass that places a part asks ``bodies_overlap``; the shove asks
+    ``_overlap_pair`` instead, because it needs the push DISTANCES rather
+    than the yes/no. Two implementations of one question is how the
+    passes came to disagree in the first place -- the resnaps tested the
+    bbox sum with no clearance while the shove added 50 -- so this pins
+    them together over a grid of positions, half-extents and clearances,
+    including the scalar form and the boundary where the parts kiss.
+    """
+    from eda_agent.design.force_directed import _overlap_pair, bodies_overlap
+
+    halves = [200, (200, 200), (100, 600), (450, 450), (1200, 300)]
+    checked = 0
+    for ha in halves:
+        for hb in halves:
+            hax = ha[0] if isinstance(ha, tuple) else ha
+            hbx = hb[0] if isinstance(hb, tuple) else hb
+            for clearance in (0, 50, 400):
+                # Straddle the boundary on each axis, kissing included.
+                edge = hax + hbx + clearance
+                for dx in (0, edge - 1, edge, edge + 1, edge + 500):
+                    for dy in (0, 250, 900, 3000):
+                        got_bool = bodies_overlap(0, 0, dx, dy, ha, hb,
+                                                  clearance)
+                        got_pair = _overlap_pair(0, 0, dx, dy, ha, hb,
+                                                 clearance)
+                        assert got_bool == (got_pair is not None), (
+                            f"disagree at d=({dx},{dy}) halves {ha}/{hb} "
+                            f"clearance {clearance}: bool={got_bool} "
+                            f"pair={got_pair}")
+                        checked += 1
+    assert checked > 500
+
+
+def test_the_shove_separates_on_the_axis_that_fits():
+    """The pair-separation axis must be one the paper can accommodate.
+
+    MEASURED on a real A3 board carrying six modules each drawn 7600 by
+    1424 mils: side by side two of them need 7900 mils and the centres
+    are confined to a 6940-mil band, so x is arithmetically impossible,
+    while stacked the six fit easily (6 x 1424 against 9590) and that is
+    what the person drew. Choosing the axis by overlap depth alone sent
+    the push down the impossible one and left a module sitting on
+    another; end to end on that sheet the fix takes it from 1 overlap to
+    0. Undersized half-extents hid it entirely, because the old
+    requirement was 2450 rather than 7900.
+
+    The assertions are on the two helpers rather than on a synthetic
+    shove, and that is deliberate: several plausible fixtures were tried
+    and every one of them resolved itself with the feasibility check
+    REMOVED, because a half-weight push down the feasible axis still
+    separates a small case within the round budget. A test that passes
+    with the code deleted is not a test. What the corpus sheet exercises
+    and a fixture does not is a crowd of oversized parts, and the suite
+    has no corpus.
+    """
+    from eda_agent.design.force_directed import (
+        _BODY_CLEARANCE_MILS, _axis_fits, _cheapest_feasible_push,
+        sheet_bounds)
+
+    plan = DesignPlan(
+        spec="x", summary="x", sheets=[Sheet(name="main", size="A3")],
+        parts=[Part(refdes="A1", lib_ref="MOD", sheet="main"),
+               Part(refdes="A2", lib_ref="MOD", sheet="main")],
+        nets=[Net(name="N", pins=[PinRef(refdes="A1", pin="1"),
+                                  PinRef(refdes="A2", pin="1")])])
+    min_x, min_y, max_x, max_y = sheet_bounds(plan)
+    module = (3800, 700)                       # the real drawn half-extent
+
+    fits = _axis_fits(module, module, min_x, min_y, max_x, max_y)
+    assert fits == (False, True), (
+        f"two 7600-mil modules cannot go side by side on A3 "
+        f"(span {max_x - min_x} against "
+        f"{2 * (2 * module[0]) + _BODY_CLEARANCE_MILS} needed) but they "
+        f"stack fine; got {fits}")
+
+    # Depth says the 100-mil push is cheapest; with x closed the full
+    # push has to go to the 900-mil one instead.
+    assert _cheapest_feasible_push(100.0, 900.0, fits) == 900.0
+    # With both axes open, depth decides exactly as it did before.
+    assert _cheapest_feasible_push(100.0, 900.0, (True, True)) == 100.0
+    # A TIE still favours both axes, which is how two parts sitting on
+    # the same point come apart diagonally.
+    assert _cheapest_feasible_push(500.0, 500.0, (True, True)) == 500.0
+    assert _cheapest_feasible_push(100.0, 900.0, (False, False)) == float("inf")
+
+    # A pair of ordinary passives has room either way on any paper.
+    assert _axis_fits((100, 100), (100, 100),
+                      min_x, min_y, max_x, max_y) == (True, True)

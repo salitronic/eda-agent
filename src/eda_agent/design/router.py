@@ -42,10 +42,50 @@ from typing import Optional
 # Pin stubs
 # ---------------------------------------------------------------------------
 
-# 100-mil stub wire length between a pin's electrical hot end and the net
-# label / power port that attaches to it. ERC reports "Floating net labels"
-# when a label sits exactly on a pin endpoint without an intervening wire,
-# so every label/port gets pulled out along the pin's vector by this much.
+# Stub wire length between a pin's electrical hot end and the net label /
+# power port that attaches to it. ERC reports "Floating net labels" when a
+# label sits exactly on a pin endpoint without an intervening wire, so
+# every label/port gets pulled out along the pin's vector by this much.
+#
+# THE COMMENT ABOVE SAID "100-mil stub" WHILE THIS SAID 300 for as long
+# as both have existed. The value is what runs; the text has been fixed
+# to stop asserting otherwise.
+#
+# 100 WOULD SCORE BETTER AND IS NOT A TUNING CHANGE. Measured on 10565
+# human wire segments leaving a pin across the KiCad demo sheets, the
+# median is 250 mils but the distribution is bimodal with modes at 50
+# (2325 segments) and 100 (1638), together 37% of them: people turn
+# much sooner than 300. Replicated on 79634 stubs from 172 public
+# hardware repositories: median 200, with the same three modes at 50,
+# 100 and 150. The demo sheets and real production boards agree.
+#
+# It costs the engine, because a stub is paid
+# twice whenever a route doubles back -- on rectifier, signal_in leaves
+# a left-facing pin 300 mils leftward and then runs east for the whole
+# span, 2500 mils where 1900 was available. Over eight sheets, 300 to
+# 100 cut wire 133000 to 110400 mils (17%) and the score 3036 to 2849
+# with no change in crossings. (200 was worse than either, buying an
+# extra crossing, so the response is not monotonic.)
+#
+# It is left at 300 because of what 100 does to the code around it.
+# _stub_endpoints clips a stub that would hit an obstacle and floors
+# the result at _STUB_MIN_LEN_MILS with _STUB_CLEARANCE_MILS to spare,
+# so clipping can only yield a length between the floor and this
+# default, which needs default > min + clearance = 150. At 300 that
+# range is 150 to 300 mils. At 100 it is EMPTY: every path returns 100,
+# the obstacle argument stops mattering, and an adaptive routine
+# quietly becomes a constant. Six tests in test_executor assert the
+# clipping behaviour that would become unreachable.
+#
+# Taking the 17% therefore means deciding that stub clipping is not
+# worth having, or moving the floor and clearance with it. That is a
+# design call, not a constant to nudge.
+#
+# Worth knowing while deciding: pipeline._REPAIR_STUB_LEN_MILS is 200
+# and its own comment calls that "short on purpose ... the pin, tick,
+# glyph the hand-drawn convention uses, not a route". The repair path
+# already reaches for the convention the human measurement above
+# supports; the routing path does not, and the two have never agreed.
 _STUB_LEN_MILS = 300
 # Minimum stub length when an obstacle clips the default 300-mil
 # extension. ERC flags net labels and power ports that sit exactly on
@@ -79,6 +119,7 @@ def _adaptive_stub_length(
     dy: int,
     obstacles: list[tuple[int, int, int, int]],
     base_length: int = _STUB_LEN_MILS,
+    hard: bool = False,
 ) -> int:
     """Maximum stub length that doesn't enter another component's bbox.
 
@@ -94,6 +135,15 @@ def _adaptive_stub_length(
     request a longer base when staggering multiple same-direction
     stubs from the same component so their bends don't share a
     column.
+
+    ``hard`` makes ``_STUB_MIN_LEN_MILS`` yield. The floor exists so a stub
+    stays long enough to hang a label on, and against a BODY that is the
+    right trade: a stub reaching a little way into a neighbour's courtyard
+    is untidy, not wrong. Against a PIN it is wrong: the stub ends on
+    another net's pin and Altium merges the two nets. A pin exactly one grid
+    step away is the common case, and the floor lands the stub precisely on
+    it. With ``hard`` the length is allowed down to 0, and a zero-length
+    stub simply means the pin's own hotspot is the stub end.
     """
     if (dx, dy) == (0, 0):
         return base_length
@@ -119,7 +169,20 @@ def _adaptive_stub_length(
             if pin_x < rx1 or pin_x > rx2 or ry2 >= pin_y:
                 continue
             entry = pin_y - ry2
-        clipped = max(_STUB_MIN_LEN_MILS, entry - _STUB_CLEARANCE_MILS)
+        floor = 0 if hard else _STUB_MIN_LEN_MILS
+        clipped = max(floor, entry - _STUB_CLEARANCE_MILS)
+        # SNAPPED DOWN to the wire grid. ``entry`` is measured to a body
+        # EDGE, and a symbol's graphics are drawn in millimetres, so that
+        # edge need not sit on the grid: the clipped length inherits the
+        # offset and the stub END becomes an off-grid wire endpoint,
+        # which is how a connection silently fails to form in Altium.
+        #
+        # Found on real hardware, not on the demos. The KiCad demo set
+        # produced one off-grid case, in the star-hub generator; a sweep
+        # over 203 sheets from public repositories produced 38 more, and
+        # tracing them landed here. Downward, so rounding can only add
+        # clearance, never eat into it.
+        clipped = max(floor, _grid_low(clipped))
         if clipped < max_len:
             max_len = clipped
     return max_len
@@ -132,6 +195,7 @@ def _stub_endpoints(
     pin_length_mils: int,  # retained for ABI compat; ignored
     obstacles: Optional[list[tuple[int, int, int, int]]] = None,
     extra_length_mils: int = 0,
+    hard_obstacles: Optional[list[tuple[int, int, int, int]]] = None,
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Compute (stub_start, stub_end) for a pin.
 
@@ -163,6 +227,12 @@ def _stub_endpoints(
         if obstacles
         else base
     )
+    # Obstacles the minimum length must not override: another net's pins.
+    # Clipping against a body may stop at the floor, clipping against a pin
+    # may not, so the two are measured separately and the shorter wins.
+    if hard_obstacles:
+        length = min(length, _adaptive_stub_length(
+            pin_x, pin_y, dx, dy, hard_obstacles, base_length=base, hard=True))
     end_x = hot_x + dx * length
     end_y = hot_y + dy * length
     return ((hot_x, hot_y), (end_x, end_y))
@@ -213,16 +283,27 @@ def _l_path_collisions(
         segs = [(x1, y1, x2, y1), (x2, y1, x2, y2)]
     else:
         segs = [(x1, y1, x1, y2), (x1, y2, x2, y2)]
+    # NEITHER TEST DEPENDS ON THE SEGMENT, and one depends on neither
+    # loop. The skip_at check reads only the path's own endpoints, so
+    # when it holds the answer is zero and the nested walk over segments
+    # and obstacles discovers that the expensive way.
+    #
+    # Same defect as _path_collisions below, which was hoisted first;
+    # this is the twin that was missed on that pass.
+    if (x1, y1) in skip_at or (x2, y2) in skip_at:
+        return 0
+
+    # Obstacles owning an endpoint are skipped, and ownership is a
+    # property of the obstacle and the path, not of the segment.
+    live = [
+        (rx1, ry1, rx2, ry2) for rx1, ry1, rx2, ry2 in obstacles
+        if not ((rx1 <= x1 <= rx2 and ry1 <= y1 <= ry2)
+                or (rx1 <= x2 <= rx2 and ry1 <= y2 <= ry2))
+    ]
+
     n = 0
     for (sx1, sy1, sx2, sy2) in segs:
-        for rx1, ry1, rx2, ry2 in obstacles:
-            # Skip obstacles owning either endpoint.
-            owns_start = rx1 <= x1 <= rx2 and ry1 <= y1 <= ry2
-            owns_end = rx1 <= x2 <= rx2 and ry1 <= y2 <= ry2
-            if owns_start or owns_end:
-                continue
-            if (x1, y1) in skip_at or (x2, y2) in skip_at:
-                continue
+        for rx1, ry1, rx2, ry2 in live:
             if _segment_crosses_rect(sx1, sy1, sx2, sy2, rx1, ry1, rx2, ry2):
                 n += 1
                 break
@@ -240,14 +321,51 @@ def _path_collisions(
     sit inside an obstacle by construction; obstacles containing any
     of those points don't count as a crossing.
     """
+    # HOISTED OUT OF THE SEGMENT LOOP. Whether an obstacle contains one
+    # of the skip points depends on the OBSTACLE alone, so evaluating it
+    # per segment-obstacle pair recomputed the same answer once for
+    # every segment.
+    #
+    # MEASURED on a 2-part, 20-net sheet: 4.5 million calls to any() and
+    # 13.5 million generator steps, 41% of an 11-second layout. Filtering
+    # once is the same arithmetic, done as many times as there are
+    # obstacles instead of obstacles times segments.
+    # NORMALISED HERE, not per pair. _segment_crosses_rect orders each
+    # rectangle's corners defensively on every call; doing it once per
+    # obstacle is the same arithmetic done as many times as there are
+    # obstacles instead of obstacles times segments.
+    live = []
+    for rx1, ry1, rx2, ry2 in obstacles:
+        if rx1 > rx2:
+            rx1, rx2 = rx2, rx1
+        if ry1 > ry2:
+            ry1, ry2 = ry2, ry1
+        if any(rx1 <= ex <= rx2 and ry1 <= ey <= ry2
+               for ex, ey in skip_endpoints):
+            continue
+        live.append((rx1, ry1, rx2, ry2))
+
+    # INLINED, and only for the call count. _segment_crosses_rect is four
+    # comparisons wrapped in a function, and this loop reached it 226
+    # MILLION times on one demo sheet, where the call overhead dwarfs the
+    # arithmetic. The conditions below are that function's, unrolled per
+    # orientation so the branch is taken once per segment rather than
+    # once per pair. Kept in sync by test_router_collisions, which checks
+    # the two agree on random geometry.
     n = 0
     for sx1, sy1, sx2, sy2 in segs:
-        for rx1, ry1, rx2, ry2 in obstacles:
-            if any(rx1 <= ex <= rx2 and ry1 <= ey <= ry2 for ex, ey in skip_endpoints):
-                continue
-            if _segment_crosses_rect(sx1, sy1, sx2, sy2, rx1, ry1, rx2, ry2):
-                n += 1
-                break
+        if sy1 == sy2:                                   # horizontal
+            lo, hi = (sx1, sx2) if sx1 <= sx2 else (sx2, sx1)
+            for rx1, ry1, rx2, ry2 in live:
+                if ry1 < sy1 < ry2 and lo < rx2 and hi > rx1:
+                    n += 1
+                    break
+        elif sx1 == sx2:                                 # vertical
+            lo, hi = (sy1, sy2) if sy1 <= sy2 else (sy2, sy1)
+            for rx1, ry1, rx2, ry2 in live:
+                if rx1 < sx1 < rx2 and lo < ry2 and hi > ry1:
+                    n += 1
+                    break
     return n
 
 
@@ -262,6 +380,9 @@ def _path_length(segs: list[tuple[int, int, int, int]]) -> int:
 
 
 _S_BEND_MARGIN_MILS = 100  # one grid cell of clearance past an obstacle edge
+# Wire bends land on this grid. A body box can be off-grid; a wire must
+# not be, or Altium fails to make the connection at that endpoint.
+_BEND_GRID_MILS = 50
 
 
 def _route_s_bend(
@@ -284,39 +405,88 @@ def _route_s_bend(
     if x1 == x2 or y1 == y2:
         return None  # endpoints already share an axis -> single segment
     skip = ((x1, y1), (x2, y2))
+
+    # FILTERED ONCE, HERE. Both obstacles and skip are the same for every
+    # candidate mid-coordinate below, and this routine tries one per
+    # obstacle edge, so letting _path_collisions re-filter each time made
+    # the filtering itself quadratic in the obstacle count for every net.
+    # The candidates are then measured against an already-clean list.
+    live = [
+        (rx1, ry1, rx2, ry2) for rx1, ry1, rx2, ry2 in obstacles
+        if not any(rx1 <= ex <= rx2 and ry1 <= ey <= ry2 for ex, ey in skip)
+    ]
+
     candidates: list[tuple[int, list[tuple[int, int, int, int]]]] = []
 
-    # HVH: vertical run at x_mid
-    x_mids: set[int] = {(x1 + x2) // 2}
-    for rx1, _ry1, rx2, _ry2 in obstacles:
-        x_mids.add(rx1 - _S_BEND_MARGIN_MILS)
-        x_mids.add(rx2 + _S_BEND_MARGIN_MILS)
-    for x_mid in x_mids:
-        if x_mid == x1 or x_mid == x2:
-            continue
-        segs = [
-            (x1, y1, x_mid, y1),
-            (x_mid, y1, x_mid, y2),
-            (x_mid, y2, x2, y2),
-        ]
-        if _path_collisions(segs, obstacles, skip) == 0:
-            candidates.append((_path_length(segs), segs))
+    # IN-SPAN CANDIDATES ARE TRIED FIRST, AND SETTLE IT WHEN ONE IS
+    # CLEAN. An HVH route measures |x1-xm| + |y1-y2| + |xm-x2|, which is
+    # exactly the Manhattan minimum for ANY xm between the endpoints and
+    # strictly greater outside; VHV is the same statement in y. So an
+    # out-of-span detour can never beat a clean in-span route, and
+    # testing one when an in-span route is already clean is work whose
+    # result is known in advance.
+    #
+    # This routine tries one candidate per obstacle EDGE and tests each
+    # against every obstacle, so the saving is quadratic in the obstacle
+    # count for the common case. It is not an approximation: the set the
+    # winner is chosen from is unchanged whenever any in-span route is
+    # clean, and identical to before when none is.
+    x_lo, x_hi = (x1, x2) if x1 <= x2 else (x2, x1)
+    y_lo, y_hi = (y1, y2) if y1 <= y2 else (y2, y1)
 
-    # VHV: horizontal run at y_mid
-    y_mids: set[int] = {(y1 + y2) // 2}
-    for _rx1, ry1_o, _rx2, ry2_o in obstacles:
-        y_mids.add(ry1_o - _S_BEND_MARGIN_MILS)
-        y_mids.add(ry2_o + _S_BEND_MARGIN_MILS)
-    for y_mid in y_mids:
-        if y_mid == y1 or y_mid == y2:
-            continue
-        segs = [
-            (x1, y1, x1, y_mid),
-            (x1, y_mid, x2, y_mid),
-            (x2, y_mid, x2, y2),
-        ]
-        if _path_collisions(segs, obstacles, skip) == 0:
-            candidates.append((_path_length(segs), segs))
+    def hvh(x_mid):
+        return [(x1, y1, x_mid, y1), (x_mid, y1, x_mid, y2),
+                (x_mid, y2, x2, y2)]
+
+    def vhv(y_mid):
+        return [(x1, y1, x1, y_mid), (x1, y_mid, x2, y_mid),
+                (x2, y_mid, x2, y2)]
+
+    # Bend candidates derived from an obstacle EDGE inherit that edge's
+    # coordinate, and a symbol's drawn body box is under no obligation
+    # to sit on the wire grid: measured on royer1, one bend landed at
+    # x=4480 and put three wire coordinates off a 25-mil grid, the only
+    # off-grid geometry the engine produced across 2016 coordinates on
+    # 21 sheets. The human sheets have none, and in Altium an off-grid
+    # endpoint is how a connection silently fails to form.
+    #
+    # Snapped AWAY from the obstacle, never toward it, so rounding can
+    # only add clearance.
+    def _nearest(v: int) -> int:
+        return int(round(v / _BEND_GRID_MILS)) * _BEND_GRID_MILS
+
+    # The geometric midpoint is off-grid whenever the two ends sum to an
+    # odd number, which they do as soon as one end came from a body edge:
+    # symbol graphics are drawn in millimetres and 43 body edges on
+    # royer1 alone sit off a 25-mil grid. Snapping only the obstacle
+    # candidates below moved the problem here rather than fixing it.
+    x_mids: set[int] = {_nearest((x1 + x2) // 2)}
+    y_mids: set[int] = {_nearest((y1 + y2) // 2)}
+    for rx1, ry1_o, rx2, ry2_o in obstacles:
+        x_mids.add(_grid_low(rx1 - _S_BEND_MARGIN_MILS))
+        x_mids.add(_grid_high(rx2 + _S_BEND_MARGIN_MILS))
+        y_mids.add(_grid_low(ry1_o - _S_BEND_MARGIN_MILS))
+        y_mids.add(_grid_high(ry2_o + _S_BEND_MARGIN_MILS))
+
+    for in_span in (True, False):
+        for x_mid in x_mids:
+            if x_mid == x1 or x_mid == x2:
+                continue
+            if (x_lo <= x_mid <= x_hi) != in_span:
+                continue
+            segs = hvh(x_mid)
+            if _path_collisions(segs, live, ()) == 0:
+                candidates.append((_path_length(segs), segs))
+        for y_mid in y_mids:
+            if y_mid == y1 or y_mid == y2:
+                continue
+            if (y_lo <= y_mid <= y_hi) != in_span:
+                continue
+            segs = vhv(y_mid)
+            if _path_collisions(segs, live, ()) == 0:
+                candidates.append((_path_length(segs), segs))
+        if candidates:
+            break          # in-span is optimal; out-of-span cannot win
 
     if not candidates:
         return None
@@ -410,6 +580,16 @@ def _net_obstacle_crossings(
     return count
 
 
+def _grid_low(v: int) -> int:
+    """Round DOWN to the wire grid: away from an obstacle on its low side."""
+    return (v // _BEND_GRID_MILS) * _BEND_GRID_MILS
+
+
+def _grid_high(v: int) -> int:
+    """Round UP to the wire grid: away from an obstacle on its high side."""
+    return -((-v) // _BEND_GRID_MILS) * _BEND_GRID_MILS
+
+
 def _trunk_candidates(
     stub_ends: list[tuple[int, int]],
 ) -> list[list[tuple[int, int, int, int]]]:
@@ -498,8 +678,17 @@ def _route_signal_pins(
     hubs: list[tuple[int, int]] = [(raw_cx, raw_cy), *stub_ends]
     for rx1, ry1, rx2, ry2 in obstacles:
         if rx1 < raw_cx < rx2 and ry1 < raw_cy < ry2:
-            hubs += [(rx1 - 100, raw_cy), (rx2 + 100, raw_cy),
-                     (raw_cx, ry1 - 100), (raw_cx, ry2 + 100)]
+            # Snapped off the obstacle EDGE, which is body geometry and
+            # need not sit on the wire grid: symbol graphics are drawn
+            # in millimetres, and royer1 alone has 43 off-grid body
+            # edges. An unsnapped hub here was the last source of
+            # off-grid wire coordinates the engine produced, and it
+            # survived snapping the same expression in _best_s_bend
+            # because this is a different generator.
+            hubs += [(_grid_low(rx1 - 100), raw_cy),
+                     (_grid_high(rx2 + 100), raw_cy),
+                     (raw_cx, _grid_low(ry1 - 100)),
+                     (raw_cx, _grid_high(ry2 + 100))]
     bb_xmin = (min(p[0] for p in stub_ends) // 100) * 100
     bb_xmax = (max(p[0] for p in stub_ends) // 100) * 100
     bb_ymin = (min(p[1] for p in stub_ends) // 100) * 100

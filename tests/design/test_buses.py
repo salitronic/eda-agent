@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from eda_agent.design.buses import BusGroup, detect_buses
 from eda_agent.design.canvas import BusEntry, BusSegment, SchematicCanvas
 from eda_agent.design.plan import DesignPlan
@@ -380,3 +382,285 @@ def test_apply_bus_drawing_adds_bus_name_label():
     texts = {l.text for l in cv.labels}
     assert "D[0..7]" in texts                 # named bus
     assert {f"D{i}" for i in range(8)} <= texts   # plus per-signal labels
+
+
+# ------------------ a member the comb cannot draw everywhere ---------------
+
+def _canvas_with_a_stray_bus_pin(stray_at=("U2",)):
+    """Eight-member bus where D7 leaves the named ICs from the TOP.
+
+    That is ordinary hardware: a connector or MCU rarely brings a whole group
+    out of one side. build_bus_geometry keeps only the dominant pin column, so
+    D7 is missing from the comb at every IC named in ``stray_at``.
+    """
+    from eda_agent.design.symbols import SymbolModel, SymbolPin, SymbolBBox
+    from eda_agent.design.canvas import SchematicCanvas, SymbolInstance, NetLabel
+
+    def ic(refdes, orient, ix, stray):
+        pins = []
+        for i in range(8):
+            if i == 7 and stray:
+                pins.append(SymbolPin(
+                    designator="8", name="D7", x=0, y=550,
+                    orientation=1, length=100, electrical_type="io"))
+                continue
+            pins.append(SymbolPin(
+                designator=str(i + 1), name=f"D{i}",
+                x=200 if orient == 0 else -200, y=400 - i * 100,
+                orientation=orient, length=100, electrical_type="io"))
+        sym = SymbolModel(lib_path=_LIB, lib_ref=refdes, pins=tuple(pins),
+                          body_bbox=SymbolBBox(x_min=-200, y_min=-450,
+                                               x_max=200, y_max=450))
+        return SymbolInstance(refdes=refdes, symbol=sym, x=ix, y=1500,
+                              rotation=0)
+
+    cv = SchematicCanvas()
+    u1 = ic("U1", 0, 1000, "U1" in stray_at)
+    u2 = ic("U2", 2, 3000, "U2" in stray_at)
+    cv.add_instance(u1)
+    cv.add_instance(u2)
+    plan = _bus_plan_for_geom(8)
+    for inst in (u1, u2):
+        for i in range(8):
+            ep = inst.pin_world(str(i + 1))
+            cv.add_labels([NetLabel(text=f"D{i}", x=ep.x, y=ep.y,
+                                    orientation=0)])
+    return cv, plan
+
+
+def test_a_member_missing_from_every_comb_is_not_erased():
+    """The netlist must survive a bus that can only draw part of itself.
+
+    apply_bus_drawing deletes every wire and label belonging to the nets it is
+    about to redraw. The redraw keeps one dominant pin column per endpoint, so
+    a member whose pin points elsewhere at BOTH ends used to be deleted and
+    never drawn back: no wire, no label, no port anywhere, and the pipeline
+    shipped the sheet with ok=True while warning that the net was disconnected.
+
+    Found on a public XIAO carrier board, where net TX left both the MCU and
+    the header on a different side from the other five members of its group.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    cv, plan = _canvas_with_a_stray_bus_pin(stray_at=("U1", "U2"))
+    apply_bus_drawing(cv, plan)
+
+    represented = ({w.net for w in cv.wires} | {l.text for l in cv.labels}
+                   | {p.text for p in cv.power_ports})
+    orphaned = [n.name for n in plan.nets if n.name not in represented]
+    assert orphaned == [], (
+        f"nets {orphaned} lost every wire, label and port to the bus drawing")
+
+
+@pytest.mark.parametrize("stray_at", [("U2",), ("U1", "U2")])
+def test_a_stray_member_stays_connected_at_both_of_its_pins(stray_at):
+    """Representation is not enough: BOTH pins have to be on the net.
+
+    With the member missing from one comb only, the surviving endpoint keeps a
+    label, so the net still counts as represented while its other pin floats.
+    That is the case the orphan check above cannot see.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    cv, plan = _canvas_with_a_stray_bus_pin(stray_at=stray_at)
+    apply_bus_drawing(cv, plan)
+
+    d7_pins = [(pr.refdes, pr.pin)
+               for n in plan.nets if n.name == "D7" for pr in n.pins]
+    assert len(d7_pins) == 2
+    for refdes, pin in d7_pins:
+        ep = cv.instance_by_refdes(refdes).pin_world(pin)
+        on_wire = any(
+            (w.x1, w.y1) == (ep.x, ep.y) or (w.x2, w.y2) == (ep.x, ep.y)
+            for w in cv.wires if w.net == "D7")
+        on_label = any(l.text == "D7" and (l.x, l.y) == (ep.x, ep.y)
+                       for l in cv.labels)
+        assert on_wire or on_label, (
+            f"D7 pin {refdes}.{pin} has neither a wire end nor a label on it")
+
+
+@pytest.mark.parametrize("stray_at", [("U2",), ("U1", "U2")])
+def test_the_bus_is_still_drawn_for_the_members_that_fit(stray_at):
+    """The fix must not answer "draw no buses".
+
+    Seven of the eight members are on the dominant column at both ends, which
+    is still a bus worth drawing.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    cv, plan = _canvas_with_a_stray_bus_pin(stray_at=stray_at)
+    drawn = apply_bus_drawing(cv, plan)
+    assert len(drawn) >= 2, "the drawable members were dropped along with D7"
+    assert cv.buses, "no bus line was drawn at all"
+    assert "D7" not in drawn
+
+
+# ------------- a member the comb reaches at only some of its pins ----------
+
+def _canvas_where_a_member_reaches_one_ic_twice():
+    """D7 lands on U1 twice: pin 8 in the column, pin 9 on the far side.
+
+    Ordinary hardware: a passthrough, a series element, or a buffer with its
+    input and output on one net. The comb keyed one pin per net, so pin 9 was
+    never drawn while D7's own wiring had already been erased.
+    """
+    from eda_agent.design.symbols import SymbolModel, SymbolPin, SymbolBBox
+    from eda_agent.design.canvas import SchematicCanvas, SymbolInstance, NetLabel
+
+    def ic(refdes, orient, ix, extra_pin):
+        pins = [SymbolPin(designator=str(i + 1), name=f"D{i}",
+                          x=200 if orient == 0 else -200, y=400 - i * 100,
+                          orientation=orient, length=100,
+                          electrical_type="io") for i in range(8)]
+        if extra_pin:
+            pins.append(SymbolPin(designator="9", name="D7B",
+                                  x=-200 if orient == 0 else 200, y=0,
+                                  orientation=2 if orient == 0 else 0,
+                                  length=100, electrical_type="io"))
+        sym = SymbolModel(lib_path=_LIB, lib_ref=refdes, pins=tuple(pins),
+                          body_bbox=SymbolBBox(x_min=-200, y_min=-450,
+                                               x_max=200, y_max=450))
+        return SymbolInstance(refdes=refdes, symbol=sym, x=ix, y=1500,
+                              rotation=0)
+
+    cv = SchematicCanvas()
+    u1 = ic("U1", 0, 1000, True)
+    u2 = ic("U2", 2, 3000, False)
+    cv.add_instance(u1)
+    cv.add_instance(u2)
+
+    parts = [{"refdes": "U1", "lib_ref": "MCU", "lib_path": _LIB,
+              "status": "existing", "sheet": "main"},
+             {"refdes": "U2", "lib_ref": "MEM", "lib_path": _LIB,
+              "status": "existing", "sheet": "main"}]
+    nets = []
+    for i in range(8):
+        pins = [{"refdes": "U1", "pin": str(i + 1)},
+                {"refdes": "U2", "pin": str(i + 1)}]
+        if i == 7:
+            pins.append({"refdes": "U1", "pin": "9"})
+        nets.append({"name": f"D{i}", "pins": pins})
+    plan = _make_plan(parts, nets)
+
+    for inst in (u1, u2):
+        for pin in [str(i + 1) for i in range(8)] + (["9"] if inst is u1
+                                                     else []):
+            ep = inst.pin_world(pin)
+            text = "D7" if pin == "9" else f"D{int(pin) - 1}"
+            cv.add_labels([NetLabel(text=text, x=ep.x, y=ep.y,
+                                    orientation=0)])
+    return cv, plan
+
+
+def test_a_second_pin_of_a_member_on_the_same_ic_is_not_left_bare():
+    """Coverage is per PIN, not per net.
+
+    build_bus_geometry used to key one pin per net per IC, so a member
+    reaching that IC twice was combed once. The net still carried labels, so
+    every net-level check read clean while the second pin sat on nothing.
+    Found on a public HDMI/GPDI board: four differential nets each landing on
+    the level shifter twice.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    cv, plan = _canvas_where_a_member_reaches_one_ic_twice()
+    apply_bus_drawing(cv, plan)
+
+    for pr in [p for n in plan.nets if n.name == "D7" for p in n.pins]:
+        ep = cv.instance_by_refdes(pr.refdes).pin_world(pr.pin)
+        on_wire = any(
+            (w.x1, w.y1) == (ep.x, ep.y) or (w.x2, w.y2) == (ep.x, ep.y)
+            for w in cv.wires if w.net == "D7")
+        on_label = any(l.text == "D7" and (l.x, l.y) == (ep.x, ep.y)
+                       for l in cv.labels)
+        assert on_wire or on_label, (
+            f"D7 pin {pr.refdes}.{pr.pin} has neither a wire end nor a label")
+
+
+def test_a_member_touching_a_part_that_is_not_an_endpoint_is_not_erased():
+    """The comb only visits the bus's endpoint ICs.
+
+    A member that also reaches a series resistor or a test point has a pin no
+    comb will ever draw, so its original wiring has to stay.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    from eda_agent.design.symbols import SymbolModel, SymbolPin, SymbolBBox
+    from eda_agent.design.canvas import SymbolInstance, NetLabel
+
+    cv, plan = _canvas_with_a_stray_bus_pin(stray_at=())
+    r_sym = SymbolModel(
+        lib_path=_LIB, lib_ref="R",
+        pins=(SymbolPin(designator="1", name="1", x=0, y=100,
+                        orientation=1, length=100, electrical_type="passive"),
+              SymbolPin(designator="2", name="2", x=0, y=-100,
+                        orientation=3, length=100, electrical_type="passive")),
+        body_bbox=SymbolBBox(x_min=-50, y_min=-100, x_max=50, y_max=100))
+    cv.add_instance(SymbolInstance(refdes="R1", symbol=r_sym, x=2000, y=2600,
+                                   rotation=0))
+    plan = plan.model_copy(deep=True)
+    plan.parts.append(type(plan.parts[0])(
+        refdes="R1", lib_ref="R", lib_path=_LIB, status="existing",
+        sheet="main"))
+    d3 = next(n for n in plan.nets if n.name == "D3")
+    d3.pins.append(type(d3.pins[0])(refdes="R1", pin="1"))
+    ep = cv.instance_by_refdes("R1").pin_world("1")
+    cv.add_labels([NetLabel(text="D3", x=ep.x, y=ep.y, orientation=0)])
+
+    apply_bus_drawing(cv, plan)
+    on_label = any(l.text == "D3" and (l.x, l.y) == (ep.x, ep.y)
+                   for l in cv.labels)
+    on_wire = any((w.x1, w.y1) == (ep.x, ep.y) or (w.x2, w.y2) == (ep.x, ep.y)
+                  for w in cv.wires if w.net == "D3")
+    assert on_label or on_wire, (
+        "D3's pin on R1 lost its label to a comb that never draws R1")
+
+
+def test_both_pins_of_a_member_on_the_dominant_side_are_combed():
+    """Drawing every pin is what KEEPS such a member in the bus.
+
+    The per-pin coverage rule alone would keep the sheet correct by dropping
+    the member from the comb and leaving its own wiring in place. That is safe
+    but poorer: with both of its pins in the column there is a perfectly good
+    comb to draw, and keying one pin per net threw it away. This is the test
+    that fails if build_bus_geometry goes back to one pin per net per IC.
+    """
+    from eda_agent.design.buses import apply_bus_drawing
+    from eda_agent.design.symbols import SymbolModel, SymbolPin, SymbolBBox
+    from eda_agent.design.canvas import SchematicCanvas, SymbolInstance
+
+    def ic(refdes, orient, ix, extra):
+        pins = [SymbolPin(designator=str(i + 1), name=f"D{i}",
+                          x=200 if orient == 0 else -200, y=400 - i * 100,
+                          orientation=orient, length=100,
+                          electrical_type="io") for i in range(8)]
+        if extra:
+            # same side, same column: a second tap on D7
+            pins.append(SymbolPin(designator="9", name="D7B",
+                                  x=200 if orient == 0 else -200, y=-500,
+                                  orientation=orient, length=100,
+                                  electrical_type="io"))
+        sym = SymbolModel(lib_path=_LIB, lib_ref=refdes, pins=tuple(pins),
+                          body_bbox=SymbolBBox(x_min=-200, y_min=-600,
+                                               x_max=200, y_max=450))
+        return SymbolInstance(refdes=refdes, symbol=sym, x=ix, y=1500,
+                              rotation=0)
+
+    cv = SchematicCanvas()
+    cv.add_instance(ic("U1", 0, 1000, True))
+    cv.add_instance(ic("U2", 2, 3000, False))
+    parts = [{"refdes": "U1", "lib_ref": "MCU", "lib_path": _LIB,
+              "status": "existing", "sheet": "main"},
+             {"refdes": "U2", "lib_ref": "MEM", "lib_path": _LIB,
+              "status": "existing", "sheet": "main"}]
+    nets = []
+    for i in range(8):
+        pins = [{"refdes": "U1", "pin": str(i + 1)},
+                {"refdes": "U2", "pin": str(i + 1)}]
+        if i == 7:
+            pins.append({"refdes": "U1", "pin": "9"})
+        nets.append({"name": f"D{i}", "pins": pins})
+    plan = _make_plan(parts, nets)
+
+    drawn = apply_bus_drawing(cv, plan)
+    assert "D7" in drawn, (
+        "D7 has both of its U1 pins in the bus column, so it belongs in the "
+        "comb; keying one pin per net drops it")
+    u1_d7_entries = [e for e in cv.bus_entries if e.net == "D7"]
+    assert len(u1_d7_entries) >= 3, (
+        f"D7 has three pins and got {len(u1_d7_entries)} bus entries")

@@ -39,11 +39,14 @@ from eda_agent.design.force_directed import (
     _SHOVE_CLEARANCE_MILS,
     _bbox_half,
     _force_directed_layout,
+    _half_map,
+    bodies_overlap,
     _hard_shove_pass,
     _is_series_flow_part,
     _mass,
     _pin_count_per_part,
     _rotation_for_part,
+    sheet_bounds,
 )
 from eda_agent.design.motifs import (
     Match,
@@ -77,12 +80,8 @@ def audit_overlaps(
             b = placed[j]
             if a.sheet != b.sheet:
                 continue
-            ha = bbox_half[a.refdes]
-            hb = bbox_half[b.refdes]
-            # Strict inequality: a kissing pair (delta == sum) is NOT
-            # an overlap. Mirrors the audit-side semantics where touch
-            # alone is acceptable post-grid-snap.
-            if abs(a.x_mils - b.x_mils) < (ha + hb) and abs(a.y_mils - b.y_mils) < (ha + hb):
+            if bodies_overlap(a.x_mils, a.y_mils, b.x_mils, b.y_mils,
+                              bbox_half[a.refdes], bbox_half[b.refdes]):
                 out.append((a.refdes, b.refdes))
     return out
 
@@ -141,6 +140,7 @@ def _splat_motifs(
     plan: DesignPlan,
     placed: list[PlacedPart],
     matches: list[Match],
+    body_half: dict | None = None,
 ) -> list[PlacedPart]:
     """Override non-anchor motif component positions to canonical offsets.
 
@@ -162,6 +162,25 @@ def _splat_motifs(
     """
     by_refdes = {p.refdes: p for p in placed}
     pin_count = _pin_count_per_part(plan)
+    # PER AXIS, and sized through the same helper the shove uses, so the
+    # two passes cannot disagree about how big a part is. Known limit,
+    # measured on a PAL/NTSC decoder: `_bbox_half` tops out at 1200 mils,
+    # so an 80-pin IC drawn 3800 by 6800 is checked as though it were
+    # 2400 square and a canonical 400-mil offset puts the decoupling cap
+    # INSIDE it. Supplying real per-refdes extents here fixes that; the
+    # supplier is not built (see the session notes on the spacing law).
+    _half = _half_map(pin_count, body_half)
+    # Which multi-pin parts each small part shares a SIGNAL net with; power
+    # and ground reach everything and carry no side.
+    wired_ics: dict[str, set[str]] = defaultdict(set)
+    for _net in plan.nets:
+        if _net.is_power or _net.is_ground:
+            continue
+        _members = {pr.refdes for pr in _net.pins}
+        _ics = {r for r in _members if pin_count.get(r, 0) >= 4}
+        for _r in _members - _ics:
+            wired_ics[_r].update(_ics)
+    _min_x, _min_y, _max_x, _max_y = sheet_bounds(plan)
     for match in matches:
         motif = get_motif_by_name(match.motif_name)
         if motif is None or not motif.canonical:
@@ -225,11 +244,14 @@ def _splat_motifs(
         if motif.ic_anchor is not None:
             ic_anchor_host = match.host_refdes(motif.ic_anchor)
 
-        def _targets_at(mx: int, my: int) -> dict[str, tuple[int, int]]:
+        def _targets_at(mx: int, my: int,
+                        mirror: bool = False) -> dict[str, tuple[int, int]]:
             t: dict[str, tuple[int, int]] = {}
             for pat_refdes, (dx, dy) in motif.canonical.items():
                 if pat_refdes == anchor_skip:
                     continue
+                if mirror:
+                    dx = -dx
                 host = match.host_refdes(pat_refdes)
                 if host is None or host not in by_refdes:
                     continue
@@ -237,14 +259,17 @@ def _splat_motifs(
                 raw_y = my + dy
                 sx = int((raw_x // SNAP_GRID_MILS) * SNAP_GRID_MILS)
                 sy = int((raw_y // SNAP_GRID_MILS) * SNAP_GRID_MILS)
-                sx = max(SHEET_ORIGIN_X_MILS, min(SHEET_MAX_X_MILS, sx))
-                sy = max(SHEET_ORIGIN_Y_MILS, min(SHEET_MAX_Y_MILS, sy))
+                # The sheet the plan declares, not A4: clamping an A3
+                # layout into the A4 window is one of the ways a
+                # satellite gets dragged back into its IC.
+                sx = max(_min_x, min(_max_x, sx))
+                sy = max(_min_y, min(_max_y, sy))
                 t[host] = (sx, sy)
             return t
 
         def _has_collisions(t: dict[str, tuple[int, int]]) -> bool:
             for host, (tx, ty) in t.items():
-                host_half = _bbox_half(pin_count.get(host, 2))
+                host_hx, host_hy = _half[host]
                 for other_refdes, other in by_refdes.items():
                     if other_refdes in motif_members:
                         # The anchor IC still counts as an obstacle (see
@@ -252,10 +277,9 @@ def _splat_motifs(
                         if other_refdes != ic_anchor_host or \
                                 other_refdes == host:
                             continue
-                    other_half = _bbox_half(pin_count.get(other_refdes, 2))
-                    gap = host_half + other_half + _SHOVE_CLEARANCE_MILS
-                    if (abs(tx - other.x_mils) < gap
-                            and abs(ty - other.y_mils) < gap):
+                    if bodies_overlap(
+                            tx, ty, other.x_mils, other.y_mils,
+                            (host_hx, host_hy), _half[other_refdes]):
                         return True
             return False
 
@@ -276,12 +300,50 @@ def _splat_motifs(
             (300, 300), (-300, 300), (300, -300), (-300, -300),
             (600, 0), (-600, 0), (0, 600), (0, -600),
         ]
+        # A CANONICAL OFFSET MUST NOT CARRY A PART ACROSS AN IC IT WIRES
+        # TO. The motif defines a SHAPE, not which side of a chip the
+        # shape hangs off; that follows the pins, and the placer has
+        # already worked it out. Measured on the 555 blinker: the
+        # force-directed pass and the shove both put the timing cap C1
+        # to the LEFT of U1, whose THRES and TRIG pins are both on the
+        # left, and rc_lowpass's canonical "cap 1000 mils right of the
+        # resistor" then dragged it 100 mils past the chip, so every one
+        # of its wires had to loop around the body. Mirroring the shape
+        # in x keeps it intact and puts it back on the pin side.
+        def _crossings_of(t: dict[str, tuple[int, int]]) -> int:
+            crossed = 0
+            for host, (tx, _ty) in t.items():
+                was = by_refdes.get(host)
+                if was is None:
+                    continue
+                for ic_ref in wired_ics.get(host, ()):
+                    ic_p = by_refdes.get(ic_ref)
+                    if ic_p is None:
+                        continue
+                    before = (was.x_mils > ic_p.x_mils) - (was.x_mils < ic_p.x_mils)
+                    after = (tx > ic_p.x_mils) - (tx < ic_p.x_mils)
+                    if before and after and before != after:
+                        crossed += 1
+                        break
+            return crossed
+
         targets: Optional[dict[str, tuple[int, int]]] = None
         for sx_shift, sy_shift in shifts:
             cand = _targets_at(meta_x + sx_shift, meta_y + sy_shift)
-            if not _has_collisions(cand):
-                targets = cand
-                break
+            if _has_collisions(cand):
+                continue
+            if _crossings_of(cand):
+                flipped = _targets_at(meta_x + sx_shift, meta_y + sy_shift,
+                                      mirror=True)
+                # The mirror has to be clean AND actually better; on a tie
+                # the un-mirrored shape wins, so nothing moves where the
+                # canonical orientation was already right.
+                if (not _has_collisions(flipped)
+                        and _crossings_of(flipped) < _crossings_of(cand)):
+                    targets = flipped
+                    break
+            targets = cand
+            break
 
         if targets is None:
             continue  # no clean shift; leave motif at FD positions
@@ -433,6 +495,79 @@ def _apply_rotations(
     return out
 
 
+def correct_two_pin_rotation(plan, placements, symbol_by_refdes):
+    """Make a shunt 2-pin part's PINS stand upright, whatever its library.
+
+    ``_apply_rotations`` decides an ORIENTATION and writes it as a rotation
+    value: 270 means "stand this part up so its pins face the rail above and
+    the ground below". That encoding assumes the symbol is natively
+    pins-left-right, and the comment in ``_neighbour_aware_rotation`` says so
+    outright.
+
+    Half of real symbols are not. MEASURED across 101 distinct 2-pin symbols
+    on public boards: 53 are natively pins-up-down and 48 pins-left-right. For
+    the natively-vertical half, rotating achieved the OPPOSITE of the intent,
+    and nothing downstream noticed because the rotation VALUE looked right.
+
+    What it cost, measured in the world frame rather than in rotation values:
+    98% of human decoupling caps stand upright against 0% of the engine's. A
+    cap lying on its side between a rail above and a ground below cannot be
+    reached without two extra bends.
+
+    THE TARGET COMES FROM THE PLAN, NOT FROM THE CURRENT ROTATION, and that
+    is what makes this safe to run anywhere. Reading the intent back out of
+    the rotation looks simpler and is wrong: the pass is then not idempotent,
+    so running it on placements it has already corrected flips them back. The
+    variant candidates rebuild from ``layout_overrides`` carrying rotations a
+    previous build already fixed, so that mistake is reachable, not
+    theoretical.
+
+    Scope is deliberately the shunt case ``_rotation_for_part`` recognises: a
+    2-pin part with a pin on a power or ground rail. Series and signal parts
+    keep whatever orientation the placer chose, because for them the right
+    answer depends on where their neighbours sit, not on a convention.
+    """
+    from eda_agent.design.force_directed import _rotation_for_part
+    from eda_agent.design.motifs import _kind_from_refdes
+
+    parts_by_refdes = {p.refdes: p for p in plan.parts}
+    out = []
+    for placement in placements:
+        part = parts_by_refdes.get(placement.refdes)
+        model = symbol_by_refdes.get(placement.refdes)
+        pins = getattr(model, "pins", ()) if model is not None else ()
+        if part is None or len(pins) != 2:
+            out.append(placement)
+            continue
+        # Passives only, and never a connector. A two-pin power header on
+        # VCC/GND satisfies the shunt test too, but it is the sheet's I/O
+        # edge and ``_apply_rotations`` lays it horizontal for that reason;
+        # measured on the corpus, 0% of human 2-pin connectors stand
+        # upright. The refdes-kind test is the same one _infer_decoup_roles
+        # already relies on.
+        role = (part.role or "").strip().lower()
+        if (role in _INPUT_CONN_ROLES or role in _OUTPUT_CONN_ROLES
+                or _kind_from_refdes(placement.refdes) not in ("R", "C", "L")):
+            out.append(placement)
+            continue
+        if _rotation_for_part(part, plan.nets) != 270:
+            out.append(placement)          # not the shunt-on-a-rail case
+            continue
+        a, b = pins
+        native_vertical = abs(a.y - b.y) > abs(a.x - b.x)
+        # Upright is the unrotated state for a pins-up-down symbol, and 270
+        # for a pins-left-right one. 270 rather than 90 keeps the single
+        # rotated value the rest of this package uses.
+        wanted = 0 if native_vertical else 270
+        if placement.rotation == wanted:
+            out.append(placement)
+            continue
+        out.append(PlacedPart(refdes=placement.refdes, sheet=placement.sheet,
+                              x_mils=placement.x_mils, y_mils=placement.y_mils,
+                              rotation=wanted))
+    return out
+
+
 def order_rail_columns(
     plan: DesignPlan,
     placed: list[PlacedPart],
@@ -477,7 +612,28 @@ def order_rail_columns(
             return 0
         return 1
 
+    # HANDS OFF A CRYSTAL CLUSTER. Its two load caps STRADDLE the crystal
+    # by design, one above and one below, and that is not a potential
+    # stack: the crystal touches neither rail so it ranks above two
+    # ground-connected caps, and this pass duly lifted it to the top of
+    # the column and left one cap 1000 mils away from it. The same
+    # hands-off rule `align_to_neighbour_axes` applies, for the same
+    # reason -- a pass that places a part relative to a SPECIFIC other
+    # part has the stronger claim.
+    #
+    # Only crystals, not every motif member: the divider filter cap this
+    # pass exists to reorder is itself a motif member, so a blanket
+    # exemption would disable the pass where it does its work.
+    try:
+        from eda_agent.design.priors import _crystal_clusters
+
+        crystal_claimed = {r for cl in _crystal_clusters(plan) for r in cl[:3]}
+    except Exception:                           # noqa: BLE001
+        crystal_claimed = set()
+
     def eligible(p: PlacedPart) -> bool:
+        if p.refdes in crystal_claimed:
+            return False
         if pin_count.get(p.refdes, 0) != 2:
             return False
         if p.rotation % 180 != 90:  # vertical parts only (90 / 270)
@@ -541,6 +697,8 @@ def compute_layout(
     plan: DesignPlan, *, engine: str = "auto",
     ic_pin_offsets: dict[str, dict[str, tuple[int, int]]] | None = None,
     pin_attract_k: float | None = None,
+    body_half: dict | None = None,
+    motif_half: dict | None = None,
 ) -> list[PlacedPart]:
     """Compute (x, y) for every part in the plan.
 
@@ -580,6 +738,8 @@ def compute_layout(
     board whose signal graph is split by a power-only bridge (a regulator).
     """
     _fd_kw = {} if pin_attract_k is None else {"pin_attract_k": pin_attract_k}
+    if body_half:
+        _fd_kw["body_half"] = body_half
     if engine == "force_directed":
         placed = _force_directed_layout(plan, ic_pin_offsets, **_fd_kw)
     elif engine == "sugiyama":
@@ -594,8 +754,33 @@ def compute_layout(
     # this is where the schematic-direction convention is applied.
     placed = _apply_rotations(plan, placed)
 
-    cleaned, _residual = _hard_shove_pass(plan, placed)
+    # ROTATE THE KEEP-OUT WITH THE PART. ``body_half`` is measured in the
+    # symbol's native frame and the rotation pass above decides whether a
+    # part is drawn upright or on its side. A 2-pin passive is roughly 30
+    # by 80 mils about its centre, so keeping the native pair after a
+    # quarter turn would let the shove hold a horizontal resistor apart by
+    # its height and stack it against its neighbour by its width. Only the
+    # axis assignment turns; the numbers do not change.
+    _turned = None
+    if body_half:
+        _rot = {p.refdes: (p.rotation or 0) % 180 for p in placed}
+        _turned = {
+            r: ((h[1], h[0])
+                if (_rot.get(r) == 90 and isinstance(h, (tuple, list))) else h)
+            for r, h in body_half.items()
+        }
+    cleaned, _residual = _hard_shove_pass(plan, placed, _turned or body_half)
     matches = recognize_motifs(plan)
     if matches:
-        cleaned = _splat_motifs(plan, cleaned, matches)
+        # SIZED SEPARATELY from the placer, and the split is measured.
+        # The splat only decides whether a canonical offset lands on
+        # something, so giving it real extents costs nothing; giving the
+        # PLACER real extents moves every part and the force-directed
+        # stiffness sweep then lands on a different, worse minimum
+        # (three attempts, each losing crossings and long wires). The
+        # anchor's real size is exactly what this pass needs: the bucket
+        # calls an 80-pin IC 1000 mils when it is drawn 1900 by 3400, so
+        # a canonical 400-mil offset puts the decoupling cap inside it.
+        cleaned = _splat_motifs(plan, cleaned, matches,
+                                body_half=motif_half or _turned or body_half)
     return cleaned

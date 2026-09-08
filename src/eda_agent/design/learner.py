@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from eda_agent.design.plan import DesignPlan
+from eda_agent.design.priors import _infer_crystal_roles, _infer_decoup_roles
 
 logger = logging.getLogger("eda_agent.design.learner")
 
@@ -121,7 +122,20 @@ def learn_from_layout(
     if post_edit_by_refdes is None:
         return out
 
-    role_by_refdes = {p.refdes: (p.role or "") for p in plan.parts}
+    # SAME INFERENCE THE CONSUMER USES. apply_placement_priors tags
+    # untagged decoupling caps and crystal clusters structurally before it
+    # looks a prior up, so a learner that records the raw planner role
+    # writes rows keyed differently from the way they will be read.
+    #
+    # MEASURED: 27 edits recorded with part_role "" collapsed into a
+    # single '_unknown_|_unknown_' bucket that can never match, because
+    # the consumer skips a part whose role is empty. Every stage reported
+    # success and the corpus taught nothing.
+    inferred = _infer_decoup_roles(plan)
+    inferred.update(_infer_crystal_roles(plan))
+    role_by_refdes = {
+        p.refdes: (p.role or inferred.get(p.refdes, "")) for p in plan.parts
+    }
     lib_ref_by_refdes = {p.refdes: p.lib_ref for p in plan.parts}
     design_id = _design_id_for(plan)
 
@@ -154,14 +168,32 @@ def learn_from_layout(
             )
             continue
 
+        # AN UNKEYED ROW IS NOT TRAINING DATA. The priors are looked up by
+        # (part_role, anchor_role); with either side empty the row can
+        # never be read back, so recording it adds noise to the corpus and
+        # inflates n_edits into a number that means nothing. Skipped
+        # loudly, because a silent skip is how 27 edits became one inert
+        # bucket without anyone noticing.
+        part_role = role_by_refdes.get(refdes, "")
+        anchor_role = role_by_refdes.get(anchor_refdes, "")
+        if not part_role or not anchor_role:
+            missing = "part" if not part_role else "anchor"
+            out["notes"].append(
+                f"{refdes}: no {missing} role, and none could be inferred; "
+                f"skipping row because a prior is keyed on the role pair "
+                f"and an unkeyed row can never be read back"
+            )
+            out["rows_skipped_unkeyed"] = out.get("rows_skipped_unkeyed", 0) + 1
+            continue
+
         rows.append({
             "ts": time.time(),
             "design_id": design_id,
             "refdes": refdes,
-            "part_role": role_by_refdes.get(refdes, ""),
+            "part_role": part_role,
             "part_lib_ref": lib_ref_by_refdes.get(refdes, ""),
             "anchor_refdes": anchor_refdes,
-            "anchor_role": role_by_refdes.get(anchor_refdes, ""),
+            "anchor_role": anchor_role,
             "anchor_lib_ref": lib_ref_by_refdes.get(anchor_refdes, ""),
             "dx_mils": dx,
             "dy_mils": dy,
@@ -243,10 +275,14 @@ def _pick_anchor(
     Preference order:
     1. Highest-pin-count netlist neighbor on a NON-power, NON-ground
        net. Captures intentional grouping (decoup_cap with its IC).
-    2. Spatial nearest neighbor on the pre-edit canvas, Manhattan
-       distance. Catches parts whose only nets are power/ground but
-       which the user clearly placed near something specific.
-    3. None if the design has no other placed component.
+    2. The rail-mate: for a part whose only nets are power and ground
+       (a decoupling cap), the highest-pin-count part sharing its
+       non-ground net. This is what the CONSUMER looks the prior up
+       against, so recording anything else keys the row unreadably.
+    3. Spatial nearest neighbor on the pre-edit canvas, Manhattan
+       distance. Last resort: it associates by distance where the
+       relationship is electrical.
+    4. None if the design has no other placed component.
     """
     candidates = {p.refdes for p in plan.parts if p.refdes != moved_refdes}
     placed_candidates = candidates & pre_edit_by_refdes.keys()
@@ -293,8 +329,32 @@ def _pick_anchor(
         )
         return best[0]
 
+    # THE RAIL-MATE BEFORE THE NEAREST NEIGHBOUR. This branch is reached
+    # exactly when a part's only nets are power and ground, which is the
+    # definition of a decoupling cap, and proximity is the wrong answer
+    # for one: the consumer looks its prior up against the IC the cap
+    # SHARES A RAIL WITH, so an anchor picked by distance is recorded
+    # under a key that will never be read back.
+    #
+    # Same class of mismatch as the empty roles this function used to
+    # emit: the learner keyed rows one way and the reader looked them up
+    # another. _decoupling_rail_anchor is the consumer's own answer.
+    try:
+        from eda_agent.design.priors import _decoupling_rail_anchor
+
+        # The real map, not {}: the helper only accepts a rail-mate
+        # that is actually placed, so an empty one always says None.
+        rail_mate = _decoupling_rail_anchor(
+            moved_refdes, plan, pre_edit_by_refdes)
+    except Exception:                 # noqa: BLE001 - inference is best effort
+        rail_mate = None
+    if rail_mate and rail_mate in placed_candidates:
+        return rail_mate
+
     # Spatial fallback: Manhattan-nearest placed neighbor in the pre-edit
-    # canvas.
+    # canvas. Last resort only. It associates by distance where the real
+    # relationship is electrical, which is how three separate layout
+    # features were caught measuring their own guess.
     moved_pre = pre_edit_by_refdes.get(moved_refdes)
     if moved_pre is None:
         return None

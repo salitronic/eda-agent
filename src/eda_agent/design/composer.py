@@ -128,6 +128,7 @@ def compose_layout(
     plan: DesignPlan,
     *,
     motifs: Optional[list[Motif]] = None,
+    motif_half: Optional[dict] = None,
 ) -> ComposerResult:
     """Top-level entry point: motif compose + Sugiyama fallback.
 
@@ -154,7 +155,12 @@ def compose_layout(
     catalogue = motifs if motifs is not None else list(MOTIF_CATALOGUE)
 
     # 1. Sugiyama baseline. Every part gets a starting position.
-    baseline = compute_layout(plan)
+    # Straight through to the motif splat. The PLACER stays uniform:
+    # correcting even one part's size on a 36-part sheet moved the
+    # force-directed sweep onto a different minimum and cost crossings
+    # (0.21 to 0.31 of the human's), so real extents go only to the
+    # passes that cannot affect the search.
+    baseline = compute_layout(plan, motif_half=motif_half)
     by_refdes: dict[str, PlacedPart] = {p.refdes: p for p in baseline}
     placeable_refdes = set(by_refdes.keys())
 

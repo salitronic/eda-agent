@@ -663,3 +663,393 @@ def test_resnap_motif_clusters_retightens_ic_anchored_fb_divider():
                           out[a].y_mils - out[b].y_mils)
     assert d("R1", "U1") < 1900 and d("R2", "U1") < 2100
     assert d("R1", "R2") == pytest.approx(1000, abs=150)   # canonical stack
+
+
+def test_resnap_never_places_a_passive_inside_a_large_ic_body():
+    """A canonical offset is a constant; an IC body is not.
+
+    FOUND BY THE HUMAN BENCHMARK. nPM1300 draws a 2400 x 2800 body, and
+    the fb_divider offset of 1300 mils sits inside it, so the resnap put
+    a passive on top of the IC and scored 1000 for illegal geometry.
+    This pass runs AFTER the pipeline's final overlap repair and nothing
+    re-checks it, so the repair could not save it.
+
+    The pin-count estimate the shove uses tops out at 1200 mils, which
+    would call this clear. Only the real body says otherwise, so the
+    real body has to be passed in.
+    """
+    plan = _make_plan(
+        parts=[
+            {"refdes": "U1", "lib_ref": "REG", "lib_path": _LIB,
+             "status": "existing", "sheet": "main", "zone": "z"},
+            {"refdes": "R1", "lib_ref": "RES", "lib_path": _LIB,
+             "status": "existing", "sheet": "main", "zone": "z"},
+            {"refdes": "R2", "lib_ref": "RES", "lib_path": _LIB,
+             "status": "existing", "sheet": "main", "zone": "z"}],
+        nets=[
+            {"name": "VOUT", "is_power": True, "pins": [
+                {"refdes": "U1", "pin": "3"}, {"refdes": "R1", "pin": "1"}]},
+            {"name": "FB", "pins": [{"refdes": "R1", "pin": "2"},
+                                    {"refdes": "R2", "pin": "1"},
+                                    {"refdes": "U1", "pin": "5"}]},
+            {"name": "GND", "is_ground": True, "pins": [
+                {"refdes": "R2", "pin": "2"}, {"refdes": "U1", "pin": "2"}]}])
+    scattered = [
+        PlacedPart(refdes="U1", sheet="main", x_mils=2200, y_mils=2200,
+                   rotation=0),
+        PlacedPart(refdes="R1", sheet="main", x_mils=8000, y_mils=7000,
+                   rotation=0),
+        PlacedPart(refdes="R2", sheet="main", x_mils=500, y_mils=8000,
+                   rotation=0)]
+
+    # nPM1300's real body: 2400 x 2800 mils, so half is 1200 x 1400.
+    half = {"U1": (1200, 1400), "R1": (60, 20), "R2": (60, 20)}
+    out = {p.refdes: p for p in
+           resnap_motif_clusters(plan, scattered, body_half=half)}
+
+    ux, uy = out["U1"].x_mils, out["U1"].y_mils
+    for ref in ("R1", "R2"):
+        px, py = out[ref].x_mils, out[ref].y_mils
+        inside = (abs(px - ux) < half["U1"][0] + half[ref][0]
+                  and abs(py - uy) < half["U1"][1] + half[ref][1])
+        assert not inside, (
+            f"{ref} at ({px},{py}) sits inside U1's body at ({ux},{uy})")
+
+
+def test_pushing_clear_keeps_the_side_the_motif_asked_for():
+    """Sliding a part out must not move it to the opposite side.
+
+    A cap placed below its IC belongs below it. Moving along the axis
+    with the smaller correction, and keeping the sign, preserves the
+    motif's shape while clearing the body.
+    """
+    from eda_agent.design.priors import _push_clear
+
+    # IC at the origin, half 1200 x 1400. Target 300 right and 1300 up:
+    # inside vertically, and y needs the smaller correction.
+    tx, ty = _push_clear(300, 1300, 0, 0, (1200, 1400), (60, 20), 100)
+    assert ty >= 1400 + 20, f"still inside vertically: {ty}"
+    assert ty > 0, "must stay on the side the motif placed it"
+    assert tx == 300, "the clear axis must not be disturbed"
+
+
+# ---------------- resnap_decoupling_bank: the aligned column ---------------
+
+def _bank_plan(n_caps: int):
+    from eda_agent.design.plan import DesignPlan
+
+    parts = [{"refdes": "U1", "lib_ref": "IC", "lib_path": "/x.SchLib"}]
+    parts += [{"refdes": f"C{i}", "lib_ref": "C", "lib_path": "/x.SchLib"}
+              for i in range(1, n_caps + 1)]
+    vcc = [{"refdes": "U1", "pin": "1"}, {"refdes": "U1", "pin": "2"},
+           {"refdes": "U1", "pin": "3"}]
+    gnd = [{"refdes": "U1", "pin": "4"}]
+    for i in range(1, n_caps + 1):
+        vcc.append({"refdes": f"C{i}", "pin": "1"})
+        gnd.append({"refdes": f"C{i}", "pin": "2"})
+    return DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": parts,
+        "nets": [{"name": "VCC", "is_power": True, "pins": vcc},
+                 {"name": "GND", "is_ground": True, "pins": gnd}],
+    })
+
+
+def _scattered(n_caps: int):
+    """What the overlap shove leaves: a bank spread unevenly along y."""
+    from eda_agent.design.layout import PlacedPart
+
+    out = [PlacedPart(refdes="U1", sheet="main", x_mils=2000, y_mils=3000,
+                      rotation=0)]
+    ys = [3000, 4100, 2400, 5300, 1500, 6000]
+    xs = [4000, 4100, 3900, 4000, 4200, 4000]
+    for i in range(n_caps):
+        out.append(PlacedPart(refdes=f"C{i + 1}", sheet="main",
+                              x_mils=xs[i], y_mils=ys[i], rotation=270))
+    return out
+
+
+def test_a_scattered_bank_comes_back_as_one_aligned_column():
+    """MEASURED on 154 public sheets: humans put a decoupling cap 450 mils
+    from its nearest other cap and 88% share an axis. The priors pass
+    reproduces that and the shove destroys it (1000 mils, 34% aligned)."""
+    from eda_agent.design.priors import _BANK_PITCH_MILS, resnap_decoupling_bank
+
+    out = resnap_decoupling_bank(_bank_plan(4), _scattered(4))
+    caps = sorted((p for p in out if p.refdes.startswith("C")),
+                  key=lambda p: p.y_mils)
+    assert len({p.x_mils for p in caps}) == 1, "the bank does not share an x"
+    gaps = [b.y_mils - a.y_mils for a, b in zip(caps, caps[1:])]
+    assert gaps == [_BANK_PITCH_MILS] * 3, gaps
+
+
+def test_the_bank_keeps_the_shove_ordering():
+    """Re-sorting the caps would swap two and cross the wires reaching them."""
+    from eda_agent.design.priors import resnap_decoupling_bank
+
+    before = _scattered(4)
+    out = resnap_decoupling_bank(_bank_plan(4), before)
+    order_before = [p.refdes for p in sorted(
+        (p for p in before if p.refdes.startswith("C")), key=lambda p: p.y_mils)]
+    order_after = [p.refdes for p in sorted(
+        (p for p in out if p.refdes.startswith("C")), key=lambda p: p.y_mils)]
+    assert order_after == order_before
+
+
+def test_a_pair_is_left_where_the_shove_put_it():
+    """Two caps are not a column, and re-spacing a pair pulled one away from
+    the pin it serves: +45% and +9% on the two 2-cap sheets of the first A/B."""
+    from eda_agent.design.priors import resnap_decoupling_bank
+
+    before = _scattered(2)
+    out = resnap_decoupling_bank(_bank_plan(2), before)
+    assert [(p.refdes, p.x_mils, p.y_mils) for p in out] == \
+        [(p.refdes, p.x_mils, p.y_mils) for p in before]
+
+
+def test_a_slot_on_top_of_another_part_is_refused():
+    """The overlap the shove fixed must not come back."""
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.priors import resnap_decoupling_bank
+
+    plan = _bank_plan(3)
+    plan = plan.model_copy(deep=True)
+    plan.parts.append(type(plan.parts[0])(
+        refdes="R9", lib_ref="R", lib_path="/x.SchLib"))
+    plan.nets[0].pins.append(type(plan.nets[0].pins[0])(refdes="R9", pin="1"))
+    plan.nets[1].pins.append(type(plan.nets[0].pins[0])(refdes="R9", pin="2"))
+    before = _scattered(3)
+    # The column for these three lands at x=4000 (median x) with slots at
+    # y=2600, 3000, 3400 about the median y. C2 (at 4100, 4100, the highest)
+    # is due for the top slot. R9 sits exactly there, and on nothing else.
+    slot = (4000, 3400)
+    assert slot not in {(p.x_mils, p.y_mils) for p in before}
+    before.append(PlacedPart(refdes="R9", sheet="main", x_mils=slot[0],
+                             y_mils=slot[1], rotation=0))
+    # Real body sizes, as the pipeline supplies them. Without them the
+    # pin-count estimate makes a 2-pin part 900 mils wide and R9 would block
+    # the neighbouring slots as well, which is a different (weaker) test.
+    body_half = {"U1": (300, 300), "R9": (100, 50),
+                 "C1": (80, 80), "C2": (80, 80), "C3": (80, 80)}
+    out = resnap_decoupling_bank(plan, before, body_half=body_half)
+    r9 = next(p for p in out if p.refdes == "R9")
+    assert (r9.x_mils, r9.y_mils) == slot, "R9 must not move"
+    c2 = next(p for p in out if p.refdes == "C2")
+    assert (c2.x_mils, c2.y_mils) == (4100, 4100), (
+        f"C2 was re-seated to {(c2.x_mils, c2.y_mils)}, onto or past R9")
+    others = [p for p in out if p.refdes in ("C1", "C3")]
+    assert all(p.x_mils == 4000 for p in others), "the rest still tightened"
+
+
+
+# ------------- one oscillator per cap pair, and per IC ---------------------
+
+def _osc_plan(extra_bridge: bool = False, second_ic: bool = False):
+    """A crystal X1 with load caps C1/C2 on an MCU.
+
+    ``extra_bridge`` adds R9 across the same two nodes: structurally it is
+    also "a 2-pin part whose legs each carry a cap to ground", so it matches
+    the crystal test too. ``second_ic`` gives the board a second oscillator
+    on its own MCU, which must still be recognised.
+    """
+    from eda_agent.design.plan import DesignPlan
+
+    parts = ["U1", "X1", "C1", "C2"]
+    nets = [
+        {"name": "XA", "pins": [{"refdes": "X1", "pin": "1"},
+                                {"refdes": "U1", "pin": "1"},
+                                {"refdes": "C1", "pin": "1"}]},
+        {"name": "XB", "pins": [{"refdes": "X1", "pin": "2"},
+                                {"refdes": "U1", "pin": "2"},
+                                {"refdes": "C2", "pin": "1"}]},
+    ]
+    gnd = [{"refdes": "C1", "pin": "2"}, {"refdes": "C2", "pin": "2"},
+           {"refdes": "U1", "pin": "3"}]
+    if extra_bridge:
+        parts.append("R9")
+        nets[0]["pins"].append({"refdes": "R9", "pin": "1"})
+        nets[1]["pins"].append({"refdes": "R9", "pin": "2"})
+    if second_ic:
+        parts += ["U2", "X2", "C3", "C4"]
+        nets += [
+            {"name": "YA", "pins": [{"refdes": "X2", "pin": "1"},
+                                    {"refdes": "U2", "pin": "1"},
+                                    {"refdes": "C3", "pin": "1"}]},
+            {"name": "YB", "pins": [{"refdes": "X2", "pin": "2"},
+                                    {"refdes": "U2", "pin": "2"},
+                                    {"refdes": "C4", "pin": "1"}]},
+        ]
+        gnd += [{"refdes": "C3", "pin": "2"}, {"refdes": "C4", "pin": "2"},
+                {"refdes": "U2", "pin": "3"}]
+    nets.append({"name": "GND", "is_ground": True, "pins": gnd})
+    return DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": r[0], "lib_path": "/x.SchLib"}
+                  for r in parts],
+        "nets": nets})
+
+
+def test_a_plain_oscillator_is_still_found():
+    from eda_agent.design.priors import _crystal_clusters
+
+    clusters = _crystal_clusters(_osc_plan())
+    assert len(clusters) == 1
+    assert clusters[0][0] == "X1"
+    assert set(clusters[0][1:3]) == {"C1", "C2"}
+
+
+def test_a_part_bridging_the_same_nodes_does_not_claim_the_same_caps():
+    """R9 passes the same structural test as the crystal.
+
+    Both clusters kept means resnap_crystal_clusters places C1 and C2 twice
+    and the two anchors are seated at the same point: on a PAL/NTSC decoder
+    that produced six mutually contained parts, where the human sheet has
+    none.
+    """
+    from eda_agent.design.priors import _crystal_clusters
+
+    clusters = _crystal_clusters(_osc_plan(extra_bridge=True))
+    assert len(clusters) == 1, f"two claims on one cap pair: {clusters}"
+    caps = [c for entry in clusters for c in entry[1:3]]
+    assert len(caps) == len(set(caps)), "a cap serves at most one oscillator"
+
+
+def test_a_cap_shared_between_two_ICs_is_claimed_once():
+    """The per-IC rule does NOT cover this, and that is why both exist.
+
+    X1 and X2 sit on different ICs, so the one-per-IC rule keeps both, and
+    they share C1 because it hangs off the node they have in common.
+    resnap_crystal_clusters would then place C1 twice, once flanking each
+    crystal. Verified by deleting the cap rule: the second cluster comes
+    back and C1 appears in both.
+    """
+    from eda_agent.design.plan import DesignPlan
+    from eda_agent.design.priors import _crystal_clusters
+
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": r[0], "lib_path": "/x.SchLib"}
+                  for r in ("U1", "U2", "X1", "X2", "C1", "C2", "C3")],
+        "nets": [
+            {"name": "XA", "pins": [{"refdes": "X1", "pin": "1"},
+                                    {"refdes": "X2", "pin": "1"},
+                                    {"refdes": "U1", "pin": "1"},
+                                    {"refdes": "U2", "pin": "1"},
+                                    {"refdes": "C1", "pin": "1"}]},
+            {"name": "XB", "pins": [{"refdes": "X1", "pin": "2"},
+                                    {"refdes": "U1", "pin": "2"},
+                                    {"refdes": "C2", "pin": "1"}]},
+            {"name": "XC", "pins": [{"refdes": "X2", "pin": "2"},
+                                    {"refdes": "U2", "pin": "2"},
+                                    {"refdes": "C3", "pin": "1"}]},
+            {"name": "GND", "is_ground": True,
+             "pins": [{"refdes": "C1", "pin": "2"}, {"refdes": "C2", "pin": "2"},
+                      {"refdes": "C3", "pin": "2"}, {"refdes": "U1", "pin": "3"},
+                      {"refdes": "U2", "pin": "3"}]},
+        ]})
+    clusters = _crystal_clusters(plan)
+    caps = [c for entry in clusters for c in entry[1:3]]
+    assert len(caps) == len(set(caps)), f"C1 claimed twice: {clusters}"
+
+
+def test_two_oscillators_on_two_ICs_are_both_kept():
+    """The limit is one per IC, not one per board."""
+    from eda_agent.design.priors import _crystal_clusters
+
+    clusters = _crystal_clusters(_osc_plan(second_ic=True))
+    assert len(clusters) == 2
+    assert {e[3] for e in clusters} == {"U1", "U2"}
+
+
+def test_two_oscillators_claiming_one_IC_keep_only_one():
+    """resnap_crystal_clusters seats an anchor from its IC alone, so two on
+    one IC are seated at the same point."""
+    from eda_agent.design.priors import _crystal_clusters
+
+    plan = _osc_plan(second_ic=True)
+    # Move the second oscillator onto U1 as well.
+    for net in plan.nets:
+        if net.name in ("YA", "YB"):
+            for pin in net.pins:
+                if pin.refdes == "U2":
+                    pin.refdes = "U1"
+    clusters = _crystal_clusters(plan)
+    assert len(clusters) == 1
+    assert {e[3] for e in clusters} == {"U1"}
+
+
+def test_the_arbitration_does_not_depend_on_iteration_order():
+    from eda_agent.design.priors import _crystal_clusters
+
+    plan = _osc_plan(extra_bridge=True)
+    first = _crystal_clusters(plan)
+    reordered = plan.model_copy(deep=True)
+    reordered.parts.reverse()
+    reordered.nets.reverse()
+    assert _crystal_clusters(reordered) == first
+
+
+def test_a_self_contained_motif_is_not_reseated_inside_another_part():
+    """A motif with no ic_anchor is seated on its members' own centroid.
+
+    ``_push_clear`` only clears the motif's OWN anchor, and the
+    self-contained branch does not even run it, so nothing consulted the
+    rest of the sheet. On a PAL/NTSC decoder the diode bridge's centroid
+    fell inside U10 and all four diodes were re-seated inside the IC's
+    rectangle, on a canvas the overlap shove had left clean.
+    """
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.plan import DesignPlan
+    from eda_agent.design.priors import resnap_motif_clusters
+
+    # A real diode bridge: two AC signal nodes, a power rail and a ground,
+    # each diode across one AC node and one rail. Built to the catalogue's
+    # own pattern, because a fixture the matcher does not recognise leaves
+    # the pass with nothing to do and the test passes for that reason: an
+    # earlier version of this asserted nothing, and survived deleting the
+    # collision check it exists to guard.
+    nets = [
+        {"name": "AC1", "pins": [{"refdes": "D1", "pin": "1"},
+                                 {"refdes": "D3", "pin": "1"}]},
+        {"name": "AC2", "pins": [{"refdes": "D2", "pin": "1"},
+                                 {"refdes": "D4", "pin": "1"}]},
+        {"name": "VPLUS", "is_power": True,
+         "pins": [{"refdes": "D1", "pin": "2"}, {"refdes": "D2", "pin": "2"},
+                  {"refdes": "U1", "pin": "1"}]},
+        {"name": "VMINUS", "is_ground": True,
+         "pins": [{"refdes": "D3", "pin": "2"}, {"refdes": "D4", "pin": "2"},
+                  {"refdes": "U1", "pin": "2"}]},
+        {"name": "IC", "pins": [{"refdes": "U1", "pin": "3"},
+                                {"refdes": "U1", "pin": "4"}]},
+    ]
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": r[0], "lib_path": "/x.SchLib"}
+                  for r in ("U1", "D1", "D2", "D3", "D4")],
+        "nets": nets})
+    before = [PlacedPart(refdes="U1", sheet="main", x_mils=5000, y_mils=5000,
+                         rotation=0)]
+    for i, (dx, dy) in enumerate(((-3000, 0), (3000, 0), (0, -3000),
+                                  (0, 3000)), start=1):
+        before.append(PlacedPart(refdes=f"D{i}", sheet="main",
+                                 x_mils=5000 + dx, y_mils=5000 + dy,
+                                 rotation=0))
+    body_half = {"U1": (2000, 2000)}
+    body_half.update({f"D{i}": (60, 60) for i in range(1, 5)})
+    from eda_agent.design.motifs import recognize_motifs
+    assert any(m.motif_name == "diode_bridge" for m in recognize_motifs(plan)), (
+        "the fixture must actually match the motif, or this pass does "
+        "nothing and the test proves nothing")
+
+    out = {p.refdes: p for p in resnap_motif_clusters(plan, before,
+                                                      body_half=body_half)}
+    for i in range(1, 5):
+        d = out[f"D{i}"]
+        inside = (abs(d.x_mils - 5000) < 2000 + 60
+                  and abs(d.y_mils - 5000) < 2000 + 60)
+        assert not inside, (
+            f"D{i} was re-seated at ({d.x_mils}, {d.y_mils}), inside U1")

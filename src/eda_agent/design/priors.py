@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from eda_agent.design.layout import PlacedPart
 from eda_agent.design.plan import DesignPlan
@@ -148,6 +149,7 @@ def apply_placement_priors(
     priors: dict[str, dict[str, Any]],
     *,
     grid_mils: int = 100,
+    body_half: "Optional[Mapping[str, tuple[int, int]]]" = None,
 ) -> list[PlacedPart]:
     """Shift placements toward the recorded preference for each role pair.
 
@@ -160,6 +162,15 @@ def apply_placement_priors(
         grid_mils: Snap-to-grid step for the biased positions. Altium's
             schematic grid is typically 100 mils; matching it keeps
             wires landing on grid intersections.
+        body_half: Real (half_width, half_height) per refdes. A canonical
+            offset is a CONSTANT and therefore assumes an anchor of
+            ordinary size: `decoup_cap|ic` is (0, 400), which is inside the
+            body of any IC taller than 400 mils. Measured over 15 corpus
+            sheets that hold a body bigger than the pin-count estimate can
+            express: the engine drew 22 body overlaps and put 8 parts
+            wholly inside another part, where the same sheets drawn by hand
+            have none of either. Without it, the offsets are applied as
+            before and the caller keeps whatever overlaps result.
 
     Returns:
         A new list of PlacedPart objects with biased positions. The
@@ -269,15 +280,38 @@ def apply_placement_priors(
         instance_idx[key] = idx + 1
         dx = int(chosen_prior.get("dx", 0))
         dy = int(chosen_prior.get("dy", 0))
-        # Step perpendicular to the primary axis to avoid stacking.
+        # Step perpendicular to the primary axis to avoid stacking, in a
+        # true alternation about the anchor: +1, -1, +2, -2 steps, not
+        # +1, -2, +3, -4.
+        #
+        # ``idx * step * sign`` walks 0, +400, -800, +1200, -1600, which
+        # sorted is -1600, -800, 0, +400, +1200: gaps of 800, 800, 400, 800.
+        # MEASURED on the corpus, the priors stage left a median
+        # cap-to-cap pitch of 800 against the 450 humans draw, and this
+        # formula is the whole reason. ``((idx + 1) // 2) * step`` gives
+        # -800, -400, 0, +400, +800: every gap 400.
         if idx > 0:
+            offset = ((idx + 1) // 2) * _BANK_PITCH_MILS * (
+                1 if idx % 2 else -1)
             if abs(dx) >= abs(dy):
-                # Primary axis is X; step in Y.
-                dy += idx * 400 * (1 if idx % 2 else -1)
+                dy += offset       # primary axis is X; step in Y
             else:
-                dx += idx * 400 * (1 if idx % 2 else -1)
+                dx += offset
         new_x = anchor_placement.x_mils + dx
         new_y = anchor_placement.y_mils + dy
+        if body_half:
+            # Slide it out of the anchor, along whichever axis needs less.
+            # Same rule as resnap_motif_clusters uses for the same reason;
+            # this is where the offsets are first applied, so an offset
+            # that starts inside the body never gets out on its own.
+            new_x, new_y = _push_clear(
+                new_x, new_y,
+                anchor_placement.x_mils, anchor_placement.y_mils,
+                _half_extent(chosen_anchor_refdes, body_half,
+                             pin_count_by_refdes),
+                _half_extent(placement.refdes, body_half,
+                             pin_count_by_refdes),
+                grid_mils)
         new_x = (new_x // grid_mils) * grid_mils
         new_y = (new_y // grid_mils) * grid_mils
         new_rot = (placement.rotation + int(chosen_prior.get("rotation", 0))) % 360
@@ -301,6 +335,16 @@ def _pin_count_by_refdes(plan: DesignPlan) -> dict[str, int]:
 
 # Part roles whose anchor is the IC on the part's own power rail, not the
 # board's biggest IC (every decoupling-cap variant in CANONICAL_PRIORS).
+# Spacing between neighbouring parts of one role bank (decoupling caps on
+# an IC, say). MEASURED over 832 decoupling caps on 154 public sheets: the
+# median distance from a cap to its nearest other cap is 450 mils, IQR 350
+# to 800, and 88% of caps share an exact x or y with another. 400 is the
+# nearest value on this package's 100 mil grid.
+_BANK_PITCH_MILS = 400
+# Smallest group the bank resnap touches; see resnap_decoupling_bank.
+_BANK_MIN_CAPS = 3
+
+
 _DECOUP_ROLES = frozenset({
     "vcc_decoup", "decoup_hf", "decoup_bulk", "decoup_cap",
 })
@@ -377,7 +421,12 @@ def _crystal_clusters(plan: DesignPlan) -> list[tuple[str, str, str]]:
     role_of = {p.refdes: (p.role or "") for p in plan.parts}
 
     def _load_cap(net_name: str) -> Optional[str]:
-        for r in members.get(net_name, set()):
+        # SORTED. This returns the FIRST qualifying cap, and ``members`` is a
+        # set of refdes strings, whose iteration order Python varies per
+        # process. A crystal with two interchangeable load caps therefore
+        # picked a different one each run, and the two swapped positions in
+        # the output.
+        for r in sorted(members.get(net_name, ())):
             # Must be an actual capacitor -- otherwise a feedback divider (R on
             # VOUT/FB with a resistor R-to-ground on FB and a cap on VOUT) reads
             # as a crystal, stealing the FB resistors' roles.
@@ -410,7 +459,45 @@ def _crystal_clusters(plan: DesignPlan) -> list[tuple[str, str, str]]:
         # (refdes as a deterministic tie-break).
         ic = max(common_ic, key=lambda r: (pins_of.get(r, 0), r))
         clusters.append((p.refdes, ca, cb, ic))
-    return clusters
+
+    # ONE CLAIM PER CAP. The test above is structural and several parts can
+    # pass it on the same two nodes: a crystal and a resistor bridging the
+    # same pair both look like "a 2-pin part whose legs each carry a cap to
+    # ground". On a PAL/NTSC decoder that produced four clusters over two
+    # cap pairs, X2 and R25 both claiming C65/C66 and L4 and R12 both
+    # claiming C12, and resnap_crystal_clusters then placed each cap twice
+    # and stacked parts exactly on top of one another: six mutually
+    # contained parts where the human sheet has none.
+    #
+    # Which claimant wins matters less than that only one does, so the rule
+    # is structural and deterministic: the candidate whose two nets are most
+    # PRIVATE goes first, since a crystal's XIN/XOUT carry little besides
+    # the oscillator while a divider's nodes are shared with the circuit
+    # around them. Refdes breaks a tie, so the choice does not depend on
+    # iteration order.
+    def _privacy(entry: tuple[str, str, str, str]) -> tuple[int, str]:
+        anchor = entry[0]
+        legs = nets_of.get(anchor, set()) - ground_nets
+        return (sum(len(members.get(n, ())) for n in legs), anchor)
+
+    # AND ONE OSCILLATOR PER IC. resnap_crystal_clusters seats the anchor
+    # from its IC alone -- just clear of the body, on the side the placer
+    # already favoured -- so two clusters sharing an IC are seated at the
+    # SAME point and land on top of each other. That is how R12 and R25
+    # ended up mutually contained: different cap pairs, same IC, one
+    # position.
+    taken: set[str] = set()
+    used_ic: set[str] = set()
+    unique: list[tuple[str, str, str, str]] = []
+    for entry in sorted(clusters, key=_privacy):
+        _anchor, cap_a, cap_b, ic = entry
+        if cap_a in taken or cap_b in taken or ic in used_ic:
+            continue
+        taken.add(cap_a)
+        taken.add(cap_b)
+        used_ic.add(ic)
+        unique.append(entry)
+    return unique
 
 
 def _infer_crystal_roles(plan: DesignPlan) -> dict[str, str]:
@@ -433,6 +520,37 @@ def _infer_crystal_roles(plan: DesignPlan) -> dict[str, str]:
 # Spacing of each load cap from the crystal, mirroring the
 # ``crystal_cap_l|crystal`` / ``crystal_cap_r|crystal`` priors.
 _CRYSTAL_CAP_DX = 400
+# Gap left between the crystal's pins and a load cap's pins, on top of the
+# reach of each. One grid step: enough for a stub to leave either pin.
+_CRYSTAL_CAP_CLEARANCE = 100
+
+
+def _reach_along(model, rotation: int, axis: str) -> int:
+    """How far the placed symbol's pins reach from its centre along ``axis``.
+
+    ``_CRYSTAL_CAP_DX`` is a constant, and a constant separation only clears
+    the neighbour if the parts are the shape it assumed. A load cap laid flat
+    reaches ~0 along the axis it is stacked on; the same cap standing upright
+    reaches 200, and 400 of separation then leaves 200 between its pin and
+    the crystal's. That is what took the mcu benchmark from routable to
+    declining net XOUT. Measured off the symbol's own pins, so it holds for
+    any library.
+    """
+    if model is None or not getattr(model, "pins", ()):
+        return 0
+    # Measured through SymbolInstance, the same code the canvas and the
+    # router use. A hand-rolled rotation here read the pin's BODY-ATTACH
+    # point and missed the pin length: a cap whose pins actually reach 200
+    # measured as 0, the separation stayed at the constant, and the bug this
+    # exists to fix survived the fix.
+    from eda_agent.design.canvas import SymbolInstance
+
+    inst = SymbolInstance(refdes="_probe", symbol=model, x=0, y=0,
+                          rotation=rotation % 360)
+    eps = list(inst.all_pin_endpoints())
+    if not eps:
+        return 0
+    return int(max(abs(ep.y if axis == "y" else ep.x) for ep in eps))
 
 
 def resnap_crystal_clusters(
@@ -440,6 +558,7 @@ def resnap_crystal_clusters(
     placements: list[PlacedPart],
     *,
     grid_mils: int = 100,
+    symbol_by_refdes: "Optional[Mapping[str, Any]]" = None,
 ) -> list[PlacedPart]:
     """Re-seat each crystal oscillator as a compact cluster beside its MCU.
 
@@ -500,12 +619,20 @@ def resnap_crystal_clusters(
             cp = by_refdes.get(cap)
             if cp is None:
                 continue
+            # Far enough that neither part's PINS reach the other, which a
+            # fixed 400 does not guarantee once a cap stands upright.
+            axis = "x" if cap_horizontal else "y"
+            models = symbol_by_refdes or {}
+            sep = max(_CRYSTAL_CAP_DX,
+                      _reach_along(models.get(y), yp.rotation, axis)
+                      + _reach_along(models.get(cap), cp.rotation, axis)
+                      + _CRYSTAL_CAP_CLEARANCE)
             if cap_horizontal:
-                nx = _snap(yp.x_mils + sign * _CRYSTAL_CAP_DX)
+                nx = _snap(yp.x_mils + sign * sep)
                 ny = _snap(yp.y_mils)
             else:
                 nx = _snap(yp.x_mils)
-                ny = _snap(yp.y_mils + sign * _CRYSTAL_CAP_DX)
+                ny = _snap(yp.y_mils + sign * sep)
             out_by_refdes[cap] = PlacedPart(
                 refdes=cp.refdes, sheet=cp.sheet,
                 x_mils=nx, y_mils=ny, rotation=cp.rotation)
@@ -513,11 +640,303 @@ def resnap_crystal_clusters(
     return [out_by_refdes[p.refdes] for p in placements]
 
 
+def _half_extent(refdes, body_half, pin_counts) -> tuple[int, int]:
+    """Real half-extents when known, else the shove's pin-count estimate."""
+    if body_half and refdes in body_half:
+        return body_half[refdes]
+    from eda_agent.design.force_directed import _bbox_half
+
+    half = _bbox_half(pin_counts.get(refdes, 2))
+    return (half, half)
+
+
+def _push_clear(tx: int, ty: int, ax: int, ay: int,
+                anchor_half: tuple[int, int], part_half: tuple[int, int],
+                grid: int) -> tuple[int, int]:
+    """Slide a re-snapped part out of the anchor's body, if it is inside.
+
+    Moves along the axis needing the SMALLER displacement, so a cap meant
+    to sit below an IC stays below it rather than jumping to one side,
+    and keeps the sign of the canonical offset so the motif's shape
+    survives.
+    """
+    need_x = anchor_half[0] + part_half[0] + grid
+    need_y = anchor_half[1] + part_half[1] + grid
+    gap_x = need_x - abs(tx - ax)
+    gap_y = need_y - abs(ty - ay)
+    if gap_x <= 0 or gap_y <= 0:
+        return tx, ty                       # already clear on one axis
+    if gap_y <= gap_x:
+        sign = 1 if ty >= ay else -1
+        return tx, ay + sign * need_y
+    sign = 1 if tx >= ax else -1
+    return ax + sign * need_x, ty
+
+
+def align_to_neighbour_axes(
+    plan: DesignPlan,
+    placements: list[PlacedPart],
+    *,
+    body_half: "Optional[Mapping[str, tuple[int, int]]]" = None,
+    max_shift: int = 300,
+    grid_mils: int = 100,
+) -> list[PlacedPart]:
+    """Nudge each part back onto an axis it nearly shares with a neighbour.
+
+    MEASURED over the 39 sheets of the stratified sample: 77.8% of the parts
+    on a human sheet share an exact x or y with another part. The engine's
+    own placement reaches 65.5% after the priors, the overlap shove knocks it
+    to 54.5% because it judges each part alone, and the motif and bank
+    resnaps recover it only to 61.5%. Those resnaps each know one shape; this
+    knows none, and applies to every part the shove moved off an axis it was
+    nearly on.
+
+    A part is moved at most ``max_shift`` mils, and only onto the coordinate
+    of a part it is WIRED to: aligning with an unrelated part across the
+    sheet is a coincidence, while aligning with a neighbour also shortens the
+    wire between them. The move is refused when it would overlap anything,
+    which is the condition the shove exists to enforce.
+
+    Deterministic: parts are visited in refdes order and each snap is
+    committed before the next is judged, so a part can align to one already
+    moved and two parts cannot swap into each other.
+    """
+    if not placements:
+        return placements
+    by_refdes = {p.refdes: p for p in placements}
+    pin_counts = _pin_count_by_refdes(plan)
+
+    from eda_agent.design.pipeline import _is_ground_net, _is_power_net
+
+    # HANDS OFF anything a resnap has already positioned. Those passes place
+    # a part relative to a specific other part (a load cap beside its
+    # crystal, a motif member at its canonical offset, a decoupling cap in
+    # its column at a fixed pitch), and that is a stronger claim than
+    # sharing an axis. Without this the aligner pulled a crystal load cap
+    # from 400 to 700 mils off its crystal to line it up, undoing the
+    # clustering resnap_crystal_clusters exists to restore.
+    claimed: set[str] = set()
+    # ANCHORS ARE NOT MOVED, for the reason apply_placement_priors gives for
+    # the same rule: parts cluster around them, so nudging one drags nothing
+    # with it and shifts every relationship at once. Measured on the 555
+    # blinker, the aligner moved U1 itself by 200 mils, which changed the
+    # score enough that a different force-directed candidate won and the
+    # timing network came out on the wrong side of the IC.
+    claimed.update(r for r, n in pin_counts.items() if n >= 4)
+    for cluster in _crystal_clusters(plan):
+        claimed.update(cluster[:3])
+    decoup = _infer_decoup_roles(plan)
+    claimed.update(r for r, role in decoup.items() if role in _DECOUP_ROLES)
+    try:
+        from eda_agent.design.motifs import recognize_motifs
+
+        for match in recognize_motifs(plan):
+            claimed.update(match.components)
+    except Exception:                       # noqa: BLE001 - best effort
+        pass
+
+    neighbours: dict[str, set[str]] = {}
+    for net in plan.nets:
+        refs = {pr.refdes for pr in net.pins}
+        # A rail touches most of the sheet; aligning to it means nothing.
+        if len(refs) > 8 or _is_power_net(net) or _is_ground_net(net):
+            continue
+        for r in refs:
+            neighbours.setdefault(r, set()).update(refs - {r})
+
+    out_by_refdes = dict(by_refdes)
+    for refdes in sorted(by_refdes):
+        if refdes in claimed:
+            continue
+        me = out_by_refdes[refdes]
+        mates = [out_by_refdes[n] for n in sorted(neighbours.get(refdes, ()))
+                 if n in out_by_refdes]
+        if not mates:
+            continue
+        best = None
+        for mate in mates:
+            for axis, delta in (("x", mate.x_mils - me.x_mils),
+                                ("y", mate.y_mils - me.y_mils)):
+                if delta == 0 or abs(delta) > max_shift:
+                    continue
+                if best is None or abs(delta) < abs(best[1]):
+                    best = (axis, delta)
+        if best is None:
+            continue
+        axis, delta = best
+        nx = me.x_mils + (delta if axis == "x" else 0)
+        ny = me.y_mils + (delta if axis == "y" else 0)
+        nx = int(round(nx / grid_mils)) * grid_mils
+        ny = int(round(ny / grid_mils)) * grid_mils
+        if _overlaps_any(refdes, nx, ny, out_by_refdes, pin_counts, body_half):
+            continue
+        # NOR MAY IT CHANGE WHICH SIDE OF ITS IC THE PART IS ON. The
+        # pin-aware placement puts a discrete on the side where the pin it
+        # wires to lives, and that is worth more than an axis: measured on
+        # the 555 blinker, aligning without this pushed a timing resistor
+        # across the IC's centre and the output stage swapped sides.
+        if _crosses_an_anchor(refdes, me, nx, ny, out_by_refdes, neighbours,
+                              pin_counts):
+            continue
+        out_by_refdes[refdes] = PlacedPart(
+            refdes=refdes, sheet=me.sheet, x_mils=nx, y_mils=ny,
+            rotation=me.rotation)
+    return [out_by_refdes[p.refdes] for p in placements]
+
+
+def _crosses_an_anchor(refdes, me, nx, ny, by_refdes, neighbours,
+                       pin_counts, ic_pins: int = 4) -> bool:
+    """Would the move put the part on the other side of an IC it wires to?"""
+    for mate in neighbours.get(refdes, ()):
+        anchor = by_refdes.get(mate)
+        if anchor is None or pin_counts.get(mate, 0) < ic_pins:
+            continue
+        for before, after, at in ((me.x_mils, nx, anchor.x_mils),
+                                  (me.y_mils, ny, anchor.y_mils)):
+            if (before - at) * (after - at) < 0:
+                return True
+            if before != at and after == at:
+                return True          # landing ON the axis loses the side too
+    return False
+
+
+def _overlaps_any(refdes, nx, ny, by_refdes, pin_counts, body_half) -> bool:
+    """Would the part at (nx, ny) sit on top of any other placed part?"""
+    from eda_agent.design.force_directed import bodies_overlap
+
+    mine = _half_extent(refdes, body_half, pin_counts)
+    for other, op in by_refdes.items():
+        if other == refdes:
+            continue
+        if bodies_overlap(nx, ny, op.x_mils, op.y_mils, mine,
+                          _half_extent(other, body_half, pin_counts)):
+            return True
+    return False
+
+
+def resnap_decoupling_bank(
+    plan: DesignPlan,
+    placements: list[PlacedPart],
+    *,
+    grid_mils: int = 100,
+    body_half: "Optional[Mapping[str, tuple[int, int]]]" = None,
+) -> list[PlacedPart]:
+    """Re-align each IC's decoupling caps into the tight bank humans draw.
+
+    WHY THIS EXISTS, measured rather than assumed. On 154 public sheets
+    carrying 832 decoupling caps, a cap sits a median 450 mils from its
+    nearest other cap (IQR 350 to 800) and 88% of caps share an exact x or y
+    with another one: humans draw the decoupling as one aligned column or row,
+    not as a cap parked beside each supply pin. Traced through this pipeline
+    on the same sheets, the priors pass already reproduces that almost exactly
+    (pitch 400, 89% aligned) and the post-priors overlap shove then throws it
+    away (pitch 1000, 34% aligned), because the shove judges each cap on its
+    own and has no notion of the bank.
+
+    So this is the same shape as ``resnap_crystal_clusters``: run AFTER the
+    shove and restore the structure the shove could not see. It deliberately
+    keeps the shove's coarse decision -- the bank stays where the shove put
+    it, around the group's own median -- and only restores the fine structure,
+    the shared axis and the even pitch.
+
+    The re-space is REFUSED per cap when the target would land on top of a
+    part outside the bank, which is the overlap the shove existed to fix. That
+    cap keeps its shove position and the rest of the bank still tightens.
+    No-op when no IC has two or more decoupling caps.
+    """
+    roles = _infer_decoup_roles(plan)
+    for part in plan.parts:
+        if (part.role or "") in _DECOUP_ROLES:
+            roles[part.refdes] = part.role or ""
+    if not roles:
+        return placements
+
+    by_refdes = {p.refdes: p for p in placements}
+    groups: dict[str, list[str]] = {}
+    for refdes, role in sorted(roles.items()):
+        if role not in _DECOUP_ROLES or refdes not in by_refdes:
+            continue
+        anchor = _decoupling_rail_anchor(refdes, plan, by_refdes)
+        if anchor is not None:
+            groups.setdefault(anchor, []).append(refdes)
+    # Three or more. A pair has no column to restore, and re-spacing it to
+    # the bank pitch pulled one cap away from the pin it serves: measured on
+    # the two 2-cap sheets in the first A/B, +45% and +9% on the score, while
+    # the 12-cap bank on the same run improved 27%.
+    groups = {a: caps for a, caps in groups.items()
+              if len(caps) >= _BANK_MIN_CAPS}
+    if not groups:
+        return placements
+
+    pin_counts = _pin_count_by_refdes(plan)
+
+    def _snap(v: float) -> int:
+        return int(round(v / grid_mils)) * grid_mils
+
+    out_by_refdes = dict(by_refdes)
+    banked = {c for caps in groups.values() for c in caps}
+    for anchor, caps in sorted(groups.items()):
+        pts = [(by_refdes[c].x_mils, by_refdes[c].y_mils) for c in caps]
+        spread_x = max(p[0] for p in pts) - min(p[0] for p in pts)
+        spread_y = max(p[1] for p in pts) - min(p[1] for p in pts)
+        # The bank runs along whichever axis it is already more spread out on,
+        # so the shared coordinate is the one it is already closest to sharing.
+        along_x = spread_x >= spread_y
+        shared = statistics.median(p[1] if along_x else p[0] for p in pts)
+        centre = statistics.median(p[0] if along_x else p[1] for p in pts)
+        # Keep the shove's ordering along the bank: re-sorting here would swap
+        # two caps and cross the wires that reach them.
+        order = sorted(caps, key=lambda c: (
+            by_refdes[c].x_mils if along_x else by_refdes[c].y_mils, c))
+        n = len(order)
+        for i, cap in enumerate(order):
+            slot = centre + (i - (n - 1) / 2.0) * _BANK_PITCH_MILS
+            tx = _snap(slot if along_x else shared)
+            ty = _snap(shared if along_x else slot)
+            if _bank_slot_is_blocked(cap, tx, ty, plan, by_refdes, banked,
+                                     pin_counts, body_half):
+                continue
+            p = by_refdes[cap]
+            out_by_refdes[cap] = PlacedPart(
+                refdes=cap, sheet=p.sheet, x_mils=tx, y_mils=ty,
+                rotation=p.rotation)
+    return [out_by_refdes[p.refdes] for p in placements]
+
+
+def _bank_slot_is_blocked(
+    cap: str,
+    tx: int,
+    ty: int,
+    plan: DesignPlan,
+    by_refdes: dict,
+    banked: "set[str]",
+    pin_counts: dict,
+    body_half,
+) -> bool:
+    """True when re-seating ``cap`` at (tx, ty) would sit on another part.
+
+    Only parts OUTSIDE the bank are consulted. Members of the same bank are
+    being re-spaced together at a known pitch, so measuring them against each
+    other would have every cap block its own neighbour.
+    """
+    from eda_agent.design.force_directed import bodies_overlap
+
+    mine = _half_extent(cap, body_half, pin_counts)
+    for other, op in by_refdes.items():
+        if other == cap or other in banked:
+            continue
+        if bodies_overlap(tx, ty, op.x_mils, op.y_mils, mine,
+                          _half_extent(other, body_half, pin_counts)):
+            return True
+    return False
+
+
 def resnap_motif_clusters(
     plan: DesignPlan,
     placements: list[PlacedPart],
     *,
     grid_mils: int = 100,
+    body_half: Optional[Mapping[str, tuple[int, int]]] = None,
 ) -> list[PlacedPart]:
     """Re-tighten motif clusters that the post-priors overlap shove spread.
 
@@ -537,6 +956,15 @@ def resnap_motif_clusters(
     and lc_output's L share an offset), re-snapping both would re-overlap them,
     so the higher-specificity motif wins the slot and the colliding part keeps
     its shove position (``min_sep`` guard). No-op when no motif fired.
+
+    AND NOT INSIDE THE IC ITSELF. A canonical offset is a constant, so it
+    assumes an IC of ordinary size. Measured against the human benchmark,
+    nPM1300 draws a 2400 x 2800 body and the +1300 offset put a decoupling
+    cap INSIDE it, scoring 1000 for illegal geometry on a pass that runs
+    after the final overlap repair and is never re-checked. ``body_half``
+    supplies real (half_width, half_height) per refdes; without it the
+    pin-count estimate is used, which is the same model the shove uses and
+    under-states a large IC.
     """
     from eda_agent.design.motifs import get_motif_by_name, recognize_motifs
 
@@ -546,6 +974,10 @@ def resnap_motif_clusters(
 
     by_refdes = {p.refdes: p for p in placements}
     out_by_refdes = dict(by_refdes)
+    pin_counts: dict[str, int] = {}
+    for net in plan.nets:
+        for pr in net.pins:
+            pin_counts[pr.refdes] = pin_counts.get(pr.refdes, 0) + 1
 
     def _snap(v: float) -> int:
         return int((v // grid_mils) * grid_mils)
@@ -582,6 +1014,7 @@ def resnap_motif_clusters(
                 continue
             ax, ay = icp.x_mils, icp.y_mils
             claimed = claimed_by_ic.setdefault(ic, [])
+            ic_half = _half_extent(ic, body_half, pin_counts)
         else:
             # Self-contained: anchor to the matched parts' current centroid; the
             # canonical offsets are internally non-colliding, so no cross-motif
@@ -593,6 +1026,17 @@ def resnap_motif_clusters(
             ax = sum(by_refdes[r].x_mils for r in members) // len(members)
             ay = sum(by_refdes[r].y_mils for r in members) // len(members)
             claimed = None
+            ic = None
+            ic_half = None
+        # Every member's target, decided together, so the whole motif can be
+        # refused as one. A motif half re-seated is worse than one left to
+        # the shove: its members then sit at a mix of canonical and shoved
+        # positions and the shape it exists to restore is gone either way.
+        members = {match.host_refdes(pat) for pat in motif.canonical}
+        members.discard(None)
+        if ic is not None:
+            members.add(ic)
+        targets: dict[str, tuple[int, int]] = {}
         for pat, (dx, dy) in motif.canonical.items():
             r = match.host_refdes(pat)
             if r is None or r not in by_refdes:
@@ -602,6 +1046,27 @@ def resnap_motif_clusters(
                     abs(tx - cx) < min_sep and abs(ty - cy) < min_sep
                     for cx, cy in claimed):
                 continue                       # would re-overlap; leave to shove
+            if ic_half is not None:
+                part_half = _half_extent(r, body_half, pin_counts)
+                tx, ty = _push_clear(tx, ty, ax, ay, ic_half, part_half,
+                                     grid_mils)
+                tx, ty = _snap(tx), _snap(ty)
+            targets[r] = (tx, ty)
+
+        # NOT ON TOP OF ANYTHING OUTSIDE THE MOTIF. ``_push_clear`` above
+        # only clears the motif's own anchor, and a SELF-CONTAINED motif
+        # (one with no ic_anchor, such as a diode bridge) does not even run
+        # it: it is seated on its members' own centroid with nothing
+        # consulted. On a PAL/NTSC decoder that centroid fell inside U10 and
+        # the whole bridge was re-seated inside the IC's rectangle, two
+        # parts wholly contained, on a canvas the shove had left clean.
+        if any(_overlaps_any(r, tx, ty, {k: v for k, v in out_by_refdes.items()
+                                         if k not in members},
+                             pin_counts, body_half)
+               for r, (tx, ty) in targets.items()):
+            continue
+
+        for r, (tx, ty) in targets.items():
             p = by_refdes[r]
             out_by_refdes[r] = PlacedPart(
                 refdes=r, sheet=p.sheet, x_mils=tx, y_mils=ty,
@@ -699,6 +1164,16 @@ def _pick_anchor(
             key=lambda kv: (kv[1], pin_counts.get(kv[0], 0)),
         )
         return best[0]
+
+    # THE RAIL-MATE BEFORE DISTANCE, matching learner._pick_anchor. This
+    # point is reached only when every net a part sits on is power or
+    # ground, which is what a decoupling cap looks like, and proximity is
+    # the wrong relation for one: the prior is looked up against the IC
+    # it shares a rail with.
+    rail_mate = _decoupling_rail_anchor(
+        moved_refdes, plan, placement_by_refdes)
+    if rail_mate and rail_mate in placed_candidates:
+        return rail_mate
 
     moved_p = placement_by_refdes.get(moved_refdes)
     if moved_p is None:

@@ -142,20 +142,14 @@ def _plan_hash(plan: DesignPlan) -> str:
 
 
 def _features_from_score(score: LayoutScore) -> dict[str, float]:
-    """Extract a stable feature dict from a LayoutScore.
+    """The feature dict a pair is logged with: ``quality.raw_features``.
 
-    Bradley-Terry fits weights to a linear combination of these. We
-    keep RAW counts and ratios; the training step normalises across
-    the dataset.
+    One definition shared with the scorer and the corpus pair miner, so the
+    model is never fitted on one set of features and applied to another.
     """
-    return {
-        "wire_crossings": float(score.wire_crossings),
-        "wires_through_bodies": float(score.wires_through_bodies),
-        "body_overlaps": float(score.body_overlaps),
-        "aspect_ratio_penalty": float(score.aspect_ratio_penalty),
-        "total_wire_length": float(score.total_wire_length),
-        "port_count": float(score.port_count),
-    }
+    from eda_agent.design.quality import raw_features
+
+    return raw_features(score)
 
 
 # Pair generation + storage -------------------------------------------

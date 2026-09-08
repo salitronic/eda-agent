@@ -37,6 +37,11 @@ from typing import Any, Optional
 
 
 REPO = Path(__file__).resolve().parents[2]
+#: The token _key uses when a role is missing. Such a bucket is counted
+#: and reported, never emitted: apply_placement_priors skips a part whose
+#: role is empty, so nothing can ever look one up.
+UNKNOWN = "_unknown_"
+
 DEFAULT_OUT = REPO / "src" / "eda_agent" / "design" / "placement_priors.json"
 
 
@@ -73,8 +78,8 @@ def _key(part_role: str, anchor_role: str) -> str:
     edits made on parts the planner didn't label -- they won't help the
     role-based priors but they ARE useful for diagnostics.
     """
-    p = part_role or "_unknown_"
-    a = anchor_role or "_unknown_"
+    p = part_role or UNKNOWN
+    a = anchor_role or UNKNOWN
     return f"{p}|{a}"
 
 
@@ -111,8 +116,20 @@ def aggregate(rows: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
         by_pair[key].append(row)
 
     priors: dict[str, dict[str, Any]] = {}
+    unkeyed = 0
     for key, pair_rows in by_pair.items():
         if len(pair_rows) < min_samples:
+            continue
+        # A BUCKET THAT CAN NEVER MATCH MUST NOT REACH THE ARTIFACT.
+        # apply_placement_priors skips any part whose role is empty, so a
+        # prior keyed on '_unknown_' is unreachable by construction. The
+        # docstring on _key calls these useful for diagnostics, and they
+        # were being written into the shipped file anyway, where they
+        # inflate n_pairs and describe a preference nothing can apply.
+        # MEASURED: 27 edits produced exactly one prior, '_unknown_|
+        # _unknown_', and every stage reported success.
+        if UNKNOWN in key.split("|"):
+            unkeyed += len(pair_rows)
             continue
         dxs = [int(r.get("dx_mils", 0)) for r in pair_rows]
         dys = [int(r.get("dy_mils", 0)) for r in pair_rows]
@@ -132,6 +149,9 @@ def aggregate(rows: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
         "n_edits": len(rows),
         "n_pairs": len(priors),
         "min_samples": min_samples,
+        # Reported rather than hidden: an aggregator that quietly drops
+        # most of its input looks identical to one with little input.
+        "edits_unkeyed": unkeyed,
         "priors": priors,
     }
 
