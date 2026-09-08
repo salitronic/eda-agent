@@ -7366,6 +7366,119 @@ Begin
         + EscapeJsonString(Path) + '"}');
 End;
 
+{..............................................................................}
+{ Lib_GetInstalledLibraries - what the environment has installed.              }
+{                                                                              }
+{ install_library and uninstall_library have been here from the start and      }
+{ nothing could report the result, so the only way to answer "what is          }
+{ installed?" was to read the registry from outside Altium. lib_search only    }
+{ walks SchLibs already open in the workspace, which is a different and much   }
+{ smaller set.                                                                 }
+{                                                                              }
+{ TWO LISTS, NOT ONE, and they are not interchangeable. Installed* is what is  }
+{ switched on for the current environment; Available* is every library known   }
+{ to it. The TYPE is published only on the Available side, so the type of an   }
+{ installed library is found by matching its path across, which is what the    }
+{ published example scripts do.                                                }
+{                                                                              }
+{ The type ordinal is returned as an Integer and named separately rather than  }
+{ compared against enum identifiers: an identifier this build does not declare }
+{ faults at runtime as a modal the polling loop cannot catch, and the ordinals }
+{ are stable where the names are not.                                          }
+{ Params: with_counts (optional, "false" skips the per-library component count,}
+{         which opens each library and is the expensive half).                 }
+{..............................................................................}
+Function LibTypeName(Ordinal : Integer) : String;
+Begin
+    { TLibraryType, in declaration order. }
+    If Ordinal = 0 Then Result := 'integrated'
+    Else If Ordinal = 1 Then Result := 'source'
+    Else If Ordinal = 2 Then Result := 'datafile'
+    Else If Ordinal = 3 Then Result := 'database'
+    Else If Ordinal = 4 Then Result := 'none'
+    Else If Ordinal = 5 Then Result := 'query'
+    Else If Ordinal = 6 Then Result := 'design_items'
+    Else Result := 'unknown';
+End;
+
+Function InstalledLibTypeOrdinal(LibPath : String) : Integer;
+Var
+    I, AvailCount : Integer;
+Begin
+    { -1 means the path is installed but absent from the Available list, }
+    { which is a real state worth reporting rather than flattening to a  }
+    { type name that would then be wrong.                                }
+    Result := -1;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    For I := 0 To AvailCount - 1 Do
+    Begin
+        Try
+            If IntegratedLibraryManager.AvailableLibraryPath(I) = LibPath Then
+            Begin
+                Result := IntegratedLibraryManager.AvailableLibraryType(I);
+                Break;
+            End;
+        Except
+        End;
+    End;
+End;
+
+Function Lib_GetInstalledLibraries(Params : String; RequestId : String) : String;
+Var
+    JsonItems, LibPath, WithCounts : String;
+    I, InstCount, AvailCount, TypeOrd, CompCount : Integer;
+    First, WantCounts : Boolean;
+Begin
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGER', 'IntegratedLibraryManager unavailable');
+        Exit;
+    End;
+
+    WithCounts := ExtractJsonValue(Params, 'with_counts');
+    WantCounts := (WithCounts <> 'false') And (WithCounts <> 'False') And (WithCounts <> '0');
+
+    InstCount := 0;
+    Try InstCount := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+
+    JsonItems := '';
+    First := True;
+    For I := 0 To InstCount - 1 Do
+    Begin
+        LibPath := '';
+        Try LibPath := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+        If LibPath = '' Then Continue;
+
+        TypeOrd := InstalledLibTypeOrdinal(LibPath);
+
+        { GetComponentCount opens the library to answer, so it is the one }
+        { expensive call here and the caller can decline it. -1 says not  }
+        { asked, which is not the same as an empty library.               }
+        CompCount := -1;
+        If WantCounts Then
+        Begin
+            Try CompCount := IntegratedLibraryManager.GetComponentCount(LibPath); Except End;
+        End;
+
+        If Not First Then JsonItems := JsonItems + ',';
+        First := False;
+        JsonItems := JsonItems + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"file_name":"' + EscapeJsonString(ExtractFileName(LibPath)) + '"'
+            + ',"library_type":"' + LibTypeName(TypeOrd) + '"'
+            + ',"library_type_ordinal":' + IntToStr(TypeOrd)
+            + ',"component_count":' + IntToStr(CompCount) + '}';
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"libraries":[' + JsonItems + ']'
+        + ',"installed_count":' + IntToStr(InstCount)
+        + ',"available_count":' + IntToStr(AvailCount)
+        + ',"counts_included":' + BoolToJsonStr(WantCounts) + '}');
+End;
+
 { Lib_DeleteComponent - remove one symbol from a schematic library (.SchLib).  }
 { Mirrors the overwrite path in Lib_CopyComponent: focus the lib, resolve the  }
 { component by LibReference, RemoveSchComponent, then mark the lib dirty for    }
@@ -10504,6 +10617,7 @@ Begin
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);
+        'get_installed_libraries': Result := Lib_GetInstalledLibraries(Params, RequestId);
         'install_library':      Result := Lib_InstallLibrary(Params, RequestId);
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);

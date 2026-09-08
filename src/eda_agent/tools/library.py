@@ -3584,6 +3584,49 @@ def register_library_tools(mcp):
         return await bridge.send_command_async("library.split_pin_functions", {})
 
     @mcp.tool()
+    async def lib_get_installed_libraries(
+        with_counts: bool = True,
+    ) -> dict[str, Any]:
+        """List the libraries installed in the Altium environment.
+
+        The answer to "what libraries does this installation have?", which
+        no other tool gives: `lib_search` walks only the SchLibs already
+        open in the workspace, and `design_snapshot_inventory` has to be
+        handed explicit .SchLib paths. This reads the environment's own
+        list, so it covers .IntLib, .SchLib, .PcbLib, database and query
+        libraries whether or not anything is open.
+
+        INSTALLED IS NOT AVAILABLE. Installed libraries are the ones
+        switched on for this environment; available ones are every library
+        it knows about. This returns the installed list and reports the
+        available total beside it, so a library that is present but not
+        switched on shows up as a gap between the two numbers rather than
+        as an absence.
+
+        Args:
+            with_counts: True (default) also reports how many components
+                each library holds. That opens every library to count
+                them, so pass False for a fast listing; the count then
+                comes back as -1, meaning not asked rather than empty.
+
+        Returns:
+            {"libraries": [{"library_path", "file_name", "library_type",
+            "library_type_ordinal", "component_count"}], "installed_count",
+            "available_count", "counts_included"}. ``library_type`` is one
+            of integrated / source / datafile / database / none / query /
+            design_items, or unknown; it reads "unknown" with an ordinal of
+            -1 when a library is installed but missing from the available
+            list, which is a real state and not an error.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {}
+        if not with_counts:
+            params["with_counts"] = "false"
+        return await bridge.send_command_async(
+            "library.get_installed_libraries", params
+        )
+
+    @mcp.tool()
     async def lib_install_library(library_path: str) -> dict[str, Any]:
         """Register a library with the environment's Available Libraries.
 
