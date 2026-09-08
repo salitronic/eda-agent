@@ -49,29 +49,61 @@ def _function_source(text: str, name: str) -> str:
 # Emit side: every float leaves through the wrapper.
 # ---------------------------------------------------------------------------
 
-def test_no_bare_float_to_str_outside_the_wrapper():
-    """The measured half of the report.
+#: Every RTL conversion that reads or writes the global DecimalSeparator.
+#: The guard used to name only FloatToStr, the one the reporter happened to
+#: measure. The hazard is the FAMILY: FloatToStrF and FormatFloat emit
+#: through the same global, and a bare StrToFloat RAISES, which the script
+#: engine surfaces as a modal before any Except can run, so it stops the
+#: polling loop rather than returning a wrong number. None of the four has
+#: a live call site today outside the two wrappers, so this is preventive:
+#: it exists to stop the next one being added, which is how the first
+#: arrived.
+_LOCALE_SENSITIVE = ("FloatToStr(", "FloatToStrF(", "FormatFloat(",
+                     "StrToFloat(")
+
+#: The wrappers' own bodies, the only places allowed to call the raw RTL:
+#: FloatToJsonStr converts and then swaps the separator character in the
+#: result, and StrToFloatDef reshapes the string into the form this locale
+#: parses once IsFloatStr has pre-validated it.
+_WRAPPER_BODIES = ("Result := FloatToStr(Value)", "Result := StrToFloat(Work)")
+
+
+def test_no_bare_locale_conversion_outside_the_wrappers():
+    """The measured half of the report, widened to the whole family.
 
     A bare FloatToStr respects the global separator and emits '1,5' on a
     comma locale, which is invalid JSON and is the value that later kills
-    the parse.
+    the parse. Confirmed live on a tr-TR machine: the handler that was
+    fixed is the one whose CALL SITE moved to FloatToJsonStr, and its
+    accumulator re-reads its own output through StrToFloatDef, so both
+    directions run inside a single call. That is why the emit and parse
+    sides are guarded together rather than one at a time.
     """
     offenders = []
     for path in SCRIPTS.glob("*.pas"):
-        if path.name == "Altium_MCP.pas":         # generated
+        if path.name == "Altium_MCP.pas":
+            # The legacy pre-split monolith. It is NOT in Altium_API.PrjScr
+            # and does not ship; the twelve live modules are the deployed
+            # code, which is how the other Pascal linters scope themselves.
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         # Strip block comments so prose about FloatToStr is not a call.
         text = re.sub(r"\{[^}]*\}", " ", text, flags=re.S)
         for i, line in enumerate(text.splitlines(), 1):
-            if "FloatToStr(" not in line or "FloatToJsonStr(" in line:
-                continue
-            # The single legitimate call is inside FloatToJsonStr itself.
-            if path.name == "Utils.pas" and "Result := FloatToStr(Value)" in line:
-                continue
-            offenders.append(f"{path.name}:{i}  {line.strip()}")
+            for name in _LOCALE_SENSITIVE:
+                if name not in line:
+                    continue
+                # The wrapper names contain the bare names as substrings.
+                if name == "FloatToStr(" and "FloatToJsonStr(" in line:
+                    continue
+                if name == "StrToFloat(" and "StrToFloatDef(" in line:
+                    continue
+                if any(body in line for body in _WRAPPER_BODIES):
+                    continue
+                offenders.append(f"{path.name}:{i}  {line.strip()}")
     assert not offenders, (
-        "these emit a locale-formatted float straight into JSON:\n  "
+        "these read or write the global decimal separator directly; route "
+        "them through FloatToJsonStr / StrToFloatDef:\n  "
         + "\n  ".join(offenders))
 
 

@@ -172,8 +172,10 @@ Begin
     { separator regardless of the user's Windows regional settings, but Delphi}
     { StrToFloat respects the global DecimalSeparator, so on a system with    }
     { comma-as-decimal (much of Europe) parsing "90.0" silently fails and     }
-    { the default value comes back instead. Temporarily force '.' for the    }
-    { duration of the parse, then restore whatever the system set.            }
+    { the default value comes back instead. The string is reshaped into the   }
+    { form THIS locale parses and the global is never touched; forcing the    }
+    { separator and restoring it was the earlier approach and is now          }
+    { forbidden by test_the_wrappers_do_not_mutate_the_global_separator.      }
     If (S = '') Or (S = 'null') Then
     Begin
         Result := Default;
