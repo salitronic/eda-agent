@@ -91,8 +91,18 @@ STAGE_PLAYBOOKS = {
                      "datasheet land pattern.",
     },
     "schematic_emit": {
-        "goal": "Instantiate the plan as a neat, ERC-clean schematic.",
-        "tools": ["design_preview_plan", "design_execute_plan",
+        "goal": "Instantiate the plan as a neat, ERC-clean schematic. One "
+                "engine draws every schematic: design_layout_schematic for "
+                "the geometry as data, design_preview_plan for the same "
+                "layout as SVG, design_execute_plan to emit it. Do not look "
+                "for a second layout engine to compare against; there is "
+                "not one. CHANGING a sheet goes the same way: re-run "
+                "design_execute_plan and it moves only what the plan "
+                "changed. For a sheet this engine did not draw, "
+                "design_plan_from_sheet reads a plan back off it first.",
+        "tools": ["design_layout_schematic", "design_preview_plan",
+                  "design_execute_plan", "design_plan_from_sheet",
+                  "design_hints_from_sheet",
                   "design_audit_schematic", "design_validate"],
         "exit_gate": "ERC clean; visual-review rubric passes; no floating pins.",
     },

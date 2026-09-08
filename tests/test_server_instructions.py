@@ -54,8 +54,24 @@ def _surface(backend: str, toolset: str = "full") -> set[str]:
 _SURFACES = {b: _surface(b) for b in _BACKENDS}
 
 
+#: Every namespace the preamble is allowed to name a tool from. The
+#: pattern demands a suffix, so the bare "sch_" and "obj_" the preamble
+#: uses to teach the namespace split are not read as tool names.
+_TOOL_NAME = re.compile(
+    r"\b(?:tool|design|sch|obj|pcb|lib|proj|audit|part|easyeda|kicad)"
+    r"_[a-z][a-z_]+\b")
+
+
 def _tools_named(text: str) -> set[str]:
-    return set(re.findall(r"\b(?:tool_[a-z_]+)\b", text))
+    """Every tool name in the preamble, not only the tool_ ones.
+
+    The narrower version of this only matched tool_guide and
+    tool_catalog, so the paragraph that tells every client which tool
+    draws a schematic named four tools no guard checked. A renamed or
+    retired design_ tool would have gone on being recommended to every
+    client that connects.
+    """
+    return set(_TOOL_NAME.findall(text))
 
 
 def test_the_preamble_is_not_empty():
@@ -74,10 +90,27 @@ def test_it_actually_reaches_the_client():
 
 @pytest.mark.parametrize("backend", _BACKENDS)
 def test_every_tool_the_preamble_names_exists(backend):
-    for name in _tools_named(SERVER_INSTRUCTIONS):
+    """Each backend's own wording, against its own surface.
+
+    The wording is not shared: design_execute_plan is Altium-only, and
+    the paragraph that names it was going out to KiCad clients too,
+    telling them to call five tools that backend never registers.
+    """
+    text = build_server_instructions("full", backend)
+    for name in _tools_named(text):
         assert name in _SURFACES[backend], (
-            f"the preamble tells every client to use {name!r}, which does "
-            f"not exist on the {backend} backend")
+            f"the {backend} preamble tells the client to use {name!r}, "
+            f"which does not exist on that backend")
+
+
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_a_backend_with_the_engine_says_so(backend):
+    """The paragraph is dropped when the engine is absent, not faked."""
+    text = build_server_instructions("full", backend)
+    has_engine = "design_layout_schematic" in _SURFACES[backend]
+    assert ("DO NOT DRAW A SCHEMATIC BY HAND" in text) is has_engine, (
+        f"{backend} {'has' if has_engine else 'does not have'} the layout "
+        f"engine, and its preamble says the opposite")
 
 
 def test_it_names_at_least_the_two_it_is_for():
@@ -94,6 +127,12 @@ def test_every_namespace_it_teaches_is_real(namespace):
         f"uses any more")
 
 
+def test_it_names_the_tool_that_draws_a_schematic():
+    """The preamble's whole point is redirecting a by-hand schematic."""
+    named = _tools_named(SERVER_INSTRUCTIONS)
+    assert "design_execute_plan" in named
+
+
 def test_the_minimal_wording_does_not_name_an_unadvertised_tool():
     """Under minimal a client sees two tools. Telling it to call a third
     is a dead end for exactly the clients that most need the pointer."""
@@ -103,17 +142,20 @@ def test_the_minimal_wording_does_not_name_an_unadvertised_tool():
         "is now advertised there, the full wording applies and this guard "
         "should be retired")
 
-    text = build_server_instructions("minimal")
+    text = build_server_instructions("minimal", "altium")
     assert "through tool_invoke" in text
     assert "call tool_guide" not in text
+    # A named tool need not be ADVERTISED under minimal, but it must
+    # exist, because tool_invoke dispatches across the whole captured
+    # surface. A name that is on neither list is a dead end.
     for name in _tools_named(text):
-        assert name in advertised or name == "tool_guide", (
+        assert name in advertised or name in _SURFACES["altium"], (
             f"the minimal preamble names {name!r}, which a minimal client "
             f"can neither see nor reach")
 
 
 def test_the_full_wording_says_call_it_directly():
-    text = build_server_instructions("full")
+    text = build_server_instructions("full", "altium")
     assert "call tool_guide" in text
     assert "through tool_invoke" not in text
 

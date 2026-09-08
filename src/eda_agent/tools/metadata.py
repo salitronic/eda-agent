@@ -160,6 +160,14 @@ _DESIGN_BRIDGE = frozenset(
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
+        # These three extract symbol geometry, or read the live sheet,
+        # over the bridge. Each CATCHES the failure and answers anyway,
+        # so with no Altium running they return a degraded result rather
+        # than an error, and calling them offline is what sends somebody
+        # to rely on that result.
+        "design_preview_plan",
+        "design_hints_from_sheet",
+        "design_plan_from_sheet",
     }
 )
 

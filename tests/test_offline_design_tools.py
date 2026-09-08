@@ -196,6 +196,88 @@ def test_the_tool_never_reaches_the_altium_bridge(name, design_tools):
         f"degraded result rather than an error, so nothing reports it.")
 
 
+#: Excluded from the sweep below because invoking it starts work that
+#: outlives the test rather than answering: the job runs in the
+#: background and the tool returns its id.
+_NOT_PROBED = ("design_job_start",)
+
+
+def _design_tool_names() -> list[str]:
+    from eda_agent.tools.registry import ToolRegistry
+    from eda_agent.tools.design import register_design_tools
+
+    registry = ToolRegistry()
+    register_design_tools(registry)
+    return sorted(t.name for t in asyncio.run(registry.list_tools()))
+
+
+def _offline_claimed() -> list[str]:
+    """Design tools the published metadata calls offline."""
+    from eda_agent.tools.metadata import maturity_of
+
+    return [n for n in _design_tool_names()
+            if maturity_of(n) == "offline" and n not in _NOT_PROBED]
+
+
+@pytest.mark.parametrize("name", _offline_claimed())
+def test_a_tool_published_as_offline_does_not_reach_the_bridge(
+        name, design_tools, tmp_path):
+    """The maturity in docs/TOOL_REFERENCE.md is a claim about the code.
+
+    "offline" is what somebody filters on to find the tools that work
+    with no Altium running. It is DERIVED: every design_ tool is offline
+    unless it is named in _DESIGN_BRIDGE, so a new bridge-backed tool is
+    published as offline by default and nothing says otherwise. Three
+    were, including one whose own test file already described it as
+    reaching the bridge.
+
+    ARGUMENTS THAT GET PAST THE FRONT DOOR. A tool handed a path that
+    does not exist refuses before it resolves anything, which measures
+    nothing; that is a false clean, not a pass. The project below has
+    the canvas snapshot the sheet-reading tools ask for first.
+    """
+    captured, hits = design_tools
+
+    project = tmp_path / "p.PrjPcb"
+    project.write_text("", encoding="utf-8")
+    (tmp_path / "p.canvas.json").write_text(
+        '{"plan": {}, "canvas": {"instances": [{"refdes": "R1", '
+        '"lib_path": "LIB.SchLib", "lib_ref": "RES", "x": 1000, '
+        '"y": 1000, "rotation": 0}]}}', encoding="utf-8")
+
+    fn = captured[name]
+    args = _arguments_for(fn)
+    for arg_name in list(args):
+        if "path" in arg_name:
+            args[arg_name] = str(project)
+
+    before = len(hits)
+    try:
+        asyncio.run(fn(**args))
+    except _Tripwire:
+        pass
+    except Exception:
+        pass
+
+    assert len(hits) == before, (
+        f"{name} is published as offline in docs/TOOL_REFERENCE.md and "
+        f"reaches the Altium bridge. Add it to _DESIGN_BRIDGE in "
+        f"tools/metadata.py so it publishes as live_only.")
+
+
+def test_the_sweep_actually_reaches_a_tool_that_reads_the_sheet():
+    """A sweep over a set that excludes the risky cases proves nothing
+    if it also excludes every case worth checking."""
+    from eda_agent.tools.metadata import maturity_of
+
+    for name in ("design_hints_from_sheet", "design_plan_from_sheet",
+                 "design_preview_plan"):
+        assert name in _design_tool_names()
+        assert maturity_of(name) == "live_only", (
+            f"{name} reaches the bridge; publishing it as offline tells "
+            f"a caller it works with no Altium running")
+
+
 def test_the_executor_is_not_offered_on_easyeda():
     """The one that genuinely cannot work here.
 

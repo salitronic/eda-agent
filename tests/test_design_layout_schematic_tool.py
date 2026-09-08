@@ -70,7 +70,14 @@ async def test_layout_returns_positions_and_net_representation():
     placed = {p["designator"] for p in out["placements"]}
     assert placed == {"U1", "C1", "R1", "J1"}
     for p in out["placements"]:
-        assert p["x"] % 100 == 0 and p["y"] % 100 == 0
+        # NOT asserted on the 100-mil grid, and the reason is the point
+        # of the engine swap: this coordinate is the symbol's BODY
+        # CENTRE, and the canvas pipeline grid-aligns a symbol by its
+        # PINS instead (an origin snap leaves pins off-grid on a library
+        # whose pin coordinates carry odd 50s, and an off-grid pin does
+        # not bond to a wire in Altium). The retired neat engine snapped
+        # centres, so this used to hold by accident of which engine ran.
+        assert isinstance(p["x"], int) and isinstance(p["y"], int)
         assert p["rotation"] in (0, 90, 180, 270)
 
     rep = out["net_representation"]

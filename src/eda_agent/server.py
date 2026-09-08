@@ -127,20 +127,78 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 # Deliberately short. This is prepended to a client's context on every
 # session, so it earns its place by covering the mistakes that actually
 # happened and nothing else.
-def build_server_instructions(toolset: str = DEFAULT_TOOLSET) -> str:
-    """The preamble, worded for the toolset the client will actually see.
+#: The schematic-engine paragraph, per backend, because the tools it
+#: names are not the same on each. The Altium surface carries the whole
+#: family; EasyEDA carries the plan-building half and emits through its
+#: own tool; KiCad carries neither, so it gets no paragraph rather than
+#: a paragraph naming tools that are not there. A preamble that names a
+#: missing tool is read first and trusted most, which is the worst place
+#: for a dead end.
+_ENGINE_ALTIUM = (
+    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
+    "with sch_place_components and joining them with sch_place_wires\n"
+    "gives a netlist-correct sheet that reads like nothing a person\n"
+    "would draw, and it is the most common way this server is misused.\n"
+    "A schematic comes from a DesignPlan: build the plan, then\n"
+    "design_execute_plan places AND routes the whole sheet in one\n"
+    "call, through a layout engine measured against hand-drawn boards.\n"
+    "design_layout_schematic returns that same layout as data and\n"
+    "design_preview_plan renders it, both without touching the EDA.\n"
+    "One engine sits behind all three.\n"
+    "\n"
+    "CHANGING an existing sheet goes the same way. Re-running\n"
+    "design_execute_plan on a project it drew before moves only what\n"
+    "the plan changed and leaves every other component alone, so an\n"
+    "edit is a plan edit. For a sheet it did not draw,\n"
+    "design_plan_from_sheet reads a plan back off the schematic and\n"
+    "design_hints_from_sheet reads the current positions to pass as\n"
+    "placement_hints. The sch_ and obj_ tools are for the few glyphs a\n"
+    "plan cannot express, and for repairs too small to re-lay-out.\n"
+    "\n"
+)
+
+_ENGINE_EASYEDA = (
+    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
+    "with easyeda_place_schematic_components and joining them with\n"
+    "easyeda_add_wires gives a netlist-correct sheet that reads like\n"
+    "nothing a person would draw, and it is the most common way this\n"
+    "server is misused. A schematic comes from a DesignPlan: build the\n"
+    "plan, lay it out with design_layout_schematic, which runs the same\n"
+    "engine measured against hand-drawn boards, then apply it with\n"
+    "easyeda_emit_plan.\n"
+    "\n"
+)
+
+_ENGINE_PARAGRAPHS = {
+    "altium": _ENGINE_ALTIUM,
+    "both": _ENGINE_ALTIUM,
+    "easyeda": _ENGINE_EASYEDA,
+    "kicad": "",
+}
+
+
+def build_server_instructions(
+    toolset: str = DEFAULT_TOOLSET, backend: str = DEFAULT_BACKEND
+) -> str:
+    """The preamble, worded for the surface the client will actually see.
 
     Under the minimal toolset only tool_catalog and tool_invoke are
     advertised, so instructing a client to "call tool_guide" names
     something it cannot see. It stays reachable through tool_invoke, and
     saying which applies is the difference between guidance and a dead
     end for the clients that most need the guidance.
+
+    The backend does the same job for the schematic-engine paragraph:
+    design_execute_plan is Altium-only, so naming it to a KiCad client
+    sent it looking for a tool that backend never registers.
     """
     if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
         reach = ('reach tool_guide through tool_invoke, since this server '
                  'is advertising only the two meta-tools,')
     else:
         reach = "call tool_guide"
+    engine = _ENGINE_PARAGRAPHS.get(
+        (backend or DEFAULT_BACKEND).strip().lower(), _ENGINE_ALTIUM)
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -156,11 +214,12 @@ def build_server_instructions(toolset: str = DEFAULT_TOOLSET) -> str:
         "reason. Use tool_catalog to search the surface by name or\n"
         "category.\n"
         "\n"
+        + engine +
         "Coordinates are in mils throughout, on every backend.\n"
     )
 
 
-SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET)
+SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET, ACTIVE_BACKEND)
 
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.

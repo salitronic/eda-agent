@@ -54,6 +54,9 @@ from ..design.inventory import LibraryInventory, snapshot_live
 from ..design.learner import learn_from_layout
 from ..design.orchestrator import (
     execute_plan_via_canvas_from_json,
+    hints_from_sheet,
+    layout_plan_from_json,
+    plan_from_live_sheet,
     preview_plan_from_json,
 )
 from ..design.motif_descriptions import describe_motifs
@@ -72,10 +75,6 @@ from ..design.plan_blocks import (
 from ..design.plan_edit import edit_plan
 from ..design.plan_erc import check_plan_erc
 from ..design.plan_stats import summarize_plan
-from ..design.schematic_layout import (
-    compute_schematic_layout,
-    to_executor_payload,
-)
 from ..design.validator import validate as run_validate
 
 
@@ -1743,142 +1742,60 @@ def register_design_tools(mcp) -> None:
         placement_hints: Optional[dict[str, dict[str, int]]] = None,
         render_png: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Compute a full schematic layout for a DesignPlan, as pure data.
+        """Compute the schematic layout for a DesignPlan, as pure data.
 
-        Runs the deterministic layout engine over the supplied plan and
-        returns the result WITHOUT touching Altium: per-symbol position
-        and rotation, the per-net representation decision
-        (wire / net_label / power_port), orthogonal wire routes for the
-        wire-tier nets, power-port / net-label glyph placements, junction
-        points, and an aesthetic score breakdown. The whole computation
-        is offline, so no project needs to be open and no Altium session
-        is required.
+        THE ONE SCHEMATIC ENGINE. Every schematic tool now runs the same
+        canvas pipeline, so whenever you are asked to draw or lay out a
+        schematic, reach for this family and nothing else: this tool for
+        the geometry as data, ``design_preview_plan`` for the same layout
+        rendered to SVG, ``design_execute_plan`` to place it in Altium.
+        There is no longer a second engine to choose between.
 
-        Use this to evaluate or compare layouts cheaply. The returned shape
-        matches the ``sch_place_*`` tool surface so a caller can drive an
-        emit directly from this payload.
+        It used to run a second, standalone engine whose placements and
+        score described a layout nobody would ever see. That engine is no
+        longer reachable: measured over ten held-out corpus sheets it lost
+        the shared objective on seven and produced four pairs of
+        OVERLAPPING BODIES where this pipeline produced none, so the
+        shorter wire it appeared to draw was partly bought by stacking
+        parts on top of one another.
 
-        IMPORTANT -- this is a DIFFERENT engine from what executes.
-        ``design_layout_schematic`` runs the standalone deterministic
-        neat-layout engine (``schematic_layout.py``). ``design_execute_plan``
-        does NOT use it: it runs the canvas pipeline (Sugiyama placement +
-        motif/prior overlays), which places and routes differently. So the
-        ``score`` and ``placements`` here are NOT guaranteed to match what
-        gets emitted. For an execution-accurate preview (same placement the
-        emit will use, same score), use ``design_preview_plan`` -- it shares
-        the canvas pipeline with ``design_execute_plan``. Reach for this tool
-        when you specifically want the neat engine's crossing-minimal routing
-        as a standalone artifact.
+        Runs OFFLINE and never reaches Altium, so it works on every
+        backend. That costs one thing and the result says which: symbol
+        geometry is synthesised from the plan's pin lists rather than
+        read from a library, so ``symbols`` comes back ``"synthetic"``
+        and ``execution_accurate`` is False. The placement and routing
+        RULES are the ones that execute. When you need the exact
+        geometry, use ``design_preview_plan`` (same pipeline, real
+        symbols, renders SVG) or ``design_execute_plan`` to emit.
 
         Args:
             plan_json: A DesignPlan as a JSON string or a JSON object/dict.
-            sheet: Sheet name to lay out (default ``"main"``).
-            grid_mils: Snap grid for final coordinates (default 100).
-            fr_iterations: Force-directed relaxation budget (default 80).
-                Higher spreads a dense sheet more, at more compute.
+            sheet: Sheet name to report (default ``"main"``).
+            grid_mils: Accepted for compatibility; the canvas pipeline
+                snaps to its own 100-mil grid.
+            fr_iterations: Accepted for compatibility; the pipeline sweeps
+                its own force-directed budget and scores the results.
             placement_hints: Optional ``{refdes: {"x", "y", "rotation"}}``
-                pinned positions that override the computed placement for
-                those parts; everything else flows through the algorithm.
-            render_png: Optional file path. When set, also render a preview
-                image of the computed layout to that path and return it as
-                ``preview_png`` (offline, matplotlib). Rendering never breaks
-                the data result; failures surface as ``preview_error``.
+                pinned positions, same as ``design_execute_plan``.
+            render_png: Optional path for a preview image of the layout.
 
         Returns:
-            Dict with:
-              - ``ok``: bool
-              - ``sheet``: the sheet laid out
-              - ``summary``: one-line plain-language verdict (crossings,
-                bends, part count, net representation mix) -- read first
-              - ``placements``: per-symbol ``{designator, x, y, rotation}``
-                (mils / degrees)
-              - ``net_representation``: ``{net_name: kind}`` where kind is
-                ``wire`` / ``net_label`` / ``power_port``
-              - ``wires``: ``[{x1, y1, x2, y2}]`` route segments
-              - ``net_labels`` / ``power_ports``: glyph placements
-              - ``junctions``: ``[{x, y}]``
-              - ``score``: aesthetic breakdown (crossings, bends,
-                alignment, aspect, length, total)
-              - ``notes``: plan cross-check + layout notes
-            On a bad plan: ``{"ok": False, "errors": [...]}``.
+            Dict with ``ok`` / ``sheet`` / ``engine`` ("canvas") /
+            ``execution_accurate`` (True) / ``summary`` / ``placements`` /
+            ``net_representation`` / ``wires`` / ``net_labels`` /
+            ``power_ports`` / ``junctions`` / ``score`` / ``notes`` /
+            ``failures``. On a bad plan: ``{"ok": False, "errors": [...]}``.
         """
-        if isinstance(plan_json, dict):
-            payload = plan_json
-        else:
-            try:
-                payload = json.loads(plan_json)
-            except json.JSONDecodeError as exc:
-                return {"ok": False, "errors": [f"invalid JSON: {exc}"]}
-
-        try:
-            plan = DesignPlan.model_validate(payload)
-        except ValidationError as exc:
-            return {
-                "ok": False,
-                "errors": [
-                    f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
-                    for err in exc.errors()
-                ],
-            }
-
-        cross = plan.cross_check()
-        if cross:
-            return {"ok": False, "errors": cross}
-
-        layout = compute_schematic_layout(
-            plan,
-            sheet=sheet,
-            grid_mils=int(grid_mils),
-            fr_iterations=int(fr_iterations),
-            placement_hints=placement_hints,
+        result = layout_plan_from_json(
+            plan_json, sheet=sheet, placement_hints=placement_hints,
+            render_png=render_png,
         )
-        flat = to_executor_payload(layout)
-
-        net_representation = {
-            name: dec.kind for name, dec in layout.decisions.items()
-        }
-        placements = [
-            {
-                "designator": p["designator"],
-                "x": p["x"],
-                "y": p["y"],
-                "rotation": p["rotation"],
-            }
-            for p in flat["placements"]
-        ]
-        notes = list(layout.notes)
-        notes.append(
-            "engine=neat (schematic_layout.py); this is NOT the execution "
-            "engine. design_execute_plan uses the canvas pipeline and may "
-            "place/route differently. Use design_preview_plan for an "
-            "execution-accurate layout and score."
-        )
-        result = {
-            "ok": True,
-            "sheet": flat["sheet"],
-            "engine": "neat",
-            "execution_accurate": False,
-            "summary": _schematic_summary(
-                flat["score"], net_representation, len(placements)),
-            "placements": placements,
-            "net_representation": net_representation,
-            "wires": flat["wires"],
-            "net_labels": flat["net_labels"],
-            "power_ports": flat["power_ports"],
-            "junctions": flat["junctions"],
-            "score": flat["score"],
-            "notes": notes,
-        }
-        if render_png:
-            try:
-                from pathlib import Path
-                from ..design.illustrate import schematic_png
-                out = Path(render_png)
-                out.parent.mkdir(parents=True, exist_ok=True)
-                schematic_png(layout, str(out), title=f"schematic: {sheet}")
-                result["preview_png"] = str(out)
-            except Exception as exc:  # rendering must never break the data path
-                result["preview_error"] = str(exc)
+        if result.get("ok") and "placements" in result:
+            result["summary"] = _schematic_summary(
+                result.get("score", {}),
+                result.get("net_representation", {}),
+                len(result.get("placements", [])),
+            )
         return result
 
     @mcp.tool()
@@ -1974,6 +1891,7 @@ def register_design_tools(mcp) -> None:
         project_path: str,
         use_canvas: bool = True,
         placement_hints: Optional[dict[str, dict[str, int]]] = None,
+        mode: str = "auto",
     ) -> dict[str, Any]:
         """Instantiate a DesignPlan in Altium.
 
@@ -2015,18 +1933,41 @@ def register_design_tools(mcp) -> None:
                      iterate until score is acceptable.
                   4. Call ``design_execute_plan`` with the same hints
                      to emit the refined layout.
+            mode: How to reach the sheet. ``"auto"`` (default) EDITS a
+                sheet this tool has drawn before, moving only the parts
+                whose position changed, placing the new ones, deleting
+                the ones the plan dropped, and leaving every other
+                component exactly as it is. It draws from scratch when
+                there is no prior sheet. This is what makes re-running a
+                changed plan safe on a schematic somebody has worked on.
+                ``"full"`` re-places every component, discarding any
+                hand edit; use it when you want the sheet redrawn.
+                ``"delta"`` refuses rather than redraw.
+
+                The edit path only knows what is in the plan. To keep a
+                part where a person dragged it, read the sheet back with
+                ``design_hints_from_sheet`` and pass the result as
+                ``placement_hints``.
 
         Returns:
             Result dict with ok / project_path / sheets_touched / placed
             (list of placements) / failures / needs_creation / notes.
             Canvas-path additions: ``canvas`` (the SchematicCanvas dict
             snapshot) and ``preview_svg_path`` (where the SVG was written).
+            On an edit, ``delta`` lists the refdes added, moved, replaced,
+            removed and untouched; ``placed`` then covers only the parts
+            actually placed, which on an edit is the new ones.
         """
         if use_canvas:
             return execute_plan_via_canvas_from_json(
                 plan_json, project_path,
                 placement_hints=placement_hints,
+                mode=mode,
             )
+        if mode != "auto":
+            return {"ok": False, "reason":
+                    "mode is a canvas-path option; the legacy executor "
+                    "(use_canvas=False) always redraws the whole sheet"}
         if isinstance(plan_json, dict):
             plan_json = json.dumps(plan_json)
         result = execute_plan_from_json(plan_json, project_path)
@@ -2071,6 +2012,91 @@ def register_design_tools(mcp) -> None:
                     "project_path is required: the same .PrjPcb path "
                     "passed to design_execute_plan"}
         return learn_from_layout(project_path)
+
+    @mcp.tool()
+    async def design_plan_from_sheet(
+        project_path: str,
+        sheet_document: str = "",
+    ) -> dict[str, Any]:
+        """Read a DesignPlan back off a schematic, including one you did
+        not draw.
+
+        Use this when you are asked to change a schematic that has no
+        ``<project>.canvas.json`` beside it: a sheet drawn by hand, or
+        one from an older project. It gives you the plan the rest of the
+        design tools take, so an edit becomes "change the plan, lay it
+        out again" instead of dragging symbols around one at a time.
+
+        The plan is reconstructed from what is actually drawn: the
+        components give the parts, the compiled netlist gives the nets,
+        and the power-port glyphs say which nets are rails. It is
+        validated before it is returned.
+
+        WHAT A SCHEMATIC DOES NOT RECORD, so you must supply it:
+
+        - ``role`` on each part. This is the tag that lets the placer
+          recognise a decoupling bank, a crystal cluster, an op-amp
+          motif. A plan without roles lays out noticeably worse. Read
+          the returned part list and netlist and assert the roles
+          yourself before laying it out.
+        - ``zone`` on each part, if you want functional blocks.
+        - Single-pin nets, which the plan schema cannot express. They
+          come back in ``dropped_pins``.
+
+        Then: edit the plan, call ``design_layout_schematic`` to see it,
+        and ``design_execute_plan`` to apply it. Pass
+        ``design_hints_from_sheet`` output as ``placement_hints`` if you
+        want the existing positions kept.
+
+        Args:
+            project_path: The .PrjPcb the sheet belongs to. Its compiled
+                netlist is what supplies the nets.
+            sheet_document: Full path to the .SchDoc to read. Defaults to
+                the active document.
+
+        Returns:
+            ``ok`` / ``plan`` (a DesignPlan dict, or None on a refusal) /
+            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``.
+        """
+        return plan_from_live_sheet(project_path, sheet_document)
+
+    @mcp.tool()
+    async def design_hints_from_sheet(
+        project_path: str,
+    ) -> dict[str, Any]:
+        """Current sheet positions, as placement_hints for a re-run.
+
+        THIS IS HOW YOU EDIT A SCHEMATIC WITH THE ENGINE. Editing by hand
+        means choosing coordinates, which is what sch_place_components
+        refuses. Do this instead:
+
+        1. ``design_edit_plan`` to change the plan (add the part, change
+           a value, add a net).
+        2. ``design_hints_from_sheet`` to capture where everything
+           currently sits.
+        3. ``design_execute_plan`` with those hints. Every existing part
+           stays exactly where it is, and only the new or changed ones are
+           placed, by the engine rather than by you.
+
+        Positions come back as BODY CENTRES, the frame placement_hints
+        expects, converted from the symbol origins Altium reports. Pass
+        the returned ``hints`` through unchanged; do not round or adjust
+        them, and drop a refdes from the dict only when you deliberately
+        want the placer free to move that part.
+
+        Needs the ``<project>.canvas.json`` snapshot that
+        ``design_execute_plan`` writes, which is what records the library
+        symbol behind each refdes.
+
+        Args:
+            project_path: Absolute path to the .PrjPcb whose sheet to read.
+
+        Returns:
+            ``ok`` / ``hints`` ({refdes: {x, y, rotation}}) / ``unmatched``
+            (refdes present in the snapshot but not readable now) /
+            ``notes``.
+        """
+        return hints_from_sheet(project_path)
 
     @mcp.tool()
     async def design_preview_plan(

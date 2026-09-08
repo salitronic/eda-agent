@@ -15,6 +15,81 @@ from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 
 
+#: How many components in one call count as "drawing a sheet" rather than
+#: editing one. Four is the smallest group that is unmistakably a layout:
+#: an IC with three passives around it.
+_MANUAL_LAYOUT_BULK = 4
+
+#: How many components already on the sheet still count as empty. Not zero,
+#: because a sheet often carries a connector or a mounting hole placed
+#: before the real work starts, and refusing there would be wrong.
+_MANUAL_LAYOUT_EMPTY = 2
+
+
+async def _refuse_manual_sheet_layout(
+    bridge,
+    n_placements: int,
+    document_path: "Optional[str]",
+    allow_manual_layout: bool,
+) -> "Optional[dict[str, Any]]":
+    """Refuse a bulk placement that is really a schematic being hand-drawn.
+
+    An LLM asked to draw a schematic reaches for this tool and picks every
+    coordinate itself, which produces a netlist-correct sheet that reads
+    like nothing a person would draw. The layout engine exists for exactly
+    this and is measured against hand-drawn boards, so the refusal names
+    it. Returns the refusal payload, or None to let the placement proceed.
+
+    DOES NOT BLOCK THE ENGINE. ``design_execute_plan`` emits through
+    ``bridge.send_command("generic.place_sch_components_from_library")``
+    directly, not through this tool, so the gate cannot cut off the path
+    it is pointing at. Checked before building it.
+
+    Only fires on a BULK placement into an EMPTY sheet: adding parts to a
+    sheet that already has work on it is ordinary editing, and one or two
+    parts is never a layout. The count costs a round trip, so it is only
+    asked for when the bulk threshold is already met.
+
+    Fails OPEN. If the count cannot be read the placement goes ahead: a
+    gate that blocks real work because an unrelated bridge call failed
+    would be worse than the drawing it is trying to prevent.
+    """
+    if allow_manual_layout or n_placements < _MANUAL_LAYOUT_BULK:
+        return None
+    scope = f"doc:{document_path}" if document_path else "active_doc"
+    try:
+        counted = await bridge.send_command_async(
+            "generic.get_object_count",
+            {"object_type": "eSchComponent",
+             "scope": scope_to_wire(scope), "filter": ""},
+        )
+    except Exception:                       # noqa: BLE001 - fail open
+        return None
+    if not isinstance(counted, dict):
+        return None
+    existing = counted.get("count")
+    if not isinstance(existing, int) or existing > _MANUAL_LAYOUT_EMPTY:
+        return None
+    return {
+        "error": (
+            f"refused: this places {n_placements} components onto a sheet "
+            f"that has {existing}, which is a schematic being drawn by "
+            f"hand. Positions chosen this way read like nothing a person "
+            f"would draw, however correct the netlist is. Build a "
+            f"DesignPlan and call design_execute_plan: it places AND "
+            f"routes the whole sheet through the layout engine. Use "
+            f"design_layout_schematic or design_preview_plan to see the "
+            f"result first, neither of which writes to the sheet. If you "
+            f"really do mean to place "
+            f"these coordinates yourself, pass allow_manual_layout=true."
+        ),
+        "refused": True,
+        "placed": 0,
+        "use_instead": "design_execute_plan",
+        "existing_components": existing,
+    }
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -2368,6 +2443,13 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Place MANY wire segments on the active schematic in ONE call.
 
+        NOT THE WAY TO WIRE A DESIGN. Routing a netlist segment by segment
+        means choosing every corner yourself, and the result reads like
+        nothing a person would draw. design_execute_plan routes the whole
+        sheet from a DesignPlan through the layout engine, deciding
+        wire-versus-label per net and keeping wires off other nets' pins.
+        Use THIS tool for a few segments on a sheet that already exists.
+
         PREFER THIS over placing wires one segment at a time (there is no
         singular variant). Wiring up a netlist is inherently N pairs of
         endpoints; the bulk version is 10-100x faster in wall time because
@@ -2405,8 +2487,21 @@ def register_generic_tools(mcp):
     async def sch_place_components(
         placements: list[dict[str, Any]],
         document_path: Optional[str] = None,
+        allow_manual_layout: bool = False,
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
+
+        NOT THE WAY TO DRAW A SCHEMATIC, AND IT IS ENFORCED. Placing four
+        or more components onto a sheet that has two or fewer is refused:
+        that is a schematic being drawn by hand, and positions chosen that
+        way read like nothing a person would draw however correct the
+        netlist is. Build a DesignPlan and call design_execute_plan
+        instead, which places AND routes the whole sheet through a layout
+        engine measured against hand-drawn boards; design_layout_schematic
+        and design_preview_plan show you the result first without touching
+        the EDA. Use THIS tool to add parts to a sheet that already exists,
+        or when the positions came from that engine. To place coordinates
+        yourself anyway, pass ``allow_manual_layout=True``.
 
         This is the only path for library placement (there is no singular
         variant). Laying out a 50-part BOM is inherently a bulk operation;
@@ -2421,6 +2516,10 @@ def register_generic_tools(mcp):
         sheet.
 
         Args:
+            allow_manual_layout: Set True to bypass the refusal described
+                above and place your own coordinates onto an empty sheet.
+                The default exists because this is almost never what the
+                caller actually wants; say why in the surrounding turn.
             document_path: Absolute path of the .SchDoc to place onto.
                 When given, it is focused before placement so parts can't
                 land on the wrong sheet. When omitted, the current active
@@ -2470,6 +2569,10 @@ def register_generic_tools(mcp):
             return {"error": "No valid placements", "placed": 0}
 
         bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(op_strs), document_path, allow_manual_layout)
+        if refusal is not None:
+            return refusal
         # Focus the target sheet first so placement can't land on a
         # different open document (placement targets the active doc, and
         # a freshly created sheet is not auto-focused).

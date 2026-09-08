@@ -92,16 +92,23 @@ def test_validate_plan_rejects_invalid_json() -> None:
     assert any("invalid JSON" in e for e in result["errors"])
 
 
-def test_layout_schematic_flags_engine_divergence() -> None:
-    # design_layout_schematic runs the neat engine, NOT the execution engine,
-    # so its result must say so -- a caller should not mistake its score /
-    # placements for what design_execute_plan emits.
+def test_layout_schematic_runs_the_execution_engine() -> None:
+    # THE INVERSE OF WHAT THIS ONCE ASSERTED. design_layout_schematic used
+    # to run a second, standalone engine and had to warn that its score
+    # and placements were not what design_execute_plan would emit. There
+    # is one engine now, so the tool must say which: `engine` names the
+    # canvas pipeline, and `symbols` says whether the geometry was read
+    # from a library or synthesised, which is the only thing that still
+    # separates this from an exact emit.
     tools = _registered_tools()
     result = asyncio.run(tools["design_layout_schematic"](plan_json=_valid_plan_json()))
     assert result["ok"] is True
-    assert result["engine"] == "neat"
-    assert result["execution_accurate"] is False
-    assert any("design_preview_plan" in n for n in result["notes"])
+    assert result["engine"] == "canvas"
+    assert result["symbols"] in ("altium", "synthetic")
+    # Accurate exactly when real symbol geometry was available.
+    assert result["execution_accurate"] is (result["symbols"] == "altium")
+    assert not any("neat" in n.lower() for n in result["notes"]), (
+        "the retired engine must not be mentioned as if it still ran")
 
 
 def test_validate_plan_rejects_schema_failure() -> None:
