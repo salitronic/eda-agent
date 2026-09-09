@@ -1928,6 +1928,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"' + ObjTypeStr + '"}');
 End;
 
@@ -2271,6 +2279,53 @@ Begin
     Result := True;
 End;
 
+{ Does this set-string rewrite a component's DESIGNATOR?                      }
+{                                                                             }
+{ A batch that renames designators is the one write with no safe partial      }
+{ result. Reported from a live project: a 25-op batch died part way, ~10 ops   }
+{ had applied, the partial rename reached disk, File > Revert All did not      }
+{ undo it, and because two parts were both left as 'D?' the netlister MERGED   }
+{ their separate nets. Two indicator circuits were silently shorted, found     }
+{ only by diffing the compiled netlist.                                        }
+{                                                                             }
+{ DelphiScript has no transaction rollback, so 'roll the batch back' is not    }
+{ on offer and promising it would be a lie. Refusing the write is, and         }
+{ proj_annotate is the path that renumbers a whole project atomically.         }
+{ The SINGULAR modify still accepts it: renaming one component is one write    }
+{ that either happens or does not.                                             }
+Function SetWritesDesignator(SetStr : String) : Boolean;
+Var
+    Remaining, Assignment, PropName : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := False;
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Assignment);
+        If EqPos > 0 Then
+        Begin
+            PropName := UpperCase(Trim(Copy(Assignment, 1, EqPos - 1)));
+            If (PropName = 'DESIGNATOR') Or (PropName = 'DESIGNATOR.TEXT') Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
     Operations, OpStr, Remaining, OpResult, Note : String;
@@ -2352,7 +2407,9 @@ Begin
         If Note = '' Then
         Begin
             If ObjTypeStr = '' Then Note := 'missing_object_type'
-            Else If SetStr = '' Then Note := 'missing_set';
+            Else If SetStr = '' Then Note := 'missing_set'
+            Else If SetWritesDesignator(SetStr) Then
+                Note := 'designator_refused_use_proj_annotate';
         End;
 
         If Note = '' Then
@@ -3263,6 +3320,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) +
         ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -3312,6 +3377,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) +
         ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -3370,6 +3443,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -3421,6 +3502,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -3471,6 +3560,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -3546,6 +3643,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -3691,6 +3796,14 @@ Begin
 
     Placed := (GotSide = WantSide) And (GotDist = DistFromTop);
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
             JsonBool('placed', True) + ',' +
@@ -3751,6 +3864,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
         + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -4118,6 +4239,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
         + '"param_name":"' + EscapeJsonString(ParamName) + '",'
@@ -4245,6 +4374,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
@@ -4805,6 +4942,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) +
         '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
@@ -5194,6 +5339,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
 End;
@@ -5234,6 +5387,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
 End;
@@ -5297,6 +5458,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -5563,6 +5732,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"image_path":"' + EscapeJsonString(ImagePath) +
         '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) +
@@ -5780,6 +5957,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"width":' + IntToStr(W) + ',"height":' + IntToStr(H)
@@ -5832,6 +6017,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"net":"' + EscapeJsonString(NetName) + '"}');
@@ -6176,6 +6369,14 @@ Begin
       thing this handler exists to achieve. Replicate plus AddSchObject
       mints a new one, so reporting true regardless would hide exactly
       the failure the staged read backs were added to expose. }
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":' + BoolToJsonStr(Shared = MasterId)
         + ',"source_designator":"' + EscapeJsonString(Designator)
@@ -6238,6 +6439,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"net_name":"' + EscapeJsonString(NetName) + '"}');
@@ -6919,6 +7128,10 @@ Begin
         Exit;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
         + '"primitive":"' + EscapeJsonString(Primitive) + '",'
@@ -7018,6 +7231,10 @@ Begin
         Exit;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
         + '"file_path":"' + EscapeJsonString(FilePath) + '",'
@@ -7190,6 +7407,14 @@ Begin
         End;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"created":' + IntToStr(Created) +
         ',"failed":' + IntToStr(Failed) +
@@ -7321,6 +7546,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -7450,6 +7683,14 @@ Begin
         ResponseBody := ResponseBody + ',"failed_refdes":"'
             + EscapeJsonString(FailedRefdes) + '"';
     ResponseBody := ResponseBody + '}';
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId, ResponseBody);
 End;
 
@@ -7548,6 +7789,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -7649,6 +7898,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -8143,6 +8400,10 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"attached":' + IntToStr(Attached) +
         ',"failed":' + IntToStr(Failed) +
@@ -9608,6 +9869,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -9879,6 +10148,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed) + '}');
 End;
