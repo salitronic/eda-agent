@@ -547,8 +547,21 @@ def register_generic_tools(mcp):
         difference is typically 10-100x on a multi-item edit.
 
         Use it for: moving multiple pins to specific positions, re-laying
-        component placement, per-sheet title changes, bulk designator
-        rewrites, any workflow where each object gets its own value.
+        component placement, per-sheet title changes, any workflow where
+        each object gets its own value.
+
+        NOT FOR DESIGNATORS. An op whose `set` writes `Designator` or
+        `Designator.Text` is refused with
+        `designator_refused_use_proj_annotate` and the rest of the batch
+        runs. A rename batch is the one write with no safe partial
+        result: reported from a live project, a 25-op batch died part
+        way, the partial rename reached disk, `File > Revert All` did
+        not undo it, and because two parts were both left as `D?` the
+        netlister merged their separate nets and silently shorted two
+        circuits. There is no transaction rollback to offer instead, so
+        the write is refused. `proj_annotate` renumbers a whole project
+        in one operation; `obj_modify` still renames a single component,
+        which either happens or does not.
 
         Args:
             operations: List of operation dicts, each with:

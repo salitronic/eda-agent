@@ -328,6 +328,7 @@ def register_application_tools(mcp):
             "script_version_match": version_match,
             "running_script_version": ping.get("altium_script_version"),
             "deployed_script_version": ping.get("bundled_script_version"),
+            "altium_version": ping.get("altium_version") or "",
             "active_document": active,
             "open_document_count": open_count,
             "unsaved": unsaved,
@@ -607,6 +608,11 @@ def register_application_tools(mcp):
               (empty string if the script is too old to report it)
             - bundled_script_version: version of the on-disk Main.pas
             - version_match: True if Altium matches bundled script version
+            - altium_version: the Altium build itself, as Altium reports
+              it. Reported, never acted on: nothing here refuses to run
+              on an old build, because most of the toolset works on one.
+              It is here because a bug report without it costs a round
+              trip, and twice the answer changed the diagnosis.
             - message: human-readable status (flags stale cache if detected)
         """
         bridge = get_bridge()
@@ -617,6 +623,7 @@ def register_application_tools(mcp):
                 "altium_script_version": None,
                 "bundled_script_version": _bundled_script_version(),
                 "version_match": False,
+                "altium_version": "",
                 "message": "Altium Designer is not running",
             }
 
@@ -629,6 +636,7 @@ def register_application_tools(mcp):
                 "altium_script_version": None,
                 "bundled_script_version": bundled,
                 "version_match": False,
+                "altium_version": "",
                 "message": "Altium script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
             }
 
@@ -659,6 +667,7 @@ def register_application_tools(mcp):
             "altium_script_version": altium_ver,
             "bundled_script_version": bundled,
             "version_match": match,
+            "altium_version": result.get("altium_version") or "",
             "message": msg,
             "_system_reminder": _SESSION_REMINDER,
         }

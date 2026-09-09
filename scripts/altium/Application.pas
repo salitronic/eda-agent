@@ -5,13 +5,32 @@
 {..............................................................................}
 
 Function App_Ping(RequestId : String) : String;
+Var
+    Ver : String;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
     // Altium script cache. cast_errors surfaces the silent-cast counter
     // (see RecordCastError), non-zero at session end indicates an
     // interface mismatch worth investigating.
+    //
+    // altium_version rides along because a bug report without it costs a
+    // round trip, and twice now the answer changed the diagnosis: two
+    // reports of a wedged polling loop were both an Altium far below the
+    // versions this is developed against, naming interfaces that build
+    // does not declare. It is reported, never acted on: an old build
+    // runs most of this toolset perfectly well, and refusing to start
+    // would take away the part that works to prevent the part that does
+    // not. Empty when the API will not answer, which is itself a fact
+    // worth having.
+    Ver := '';
+    Try
+        Ver := Client.GetProductVersion;
+    Except
+        Ver := '';
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"pong":true,"script_version":"' + SCRIPT_VERSION +
+        '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
         ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
 End;
