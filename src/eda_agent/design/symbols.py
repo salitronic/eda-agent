@@ -308,8 +308,24 @@ class SymbolCache:
             )
             return None
 
-    def put(self, model: SymbolModel) -> None:
-        """Insert a model and persist the lib's cache file atomically."""
+    def put(self, model: SymbolModel,
+            source_mtime: Optional[float] = None) -> None:
+        """Insert a model and persist the lib's cache file atomically.
+
+        ``source_mtime`` is the library's mtime as observed BEFORE the
+        model was read out of it. Stamping the mtime found at write time
+        instead certifies the entry against a file the model may not
+        have come from: the library is reopened in the editor to answer
+        the read, and anything that touches it in that window (a
+        deferred save landing, an edit, another tool) moves the mtime.
+        The entry then reads as current for a symbol whose geometry is
+        one version behind, which is worse than a cache miss because
+        nothing reports it.
+
+        Falls back to the mtime at write time when the caller does not
+        supply one, which is the previous behaviour and is right for a
+        model built from something other than a live read.
+        """
         try:
             disk_mtime = Path(model.lib_path).stat().st_mtime
         except OSError as exc:
@@ -317,6 +333,17 @@ class SymbolCache:
                 "cannot stat %s, skipping cache write: %s", model.lib_path, exc
             )
             return
+        if source_mtime is not None:
+            if abs(source_mtime - disk_mtime) >= 0.001:
+                # The library moved under the read. Keep the model (the
+                # caller asked for it and will use it) but do not claim
+                # it is current, so the next run re-reads.
+                logger.info(
+                    "%s changed while %s was read; not caching it",
+                    model.lib_path, model.lib_ref,
+                )
+                return
+            disk_mtime = source_mtime
         data = self._load_lib(model.lib_path) or {
             "lib_mtime": disk_mtime,
             "components": {},
@@ -363,6 +390,12 @@ class SymbolExtractor:
         # target SchLib to be loaded in the editor. The handler reopens
         # the lib via WorkspaceManager:OpenObject if it isn't already
         # focused, so we don't need a separate load step here.
+        # Observed BEFORE the read, so put() can tell whether the library
+        # stayed still while Altium answered.
+        try:
+            source_mtime = Path(lib_path).stat().st_mtime
+        except OSError:
+            source_mtime = None
         try:
             response = self.bridge.send_command(
                 "library.get_component_details",
@@ -381,7 +414,7 @@ class SymbolExtractor:
             )
             return None
         model = parse_symbol_from_details(response, lib_path)
-        self.cache.put(model)
+        self.cache.put(model, source_mtime)
         return model
 
     def extract_many(

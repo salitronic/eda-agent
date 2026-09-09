@@ -395,6 +395,40 @@ def emit_canvas_delta(
     return result
 
 
+def _emit_sheet_size(
+    canvas: SchematicCanvas, sheet_name: str, bridge: Any, result: EmitResult
+) -> None:
+    """Put the plan's paper on the document before anything is drawn.
+
+    THE PLACER ALREADY SIZED TO IT. sheet_bounds spreads a layout across
+    the sheet the plan declares, so a plan asking for A3 is laid out to
+    A3 and, on a document nobody resized, drawn past the edge of an A4
+    frame. Nothing failed and nothing said so: the parts are all there,
+    the netlist is right, and the border is in the wrong place.
+
+    Set BEFORE placing, because the size is a document property and
+    changing it afterwards would move the frame under parts already
+    positioned against it.
+
+    A4 is skipped because it is what a new document already is, which
+    keeps the common case at zero extra calls, and a failure is a note
+    rather than an abort: the sheet is still correct, only its border is
+    the wrong size.
+    """
+    sheet = next((s for s in canvas.sheets if s.name == sheet_name), None)
+    size = (getattr(sheet, "size", "") or "").strip()
+    if not size or size.upper() == "A4":
+        return
+    try:
+        bridge.send_command("generic.set_sheet_size", {"style": size})
+        result.notes.append(f"sheet {sheet_name}: size set to {size}")
+    except Exception as exc:                    # noqa: BLE001
+        result.notes.append(
+            f"sheet {sheet_name}: could not set size to {size} ({exc}); the "
+            f"layout was computed for {size} and the border is still the "
+            f"document default")
+
+
 def _emit_sheet(
     canvas: SchematicCanvas,
     sheet_name: str,
@@ -416,6 +450,8 @@ def _emit_sheet(
     except Exception as exc:
         result.notes.append(f"set_active_document {sheet_name} failed: {exc}")
         return
+
+    _emit_sheet_size(canvas, sheet_name, bridge, result)
 
     # 1. Bulk place components.
     instances = canvas.instances_on(sheet_name)
