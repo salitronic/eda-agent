@@ -650,6 +650,39 @@ Apply these rules whenever calling `pcb_move_components`.
    component to bottom and place it under a top-side IC, that's a
    legal solid-geometry overlap (different layers). Use DRC if you
    need actual clearance rules enforced.
+
+## PCB routing discipline
+
+These are conventions a fabricator and a reviewer both expect. A board
+can be netlist-correct and DRC-clean while breaking every one of them,
+which is why they are written down rather than left to the checker.
+
+1. **45 degree corners, not 90.** A right-angle corner in signal
+   copper is the first thing a reviewer notices and the standard house
+   rule on nearly every board. Turn with two 45 degree bends instead.
+   `route_plan` does this by default; if you place tracks yourself with
+   `pcb_place_tracks`, emit the chamfer segment rather than a single
+   corner point. Acute (less than 90 degree) corners are worse than
+   either and are what `audit_find_acute_angles` looks for.
+
+2. **No via in a pad unless the part forces it.** A via inside a
+   surface-mount pad wicks solder off the joint and has to be filled
+   and capped, which is a different and more expensive process. Put the
+   via beside the pad with a short stub. `route_plan` refuses via-in-pad
+   by default and takes `allow_via_in_pad=True` for the cases that
+   genuinely need it: BGA fanout with no room to escape, and a thermal
+   pad being stitched to a plane, where the via is intentional and the
+   fabricator is told about it.
+
+3. **One of these DRC can enforce and one it cannot.** Altium has a
+   Vias Under SMD rule, and switching it on is worth more than care
+   while placing, because it checks the whole board every time.
+   `pcb_create_design_rule` cannot create that kind yet (it makes
+   clearance, width, via_size and differential_pairs), so set it in
+   Design > Rules > Routing, which the `app_*` dialog tools can drive.
+   For right angles there is no rule at all: the nearest check fires
+   below 90 degrees, so a board full of right-angle corners passes DRC
+   silently. Look at it, or read back what you placed.
 """
 
 

@@ -53,8 +53,20 @@ _CLASS_PRIORITY = {
     "signal": 5,
 }
 
+# FOUR DIRECTIONS IN THE SEARCH, 45s AFTERWARDS. Adding the diagonals to
+# the A* move set was tried and measured: it reroutes earlier nets
+# through cells the orthogonal routes left free, walls off a later net,
+# and cost the blinker benchmark a net it had always routed (100% to
+# 83.3%). Nets are routed in order and each becomes an obstacle for the
+# next, so a locally prettier path is not a better board. The corners are
+# chamfered after the fact instead, against the same obstacle map, which
+# cannot change what routes at all.
 _DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _DIR_NONE = 4  # start of path / just emerged from a via: next move is free
+
+#: How deep a corner may be cut, in grid cells. The chamfer never eats
+#: more than half of the shorter leg, so a short jog keeps its shape.
+_MAX_CHAMFER_CELLS = 4
 _EPS = 1e-6
 
 
@@ -65,6 +77,12 @@ class RouterOptions:
 
     bend_penalty: float = 1.0
     via_cost: float = 10.0
+    #: A via inside a surface-mount pad wicks solder off the joint and
+    #: has to be filled and capped, which is a different and dearer
+    #: process. Off by default; the cases that genuinely need it are BGA
+    #: fanout with no room to escape and a thermal pad being stitched to
+    #: a plane.
+    allow_via_in_pad: bool = False
     # Per-connection expansion budget so a walled-in net fails fast
     # instead of flooding a big grid forever.
     max_expansions: int = 200_000
@@ -453,7 +471,8 @@ def _astar(problem: RoutingProblem, net: str,
                 heapq.heappush(
                     open_heap, (ng + _h(jx, jy), ng, next(counter), nst))
 
-        if n_layers > 1 and problem.via_ok(ix, iy, net):
+        if n_layers > 1 and problem.via_ok(
+                ix, iy, net, allow_in_pad=opt.allow_via_in_pad):
             for l2 in range(n_layers):
                 if l2 == li:
                     continue
@@ -488,6 +507,86 @@ def _reconstruct(parent: dict, last: tuple[int, int, int, int]
 # ---------------------------------------------------------------------------
 
 
+def _chamfer(problem: RoutingProblem, net: str, li: int,
+             cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Cut every right-angle corner in a same-layer run into two 45s.
+
+    A right angle in signal copper is the first thing a reviewer picks
+    up and the standard house rule on most boards. The search runs on a
+    4-direction grid and cannot produce anything else, so the corners
+    are cut here, after the fact, where doing it cannot change which
+    nets route. Putting the diagonals in the search itself was tried and
+    measured: it reroutes earlier nets and strands later ones.
+
+    VERIFIED AGAINST THE SAME OBSTACLE MAP the search used. The diagonal
+    crosses cells that neither leg occupies, so every one is checked. A
+    corner whose chamfer would clip a pad keeps its right angle, which
+    is correct and visible rather than clever and shorted.
+
+    Cuts as deep as it can, never taking more than half of either leg,
+    so a short jog keeps its shape and a long run gets a long chamfer.
+    """
+    if len(cells) < 3:
+        return cells
+
+    def _unit(a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:
+        return ((b[0] > a[0]) - (b[0] < a[0]),
+                (b[1] > a[1]) - (b[1] < a[1]))
+
+    out: list[tuple[int, int]] = [cells[0]]
+    i = 1
+    while i < len(cells) - 1:
+        corner = cells[i]
+        din = _unit(cells[i - 1], corner)
+        dout = _unit(corner, cells[i + 1])
+        # A right angle only: straight runs and reversals are left alone.
+        if din == (0, 0) or dout == (0, 0) or (
+                din[0] * dout[0] + din[1] * dout[1]) != 0:
+            out.append(corner)
+            i += 1
+            continue
+
+        # How far the legs run, in cells, either side of the corner.
+        back = 0
+        while back < len(out) and _unit(out[-1 - back], corner) == din:
+            back += 1
+        fwd = 0
+        while (i + fwd + 1 < len(cells)
+               and _unit(cells[i + fwd], cells[i + fwd + 1]) == dout):
+            fwd += 1
+
+        depth = min(_MAX_CHAMFER_CELLS, back // 2, fwd // 2)
+        applied = 0
+        for d in range(depth, 0, -1):
+            a = (corner[0] - din[0] * d, corner[1] - din[1] * d)
+            step = (din[0] + dout[0], din[1] + dout[1])
+            if all(problem.passable(li, a[0] + step[0] * k,
+                                    a[1] + step[1] * k, net)
+                   for k in range(1, d + 1)):
+                applied = d
+                break
+
+        if not applied:
+            out.append(corner)
+            i += 1
+            continue
+
+        # Drop the cells between the cut point and the corner; they were
+        # already emitted on the way in.
+        for _ in range(applied - 1):
+            out.pop()
+        a = out[-1]
+        step = (din[0] + dout[0], din[1] + dout[1])
+        for k in range(1, applied + 1):
+            out.append((a[0] + step[0] * k, a[1] + step[1] * k))
+        # Resume past the outgoing cells the chamfer replaced.
+        i += applied
+
+    if out[-1] != cells[-1]:
+        out.append(cells[-1])
+    return out
+
+
 def _emit(problem: RoutingProblem, net: str, width: int,
           paths: list[list[tuple[int, int, int]]],
           terms: list[Terminal],
@@ -505,13 +604,29 @@ def _emit(problem: RoutingProblem, net: str, width: int,
             "width": int(width), "layer": layer, "net_name": net,
         })
 
+    def _flush_cells(cells: list[tuple[int, int]], layer_idx: int) -> None:
+        """Chamfer the run's corners, then emit it as track segments.
+
+        Done on the CELLS rather than on the emitted segments: the
+        chamfer has to check the obstacle map, and that is indexed by
+        cell.
+        """
+        if len(cells) < 2:
+            return
+        points: list[tuple[int, int]] = []
+        for ix, iy in _chamfer(problem, net, layer_idx, cells):
+            pt = problem.cell_center(ix, iy)
+            if not points or points[-1] != pt:
+                points.append(pt)
+        _flush_run(points, problem.layers[layer_idx], _track)
+
     for path in paths:
-        run: list[tuple[int, int]] = []
+        run_cells: list[tuple[int, int]] = []
         run_layer = path[0][0]
         for (li, ix, iy) in path:
-            pt = problem.cell_center(ix, iy)
             if li != run_layer:
-                _flush_run(run, problem.layers[run_layer], _track)
+                _flush_cells(run_cells, run_layer)
+                pt = problem.cell_center(ix, iy)
                 if pt not in via_at:
                     via_at.add(pt)
                     vias.append({
@@ -519,12 +634,12 @@ def _emit(problem: RoutingProblem, net: str, width: int,
                         "size": int(problem.rules.via_size_mils),
                         "hole_size": int(problem.rules.via_drill_mils),
                     })
-                run = [pt]
+                run_cells = [(ix, iy)]
                 run_layer = li
             else:
-                if not run or run[-1] != pt:
-                    run.append(pt)
-        _flush_run(run, problem.layers[run_layer], _track)
+                if not run_cells or run_cells[-1] != (ix, iy):
+                    run_cells.append((ix, iy))
+        _flush_cells(run_cells, run_layer)
 
     # Stub from each exact pad center to its snapped grid point, on a
     # layer where the pad copper and the routed tree coincide.

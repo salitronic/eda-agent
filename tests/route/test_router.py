@@ -199,6 +199,25 @@ class TestCrossingNets:
             assert v["size"] == 50 and v["hole_size"] == 28
         assert sol["validation"]["ok"]
 
+    def test_a_wall_with_no_way_round_still_uses_vias(self):
+        """The via path has to keep working where it is the only path.
+
+        B is a row of pads spanning the full height of the board, so
+        there is no planar route at all and A must change layers.
+        """
+        wall = [_pad(500, y, "B") for y in range(0, 601, 40)]
+        sol = route_geometry(
+            _geom([_pad(50, 300, "A"), _pad(950, 300, "A")] + wall), RULES)
+        assert sol["ok"]
+        assert sol["nets"]["A"]["status"] == "routed"
+        assert len(sol["vias"]) >= 2
+        for v in sol["vias"]:
+            _via_keys_ok(v)
+            assert v["size"] == 50 and v["hole_size"] == 28
+        layers = {t["layer"] for t in sol["tracks"] if t["net_name"] == "A"}
+        assert layers == {"TopLayer", "BottomLayer"}
+        assert sol["validation"]["ok"]
+
     def test_short_net_first(self):
         sol = route_geometry(self._geometry(), RULES)
         assert sol["order"] == ["B", "A"]  # HPWL 500 before 900

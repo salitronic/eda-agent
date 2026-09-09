@@ -238,6 +238,16 @@ class RoutingProblem:
             {} for _ in self.layers]
         self.via_blocked: list[dict[tuple[int, int], set[str | None]]] = [
             {} for _ in self.layers]
+        # Cells whose centre sits ON pad copper, per layer, with no
+        # clearance inflation: this is the pad itself, not its keep-out.
+        # A via here is a via IN a pad, which wicks solder off the joint
+        # and turns the board into a filled-and-capped process. Kept
+        # apart from ``via_blocked`` because that map is about what a
+        # via would collide with, and this one is about what it would
+        # sit inside, which is a manufacturing question rather than a
+        # geometric one.
+        self.pad_cells: list[set[tuple[int, int]]] = [
+            set() for _ in self.layers]
         self._margin_track = rules.clearance_mils + rules.max_track_halfwidth
         self._margin_via = rules.clearance_mils + rules.via_size_mils / 2.0
         # net -> terminals (pad centers).
@@ -270,13 +280,27 @@ class RoutingProblem:
             return True
         return all(o == net for o in owners)
 
-    def via_ok(self, ix: int, iy: int, net: str) -> bool:
+    def via_ok(self, ix: int, iy: int, net: str,
+               allow_in_pad: bool = False) -> bool:
         """True if a through-via for ``net`` may land on this cell. The
         barrel spans every routing layer, so the cell must clear the
         wider via inflation on all of them (plus be track-passable for
-        the entry/exit centerlines)."""
+        the entry/exit centerlines).
+
+        NOT INSIDE A PAD unless the caller asks. The clearance maps let
+        a net sit on its own copper, which is right for a track and
+        wrong for a via: the result is a via in the pad, which wicks
+        solder off the joint and has to be filled and capped. The via
+        belongs beside the pad, and there is almost always a cell there.
+        ``allow_in_pad`` is for the cases that genuinely need it, BGA
+        fanout and a thermal pad stitched to a plane.
+        """
         if not (0 <= ix < self.nx and 0 <= iy < self.ny):
             return False
+        if not allow_in_pad:
+            for li in range(len(self.layers)):
+                if (ix, iy) in self.pad_cells[li]:
+                    return False
         for li in range(len(self.layers)):
             if not self.passable(li, ix, iy, net):
                 return False
@@ -347,6 +371,8 @@ class RoutingProblem:
             else:
                 continue  # mask/paste/mech artwork: not routing copper
             prob._block_rect(indices, cx, cy, hw, hh, owner)
+            if lay != "keepoutlayer":
+                prob._mark_pad_cells(indices, cx, cy, hw, hh)
             prob.geoms.append({
                 "kind": "rect",
                 "layer": None if len(indices) > 1 else indices[0],
@@ -436,6 +462,20 @@ class RoutingProblem:
     def _maps(self) -> tuple[tuple[list, float], ...]:
         return ((self.blocked, self._margin_track),
                 (self.via_blocked, self._margin_via))
+
+    def _mark_pad_cells(self, indices: Iterable[int], cx: float, cy: float,
+                        hw: float, hh: float) -> None:
+        """Record the cells the pad copper actually covers.
+
+        No margin: a cell beside a pad is a fine place for a via, and
+        that is where a via belongs when a pad needs one.
+        """
+        for li in indices:
+            for ix, iy in self._cells_in_window(cx - hw, cy - hh,
+                                                cx + hw, cy + hh):
+                x, y = self.cell_center(ix, iy)
+                if abs(x - cx) <= hw and abs(y - cy) <= hh:
+                    self.pad_cells[li].add((ix, iy))
 
     def _block_rect(self, indices: Iterable[int], cx: float, cy: float,
                     hw: float, hh: float, owner: str | None) -> None:

@@ -41,15 +41,50 @@ from ..route.repair import plan_drc_repairs
 
 
 async def _resolve_geometry(geometry: Any,
-                            fetch_geometry: bool) -> dict[str, Any] | None:
-    """Return the geometry dict, fetching from the live board only when
-    ``fetch_geometry`` is set and no geometry was passed in."""
+                            fetch_geometry: bool) -> tuple[
+                                dict[str, Any] | None, str]:
+    """The geometry dict and where it came from.
+
+    Fetches from the live board only when ``fetch_geometry`` is set and
+    nothing was passed in, which is the default, so the ordinary repeat
+    call plans against whatever snapshot the caller still has. That is
+    the right default (a fetch is a round trip on a big board) and a
+    silent trap: after placing the first net's copper the board has
+    moved on, and a second plan built on the old snapshot routes
+    straight through the tracks that now exist.
+
+    The source is returned so the reply can say which board state was
+    planned against instead of leaving the caller to remember.
+    """
     if geometry is None and fetch_geometry:
         bridge = get_bridge()
         geometry = await bridge.send_command_async(
             "generic.get_pcb_geometry", {}, timeout=120.0,
         )
-    return geometry if isinstance(geometry, dict) else None
+        return (geometry if isinstance(geometry, dict) else None), "live"
+    return (geometry if isinstance(geometry, dict) else None), "caller"
+
+
+def _planned_against(geom: dict[str, Any], source: str) -> dict[str, Any]:
+    """What the result says about the board state it used.
+
+    Counts and bbox come straight from the payload, so a caller can
+    compare them against a fresh read and see for itself whether the
+    plan was built on the current board.
+    """
+    counts = geom.get("counts") if isinstance(geom.get("counts"), dict) else {}
+    out: dict[str, Any] = {
+        "source": source,
+        "bbox": geom.get("bbox"),
+        "counts": counts,
+    }
+    if source == "caller":
+        out["note"] = (
+            "planned against the geometry you supplied, which this tool "
+            "cannot date. Copper placed since it was read is invisible "
+            "here: re-read with fetch_geometry=True before re-planning "
+            "after any placement.")
+    return out
 
 
 def register_route_tools(mcp):
@@ -112,8 +147,16 @@ def register_route_tools(mcp):
             [...], "vias": [...], "validation": {...}}``; with a
             ``nets`` filter also ``requested_nets`` / ``unknown_nets``.
             ``{"ok": False, "reason": ...}`` on malformed input.
+
+            ``geometry`` says which board state was planned against:
+            ``source`` is ``live`` when this call read the board and
+            ``caller`` when you supplied the dict, plus the ``bbox`` and
+            ``counts`` from that payload. A ``caller`` plan is only as
+            current as the snapshot behind it, and this tool cannot date
+            it: after placing anything, re-read before re-planning or
+            the next plan routes through copper it cannot see.
         """
-        geom = await _resolve_geometry(geometry, fetch_geometry)
+        geom, geom_source = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
             return {"ok": False,
                     "reason": "no geometry: pass the geometry dict or set "
@@ -142,6 +185,7 @@ def register_route_tools(mcp):
                 n: t for n, t in problem.terminals.items() if n in wanted
             }
         result = route_problem(problem, options)
+        result["geometry"] = _planned_against(geom, geom_source)
         if nets is not None:
             result["requested_nets"] = sorted(set(nets))
             result["unknown_nets"] = unknown
