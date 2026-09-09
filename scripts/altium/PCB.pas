@@ -11,6 +11,33 @@
 { Returns Nil if not found.                                                   }
 {..............................................................................}
 
+{ TELL THE NET ABOUT THE PRIMITIVE, not just the primitive about the net.  }
+{                                                                            }
+{ Assigning Prim.Net sets a reference and nothing else. The NET keeps its own }
+{ collection, and connectivity, the ratsnest and the polygon engine all walk  }
+{ THAT. A via placed with only the assignment therefore has a net, reports    }
+{ its net when queried, and is invisible to everything that matters: no       }
+{ thermal relief where the pour meets it, no connection in the DRC's view,    }
+{ and an un-routed net reported for copper that is plainly on the board.      }
+{ Measured on a live board, where a jumper via read as connected and the      }
+{ pour ignored it.                                                            }
+{                                                                            }
+{ PCB_TuneLength and PCB_ReplicateLayout already do both, which is why their  }
+{ copper connects; every other placement handler did only the assignment.     }
+{ Wrapped so a type that will not take it degrades to the old behaviour       }
+{ rather than ending the call.                                                }
+Function BindPrimitiveToNet(NetObj : IPCB_Net; Prim : IPCB_Primitive) : Boolean;
+Begin
+    Result := False;
+    If (NetObj = Nil) Or (Prim = Nil) Then Exit;
+    Try
+        Prim.Net := NetObj;
+        NetObj.AddPCBObject(Prim);
+        Result := True;
+    Except
+    End;
+End;
+
 Function FindNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
 Var
     Iterator : IPCB_BoardIterator;
@@ -1490,6 +1517,7 @@ Var
     NewX, NewY : Integer;
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
+    CurX, CurY, DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1535,8 +1563,19 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
 
-        If HasX Then Comp.x := MilsToCoord(NewX);
-        If HasY Then Comp.y := MilsToCoord(NewY);
+        { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents for why. A
+          component owns its pads, and assigning x leaves them behind in
+          the board's structures, where the polygon engine still sees
+          them. }
+        If HasX Or HasY Then
+        Begin
+            CurX := Comp.x;
+            CurY := Comp.y;
+            If HasX Then DeltaX := MilsToCoord(NewX) - CurX Else DeltaX := 0;
+            If HasY Then DeltaY := MilsToCoord(NewY) - CurY Else DeltaY := 0;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
+        End;
         If HasRot Then Comp.Rotation := NewRot;
 
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
@@ -3106,7 +3145,7 @@ Begin
                         Via.HoleSize := ViaHole;
                         Try Via.LowLayer := eTopLayer; Except End;
                         Try Via.HighLayer := eBottomLayer; Except End;
-                        Try Via.Net := Net; Except End;
+                        BindPrimitiveToNet(Net, Via);
                         Board.AddPCBObject(Via);
                         Inc(Placed);
                     End;
@@ -3282,6 +3321,7 @@ Var
     NewX, NewY : Integer;
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
+    CurX, CurY, DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -3372,9 +3412,33 @@ Begin
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
 
-            If HasX Then Comp.x := MilsToCoord(NewX);
-            If HasY Then Comp.y := MilsToCoord(NewY);
+            { MOVED, NOT ASSIGNED, and the pour is how you find out.
+              A component owns its pads. Writing Comp.x moves the
+              component record and leaves every child pad at its old
+              coordinate in the board's own structures, so the polygon
+              engine keeps clearing the hole where the part used to be.
+              Reported from a live board: a part was moved through here,
+              repoured, and the copper still avoided the old pad while
+              shorting the new one; repouring from the menu did not help,
+              because the board still believed the pad had not moved.
+
+              MoveByXY is inherited from IPCB_Primitive, PCB_Place3DBody
+              and PCB_ReplicateLayout already call it, and four published
+              scripts move a component with it, so it is not an undeclared
+              identifier. The delta is taken from where the component
+              actually is, and rotation is applied first so the move lands
+              the origin exactly where the caller asked whatever the
+              rotation did to it. }
             If HasRot Then Comp.Rotation := NewRot;
+            If HasX Or HasY Then
+            Begin
+                CurX := Comp.x;
+                CurY := Comp.y;
+                If HasX Then DeltaX := MilsToCoord(NewX) - CurX Else DeltaX := 0;
+                If HasY Then DeltaY := MilsToCoord(NewY) - CurY Else DeltaY := 0;
+                If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                    Comp.MoveByXY(DeltaX, DeltaY);
+            End;
 
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
@@ -4780,7 +4844,7 @@ Begin
         Begin
             FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-                Via.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Via);
         End;
 
         Board.AddPCBObject(Via);
@@ -4875,7 +4939,7 @@ Begin
         Begin
             FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-                Track.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Track);
         End;
 
         Board.AddPCBObject(Track);
@@ -5031,7 +5095,7 @@ Begin
             If NetStr <> '' Then
             Begin
                 FoundNet := FindNetByName(Board, NetStr);
-                If FoundNet <> Nil Then Track.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Track);
             End;
 
             Board.AddPCBObject(Track);
@@ -5308,7 +5372,7 @@ Begin
         Begin
             FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-                Fill.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Fill);
         End;
 
         Board.AddPCBObject(Fill);
@@ -5758,6 +5822,7 @@ Var
     { first pass to validate + measure bounds, second pass to apply.      }
     Resolved : TStringList;
     MinX, MaxX, MinY, MaxY, CenterX, CenterY : Integer;
+    DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -5837,18 +5902,26 @@ Begin
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
 
+                { MOVED, NOT ASSIGNED: a component owns its pads, and
+                  writing x leaves them where they were in the board's
+                  own structures, so the pour and the DRC keep seeing the
+                  old footprint. See PCB_BatchMoveComponents. }
+                DeltaX := 0;
+                DeltaY := 0;
                 If AlignStr = 'left' Then
-                    Comp.x := MilsToCoord(MinX)
+                    DeltaX := MilsToCoord(MinX) - Comp.x
                 Else If AlignStr = 'right' Then
-                    Comp.x := MilsToCoord(MaxX)
+                    DeltaX := MilsToCoord(MaxX) - Comp.x
                 Else If AlignStr = 'top' Then
-                    Comp.y := MilsToCoord(MaxY)
+                    DeltaY := MilsToCoord(MaxY) - Comp.y
                 Else If AlignStr = 'bottom' Then
-                    Comp.y := MilsToCoord(MinY)
+                    DeltaY := MilsToCoord(MinY) - Comp.y
                 Else If AlignStr = 'center_x' Then
-                    Comp.x := MilsToCoord(CenterX)
+                    DeltaX := MilsToCoord(CenterX) - Comp.x
                 Else If AlignStr = 'center_y' Then
-                    Comp.y := MilsToCoord(CenterY);
+                    DeltaY := MilsToCoord(CenterY) - Comp.y;
+                If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                    Comp.MoveByXY(DeltaX, DeltaY);
 
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_EndModify, c_NoEventData);
@@ -5953,6 +6026,7 @@ Var
     Comp : IPCB_Component;
     DesStr, GridStr : String;
     GridSize, OldX, OldY, NewX, NewY : Integer;
+    DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -5992,8 +6066,11 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
 
-        Comp.x := MilsToCoord(NewX);
-        Comp.y := MilsToCoord(NewY);
+        { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
+        DeltaX := MilsToCoord(NewX) - Comp.x;
+        DeltaY := MilsToCoord(NewY) - Comp.y;
+        If (DeltaX <> 0) Or (DeltaY <> 0) Then
+            Comp.MoveByXY(DeltaX, DeltaY);
 
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
@@ -7549,7 +7626,7 @@ Begin
                     Via.HoleSize := MilsToCoord(ViaHole);
                     Via.LowLayer := LowLayer;
                     Via.HighLayer := HighLayer;
-                    If FoundNet <> Nil Then Via.Net := FoundNet;
+                    BindPrimitiveToNet(FoundNet, Via);
                     Board.AddPCBObject(Via);
                     PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                         PCBM_BoardRegisteration, Via.I_ObjectAddress);
@@ -7718,7 +7795,7 @@ Begin
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board,NetStr); Except FoundNet := Nil; End;
-            If FoundNet <> Nil Then Region.Net := FoundNet;
+            BindPrimitiveToNet(FoundNet, Region);
         End;
 
         Board.AddPCBObject(Region);
@@ -7754,6 +7831,7 @@ Var
     CompList : TInterfaceList;
     Comp : IPCB_Component;
     Iterator : IPCB_BoardIterator;
+    DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -7840,10 +7918,19 @@ Begin
             NewPos := StartVal + Round(Step * I);
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
+            { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
             If AxisX Then
-                Comp.x := MilsToCoord(NewPos)
+            Begin
+                DeltaX := MilsToCoord(NewPos) - Comp.x;
+                DeltaY := 0;
+            End
             Else
-                Comp.y := MilsToCoord(NewPos);
+            Begin
+                DeltaX := 0;
+                DeltaY := MilsToCoord(NewPos) - Comp.y;
+            End;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
         End;
@@ -8022,7 +8109,7 @@ Begin
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board,NetStr); Except FoundNet := Nil; End;
-            If FoundNet <> Nil Then Pad.Net := FoundNet;
+            BindPrimitiveToNet(FoundNet, Pad);
         End;
 
         Board.AddPCBObject(Pad);
@@ -8152,8 +8239,10 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Comp.I_ObjectAddress);
 
-        { pad nets: create each named net if missing, assign it to the pad,    }
-        { giving the board real connectivity (ratsnest + DRC) without an ECO.  }
+        { pad nets: create each named net if missing and JOIN the pad to it.   }
+        { This comment used to promise "real connectivity (ratsnest + DRC)"    }
+        { off an assignment alone, which does not deliver it: the net has to   }
+        { be told about the pad or nothing downstream sees the connection.     }
         If PadNetsStr <> '' Then
         Begin
             GrpIter := Comp.GroupIterator_Create;
@@ -8169,7 +8258,7 @@ Begin
                     Net := EnsureNet(Board, NetName);
                     If Net <> Nil Then
                     Begin
-                        Pad.Net := Net;
+                        BindPrimitiveToNet(Net, Pad);
                         NetsAssigned := NetsAssigned + 1;
                     End;
                 End;
@@ -8348,7 +8437,7 @@ Begin
                     If NetName <> '' Then
                     Begin
                         Net := EnsureNet(Board, NetName);
-                        If Net <> Nil Then Pad.Net := Net;
+                        BindPrimitiveToNet(Net, Pad);
                     End;
                     Pad := GrpIter.NextPCBObject;
                 End;
@@ -8802,7 +8891,7 @@ Begin
                                     Pad.HoleSize := 0;
                                 End;
                                 Pad.Name := 'TP_' + NetName;
-                                Pad.Net := Net;
+                                BindPrimitiveToNet(Net, Pad);
                                 Try Pad.IsTestpoint_Top := FabTop; Except End;
                                 Try Pad.IsTestpoint_Bottom := FabBot; Except End;
                                 Try Pad.IsAssyTestpoint_Top := AssyTop; Except End;
@@ -10049,7 +10138,7 @@ Begin
                                                 Arc.LineWidth := Track.Width;
                                                 Arc.Layer := Track.Layer;
                                                 If Track.Net <> Nil Then
-                                                    Arc.Net := Track.Net;
+                                                    BindPrimitiveToNet(Track.Net, Arc);
                                                 Board.AddPCBObject(Arc);
                                                 PCBServer.SendMessageToRobots(
                                                     Board.I_ObjectAddress,
@@ -10245,6 +10334,9 @@ Var
     NetFilter, NetName, ExpStr : String;
     ExpMils, Count : Integer;
     Keep : Boolean;
+    Prim : IPCB_Primitive;
+    Matches : TInterfaceList;
+    I : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -10258,39 +10350,58 @@ Begin
     ExpMils := StrToIntDef(ExpStr, 4);
     Count := 0;
 
+    { COLLECT FIRST, THEN MODIFY, and hold the walk as the BASE primitive.
+      Writing SolderMaskExpansion while the BoardIterator was still walking
+      took the whole scripting engine down with an access violation on a
+      live board, and because the fault landed between PreProcess and
+      PostProcess it left an open transaction in the PCB server behind it.
+      PCB_SetTrackWidth carries the same two notes for the same reasons: a
+      mutation during iteration corrupts the iterator, and assigning a
+      collected item straight to a derived interface skips QueryInterface
+      and faults in oleaut32 on the first vtable call. Narrow to Via only
+      in a typed local, after retrieval. }
+    Matches := CreateObject(TInterfaceList);
     Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    PCBServer.PreProcess;
     Try
-        Via := Iterator.FirstPCBObject;
-        While Via <> Nil Do
+        Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Prim := Iterator.FirstPCBObject;
+        While Prim <> Nil Do
         Begin
+            Via := Prim;
             NetName := '';
             Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
             Keep := True;
             If (NetFilter <> '') And (NetName <> NetFilter) Then Keep := False;
-            If Keep Then
-            Begin
-                Try
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Via.SolderMaskExpansionFromHoleEdge := True;
-                    Via.SolderMaskExpansion := MilsToCoord(ExpMils);
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Inc(Count);
-                Except
-                End;
+            If Keep Then Matches.Add(Prim);
+            Prim := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Prim := Matches.Items[I];
+            If Prim = Nil Then Continue;
+            Try
+                Via := Prim;
+                Via.BeginModify;
+                Via.SolderMaskExpansionFromHoleEdge := True;
+                Via.SolderMaskExpansion := MilsToCoord(ExpMils);
+                Via.EndModify;
+                Inc(Count);
+            Except
             End;
-            Via := Iterator.NextPCBObject;
         End;
     Finally
         PCBServer.PostProcess;
     End;
-    Board.BoardIterator_Destroy(Iterator);
+    { Do NOT Free the list: releasing board-primitive refs through the COM
+      marshaller faults in oleaut32, same as PCB_SetTrackWidth records. }
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"modified":' + IntToStr(Count) + ','
@@ -10853,6 +10964,7 @@ Var
     Desig, XStr, YStr, RotStr, LayerStr, BadLayers : String;
     PipePos, CommaPos, FieldIdx, Applied, Failed : Integer;
     TargetLayer : TLayer;
+    DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -10942,9 +11054,19 @@ Begin
         Try
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
-            If XStr <> '' Then Comp.x := MilsToCoord(StrToIntDef(XStr, 0));
-            If YStr <> '' Then Comp.y := MilsToCoord(StrToIntDef(YStr, 0));
+            { MOVED, NOT ASSIGNED: these components are already on the
+              board, so writing x leaves their pads behind in its own
+              structures and every later pour and DRC reads the old
+              footprint. See PCB_BatchMoveComponents. Rotation first, so
+              the move lands the origin where the file says whatever the
+              rotation did to it. }
             If RotStr <> '' Then Comp.Rotation := StrToFloatDef(RotStr, 0);
+            If XStr <> '' Then DeltaX := MilsToCoord(StrToIntDef(XStr, 0)) - Comp.x
+            Else DeltaX := 0;
+            If YStr <> '' Then DeltaY := MilsToCoord(StrToIntDef(YStr, 0)) - Comp.y
+            Else DeltaY := 0;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
             If TargetLayer <> eNoLayer Then
             Begin
                 If Comp.Layer <> TargetLayer Then Comp.Layer := TargetLayer;
@@ -12034,7 +12156,7 @@ Begin
                     NewT.Width := NewWidth;
                     NewT.x1 := FarAx; NewT.y1 := FarAy;
                     NewT.x2 := FarBx; NewT.y2 := FarBy;
-                    If NewNet <> Nil Then NewT.Net := NewNet;
+                    BindPrimitiveToNet(NewNet, NewT);
                     Board.AddPCBObject(NewT);
                     PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                         PCBM_BoardRegisteration, NewT.I_ObjectAddress);
@@ -12185,8 +12307,11 @@ Var
     NetStr, LayerStr : String;
     TargetNet : IPCB_Net;
     TargetLayer : TLayer;
-    ViaSize, ViaHole, Moved, ViasAdded : Integer;
+    ViaSize, ViaHole, Moved, ViasAdded, I : Integer;
+    Prim : IPCB_Primitive;
+    Movers : TInterfaceList;
 Begin
+    Movers := CreateObject(TInterfaceList);
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
@@ -12226,22 +12351,37 @@ Begin
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
             Iter.AddFilter_LayerSet(AllLayers);
             Iter.AddFilter_Method(eProcessAll);
-            Trk := Iter.FirstPCBObject;
-            While Trk <> Nil Do
+            { COLLECT FIRST. A layer change re-indexes the track in the
+              board's own structures, so making it mid-walk corrupts the
+              iterator the same way a width change does; PCB_SetTrackWidth
+              carries the note this follows. Held as the base primitive and
+              narrowed after retrieval, because a TInterfaceList item
+              assigned straight to a derived interface skips QueryInterface
+              and faults in oleaut32 on the first call through it. }
+            Prim := Iter.FirstPCBObject;
+            While Prim <> Nil Do
             Begin
+                Trk := Prim;
                 If (TrackNetNm(Trk) = NetStr) And (Trk.Layer <> TargetLayer) Then
-                Begin
-                    PCBServer.SendMessageToRobots(Trk.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Trk.Layer := TargetLayer;
-                    PCBServer.SendMessageToRobots(Trk.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Moved := Moved + 1;
-                End;
-                Trk := Iter.NextPCBObject;
+                    Movers.Add(Prim);
+                Prim := Iter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(Iter);
+        End;
+
+        For I := 0 To Movers.Count - 1 Do
+        Begin
+            Prim := Movers.Items[I];
+            If Prim = Nil Then Continue;
+            Try
+                Trk := Prim;
+                Trk.BeginModify;
+                Trk.Layer := TargetLayer;
+                Trk.EndModify;
+                Moved := Moved + 1;
+            Except
+            End;
         End;
 
         { via pass: same-net SMD pad off the target layer now needs a via }
@@ -12264,7 +12404,7 @@ Begin
                             Via.HoleSize := MilsToCoord(ViaHole);
                             Via.LowLayer := eTopLayer;
                             Via.HighLayer := eBottomLayer;
-                            Via.Net := TargetNet;
+                            BindPrimitiveToNet(TargetNet, Via);
                             Board.AddPCBObject(Via);
                             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                                 PCBM_BoardRegisteration, Via.I_ObjectAddress);

@@ -13,6 +13,86 @@
 { PCB Property Getter, late-bound, returns '' on unsupported properties     }
 {..............................................................................}
 
+{ WHERE A PCB PRIMITIVE KEEPS ITS POSITION, WHICH IS NOT ONE MEMBER.        }
+{                                                                            }
+{ Reading Obj.x off the declared IPCB_Primitive worked for the types that     }
+{ happen to publish it and raised "Undeclared identifier: x" for the rest.    }
+{ That is not a tool error: the script engine shows it as a modal before any  }
+{ Try/Except runs, so it stops the polling loop and the session has to be     }
+{ restarted by hand. Reported from a live board by an obj_query for X on an   }
+{ eTextObject.                                                                }
+{                                                                            }
+{ The mapping below uses only members this build already exercises elsewhere: }
+{ Pad.x / Via.x / Comp.x in PCB.pas, Text.XLocation in Generic.pas and        }
+{ Library.pas, Arc.XCenter and Fill.X1Location in PCB.pas.                    }
+{                                                                            }
+{ A track, a region and a polygon have no single position and are reported    }
+{ as unreadable rather than answered with one end of themselves. Same reason  }
+{ the schematic side gained SchObjectHasText: a type that lacks the member is }
+{ told so, and the caller gets a reply instead of a stalled loop.             }
+Function PCBPrimitivePos(Obj : IPCB_Primitive; WantY : Boolean;
+                         Var Found : Boolean) : Integer;
+Var
+    Oid   : Integer;
+    Pad   : IPCB_Pad;
+    Via   : IPCB_Via;
+    Comp  : IPCB_Component;
+    Txt   : IPCB_Text;
+    Arc   : IPCB_Arc;
+    Fill  : IPCB_Fill;
+    Body  : IPCB_ComponentBody;
+Begin
+    Result := 0;
+    Found := False;
+    Oid := Obj.ObjectId;
+    Try
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If WantY Then Result := Pad.y Else Result := Pad.x;
+            Found := True;
+        End
+        Else If Oid = eViaObject Then
+        Begin
+            Via := Obj;
+            If WantY Then Result := Via.y Else Result := Via.x;
+            Found := True;
+        End
+        Else If Oid = eComponentObject Then
+        Begin
+            Comp := Obj;
+            If WantY Then Result := Comp.y Else Result := Comp.x;
+            Found := True;
+        End
+        Else If Oid = eComponentBodyObject Then
+        Begin
+            Body := Obj;
+            If WantY Then Result := Body.y Else Result := Body.x;
+            Found := True;
+        End
+        Else If Oid = eTextObject Then
+        Begin
+            Txt := Obj;
+            If WantY Then Result := Txt.YLocation Else Result := Txt.XLocation;
+            Found := True;
+        End
+        Else If Oid = eArcObject Then
+        Begin
+            Arc := Obj;
+            If WantY Then Result := Arc.YCenter Else Result := Arc.XCenter;
+            Found := True;
+        End
+        Else If Oid = eFillObject Then
+        Begin
+            Fill := Obj;
+            If WantY Then Result := Fill.Y1Location Else Result := Fill.X1Location;
+            Found := True;
+        End;
+    Except
+        Found := False;
+    End;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -25,14 +105,28 @@ Var
     Poly  : IPCB_Polygon;
     Body  : IPCB_ComponentBody;
     Oid   : Integer;
+    PosVal : Integer;
+    PosFound : Boolean;
 Begin
     Result := '';
     Try
         Oid := Obj.ObjectId;
         { Base IPCB_Primitive members, valid to read on ANY primitive. }
         If PropName = 'ObjectId'        Then Result := IntToStr(Oid)
-        Else If PropName = 'X'          Then Result := IntToStr(CoordToMils(Obj.x))
-        Else If PropName = 'Y'          Then Result := IntToStr(CoordToMils(Obj.y))
+        Else If (PropName = 'X') Or (PropName = 'Y') Then
+        Begin
+            PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
+            If PosFound Then
+                Result := IntToStr(CoordToMils(PosVal))
+            Else
+            Begin
+                { A track has two ends and a region has an outline, so       }
+                { answering with either would be a coordinate the caller     }
+                { would then act on. Say it is not on this type instead.     }
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
         Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
         Else If PropName = 'Selected'   Then Result := BoolToJsonStr(Obj.Selected)
@@ -261,32 +355,47 @@ Var
     Rgn   : IPCB_Region;
     Oid   : Integer;
     Matched : Boolean;
+    PosVal : Integer;
+    PosFound : Boolean;
 Begin
     Result := 0;
     Matched := True;
     Try
         Oid := Obj.ObjectId;
         { Base members, settable on any primitive. }
-        { A COMPONENT BODY IS MOVED, NOT ASSIGNED.
-          Writing x or y on a body is not something this codebase has
-          done successfully, and the one time it tried, the PCB engine
-          went down with an access violation. MoveByXY is inherited from
-          IPCB_Primitive, PCB_ReplicateLayout already calls it, and
-          Lib_Link3DModel positions bodies with it, so it is the proven
-          route. The delta is taken from where the body actually is.
-
-          Checked before the generic branch because that branch is the
-          assignment being avoided. }
-        If ((PropName = 'X') Or (PropName = 'Y'))
-           And (Oid = eComponentBodyObject) Then
+        { EVERY PRIMITIVE IS MOVED, NOT ASSIGNED.
+          Writing x or y directly is not something this codebase has done
+          successfully, and the one time it tried on a component body the
+          PCB engine went down with an access violation. It was also
+          unreachable for half the types, since x is not declared on all
+          of them. MoveByXY is inherited from IPCB_Primitive,
+          PCB_ReplicateLayout already calls it, and Lib_Link3DModel
+          positions bodies with it, so it is the proven route, and taking
+          the delta from PCBPrimitivePos makes one path serve every type
+          that has a position at all. }
+        If (PropName = 'X') Or (PropName = 'Y') Then
         Begin
+            { Moved as a DELTA off wherever the primitive currently is, so   }
+            { one shared path covers a pad, a via, a text and an arc without }
+            { each needing its own writable member. A type with no single    }
+            { position is refused rather than moved by one corner.           }
+            PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
+            If Not PosFound Then
+            Begin
+                { Reported as unreadable and NOT as a failure or an unknown
+                  name: X is a real property spelled correctly, and the tail
+                  of this function turns 0 into "unknown" and -1 into
+                  "failed", either of which would send the caller looking
+                  for a spelling mistake that is not there. }
+                NotePropertyDiag('unreadable', PropName);
+                Result := 1;
+                Exit;
+            End;
             If PropName = 'X' Then
-                Obj.MoveByXY(MilsToCoord(StrToIntDef(Value, 0)) - Obj.x, 0)
+                Obj.MoveByXY(MilsToCoord(StrToIntDef(Value, 0)) - PosVal, 0)
             Else
-                Obj.MoveByXY(0, MilsToCoord(StrToIntDef(Value, 0)) - Obj.y);
+                Obj.MoveByXY(0, MilsToCoord(StrToIntDef(Value, 0)) - PosVal);
         End
-        Else If PropName = 'X'        Then Obj.x := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Y'        Then Obj.y := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'Layer'    Then SetPrimitiveLayerByName(Obj, Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
         { Subtype members: narrow to a typed local via ObjectId first. }
