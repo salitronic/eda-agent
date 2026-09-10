@@ -2279,53 +2279,6 @@ Begin
     Result := True;
 End;
 
-{ Does this set-string rewrite a component's DESIGNATOR?                      }
-{                                                                             }
-{ A batch that renames designators is the one write with no safe partial      }
-{ result. Reported from a live project: a 25-op batch died part way, ~10 ops   }
-{ had applied, the partial rename reached disk, File > Revert All did not      }
-{ undo it, and because two parts were both left as 'D?' the netlister MERGED   }
-{ their separate nets. Two indicator circuits were silently shorted, found     }
-{ only by diffing the compiled netlist.                                        }
-{                                                                             }
-{ DelphiScript has no transaction rollback, so 'roll the batch back' is not    }
-{ on offer and promising it would be a lie. Refusing the write is, and         }
-{ proj_annotate is the path that renumbers a whole project atomically.         }
-{ The SINGULAR modify still accepts it: renaming one component is one write    }
-{ that either happens or does not.                                             }
-Function SetWritesDesignator(SetStr : String) : Boolean;
-Var
-    Remaining, Assignment, PropName : String;
-    PipePos, EqPos : Integer;
-Begin
-    Result := False;
-    Remaining := SetStr;
-    While Remaining <> '' Do
-    Begin
-        PipePos := Pos('|', Remaining);
-        If PipePos > 0 Then
-        Begin
-            Assignment := Copy(Remaining, 1, PipePos - 1);
-            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
-        End
-        Else
-        Begin
-            Assignment := Remaining;
-            Remaining := '';
-        End;
-        EqPos := Pos('=', Assignment);
-        If EqPos > 0 Then
-        Begin
-            PropName := UpperCase(Trim(Copy(Assignment, 1, EqPos - 1)));
-            If (PropName = 'DESIGNATOR') Or (PropName = 'DESIGNATOR.TEXT') Then
-            Begin
-                Result := True;
-                Exit;
-            End;
-        End;
-    End;
-End;
-
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
     Operations, OpStr, Remaining, OpResult, Note : String;
@@ -2407,9 +2360,7 @@ Begin
         If Note = '' Then
         Begin
             If ObjTypeStr = '' Then Note := 'missing_object_type'
-            Else If SetStr = '' Then Note := 'missing_set'
-            Else If SetWritesDesignator(SetStr) Then
-                Note := 'designator_refused_use_proj_annotate';
+            Else If SetStr = '' Then Note := 'missing_set';
         End;
 
         If Note = '' Then
