@@ -236,6 +236,13 @@ INTERACTION_OVERRIDES = {
     # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
+    # Refuses on this Altium build: the via soldermask write raises an
+    # access violation inside ScriptingSystem.DLL, so the handler
+    # answers NOT_SCRIPTABLE and touches nothing. The pcb_set_ prefix
+    # defaults to "silent" (mutates), which tells a caller filtering for
+    # safe operations the opposite of the truth. If a build is ever
+    # found where the write works, this goes back to SILENT with it.
+    "pcb_set_via_soldermask_relief": READONLY,
 }
 
 # --- explicit maturity overrides -------------------------------------------

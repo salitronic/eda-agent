@@ -677,12 +677,10 @@ which is why they are written down rather than left to the checker.
 3. **One of these DRC can enforce and one it cannot.** Altium has a
    Vias Under SMD rule, and switching it on is worth more than care
    while placing, because it checks the whole board every time.
-   `pcb_create_design_rule` cannot create that kind yet (it makes
-   clearance, width, via_size and differential_pairs), so set it in
-   Design > Rules > Routing, which the `app_*` dialog tools can drive.
-   For right angles there is no rule at all: the nearest check fires
-   below 90 degrees, so a board full of right-angle corners passes DRC
-   silently. Look at it, or read back what you placed.
+   `pcb_create_design_rule(rule_type="vias_under_smd", allowed=False)`
+   creates it. For right angles there is no rule at all: the nearest
+   check fires below 90 degrees, so a board full of right-angle corners
+   passes DRC silently. Look at it, or read back what you placed.
 """
 
 

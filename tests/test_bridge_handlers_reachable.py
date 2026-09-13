@@ -73,6 +73,14 @@ KNOWN_UNREACHABLE = {
     "fillet_corners",
     "measure_distance",
     "place_compile_mask",
+    # Deliberately unreachable from Python: the handler refuses, and
+    # pcb_set_via_soldermask_relief refuses locally rather than send to
+    # it. Reaching it means putting the command on the wire, and a
+    # session running a deployed script older than 2026.09.10.3 still
+    # has the write that takes the scripting engine down. The handler
+    # stays as the second layer, for tool_invoke and raw commands.
+    # See tests/test_via_soldermask_relief_is_refused.py.
+    "set_via_soldermask_relief",
 }
 
 #: The modules do NOT all dispatch the same way, and matching only one

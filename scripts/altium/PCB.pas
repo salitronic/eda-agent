@@ -5433,8 +5433,10 @@ End;
 
 {..............................................................................}
 { PCB_CreateDesignRule - Create a new design rule                             }
-{ Params: rule_type (clearance/width/via_size), name, value (mils),          }
-{         scope (query expression for Scope1)                                }
+{ Params: rule_type (clearance / width / via_size / differential_pairs /     }
+{         solder_mask_expansion / paste_mask_expansion / vias_under_smd),    }
+{         name, value (mils, signed for the mask kinds), allowed (bool,      }
+{         vias_under_smd only), scope (query expression for Scope1)          }
 {..............................................................................}
 
 Function PCB_CreateDesignRule(Params : String; RequestId : String) : String;
@@ -5445,10 +5447,13 @@ Var
     RuleWidth : IPCB_MaxMinWidthConstraint;
     RuleHole : IPCB_MaxMinHoleSizeConstraint;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
+    RuleSMask : IPCB_SolderMaskExpansionRule;
+    RulePMask : IPCB_PasteMaskExpansionRule;
+    RuleVUS : IPCB_ViasUnderSMDConstraint;
     RuleTypeStr, RuleName, ValueStr, MaxValueStr, FavoredValueStr : String;
-    ScopeStr, NetScopeStr, MaxUncoupStr : String;
+    ScopeStr, NetScopeStr, MaxUncoupStr, AllowedStr : String;
     RuleValue, MaxValue, FavoredValue, MaxUncoupVal, NetScopeVal : Integer;
-    HasMaxValue : Boolean;
+    HasMaxValue, AllowedVal : Boolean;
     L : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5466,6 +5471,7 @@ Begin
     MaxUncoupStr := ExtractJsonValue(Params, 'max_uncoupled_length');
     ScopeStr := ExtractJsonValue(Params, 'scope');
     NetScopeStr := LowerCase(ExtractJsonValue(Params, 'net_scope'));
+    AllowedStr := ExtractJsonValue(Params, 'allowed');
 
     If RuleName = '' Then
     Begin
@@ -5498,6 +5504,13 @@ Begin
     MaxValue := StrToIntDef(MaxValueStr, RuleValue * 5);
     FavoredValue := StrToIntDef(FavoredValueStr, RuleValue);
     MaxUncoupVal := StrToIntDef(MaxUncoupStr, 1000);
+
+    { vias_under_smd is a yes/no rule, not a measurement. Absent means      }
+    { True, matching Altium's own default: the rule exists to FORBID, so a  }
+    { caller who omits the flag has created one that changes nothing rather }
+    { than one that silently bans vias under every SMD pad on the board.    }
+    If AllowedStr = '' Then AllowedVal := True
+    Else AllowedVal := StrToBool(AllowedStr);
 
     { Constraint values are NOT properties of the base IPCB_Rule interface,    }
     { they live on the per-kind subtypes (IPCB_ClearanceConstraint,            }
@@ -5575,11 +5588,51 @@ Begin
                 RuleDiff.Scope1Expression := ScopeStr;
             Rule := RuleDiff;
         End
+        Else If RuleTypeStr = 'solder_mask_expansion' Then
+        Begin
+            { The mask opening at each pad and via site, expanded or        }
+            { contracted radially by this amount. A NEGATIVE value shrinks  }
+            { the opening, which is how a via gets covered, so the value is }
+            { passed through signed rather than clamped at zero.            }
+            { Scope1Expression is what selects vias only: IsVia.            }
+            RuleSMask := PCBServer.PCBRuleFactory(eRule_SolderMaskExpansion);
+            RuleSMask.Name := RuleName;
+            RuleSMask.Expansion := MilsToCoord(RuleValue);
+            If ScopeStr <> '' Then
+                RuleSMask.Scope1Expression := ScopeStr;
+            Rule := RuleSMask;
+        End
+        Else If RuleTypeStr = 'paste_mask_expansion' Then
+        Begin
+            { Same shape, stencil side. NofittedNoPaste.pas in the          }
+            { reference corpus creates one exactly this way, which is why   }
+            { this kind is the least speculative of the three added here.   }
+            RulePMask := PCBServer.PCBRuleFactory(eRule_PasteMaskExpansion);
+            RulePMask.Name := RuleName;
+            RulePMask.Expansion := MilsToCoord(RuleValue);
+            If ScopeStr <> '' Then
+                RulePMask.Scope1Expression := ScopeStr;
+            Rule := RulePMask;
+        End
+        Else If RuleTypeStr = 'vias_under_smd' Then
+        Begin
+            { A boolean rule: value is ignored and "allowed" decides. This  }
+            { is the DRC that catches via-in-pad, which a fabricator has to }
+            { fill and cap and which the router here avoids by default.     }
+            RuleVUS := PCBServer.PCBRuleFactory(eRule_ViasUnderSMD);
+            RuleVUS.Name := RuleName;
+            RuleVUS.Allowed := AllowedVal;
+            If ScopeStr <> '' Then
+                RuleVUS.Scope1Expression := ScopeStr;
+            Rule := RuleVUS;
+        End
         Else
         Begin
             PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
-                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, via_size, or differential_pairs');
+                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
+                + 'via_size, differential_pairs, solder_mask_expansion, '
+                + 'paste_mask_expansion, or vias_under_smd');
             Exit;
         End;
 
@@ -5593,11 +5646,20 @@ Begin
 
     MarkDocDirtyByPath(Board.FileName);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"created":true,'
-        + '"name":"' + EscapeJsonString(RuleName) + '",'
-        + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
-        + '"value_mils":' + IntToStr(RuleValue) + '}');
+    { vias_under_smd carries no measurement, so reporting value_mils for it }
+    { would be reporting a number the rule does not hold.                   }
+    If RuleTypeStr = 'vias_under_smd' Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"allowed":' + BoolToJsonStr(AllowedVal) + '}')
+    Else
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"value_mils":' + IntToStr(RuleValue) + '}');
 End;
 
 {..............................................................................}
@@ -10327,97 +10389,34 @@ End;
 {..............................................................................}
 
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Via : IPCB_Via;
-    NetFilter, NetName, ExpStr : String;
-    ExpMils, Count : Integer;
-    Keep : Boolean;
-    Prim : IPCB_Primitive;
-    Matches : TInterfaceList;
-    I : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
+    { THIS WRITE TAKES THE SCRIPTING ENGINE DOWN, MEASURED TWICE.
+      Setting SolderMaskExpansion / SolderMaskExpansionFromHoleEdge on an
+      IPCB_Via raises "Access violation in ScriptingSystem.DLL, read of
+      address 0x38" on AD 26.10.1.6. The fault is in the write itself: it
+      was measured once through Via.BeginModify and once through
+      SendMessageToRobots, on a scratch board holding three vias and
+      nothing else, and it is identical both ways. It is not catchable
+      either, because the engine shows a modal before any Except runs, so
+      the polling loop stops and the session needs a manual restart.
 
-    NetFilter := ExtractJsonValue(Params, 'net');
-    ExpStr := ExtractJsonValue(Params, 'expansion_mils');
-    ExpMils := StrToIntDef(ExpStr, 4);
-    Count := 0;
+      The handler therefore does not attempt it. Refusing is not the
+      preferred answer anywhere in this bridge and is right here only
+      because the operation cannot complete: every caller who tried it
+      lost their session and changed nothing on the board.
 
-    { COLLECT FIRST, THEN MODIFY, and hold the walk as the BASE primitive.
-      Writing SolderMaskExpansion while the BoardIterator was still walking
-      took the whole scripting engine down with an access violation on a
-      live board, and because the fault landed between PreProcess and
-      PostProcess it left an open transaction in the PCB server behind it.
-      PCB_SetTrackWidth carries the same two notes for the same reasons: a
-      mutation during iteration corrupts the iterator, and assigning a
-      collected item straight to a derived interface skips QueryInterface
-      and faults in oleaut32 on the first vtable call. Narrow to Via only
-      in a typed local, after retrieval. }
-    Matches := CreateObject(TInterfaceList);
-    Iterator := Board.BoardIterator_Create;
-    Try
-        Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
-        Iterator.AddFilter_Method(eProcessAll);
-        Prim := Iterator.FirstPCBObject;
-        While Prim <> Nil Do
-        Begin
-            Via := Prim;
-            NetName := '';
-            Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-            Keep := True;
-            If (NetFilter <> '') And (NetName <> NetFilter) Then Keep := False;
-            If Keep Then Matches.Add(Prim);
-            Prim := Iterator.NextPCBObject;
-        End;
-    Finally
-        Board.BoardIterator_Destroy(Iterator);
-    End;
-
-    PCBServer.PreProcess;
-    Try
-        For I := 0 To Matches.Count - 1 Do
-        Begin
-            Prim := Matches.Items[I];
-            If Prim = Nil Then Continue;
-            Try
-                Via := Prim;
-                Via.BeginModify;
-                Via.SolderMaskExpansionFromHoleEdge := True;
-                Via.SolderMaskExpansion := MilsToCoord(ExpMils);
-                Via.EndModify;
-                Inc(Count);
-            Except
-            End;
-        End;
-    Finally
-        PCBServer.PostProcess;
-    End;
-    { Do NOT Free the list: releasing board-primitive refs through the COM
-      marshaller faults in oleaut32, same as PCB_SetTrackWidth records. }
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"modified":' + IntToStr(Count) + ','
-        + '"expansion_mils":' + IntToStr(ExpMils) + '}');
+      Altium's own route for tenting is a Solder Mask Expansion rule
+      scoped IsVia, which covers every via at once and survives a
+      repour. PCB_CreateDesignRule builds that kind, so the pointer is
+      to a tool rather than to a dialog. }
+    Result := BuildErrorResponse(RequestId, 'NOT_SCRIPTABLE',
+        'Writing a via soldermask expansion crashes the Altium scripting '
+        + 'engine on this build (access violation in ScriptingSystem.DLL), '
+        + 'which stops the polling loop and needs a manual restart, so this '
+        + 'handler does not attempt it. Tent vias with a Solder Mask '
+        + 'Expansion rule instead: pcb_create_design_rule with '
+        + 'rule_type=solder_mask_expansion and scope=IsVia.');
 End;
-
-{..............................................................................}
-{ PCB_SetMechLayerKind - Assign the kind of one mechanical layer.             }
-{ Params: layer, kind (a name such as 'Courtyard Top', or its number)         }
-{                                                                              }
-{ A kind belongs to ONE layer at a time. Assigning a kind that another layer  }
-{ already holds leaves two layers claiming the same purpose, so the previous  }
-{ holder is cleared first and reported, rather than leaving the board in a    }
-{ state the stack manager did not intend.                                      }
-{..............................................................................}
-
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;

@@ -591,9 +591,20 @@ def register_pcb_tools(mcp):
     async def pcb_get_design_rules() -> dict[str, Any]:
         """Get all design rules from the active PCB.
 
+        Reports every rule kind, including ones this toolset cannot
+        create, because it iterates rule objects rather than switching
+        on a kind.
+
+        ``rule_kind`` IS AN ALTIUM ENUM ORDINAL, NOT A NAME. It is the
+        raw integer, so it is only meaningful against the build that
+        produced it and is not worth comparing across versions. Read
+        ``descriptor`` instead: Altium composes it for display, so it
+        names the kind and carries the constraint values.
+
         Returns:
-            Dictionary with "rules" array (each with name, rule_kind, enabled,
-            priority, scope_1, scope_2, comment, descriptor) and "count"
+            Dictionary with "rules" array (each with name, rule_kind,
+            enabled, priority, scope_1, scope_2, comment, descriptor)
+            and "count".
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_design_rules", {})
@@ -4315,6 +4326,7 @@ def register_pcb_tools(mcp):
         max_uncoupled_length: Optional[int] = None,
         scope: str = "",
         net_scope: str = "different_nets",
+        allowed: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Create a new design rule on the active PCB.
 
@@ -4330,6 +4342,17 @@ def register_pcb_tools(mcp):
                     (value = min gap, max_value = max gap,
                     favored_value = preferred gap, max_uncoupled_length =
                     max uncoupled length in mils).
+                ``"solder_mask_expansion"`` - The mask opening at each pad
+                    and via site (value = radial expansion in mils,
+                    SIGNED). A negative value contracts the opening,
+                    which is how a via ends up covered. Scope it with
+                    ``"IsVia"`` to tent vias and leave pads alone.
+                ``"paste_mask_expansion"`` - Same shape, stencil side
+                    (value = radial expansion in mils, signed).
+                ``"vias_under_smd"`` - Whether the autorouter may put a
+                    via inside an SMD pad. Boolean: set ``allowed``, not
+                    ``value``. This is the DRC that catches via-in-pad,
+                    which needs filling and capping at fabrication.
             value: Rule's primary value in mils. For width / via_size /
                 differential_pairs this is the MIN side. Default 10.
             max_value: For width / via_size / differential_pairs. When
@@ -4354,7 +4377,13 @@ def register_pcb_tools(mcp):
             net_scope: Which nets the rule applies between. Options:
                 ``"different_nets"`` (default) for Clearance rules;
                 ``"any_net"`` for all-pairs; ``"same_net"`` for same-net
-                only. Has no effect on differential_pairs.
+                only. Has no effect on differential_pairs, and none on
+                the mask or vias_under_smd kinds, which are not
+                net-pair rules.
+            allowed: For vias_under_smd only. False forbids a via inside
+                an SMD pad. Omitted means True, which is Altium's own
+                default and creates a rule that changes nothing, rather
+                than one that silently bans via-in-pad board-wide.
 
         Returns:
             Dictionary with created rule details.
@@ -4382,6 +4411,8 @@ def register_pcb_tools(mcp):
             params["max_uncoupled_length"] = str(max_uncoupled_length)
         if scope:
             params["scope"] = scope
+        if allowed is not None:
+            params["allowed"] = "true" if allowed else "false"
         result = await bridge.send_command_async("pcb.create_design_rule", params)
         return result
 
@@ -4582,28 +4613,55 @@ def register_pcb_tools(mcp):
         expansion_mils: int = 4,
         net: str = "",
     ) -> dict[str, Any]:
-        """Open soldermask over via barrels (barrel relief).
+        """REFUSED on this Altium build: the write crashes the engine.
 
-        Sets each via's soldermask expansion-from-hole-edge so the via
-        barrel gets a soldermask opening, optionally limited to one net.
-        This is a common fab requirement that design rules don't expose
-        directly per-via.
+        Setting a via's soldermask expansion from script raises an access
+        violation inside ScriptingSystem.DLL on AD 26.10.1.6, measured
+        twice on a scratch board with three vias and nothing else, once
+        through BeginModify and once through SendMessageToRobots. The
+        engine shows a modal before any handler guard can run, so the
+        polling loop stops and the session needs a manual restart. The
+        handler refuses rather than attempt it: every caller who tried
+        lost their session and changed nothing on the board.
+
+        TENT VIAS WITH A RULE INSTEAD. Altium's own route is a Solder
+        Mask Expansion rule, which covers every via at once and survives
+        a repour, where a per-via write would not. Create it with
+        ``pcb_create_design_rule(rule_type="solder_mask_expansion",
+        scope="IsVia", value=<negative mils>)``. A negative expansion
+        contracts the mask opening; the rule is also editable by hand in
+        Design > Rules > Mask.
+
+        REFUSED HERE, NOT AT THE BRIDGE, on purpose. The handler refuses
+        too, but reaching it means sending the command, and a session
+        running a deployed script older than 2026.09.10.3 still has the
+        write in it. Sending would take down exactly the session this
+        exists to protect. Nothing is sent.
 
         Args:
-            expansion_mils: Soldermask expansion from the hole edge, in
-                mils (default 4).
-            net: Only vias on this net (optional; default all vias).
+            expansion_mils: accepted and unused.
+            net: accepted and unused.
 
         Returns:
-            Dict with success, modified (count), expansion_mils.
+            An error dict with `NOT_SCRIPTABLE` and the rule route.
         """
-        bridge = get_bridge()
-        params: dict[str, Any] = {"expansion_mils": str(expansion_mils)}
-        if net:
-            params["net"] = net
-        return await bridge.send_command_async(
-            "pcb.set_via_soldermask_relief", params
-        )
+        return {
+            "success": False,
+            "error": "NOT_SCRIPTABLE",
+            "reason": (
+                "Writing a via soldermask expansion crashes the Altium "
+                "scripting engine on this build (access violation in "
+                "ScriptingSystem.DLL), which stops the polling loop and "
+                "needs a manual restart, so nothing was sent."
+            ),
+            "instead": (
+                "Tent vias with a Solder Mask Expansion rule scoped IsVia, "
+                "in Design > Rules > Mask. pcb_create_design_rule cannot "
+                "author that rule kind; app_run_menu opens the dialog and "
+                "app_drive_dialogs fills it in."
+            ),
+            "requested": {"expansion_mils": expansion_mils, "net": net},
+        }
 
     @mcp.tool()
     async def pcb_get_mech_layer_names(

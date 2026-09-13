@@ -10,8 +10,12 @@ a live board it took the scripting engine down with an access violation.
 Because the fault landed between PreProcess and PostProcess it also left
 an open transaction in the PCB server, so the next edit misbehaved too.
 
+Rewriting that handler to collect first was not enough: the write faults
+on AD 26.10.1.6 however it is spelled, so it refuses instead, and what
+is guarded here is that it stays refused.
+
 A note in one handler does not stop the next one being written the same
-way, which is what this checks.
+way, which is what the rest of this checks.
 """
 from __future__ import annotations
 
@@ -117,31 +121,104 @@ def test_no_primitive_is_written_inside_a_board_walk(source: str):
         "violation: " + "; ".join(offenders))
 
 
-def test_the_via_relief_collects_before_it_modifies(source: str):
-    """The handler that hit it, specifically."""
-    body = source.split("Function PCB_SetViaSoldermaskRelief", 1)[1].split(
-        chr(10) + "End;", 1)[0]
-    assert "TInterfaceList" in body, "it walks and writes in one pass again"
-    collect = body.split("PCBServer.PreProcess", 1)[0]
-    assert "Matches.Add" in collect
-    assert "SolderMaskExpansion :=" not in collect
+#: The handlers that walk the board and then write to what they found.
+#: PCB_SetTrackWidth is where the pattern was worked out; the other one
+#: had the defect and nobody had reported it.
+_COLLECTORS = ("PCB_SetTrackWidth", "PCB_MoveTracksToLayer")
 
 
-def test_the_collected_item_is_narrowed_after_retrieval(source: str):
+def _body(source: str, name: str) -> str:
+    assert f"Function {name}" in source, f"{name} is gone from PCB.pas"
+    return source.split(f"Function {name}", 1)[1].split(chr(10) + "End;", 1)[0]
+
+
+def _list_name(body: str) -> str:
+    m = re.search(r"(\w+)\s*:=\s*CreateObject\(TInterfaceList\)", body)
+    assert m, "no TInterfaceList here, so it walks and writes in one pass"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("name", _COLLECTORS)
+def test_a_collecting_handler_fills_its_list_before_it_reads_it_back(
+        source: str, name: str):
+    """Collect during the walk, modify after it.
+
+    Not "before PreProcess": one of these two opens the transaction
+    before the walk and the other after, and both are correct. What has
+    to hold is the order of the two list operations.
+    """
+    body = _body(source, name)
+    listname = _list_name(body)
+    added = body.find(f"{listname}.Add(")
+    read_back = body.find(f"{listname}.Items[")
+    assert added >= 0, f"{name} never adds to {listname}"
+    assert read_back >= 0, f"{name} never reads {listname} back"
+
+    # Against the end of the walk that FILLS the list, not against the
+    # Add itself and not against the last walk in the function. Ordering
+    # the two list calls is not enough: a read-back on the line after the
+    # Add is still inside the loop, which is the shape of the original
+    # defect. And PCB_MoveTracksToLayer runs a second, unrelated walk
+    # after the writes, so the last iterator in the function is the
+    # wrong landmark too.
+    walk_ends = body.find("NextPCBObject", added)
+    assert walk_ends >= 0, (
+        f"{name} adds to {listname} outside any iterator walk; this guard "
+        f"has lost track of what it is measuring")
+    assert read_back > walk_ends, (
+        f"{name} reads {listname} back while the BoardIterator that filled "
+        f"it is still walking; the whole point of the list is to defer the "
+        f"writes until after it finishes")
+
+
+@pytest.mark.parametrize("name", _COLLECTORS)
+def test_the_collected_item_is_narrowed_after_retrieval(source: str, name: str):
     """A TInterfaceList holds untyped IInterface.
 
     Assigning an item straight to a derived local skips QueryInterface and
     leaves a mistyped pointer, and the fault surfaces as a read of
-    FFFFFFFF inside oleaut32 rather than anywhere near this code.
+    FFFFFFFF inside oleaut32 rather than anywhere near this code. So the
+    local it lands in has to be the base IPCB_Primitive.
     """
-    body = source.split("Function PCB_SetViaSoldermaskRelief", 1)[1].split(
-        chr(10) + "End;", 1)[0]
-    assert "Prim := Matches.Items[I];" in body
-    assert "Via := Matches.Items" not in body
+    body = _body(source, name)
+    listname = _list_name(body)
+    targets = re.findall(r"(\w+)\s*:=\s*%s\.Items\[" % re.escape(listname),
+                         body)
+    assert targets, f"{name} never retrieves from {listname}"
+
+    decls = body.split("Begin", 1)[0]
+    for target in set(targets):
+        line = next((ln for ln in decls.splitlines()
+                     if re.search(r"\b%s\b\s*[,:]" % re.escape(target), ln)),
+                    "")
+        assert "IPCB_Primitive" in line, (
+            f"{name} assigns {listname}.Items straight to {target}, declared "
+            f"as {line.strip() or 'nothing found'}; a derived interface here "
+            f"skips QueryInterface and faults in oleaut32")
 
 
-def test_the_list_of_primitives_is_not_freed(source: str):
+@pytest.mark.parametrize("name", _COLLECTORS)
+def test_the_list_of_primitives_is_not_freed(source: str, name: str):
     """Releasing board-primitive refs through the COM marshaller faults."""
-    body = source.split("Function PCB_SetViaSoldermaskRelief", 1)[1].split(
-        chr(10) + "End;", 1)[0]
-    assert "Matches.Free" not in body
+    body = _body(source, name)
+    assert f"{_list_name(body)}.Free" not in body
+
+
+def test_the_via_relief_does_not_walk_the_board_at_all(source: str):
+    """The handler that hit this refuses now, so it cannot hit it again.
+
+    Setting a via's soldermask expansion faults inside
+    ScriptingSystem.DLL on AD 26.10.1.6 however it is written, so the
+    collect-then-modify rewrite was not enough and the handler answers
+    NOT_SCRIPTABLE without touching the board. Guarded here rather than
+    only where the refusal lives, because restoring the write is exactly
+    the change that would bring the original crash back.
+    """
+    body = _body(source, "PCB_SetViaSoldermaskRelief")
+    assert "NOT_SCRIPTABLE" in body, (
+        "PCB_SetViaSoldermaskRelief no longer refuses; if the write is "
+        "back it needs the collect-then-modify guards above and a live "
+        "re-measurement on the Altium build that faulted")
+    assert "BoardIterator_Create" not in body
+    assert "PCBServer.PreProcess" not in body
+    assert "SolderMaskExpansion" not in body
