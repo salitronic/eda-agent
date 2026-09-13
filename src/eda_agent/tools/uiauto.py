@@ -63,6 +63,11 @@ def _altium_pid():
             f"can do")}
 
     status = get_bridge().get_altium_status()
+    # Before the not-running check, because an ambiguous status also has
+    # no pid, and "Altium is not running" would be false.
+    if status.get("ambiguous"):
+        return None, {"ok": False, "reason": status.get("reason"),
+                      "candidate_pids": status.get("candidate_pids", [])}
     if not status.get("running") or not status.get("pid"):
         return None, {"ok": False, "reason": "Altium is not running"}
     return int(status["pid"]), None

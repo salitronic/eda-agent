@@ -50,7 +50,9 @@ class TestAltiumBridge:
 
     def test_get_altium_status_not_running(self, bridge):
         """Test get_altium_status when Altium is not running."""
-        with patch.object(bridge.process_manager, 'get_altium_info', return_value=None):
+        from eda_agent.bridge.process_manager import AltiumSelection
+        with patch.object(bridge.process_manager, 'select_altium_process',
+                          return_value=AltiumSelection(None, [], "none")):
             status = bridge.get_altium_status()
             assert status['running'] is False
             assert status['pid'] is None

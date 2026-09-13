@@ -354,19 +354,44 @@ class AltiumBridge:
         return self.process_manager.is_altium_running()
 
     def get_altium_status(self) -> dict:
-        process = self.process_manager.get_altium_info()
-        if process:
+        """Which Altium is running, and whether that is certain.
+
+        ``pid`` is None with ``ambiguous`` set when more than one Altium
+        is running and none can be identified as the one running
+        StartMCPServer; ``reason`` explains and ``candidate_pids`` names
+        them all. Picking one silently used to send every UI tool to a
+        windowless orphan while bridge calls reached the real instance.
+        """
+        selection = self.process_manager.select_altium_process()
+        common = {
+            "candidate_count": len(selection.candidates),
+            "candidate_pids": [c.pid for c in selection.candidates],
+            "selected_by": selection.selected_by,
+        }
+        if selection.process:
             return {
                 "running": True,
-                "pid": process.pid,
-                "exe_path": process.exe_path,
+                "pid": selection.process.pid,
+                "exe_path": selection.process.exe_path,
                 "attached": self._attached,
+                **common,
+            }
+        if selection.candidates:
+            return {
+                "running": True,
+                "pid": None,
+                "exe_path": None,
+                "attached": self._attached,
+                "ambiguous": True,
+                "reason": selection.reason,
+                **common,
             }
         return {
             "running": False,
             "pid": None,
             "exe_path": None,
             "attached": False,
+            **common,
         }
 
     def attach(self) -> bool:

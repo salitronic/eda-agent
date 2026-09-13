@@ -225,6 +225,13 @@ def register_application_tools(mcp):
         - Executable path
         - Whether the MCP bridge is attached
 
+        MORE THAN ONE ALTIUM. ``candidate_count`` and ``candidate_pids``
+        list every instance, and ``selected_by`` says how ``pid`` was
+        chosen: the instance owning the bridge's status window, or the
+        only one with a visible window. When neither decides it, ``pid``
+        is None, ``ambiguous`` is True and ``reason`` explains, and every
+        UI tool refuses rather than read the wrong process's dialogs.
+
         Returns:
             Dictionary with status information
         """
