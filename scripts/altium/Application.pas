@@ -58,7 +58,7 @@ Var
     Project : IProject;
     Doc : IDocument;
     I, J : Integer;
-    Data, DocInfo, FileName, FullPath, Kind, LoadedStr : String;
+    Data, DocInfo, FileName, FullPath, Kind, LoadedStr, ModifiedStr : String;
     FirstItem, IsLoaded : Boolean;
 Begin
     Workspace := GetWorkspace;
@@ -100,10 +100,18 @@ Begin
                         Except IsLoaded := False; End;
                         If IsLoaded Then LoadedStr := 'true' Else LoadedStr := 'false';
 
+                        // Unsaved state. app_context filters this list on
+                        // "modified" to warn about pending edits, so a missing
+                        // key made that warning unreachable and every session
+                        // read as clean.
+                        If DocIsModified(FullPath) Then ModifiedStr := 'true'
+                        Else ModifiedStr := 'false';
+
                         DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
                         DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FullPath) + '"';
                         DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Kind) + '"';
-                        DocInfo := DocInfo + ',"loaded":' + LoadedStr + '}';
+                        DocInfo := DocInfo + ',"loaded":' + LoadedStr;
+                        DocInfo := DocInfo + ',"modified":' + ModifiedStr + '}';
                         Data := Data + DocInfo;
                     End;
                 End;
@@ -129,10 +137,11 @@ Begin
         Doc := Workspace.DM_FocusedDocument;
         If Doc <> Nil Then
         Begin
-            FileName := Doc.DM_FileName;
+            FileName := DocFullPath(Doc);
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
+            Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
 
@@ -150,7 +159,8 @@ Begin
             FileName := SchDoc.DocumentName;
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"SCH"}';
+            Data := Data + ',"document_kind":"SCH"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
     If Data = '' Then
@@ -162,7 +172,8 @@ Begin
             FileName := Board.FileName;
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"PCB"}';
+            Data := Data + ',"document_kind":"PCB"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
 

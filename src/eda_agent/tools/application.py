@@ -808,6 +808,10 @@ def register_application_tools(mcp):
             - loaded: True if the doc is resident in the editor server.
               False means it's a project member on disk whose editor
               state hasn't been opened yet.
+            - modified: True if the editor holds unsaved edits. A false
+              is a floor rather than a clean bill, since the flag does
+              not always propagate from ProcessControl. app_save_all
+              measures file timestamps instead of trusting it.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_open_documents")
@@ -837,7 +841,9 @@ def register_application_tools(mcp):
             - file_name: Document file name
             - file_path: Full file path
             - document_kind: Type of document (SchDoc, PcbDoc, etc.)
-            - modified: Whether the document has unsaved changes
+            - modified: True if the editor holds unsaved edits. A false
+              is a floor rather than a clean bill, since the flag does
+              not always propagate from ProcessControl.
             Returns empty dict if no document is active.
         """
         bridge = get_bridge()

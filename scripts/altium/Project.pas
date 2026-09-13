@@ -284,7 +284,7 @@ Begin
                 If Not First Then Data := Data + ',';
                 First := False;
                 DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(Doc.DM_FileName)) + '"';
-                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(Doc.DM_FileName) + '"';
+                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(DocFullPath(Doc)) + '"';
                 DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
                 Data := Data + DocInfo;
             End;

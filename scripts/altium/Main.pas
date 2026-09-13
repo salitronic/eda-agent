@@ -391,6 +391,33 @@ Begin
 End;
 
 {..............................................................................}
+{ Read that same flag back. The counterpart to MarkDocDirtyByPath, and the     }
+{ one definition of "unsaved" for every handler that reports it.               }
+{                                                                              }
+{ A path with no resident IServerDocument reports False: a document that is    }
+{ not open in the editor holds no unsaved edits. Treat a True as reliable and  }
+{ a False as a floor, not a clean bill. App_SaveAll records that Modified does }
+{ not always propagate from ProcessControl, which is why that handler measures }
+{ file timestamps instead of trusting this.                                    }
+{..............................................................................}
+
+Function DocIsModified(FilePath : String) : Boolean;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If FilePath = '' Then Exit;
+    ServerDoc := Nil;
+    Try
+        ServerDoc := Client.GetDocumentByPath(FilePath);
+        If ServerDoc <> Nil Then
+            If ServerDoc.Modified Then Result := True;
+    Except
+        Result := False;
+    End;
+End;
+
+{..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
 {..............................................................................}
 
@@ -759,6 +786,33 @@ Begin
     Try
         Result := MatchDocPathInProject(Workspace.DM_FreeDocumentsProject, Wanted);
     Except End;
+End;
+
+{ DocFullPath - the absolute path of a document, never its bare name.         }
+{                                                                             }
+{ DM_FileName is the file NAME. MEASURED on AD 26.10.1.6: a project member    }
+{ came back as "CloseSheet.SchDoc", and two handlers passed that on as        }
+{ file_path. A caller got a path that was not one, and a modified lookup on   }
+{ it could never resolve. DM_FullPath first, the name only as a last resort,  }
+{ and a bare result resolved against the open projects.                       }
+Function DocFullPath(Doc : IDocument) : String;
+Var
+    P, Resolved : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    P := '';
+    Try P := Doc.DM_FullPath; Except P := ''; End;
+    If P = '' Then
+    Begin
+        Try P := Doc.DM_FileName; Except P := ''; End;
+    End;
+    If (P <> '') And (Not LooksAbsolutePath(P)) Then
+    Begin
+        Resolved := ResolveLoadedDocPath(P);
+        If Resolved <> '' Then P := Resolved;
+    End;
+    Result := P;
 End;
 
 {..............................................................................}
