@@ -120,7 +120,7 @@ _SIMULATOR_TOOLS = frozenset({
     "pcb_get_components", "pcb_get_nets", "pcb_get_unrouted_nets",
     "pcb_get_vias", "pcb_move_components", "pcb_place_components",
     "pcb_place_tracks", "pcb_place_via", "pcb_run_drc",
-    "proj_add_document", "proj_annotate", "proj_close", "proj_compile",
+    "proj_add_document", "proj_annotate", "proj_compile",
     "proj_create", "proj_cross_probe", "proj_export_bom_html",
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
