@@ -32,6 +32,7 @@ the pointer nor need the window in front.
 """
 from __future__ import annotations
 
+from collections import deque
 from typing import Any, Optional
 
 try:                                            # pragma: no cover - platform
@@ -119,11 +120,24 @@ def _describe(element) -> dict:
 
 
 def describe_window(hwnd: int, depth: int = 4, limit: int = 400) -> dict:
-    """Every element under a window, flattened.
+    """Every element under a window, flattened, shallowest first.
 
     The WPF answer to controls.describe_all. Where that walks child
     WINDOW handles and finds none in a WPF dialog, this walks the UIA
     tree, where the same buttons are ordinary elements.
+
+    BREADTH-FIRST, because the element budget is spent in walk order.
+    Depth-first let the first deep subtree take all of it: on an
+    Engineering Change Order with 47 rows the grid came first in tree
+    order, filled the 400-element limit, and the dialog's buttons were
+    never reached. The caller saw one button of five and nothing said
+    four were missing. Walking level by level reads everything near the
+    root before anything deep.
+
+    ``truncated`` is True when the limit cut the walk short, meaning at
+    least one more element was found and left out. A tree that ends at
+    exactly ``limit`` elements is not truncated. ``depth`` is the
+    caller's choice, so stopping there is not reported as truncation.
     """
     root = _element(hwnd)
     if root is None:
@@ -132,27 +146,36 @@ def describe_window(hwnd: int, depth: int = 4, limit: int = 400) -> dict:
             "available on this host, so the window is likely gone")}
 
     out: list[dict] = []
-
-    def walk(node, level: int) -> None:
-        if level > depth or len(out) >= limit:
-            return
+    truncated = False
+    queue = deque([(root, 0)])
+    while queue and not truncated:
+        node, level = queue.popleft()
         for child in _children(node):
             info = _describe(child)
             if info["name"] or info["type"]:
+                if len(out) >= limit:
+                    truncated = True
+                    break
                 info["depth"] = level
                 out.append(info)
-            if len(out) >= limit:
-                return
-            walk(child, level + 1)
+            if level + 1 <= depth:
+                queue.append((child, level + 1))
 
-    walk(root, 0)
-    return {"ok": True, "hwnd": hwnd, "count": len(out),
-            "elements": out,
-            "root": _describe(root)}
+    reply = {"ok": True, "hwnd": hwnd, "count": len(out),
+             "truncated": truncated, "limit": limit,
+             "elements": out,
+             "root": _describe(root)}
+    if truncated:
+        reply["note"] = (
+            f"stopped at the {limit}-element limit with more of the tree "
+            f"unread. Elements are listed shallowest first, so what is "
+            f"missing is the deepest part of the tree. Pass a larger "
+            f"limit to read it")
+    return reply
 
 
 def text_of(hwnd: int) -> list:
-    """Every readable string under a window, in tree order.
+    """Every readable string under a window, shallowest first.
 
     Tried BEFORE ocr.read_window_text. When UIA can see the text this is
     exact, where OCR is a hint that confuses 0 with O. When it cannot,
