@@ -646,9 +646,12 @@ def register_uiauto_tools(mcp):
                     "reason": (
                         f"{button.text!r} was the only button on "
                         f"{target.title!r} and the dialog is still open, so "
-                        f"the press did not take. Altium can reach a state "
-                        f"where the window pumps messages but acts on none "
-                        f"of them, and no synthetic press will clear it."),
+                        f"the press did not take. It was sent as a posted "
+                        f"message, and some Altium prompts have been "
+                        f"reported to ignore one while still answering "
+                        f"other input. app_invoke_element presses the same "
+                        f"caption through UI Automation instead, and is the "
+                        f"next thing to try."),
                 }
             return {"ok": True, "dialog": target.title,
                     "pressed": button.text, "role": role,
