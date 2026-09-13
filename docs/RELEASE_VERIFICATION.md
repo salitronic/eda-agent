@@ -1,4 +1,4 @@
-# Release verification: 2026.09.10.1
+# Release verification: 2026.09.13.3
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -108,6 +108,74 @@ identifier does, so they are safe to run in any order and safe to run
 last. The cost of getting one wrong is a wrong answer, not a dead
 bridge.
 
+### Carried into 2026.09.13.3: five fixes whose symptom was silence
+
+These came out of one live session and a bug report, and they share a
+shape: the tool reported success, the board or sheet did not agree, and
+nothing anywhere said so. A guard test covers each one against the
+source, which is not the same as having watched it work.
+
+| Fixed | What it did before | How you would know it is fixed |
+|---|---|---|
+| Component movers use `MoveByXY` | Assigning `Comp.x` moved the record and left every pad where it was, so the pour kept clearing the old footprint and the DRC kept measuring it | Move a placed component with `pcb_move_components`, then `pcb_repour_polygons`. The copper must clear the NEW position and nothing at the old one |
+| Placed copper joins its net | `Prim.Net := N` sets a reference, but the net keeps its own collection and connectivity, the ratsnest and the pour all walk that one. Copper had a net, reported that net, and was invisible to everything downstream | `pcb_place_via` on a named net, then `pcb_get_unrouted_nets`. The via must count as connected, and a pour on that net must give it thermal relief |
+| Schematic writes mark the document | A write that does not set the modified flag is invisible to `SmartCompile`, which checks `ProjectHasDirtyDocs` and skips. Symptom: ERC and the netlist keep reporting the state before your edit until the sheet is reopened | Place something with `sch_place_no_erc`, then `app_context`. The sheet must appear in `unsaved`, and `proj_run_erc` must see the edit without a reopen |
+| Position reads resolve per type | `GetPCBProperty` read `Obj.x` off the declared `IPCB_Primitive`. A type that does not publish it raised "Undeclared identifier: x", which the engine shows as a modal before any `Try/Except` runs, stopping the polling loop | `obj_query` a text object's position, then an arc's. Both must answer, and a track must come back `unreadable` rather than with one of its ends |
+| `app_context` can see unsaved work | It filtered the open-document list on a `modified` key the handler never emitted, so the list was always empty and every session opened reporting itself clean | Edit any sheet without saving, then `app_context`. `unsaved` must name it |
+
+`pcb_set_via_soldermask_relief` refuses on this build rather than being
+fixed. The write raises an access violation inside
+`ScriptingSystem.DLL` on AD 26.10.1.6, measured twice on a scratch
+board with three vias and nothing else, once through `BeginModify` and
+once through `SendMessageToRobots`. Because the fault lands between
+`PreProcess` and `PostProcess` it also leaves an open transaction
+behind it.
+
+The refusal is in the PYTHON tool, and that is the half to check.
+Reaching the handler means putting the command on the wire, and any
+session running a deployed script from before the refusal landed still has the
+crashing write in it. Confirm the tool answers `NOT_SCRIPTABLE`
+instantly and that `bridge_trace.log` shows no request for it.
+
+### Three new design-rule kinds, and these DO carry identifier risk
+
+Unlike everything else in this release, these write Altium symbols this
+codebase has never used. Run them before anything else in a session you
+mind losing, because an undeclared identifier here stops the polling
+loop rather than returning an error.
+
+| `rule_type` | Symbols | Evidence they exist | How to check |
+|---|---|---|---|
+| `paste_mask_expansion` | `eRule_PasteMaskExpansion`, `IPCB_PasteMaskExpansionRule.Expansion` | `NofittedNoPaste.pas` in the reference corpus creates one exactly this way | Create one, then read it back with `pcb_get_design_rules` and look at `descriptor`, not `rule_kind`, which is a raw enum ordinal |
+| `solder_mask_expansion` | `eRule_SolderMaskExpansion`, `IPCB_SolderMaskExpansionRule.Expansion` | enum used by three reference scripts; interface and property in the SDK reference. The FACTORY call is unproven | Create with `scope="IsVia"` and a negative value, then look at the mask layer over a via |
+| `vias_under_smd` | `eRule_ViasUnderSMD`, `IPCB_ViasUnderSMDConstraint.Allowed` | same: enum used by three reference scripts, interface and property documented, factory call unproven | Create with `allowed=false`, place a via inside an SMD pad, run DRC |
+
+`paste_mask_expansion` is the one to run first. It is the only one of
+the three whose factory call is demonstrated by working published code,
+so if it fails the problem is this handler rather than the symbol, and
+if it succeeds the other two are down to their own enum values.
+
+These close the gap the via-relief refusal used to point at: tenting is
+a Solder Mask Expansion rule scoped `IsVia`, and via-in-pad is caught
+by Vias Under SMD. Both were previously "set it in the dialog".
+
+### Close without saving, and OutJob runs that wrote nothing
+
+Two handler changes. Neither adds an identifier this codebase has not
+already called, so the risk is behavioural rather than a halted loop.
+Run both on a scratch project, never a client one: the first one is
+built to throw edits away.
+
+| Changed | What is unmeasured | How to check |
+|---|---|---|
+| `Proj_Close` with `save=false` clears each loaded member's modified flag before closing, without reading it | MEASURED on this build, local scratch project: the tab showed the sheet modified, the close raised no prompt, `attempts` was 1, and the file on disk was byte-identical afterwards. On the previous build the clear was gated on a read that returned False, and the close prompted. A managed project is untested | On a managed project, edit a sheet without saving, then `proj_close(project_path=..., save=False)`. Record whether a prompt appears |
+| If a prompt appears anyway, `proj_close` answers it: Save None, then OK once the title reads "Confirm Not Saving" | The sequence was MEASURED on the previous build with `app_invoke_element`. The tool running it has not run live, because on this build the prompt did not appear | Only reachable where the step above still prompts. The reply then carries `prompts_answered` |
+| It presses nothing when the prompt lists a document outside the project | Unmeasured | Do not arrange it on a project with real work open |
+| `App_GetActiveDocument` and `Proj_GetDocuments` put a path in `file_path` | MEASURED: the previous build reported the bare file name from both, and this build reports absolute paths from both | Done |
+| A close without saving that stays open is retried once | MEASURED on the previous build, and misread at first: `attempts: 2` on an unmodified scratch project was not the retry doing its job. The first close had closed a different project, the focused one | See the next row |
+| `Proj_Close` focuses the named project before closing, refuses when it cannot, and stops without retrying when anything else closes | MEASURED on the previous build: `CloseObject` given a project's full path closed the FOCUSED project instead, and nothing reported it. This build's guard is unmeasured | Open two scratch projects, each with a loaded sheet. Focus a sheet of the first, then `proj_close` the second: only the second may close, and `closed_instead` must be empty. Then `proj_close` a project with no loaded document: it must refuse and close nothing |
+| `Proj_RunOutJob` replies `process_issued`, and the Python tools decide `success` from the output folder | Nothing Altium-side | Run a container with its outputs switched off: `proj_run_outjob` must return `success: false` with a `reason`. Run one that writes: `files_written` must be above zero |
+
 ---
 
 ## Gather these before you start
@@ -139,7 +207,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.09.10.1`, `version_match` =
+Expect `altium_script_version` = `2026.09.13.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.5.0`.
 
 Those are two different versions and they fail differently.

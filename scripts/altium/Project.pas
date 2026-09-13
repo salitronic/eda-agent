@@ -154,6 +154,234 @@ Begin
         + 'focused project."}');
 End;
 
+{..............................................................................}
+{ Unsaved edits of ONE project, for a close that does not save.               }
+{                                                                             }
+{ A close issued while a member is still modified raises Altium's save        }
+{ prompt. RunProcess is synchronous, so the prompt blocks inside the handler, }
+{ the handler blocks the polling loop, and the loop is the only thing that    }
+{ could have answered it: every later call waits until a human clicks.        }
+{ Clearing the modified flag first leaves the close nothing to ask about,     }
+{ and closing a document that reads as clean drops its in-memory edits,       }
+{ which is exactly what save=false asks for.                                  }
+{                                                                             }
+{ SCOPED TO THE PROJECT: the same members SaveProjectMembers writes, and the  }
+{ project file. Never the workspace, which is how a close once reached a      }
+{ client project nobody had named.                                            }
+{..............................................................................}
+
+{ MEASURED 2026-09-13 on AD 26.10.1.6: after a ProcessControl edit the tab    }
+{ showed the sheet as modified while IServerDocument.Modified read False, and }
+{ CloseObject raised its save prompt anyway. A clear gated on that read       }
+{ cleared nothing, so the flag is cleared on every loaded member without      }
+{ reading it. Whether clearing it stops the prompt is still unmeasured, and   }
+{ proj_close answers the prompt from Python when it appears, which is what    }
+{ keeps the bridge from wedging.                                              }
+Function ClearDocModifiedByPath(Path : String) : Boolean;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If Path = '' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    Try ServerDoc.SetModified(False); Except End;
+    Result := True;
+End;
+
+Function DiscardProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If ClearDocModifiedByPath(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If ClearDocModifiedByPath(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+{ What is STILL modified after a discard. DocIsModified reads a flag that    }
+{ App_SaveAll records does not always propagate, so the discard is checked   }
+{ rather than trusted: one document left dirty is enough to raise the prompt. }
+Function DirtyProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If (Path <> '') And DocIsModified(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If (Path <> '') And DocIsModified(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+Function PipePathsToJsonArray(PathList : String) : String;
+Var
+    Remaining, Path : String;
+    P : Integer;
+Begin
+    Result := '[';
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Result <> '[' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Path) + '"';
+    End;
+    Result := Result + ']';
+End;
+
+{..............................................................................}
+{ WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
+{                                                                             }
+{ MEASURED 2026-09-13 on AD 26.10.1.6: proj_close named a scratch project     }
+{ with no loaded document while Blinker555_v4's board was focused. The first  }
+{ CloseObject, given the scratch project's full path, closed Blinker555_v4,   }
+{ and the retry closed the scratch project. Every earlier close that worked   }
+{ had a sheet of the named project focused, so the two could not be told      }
+{ apart. The reference scripts never close a project by name: they focus it,  }
+{ check DM_FocusedProject, and close the focused one.                         }
+{                                                                             }
+{ It also explains a report from a managed project: a save prompt listing 49  }
+{ documents for a 10-document project, then a second call that listed 4 and   }
+{ closed. The first close was aimed at a different project.                   }
+{..............................................................................}
+
+Function OpenProjectPaths(Workspace : IWorkspace) : String;
+Var
+    I : Integer;
+    Proj : IProject;
+    P : String;
+Begin
+    Result := '';
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Workspace.DM_Projects(I);
+        If Proj = Nil Then Continue;
+        P := '';
+        Try P := Proj.DM_ProjectFullPath; Except P := ''; End;
+        If P = '' Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + P;
+    End;
+End;
+
+{ Focus follows the active DOCUMENT, so the project is focused by showing one  }
+{ of its documents. Only LOADED ones: opening a member here would load it as a }
+{ free document, the way App_SetActiveDocument records, and focus nothing.     }
+Function FocusProjectForClose(Project : IProject) : Boolean;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Path, Target : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Target := '';
+    Try Target := Project.DM_ProjectFullPath; Except Target := ''; End;
+    If Target = '' Then Exit;
+    If FocusedProjectPathIs(Target) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        If FocusedProjectPathIs(Target) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{ Paths in BeforeList that are gone from AfterList, other than TargetPath.   }
+Function PathsGoneOtherThan(BeforeList, AfterList, TargetPath : String) : String;
+Var
+    Remaining, P, UpAfter : String;
+    K : Integer;
+Begin
+    Result := '';
+    UpAfter := '|' + UpperCase(AfterList) + '|';
+    Remaining := BeforeList;
+    While Remaining <> '' Do
+    Begin
+        K := Pos('|', Remaining);
+        If K > 0 Then
+        Begin
+            P := Copy(Remaining, 1, K - 1);
+            Remaining := Copy(Remaining, K + 1, Length(Remaining) - K);
+        End
+        Else
+        Begin
+            P := Remaining;
+            Remaining := '';
+        End;
+        If (P <> '') And (UpperCase(P) <> UpperCase(TargetPath))
+            And (Pos('|' + UpperCase(P) + '|', UpAfter) = 0) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + P;
+        End;
+    End;
+End;
+
 Function Proj_Save(Params : String; RequestId : String) : String;
 Var
     ProjectPath : String;
@@ -204,13 +432,16 @@ End;
 { looking the project up again.                                               }
 Function Proj_Close(Params : String; RequestId : String) : String;
 Var
-    ProjectPath : String;
+    ProjectPath, Discarded, StillDirty, More : String;
+    ClosedInstead, BeforeClose, Why : String;
     SaveFirst, Closed : Boolean;
+    Attempts : Integer;
     Workspace : IWorkspace;
     Project : IProject;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     SaveFirst := ExtractJsonValue(Params, 'save') <> 'false';
+    Discarded := '';
 
     Workspace := GetWorkspace;
     If Workspace <> Nil Then
@@ -223,28 +454,118 @@ Begin
         If Project <> Nil Then
         Begin
             ProjectPath := Project.DM_ProjectFullPath;
-            If SaveFirst Then
-                SaveProjectMembers(Project);
 
-            ResetParameters;
-            AddStringParameter('ObjectKind', 'Project');
-            AddStringParameter('FileName', ProjectPath);
-            RunProcess('WorkspaceManager:CloseObject');
-
-            { Confirm. A cancelled save prompt aborts the close, and the      }
-            { process layer cannot report that.                               }
-            Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
-            If Closed Then
-                Result := BuildSuccessResponse(RequestId,
-                    '{"success":true,"closed":true,"project_path":"'
-                    + EscapeJsonString(ProjectPath) + '"}')
-            Else
+            { BEFORE ANY SAVE OR DISCARD, so a close that has to be refused  }
+            { leaves the project exactly as it found it.                     }
+            If Not FocusProjectForClose(Project) Then
+            Begin
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":false,"closed":false,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
-                    + ',"reason":"the project is still open after the close '
-                    + 'was issued, which is what happens when a save prompt '
-                    + 'is cancelled or a document refuses to close"}');
+                    + ',"discarded":[],"attempts":0,"closed_instead":[]'
+                    + ',"reason":"Altium closes the FOCUSED project, and this '
+                    + 'one could not be made focused because none of its '
+                    + 'documents is loaded. Nothing was closed or changed. '
+                    + 'Load a sheet with proj_load_sheets, or activate one of '
+                    + 'its documents, and close again."}');
+                Exit;
+            End;
+
+            If SaveFirst Then
+                SaveProjectMembers(Project)
+            Else
+            Begin
+                { DISCARD BEFORE CLOSING, then check the discard took. A close }
+                { issued with anything still modified raises a save prompt     }
+                { that blocks this loop until a human answers it, so refusing  }
+                { here is the only way the caller hears anything at all.       }
+                Discarded := DiscardProjectMembers(Project);
+                StillDirty := DirtyProjectMembers(Project);
+                If StillDirty <> '' Then
+                Begin
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":false,"closed":false,"project_path":"'
+                        + EscapeJsonString(ProjectPath) + '"'
+                        + ',"still_modified":' + PipePathsToJsonArray(StillDirty)
+                        + ',"reason":"save=false could not clear the modified '
+                        + 'flag on these documents, so closing would raise a '
+                        + 'save prompt, and that prompt blocks the bridge until '
+                        + 'someone answers it in Altium. Nothing was closed. '
+                        + 'Pass save=true to write them first, or close the '
+                        + 'project in Altium."}');
+                    Exit;
+                End;
+            End;
+
+            { Confirm by looking the project up again. A cancelled save      }
+            { prompt aborts the close, and the process layer cannot say so.  }
+            { A close without saving is retried ONCE: reported on a managed  }
+            { project, the first close was abandoned after its prompt was    }
+            { answered and a second completed. Not retried when saving,      }
+            { where the likely cause is a prompt cancelled on purpose.       }
+            Attempts := 0;
+            Closed := False;
+            ClosedInstead := '';
+            While (Not Closed) And (Attempts < 2) Do
+            Begin
+                { CloseObject closes the FOCUSED project, whatever FileName  }
+                { says, so focus the named one before EVERY attempt: focus   }
+                { can move between one attempt and the next.                  }
+                Project := FindProjectByPath(Workspace, ProjectPath);
+                If Not FocusProjectForClose(Project) Then Break;
+                BeforeClose := OpenProjectPaths(Workspace);
+                Attempts := Attempts + 1;
+                ResetParameters;
+                AddStringParameter('ObjectKind', 'Project');
+                AddStringParameter('FileName', ProjectPath);
+                RunProcess('WorkspaceManager:CloseObject');
+                Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
+                ClosedInstead := PathsGoneOtherThan(BeforeClose,
+                    OpenProjectPaths(Workspace), ProjectPath);
+                { Never retry after something else closed. The retry is what }
+                { turned one wrong close into two.                            }
+                If ClosedInstead <> '' Then Break;
+                If SaveFirst Then Break;
+                If Not Closed Then
+                Begin
+                    Project := FindProjectByPath(Workspace, ProjectPath);
+                    More := DiscardProjectMembers(Project);
+                    If More <> '' Then
+                    Begin
+                        If Discarded <> '' Then Discarded := Discarded + '|';
+                        Discarded := Discarded + More;
+                    End;
+                End;
+            End;
+
+            If Closed And (ClosedInstead = '') Then
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":true,"closed":true,"project_path":"'
+                    + EscapeJsonString(ProjectPath) + '"'
+                    + ',"saved":' + BoolToJsonStr(SaveFirst)
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":[]}')
+            Else
+            Begin
+                If ClosedInstead <> '' Then
+                    Why := 'closing this project also closed a project nobody '
+                        + 'named, listed under closed_instead. Altium closes '
+                        + 'the focused project; this stopped there and did not '
+                        + 'retry. Reopen those with proj_open.'
+                Else
+                    Why := 'the project is still open after the close was '
+                        + 'issued, which is what happens when a save prompt is '
+                        + 'cancelled, a document refuses to close, or focus '
+                        + 'could not be moved back to it for a second attempt';
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":false,"closed":' + BoolToJsonStr(Closed)
+                    + ',"project_path":"' + EscapeJsonString(ProjectPath) + '"'
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":' + PipePathsToJsonArray(ClosedInstead)
+                    + ',"reason":"' + Why + '"}');
+            End;
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');

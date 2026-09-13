@@ -228,6 +228,14 @@ def window_pid(hwnd):
         return None
 
 
+def window_title(hwnd) -> str:
+    """A window's caption, or '' when it cannot be read or is gone."""
+    try:
+        return str(win32gui.GetWindowText(int(hwnd)) or "")
+    except Exception:                            # noqa: BLE001
+        return ""
+
+
 def owns_foreground(hwnd) -> bool:
     """Whether hwnd's APPLICATION is the active one.
 

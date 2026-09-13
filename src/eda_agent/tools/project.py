@@ -85,21 +85,265 @@ def register_project_tools(mcp):
     async def proj_close(
         project_path: Optional[str] = None, save: bool = True
     ) -> dict[str, Any]:
-        """Close a project.
+        """Close a project, saving its documents or discarding their edits.
+
+        ``save=True`` (default) writes this project's modified documents,
+        then closes it. ``save=False`` closes it without saving.
+
+        WITHOUT SAVING, TWO LAYERS KEEP THE BRIDGE FROM WEDGING. A close
+        with a modified member raises Altium's save prompt inside the
+        polling loop, where the bridge cannot answer it. MEASURED on AD
+        26.10.1.6: after an edit IServerDocument.Modified reads False while
+        the tab shows the sheet modified, so nothing gated on that read
+        works.
+
+        First, the handler clears the modified flag on every loaded member
+        without reading it. MEASURED on a local scratch project: the close
+        then raised no prompt and the file on disk was byte-identical.
+
+        Second, if a prompt appears anyway, this answers it through UI
+        Automation: "Save None", then "OK" once the dialog has retitled to
+        "Confirm Not Saving", which is what shows the decisions changed.
+        Pressing OK before that would save. The sequence was measured by
+        hand; this tool running it has not run live.
+
+        ALTIUM CLOSES THE FOCUSED PROJECT. MEASURED: a close naming a
+        project with no loaded document, while another project's board was
+        focused, closed that other project first. So the handler makes the
+        named project focused by showing one of its loaded documents, and
+        refuses, changing nothing, when it cannot. Every attempt compares
+        the open projects before and after: if anything else closed, it
+        stops without retrying and returns those paths as
+        ``closed_instead``, with ``success`` false.
+
+        IT ANSWERS ONLY FOR THIS PROJECT. It records the project's member
+        paths before closing and reads every path the prompt lists. If any
+        listed document is outside the project it presses nothing and
+        returns them, because answering would discard work in a project
+        nobody named. It also presses nothing when membership cannot be
+        established: no ``project_path``, or a deployed script that
+        reports member file names rather than paths.
+
+        A document shared with another open project is a member of both,
+        so its unsaved edits are discarded here too. ``save=True`` prompts
+        are never answered for you.
+
+        IF A PROMPT IS LEFT OPEN, answer it with ``app_invoke_element``
+        (``Save None``, then ``OK``) or ``app_press_dialog_button``. Both
+        work while the bridge is blocked, because they go through Win32
+        rather than through the loop.
 
         Args:
-            project_path: Optional path to specific project. If None, closes active project.
-            save: Whether to save before closing
+            project_path: project to close. Omit for the focused project;
+                ``save=False`` then leaves any prompt for a human.
+            save: write modified documents first (True), or discard their
+                unsaved edits (False).
 
         Returns:
-            Dictionary confirming close operation
+            ``success`` and ``closed``, checked by looking the project up
+            again, and ``project_path``. When a prompt was answered,
+            ``prompts_answered`` and ``discarded``, the paths it listed.
+            When one was left, ``prompt`` and ``reason``: the bridge stays
+            blocked until it is answered. Without a prompt, ``discarded``
+            lists the loaded members closed without saving and
+            ``attempts`` how many closes it took. The modified flag cannot
+            be read reliably, so a path in ``discarded`` is not proof that
+            document had edits.
         """
+        import asyncio as _asyncio
+
         bridge = get_bridge()
         params = {"save": save}
         if project_path:
             params["project_path"] = project_path
-        result = await bridge.send_command_async("project.close", params)
-        return result
+        members = None
+        if not save and project_path:
+            members = await _close_members(bridge, project_path)
+        try:
+            result = await bridge.send_command_async("project.close", params)
+        except Exception as exc:                    # noqa: BLE001
+            prompt = _close_prompt_in(exc)
+            if prompt is None or save:
+                raise
+            left = {"success": False, "closed": False,
+                    "project_path": project_path, "prompt": prompt["title"],
+                    "prompts_answered": 0, "discarded": []}
+            if members is None:
+                left["reason"] = (
+                    "Altium is asking whether to save, and this does not know "
+                    "which documents belong to the project: either no "
+                    "project_path was given, or the deployed script reports "
+                    "member file names rather than paths. Nothing was pressed, "
+                    "and the bridge is blocked until the prompt is answered")
+                return left
+
+            loop = _asyncio.get_running_loop()
+            answered, discarded, refusal = await loop.run_in_executor(
+                None, _answer_close_prompts, bridge, members, prompt)
+
+            closed = False
+            if refusal is None:
+                try:
+                    listing = await bridge.send_command_async(
+                        "project.get_open_projects", {})
+                    open_paths = {
+                        str(p.get("project_path", "")).upper()
+                        for p in (listing or {}).get("projects", [])}
+                    closed = str(project_path).upper() not in open_paths
+                except Exception:                   # noqa: BLE001
+                    closed = False
+            out = {"success": closed, "closed": closed,
+                   "project_path": project_path, "saved": False,
+                   "prompts_answered": answered,
+                   "discarded": sorted(set(discarded))}
+            if refusal is not None:
+                out["prompt"] = prompt["title"]
+                out["reason"] = refusal
+            elif not closed:
+                out["reason"] = (
+                    "the save prompt was answered and the project is still "
+                    "open. Reported on a managed project, where calling "
+                    "proj_close again closed it")
+            return out
+        else:
+            return _dedupe_discarded(result)
+
+    # Helpers for proj_close.
+
+    def _dedupe_discarded(reply):
+        """One entry per path in ``discarded``, first occurrence kept.
+
+        MEASURED: a two-attempt close listed the project file twice,
+        because the handler clears again on the second attempt and appends
+        what it cleared.
+        """
+        if isinstance(reply, dict) and isinstance(reply.get("discarded"), list):
+            seen: set = set()
+            unique = []
+            for path in reply["discarded"]:
+                key = str(path).upper()
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(path)
+            reply = {**reply, "discarded": unique}
+        return reply
+
+    # The helpers here are defined after proj_close in this scope, which is
+    # fine: the tool looks them up when it is CALLED, after registration
+    # finishes.
+
+    #: Titles of Altium's close-time save prompt, before and after "Save
+    #: None" is pressed. MEASURED 2026-09-13 on AD 26.10.1.6.
+    _CLOSE_PROMPT_TITLES = ("Confirm Save", "Confirm Not Saving")
+
+    def _is_absolute(path: str) -> bool:
+        return len(path) > 2 and (path[1] == ":" or path.startswith("\\\\"))
+
+    async def _close_members(bridge, project_path):
+        """Upper-cased absolute paths a close of this project may discard.
+
+        Its members and the project file. None when membership cannot be
+        established, which disables answering any prompt: a file NAME
+        cannot tell two projects' documents apart.
+        """
+        try:
+            docs = await bridge.send_command_async(
+                "project.get_documents", {"project_path": project_path})
+        except Exception:                           # noqa: BLE001
+            return None
+        if isinstance(docs, dict):
+            docs = docs.get("documents", [])
+        if not isinstance(docs, list):
+            return None
+        paths = {str(project_path).upper()}
+        for doc in docs:
+            path = str(doc.get("file_path", "")) if isinstance(doc, dict) else ""
+            if not _is_absolute(path):
+                return None
+            paths.add(path.upper())
+        return paths
+
+    def _close_prompt_in(exc):
+        """The close-time save prompt a blocked-bridge error names, or None."""
+        report = (getattr(exc, "details", None) or {}).get("dialogs") or {}
+        if not isinstance(report, dict):
+            return None
+        for dialog in report.get("dialogs", []):
+            title = str(dialog.get("title", ""))
+            if title.startswith(_CLOSE_PROMPT_TITLES):
+                return {"title": title, "hwnd": dialog.get("hwnd")}
+        return None
+
+    def _answer_close_prompts(bridge, members, prompt, budget=30.0):
+        """Answer the save prompt: Save None, then OK. Runs in a thread.
+
+        Returns (answered, discarded, refusal). Presses nothing unless
+        every document the prompt lists is in ``members``. Loops because
+        a close retried by the handler can raise a second prompt.
+        """
+        import time as _time
+        from ..ui import uia, windows
+
+        if not (windows.available() and uia.available()):
+            return 0, [], ("UI Automation is not available here, so the "
+                           "prompt was left open")
+        if not windows.automation_enabled():
+            return 0, [], (f"UI automation is disabled by "
+                           f"{windows.UI_AUTOMATION_ENV}, so the prompt was "
+                           f"left open")
+        status = bridge.get_altium_status()
+        pid = status.get("pid")
+        if not pid:
+            return 0, [], (status.get("reason") or "no Altium process to "
+                           "answer the prompt in, so it was left open")
+
+        answered, discarded = 0, []
+        hwnd = prompt.get("hwnd")
+        deadline = _time.monotonic() + budget
+        while hwnd and _time.monotonic() < deadline:
+            read = uia.describe_window(hwnd, depth=6, limit=400)
+            listed = sorted({e.get("name", "") for e in read.get("elements", [])
+                             if _is_absolute(e.get("name", ""))})
+            if not listed:
+                return answered, discarded, (
+                    "could not read which documents the prompt would discard, "
+                    "so nothing was pressed")
+            foreign = [p for p in listed if p.upper() not in members]
+            if foreign:
+                return answered, discarded, (
+                    "the prompt would also discard documents outside this "
+                    "project, so nothing was pressed: " + "; ".join(foreign))
+            if not uia.invoke(hwnd, "Save None").get("ok"):
+                return answered, discarded, (
+                    "Save None could not be pressed, so OK was not pressed "
+                    "either")
+            # OK with the decisions still on Save would SAVE. The retitle
+            # is the only visible sign the decisions changed.
+            if not windows.wait_until(
+                    lambda: windows.window_title(hwnd).startswith(
+                        "Confirm Not Saving"), 5.0):
+                return answered, discarded, (
+                    "Save None did not change the decisions within 5 s, so OK "
+                    "was not pressed: pressed now it would save")
+            if not uia.invoke(hwnd, "OK").get("ok"):
+                return answered, discarded, "OK could not be pressed"
+            windows.wait_for_close(hwnd, timeout=10.0)
+            answered += 1
+            discarded.extend(listed)
+
+            found = {"hwnd": None}
+
+            def another() -> bool:
+                for dialog in windows.dialogs(pid):
+                    if (dialog.hwnd != hwnd and (dialog.title or "")
+                            .startswith(_CLOSE_PROMPT_TITLES)):
+                        found["hwnd"] = dialog.hwnd
+                        return True
+                return False
+
+            windows.wait_until(another, 3.0)
+            hwnd = found["hwnd"]
+        return answered, discarded, None
 
     @mcp.tool()
     async def proj_list_documents(
