@@ -979,6 +979,7 @@ def register_project_tools(mcp):
     async def proj_run_outjob(
         container_name: str,
         outjob_path: str = "",
+        fresh_window_seconds: float = 5.0,
     ) -> dict[str, Any]:
         """Execute a specific output container from an OutJob file.
 
@@ -986,22 +987,112 @@ def register_project_tools(mcp):
         containers, then run the desired one by name. Supports both GeneratedFiles
         (Gerber, drill, BOM, etc.) and Publish (PDF) container types.
 
+        SUCCESS MEANS A FILE WAS WRITTEN. Running a container proves only
+        that Altium was asked to. One bound to a managed release, or with
+        its outputs switched off, runs cleanly and writes nothing, and
+        this used to report ``success: true`` with an ``output_dir`` that
+        had never been created. ``output_dir`` is now checked afterwards,
+        and ``success`` is true only when a file under it was written or
+        changed after the run started.
+
+        That check covers ``output_dir`` and nothing else. A container
+        that writes somewhere else reads as ``success: false``, and
+        ``reason`` says what was examined, so a caller who knows where
+        the output really goes can look there.
+
         Args:
             container_name: Name of the output container to execute
             outjob_path: Path to the .OutJob file. If omitted, uses the
                          first OutJob found in the focused project.
+            fresh_window_seconds: files modified up to this many seconds
+                before the run started still count as written, for file
+                systems with coarse timestamps. Default 5s.
 
         Returns:
-            Dictionary with success status, container name and type
+            ``success``, ``container_name``, ``container_type``,
+            ``output_dir``, ``output_dir_exists``, ``files_written`` (a
+            count), ``written`` (up to 50 paths), and ``reason`` when
+            nothing was written.
         """
+        import time as _time
+
         bridge = get_bridge()
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
             params["outjob_path"] = outjob_path
+        started_at = _time.time()
         result = await bridge.send_command_async(
             "project.run_outjob", params, timeout=120.0
         )
-        return result
+        return _judge_outjob_run(result, started_at, fresh_window_seconds)
+
+    # Shared by the three OutJob tools, so they cannot disagree about what
+    # "produced" means. Defined after proj_run_outjob in this scope, which
+    # is fine: the tools look these up when they are CALLED, by which time
+    # registration has finished.
+    def _scan_output_dir(output_dir, started_at, fresh_window_seconds):
+        """(exists, files) for one container's output directory.
+
+        ``files`` is every file under it, each flagged ``newly_produced``
+        when its mtime is at or after the run start less the window.
+        """
+        from pathlib import Path
+
+        if not output_dir:
+            return False, []
+        root = Path(output_dir)
+        if not root.is_dir():
+            return False, []
+        cutoff = started_at - float(fresh_window_seconds)
+        files: list[dict[str, Any]] = []
+        for f in root.rglob("*"):
+            try:
+                if not f.is_file():
+                    continue
+                st = f.stat()
+            except OSError:
+                continue
+            files.append({"path": str(f), "size": st.st_size,
+                          "modified_at": st.st_mtime,
+                          "newly_produced": st.st_mtime >= cutoff})
+        return True, files
+
+    def _judge_outjob_run(run, started_at, fresh_window_seconds):
+        """A run reply with ``success`` decided by what was written.
+
+        The handler reports only that the process was issued. Anything
+        that is not a normal reply is passed through untouched.
+        """
+        if not isinstance(run, dict) or run.get("error"):
+            return run
+        out = dict(run)
+        out_dir = run.get("output_dir") or ""
+        exists, files = _scan_output_dir(out_dir, started_at,
+                                         fresh_window_seconds)
+        fresh = [f["path"] for f in files if f["newly_produced"]]
+        out["output_dir_exists"] = exists
+        out["files_written"] = len(fresh)
+        out["written"] = fresh[:50]
+        out["success"] = bool(fresh)
+        if not fresh:
+            if not out_dir:
+                out["reason"] = (
+                    "the container ran, but the OutJob gives it no output "
+                    "path, so there was no folder to check and no file is "
+                    "known to have been written")
+            elif not exists:
+                out["reason"] = (
+                    f"the container ran, but {out_dir} does not exist, so "
+                    f"nothing was written there. A container bound to a "
+                    f"managed release, or with its outputs switched off, "
+                    f"runs cleanly and writes no local file")
+            else:
+                out["reason"] = (
+                    f"the container ran, but no file under {out_dir} was "
+                    f"written or changed after it started. Outputs switched "
+                    f"off in the OutJob, or bound to a managed release, "
+                    f"produce this")
+        return out
 
     @mcp.tool()
     async def proj_run_outjob_all(
@@ -1064,34 +1155,33 @@ def register_project_tools(mcp):
             run = await bridge.send_command_async(
                 "project.run_outjob", params, timeout=300.0,
             )
+            judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
+            judged = judged if isinstance(judged, dict) else {}
+            out_dir = judged.get("output_dir")
+            exists, files = _scan_output_dir(out_dir, started_at,
+                                             fresh_window_seconds)
             entry: dict[str, Any] = {
                 "container": name,
-                "ok": bool(isinstance(run, dict) and run.get("success")),
-                "container_type": (run or {}).get("container_type"),
-                "output_dir": (run or {}).get("output_dir"),
-                "files": [],
+                # From what was written, not from the handler, which
+                # reports only that the process was issued.
+                "ok": bool(judged.get("success")),
+                "container_type": judged.get("container_type"),
+                "output_dir": out_dir,
+                "output_dir_exists": exists,
+                "files_written": judged.get("files_written", 0),
+                "files": files if include_files else [],
             }
-            if include_files and entry["output_dir"]:
-                p = Path(entry["output_dir"])
-                if p.exists() and p.is_dir():
-                    cutoff = started_at - float(fresh_window_seconds)
-                    for f in p.rglob("*"):
-                        if not f.is_file():
-                            continue
-                        try:
-                            st = f.stat()
-                        except OSError:
-                            continue
-                        entry["files"].append({
-                            "path": str(f),
-                            "size": st.st_size,
-                            "modified_at": st.st_mtime,
-                            "newly_produced": st.st_mtime >= cutoff,
-                        })
+            if not entry["ok"]:
+                entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
 
+        produced = [r for r in per_container if r["ok"]]
         return {
-            "ok": True,
+            "ok": bool(produced),
+            "containers_with_output": len(produced),
+            "reason": "" if produced else (
+                "no container wrote a file under its output_dir; each "
+                "result says what was checked"),
             "outjob_path": (
                 (per_container[0].get("output_dir") if per_container else "")
                 if not outjob_path else outjob_path
@@ -1167,32 +1257,25 @@ def register_project_tools(mcp):
             run = await bridge.send_command_async(
                 "project.run_outjob", params, timeout=300.0,
             )
+            judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
+            judged = judged if isinstance(judged, dict) else {}
+            out_dir = judged.get("output_dir")
+            exists, files = _scan_output_dir(out_dir, started_at,
+                                             fresh_window_seconds)
+            all_files.extend(f["path"] for f in files if f["newly_produced"])
             entry: dict[str, Any] = {
                 "container": name,
-                "container_type": (run or {}).get("container_type"),
-                "ok": bool(isinstance(run, dict) and run.get("success")),
-                "output_dir": (run or {}).get("output_dir"),
-                "files": [],
+                "container_type": judged.get("container_type"),
+                # From what was written, not from the handler, which
+                # reports only that the process was issued.
+                "ok": bool(judged.get("success")),
+                "output_dir": out_dir,
+                "output_dir_exists": exists,
+                "files_written": judged.get("files_written", 0),
+                "files": files,
             }
-            out_dir = entry["output_dir"]
-            if out_dir:
-                p = Path(out_dir)
-                if p.exists() and p.is_dir():
-                    cutoff = started_at - float(fresh_window_seconds)
-                    for f in p.rglob("*"):
-                        if not f.is_file():
-                            continue
-                        try:
-                            st = f.stat()
-                        except OSError:
-                            continue
-                        newly = st.st_mtime >= cutoff
-                        entry["files"].append(
-                            {"path": str(f), "size": st.st_size,
-                             "newly_produced": newly}
-                        )
-                        if newly:
-                            all_files.append(str(f))
+            if not entry["ok"]:
+                entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
 
         extras: dict[str, Any] = {}
@@ -1206,7 +1289,11 @@ def register_project_tools(mcp):
             )
 
         return {
-            "ok": True,
+            "ok": bool(all_files),
+            "reason": "" if all_files else (
+                "no container wrote a file under its output_dir, so there "
+                "is no fabrication package; each result says what was "
+                "checked"),
             "outjob_path": outjob_path,
             "containers_run": [r["container"] for r in per_container],
             "results": per_container,

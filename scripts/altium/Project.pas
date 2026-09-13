@@ -2474,8 +2474,13 @@ Begin
             OutputDir := OutputDir + '\';
     End;
 
+    { NOT A SUCCESS CLAIM. The process was issued, and nothing here can say }
+    { whether it wrote anything: a container bound to a managed release, or }
+    { with its outputs off, runs cleanly and produces no file, and this used }
+    { to reply success with an output_dir that had never been created. The  }
+    { Python tools check that directory afterwards and decide success there. }
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true' +
+        '{"process_issued":true' +
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
