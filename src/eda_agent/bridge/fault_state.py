@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Optional
+from eda_agent.atomicfile import replace_with_retry
 
 FAULT_FILE = "last_fault.json"
 
@@ -29,7 +30,7 @@ def record_fault(workspace_dir: Path, guidance: dict, *, when: str = "") -> None
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        replace_with_retry(tmp, path)
     except OSError:
         pass  # a fault record is best-effort; never mask the real error
 

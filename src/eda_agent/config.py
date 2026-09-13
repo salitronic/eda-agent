@@ -17,6 +17,7 @@ from typing import Optional
 
 logger = logging.getLogger("eda_agent.config")
 from pydantic import BaseModel, Field
+from eda_agent.atomicfile import replace_with_retry
 
 
 # Pointer file that the DelphiScript reads to find the workspace dir.
@@ -197,7 +198,7 @@ class AltiumConfig(BaseModel):
                     pass
             tmp = target.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            tmp.replace(target)
+            replace_with_retry(tmp, target)
         except (OSError, PermissionError):
             pass
 

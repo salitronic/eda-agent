@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from eda_agent.atomicfile import replace_with_retry
 
 __all__ = ["FetchError", "cache_dir", "get_bytes", "get_json_cached"]
 
@@ -134,7 +135,7 @@ def get_json_cached(url: str, allowed_hosts: set[str],
         # truncated cache that later parses as valid-but-wrong.
         tmp = path.with_suffix(".tmp")
         tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        replace_with_retry(tmp, path)
     except OSError:
         pass  # caching is an optimisation, never a requirement
 

@@ -31,6 +31,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Optional
 
+from eda_agent.atomicfile import discard, replace_with_retry
+
 logger = logging.getLogger("eda_agent.design.symbols")
 
 
@@ -354,7 +356,23 @@ class SymbolCache:
         cache_file = self._lib_cache_path(model.lib_path)
         tmp = cache_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(cache_file)
+        # On Windows a scanner (Defender, a sync client, an indexer) can hold
+        # the freshly-written target open for a few ms, and os.replace then
+        # raises PermissionError. Retried in replace_with_retry; if it still
+        # will not go through, drop the cache entry rather than propagating.
+        # This cache is an optimisation, and losing a whole extraction run
+        # because a temp-file rename lost a race is never the right trade.
+        # put() rewrites this file once per symbol, so a 38-symbol run makes
+        # 38 attempts at the same target and any per-attempt failure rate
+        # compounds into near-certainty.
+        try:
+            replace_with_retry(tmp, cache_file)
+        except PermissionError:
+            logger.warning(
+                "symbol cache write for %s kept losing the rename race; "
+                "continuing without caching it", cache_file,
+            )
+            discard(tmp)
 
     def invalidate(self, lib_path: str) -> None:
         self._memory.pop(lib_path, None)

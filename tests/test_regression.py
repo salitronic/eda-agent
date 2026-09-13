@@ -658,18 +658,26 @@ class TestIpcWriteAtomicityIsDeliberatelyAsymmetric:
         implementation ever writes the final path directly, no rename
         happens and this fails.
         """
+        import os as _os
         from pathlib import Path as _Path
 
         from eda_agent.bridge.altium_bridge import CommandRequest
 
+        # Spy on os.replace, NOT Path.replace. Both spellings appear in
+        # this codebase and every atomic write now funnels through
+        # eda_agent.atomicfile, which calls os.replace; pathlib's
+        # Path.replace calls the same function, so this sees either.
+        # Patching Path.replace saw only one of them, and when the
+        # bridge moved behind the retry helper this test failed while
+        # the behaviour it guards was unchanged.
         renames: list[tuple[str, str]] = []
-        real_replace = _Path.replace
+        real_replace = _os.replace
 
-        def spy(self, target):
-            renames.append((self.name, _Path(target).name))
-            return real_replace(self, target)
+        def spy(src, target):
+            renames.append((_Path(src).name, _Path(target).name))
+            return real_replace(src, target)
 
-        monkeypatch.setattr(_Path, "replace", spy)
+        monkeypatch.setattr(_os, "replace", spy)
 
         bridge = _bare_bridge_for(tmp_path)
         request = CommandRequest(command="application.ping", params={})

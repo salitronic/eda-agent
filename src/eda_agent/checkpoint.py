@@ -35,6 +35,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from eda_agent.atomicfile import replace_with_retry
+
 # Directories never worth snapshotting: regenerable outputs, Altium's own
 # history/preview caches, VCS metadata. Matched case-insensitively against
 # any path component.
@@ -143,10 +145,13 @@ class CheckpointStore:
             blob = self.blobs / digest
             if not blob.exists():
                 # Stage then atomic-rename so a concurrent reader never sees a
-                # half-written blob.
+                # half-written blob. Allowed to raise if the rename keeps
+                # losing the race: a checkpoint missing a blob cannot
+                # restore, and a backup that silently is not one is worse
+                # than a save that failed and said so.
                 tmp = self.blobs / (digest + ".tmp")
                 shutil.copyfile(path, tmp)
-                tmp.replace(blob)
+                replace_with_retry(tmp, blob)
             rel = path.relative_to(project_dir).as_posix()
             files[rel] = {"hash": digest, "size": size}
             total += size
@@ -164,7 +169,7 @@ class CheckpointStore:
         manifest_path = self.manifests / f"{cid}.json"
         tmp = manifest_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(asdict(info), indent=2), encoding="utf-8")
-        tmp.replace(manifest_path)
+        replace_with_retry(tmp, manifest_path)
         return info
 
     def _load(self, checkpoint_id: str) -> CheckpointInfo:
@@ -209,7 +214,7 @@ class CheckpointStore:
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + ".ckpt-tmp")
             shutil.copyfile(blob, tmp)
-            tmp.replace(dest)
+            replace_with_retry(tmp, dest)
             restored += 1
 
         removed = []

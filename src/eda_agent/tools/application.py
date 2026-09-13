@@ -8,6 +8,7 @@ from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
 from ..cli import get_bundled_scripts_path
 from .datasheet_hints import DATASHEET_RULES
+from ..atomicfile import replace_with_retry
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
@@ -990,10 +991,9 @@ def register_application_tools(mcp):
                 # the script engine surfaces as a modal. Invariant: every
                 # workspace file the Pascal side reads MUST be written this
                 # way (see request files, dashboard.heartbeat).
-                import os as _os
                 tmp = path.with_suffix(".txt.tmp")
                 tmp.write_text(text, encoding="utf-8")
-                _os.replace(tmp, path)
+                replace_with_retry(tmp, path)
             elif path.exists():
                 path.unlink()
         except OSError as e:

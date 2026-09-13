@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
+from eda_agent.atomicfile import discard, replace_with_retry
+
 # NOTE: no cross-process or publish lock is needed here. Each caller writes
 # its own request_<id>.json (staged to .json.tmp, then atomically renamed)
 # and polls its own response_<id>.json, so concurrent publishers -- threads
@@ -536,7 +538,16 @@ class AltiumBridge:
         tmp_path = request_path.with_suffix(".json.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(request.to_dict(), f, indent=2)
-        tmp_path.replace(request_path)
+        # The rename can lose a race with a Windows scanner holding the
+        # target. Retried, then allowed to raise: a request that is never
+        # published leaves the caller waiting out the full poll timeout
+        # with nothing to explain the silence, so failing here with the
+        # real error is strictly better than failing there without one.
+        try:
+            replace_with_retry(tmp_path, request_path)
+        except PermissionError:
+            discard(tmp_path)
+            raise
         logger.debug("Published request %s: %s", request.id, request.command)
 
     def _poll_response(self, request_id: str, timeout: float) -> CommandResponse:

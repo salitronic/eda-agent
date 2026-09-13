@@ -12,6 +12,7 @@ from ..libimport import extract_cse_zip, inspect_cse_zip
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
+from ..atomicfile import replace_with_retry
 
 
 def _encode_layer_ops(layers) -> "str | dict":
@@ -165,7 +166,7 @@ def write_designator_edits(workspace_dir, actions) -> tuple:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(body)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

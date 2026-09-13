@@ -39,6 +39,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from eda_agent.atomicfile import replace_with_retry
 
 from flask import Flask, Response, jsonify, send_from_directory, stream_with_context
 
@@ -829,8 +830,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
                 # os.replace raises -> we skip this tick and refresh on the
                 # next one (staleness window is well above 3s).
                 heartbeat_tmp.write_text(str(ts), encoding="utf-8")
-                import os as _os
-                _os.replace(heartbeat_tmp, heartbeat_path)
+                replace_with_retry(heartbeat_tmp, heartbeat_path)
             except OSError:
                 pass
             heartbeat_stop.wait(3.0)

@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Optional, Type
 
+from eda_agent.atomicfile import replace_with_retry
+
 from pydantic import BaseModel
 
 
@@ -135,4 +137,4 @@ def _write_json(path: Path, payload) -> None:
             pass
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(serialised, encoding="utf-8")
-    tmp.replace(path)
+    replace_with_retry(tmp, path)
