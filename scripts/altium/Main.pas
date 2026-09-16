@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.09.13.3';
+    SCRIPT_VERSION = '2026.09.16.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -1784,4 +1784,6 @@ Begin
     End;
 End;
 
-{ Dispatcher and entry points are in Dispatcher.pas (compiles last) }
+{ Request dispatch and the poll timer are in StatusForm.pas (the pump's     }
+{ handler must live in the form's own unit); the StartMCPServer entry point }
+{ stays in Dispatcher.pas, which compiles last.                             }

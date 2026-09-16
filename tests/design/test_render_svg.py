@@ -58,9 +58,7 @@ def test_no_value_renders_designator_only():
 def test_pipeline_populates_instance_value():
     """build_canvas_from_plan copies the plan part's value onto the instance
     so the render and any downstream consumer see it."""
-    import sys
-    sys.path.insert(0, "tests")
-    from design.test_pipeline import MockExtractor, _passive, _LIB
+    from tests.design.test_pipeline import MockExtractor, _passive, _LIB
     from eda_agent.design.plan import DesignPlan
     from eda_agent.design.pipeline import build_canvas_from_plan
 

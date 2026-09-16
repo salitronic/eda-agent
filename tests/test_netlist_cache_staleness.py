@@ -37,9 +37,33 @@ from tests.test_cross_validate import (          # noqa: F401  (fixture)
 )
 
 SCRIPTS = Path(__file__).parent.parent / "scripts" / "altium"
-DISPATCHER = SCRIPTS / "Dispatcher.pas"
 MAIN = SCRIPTS / "Main.pas"
 CROSS_VALIDATOR = Path(__file__).parent / "cross_validate_pascal.pas"
+
+
+def _dispatch_unit() -> Path:
+    """The unit carrying the per-request dispatch, wherever it lives.
+
+    It was Dispatcher.pas until the blocking polling loop became a timer
+    on the dashboard: a form's event handler resolves only inside the
+    form's own unit, so ProcessSingleRequest and the read-only classifier
+    had to move into StatusForm.pas alongside the timer. Not one thing
+    these tests check changed, yet all of them failed, so find the unit
+    by what it CONTAINS and let the code move again without this
+    noticing.
+    """
+    for path in sorted(SCRIPTS.glob("*.pas")):
+        if path.name == "Altium_MCP.pas":        # generated, would double count
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"^Function\s+ProcessSingleRequest\b", text, re.M):
+            return path
+    raise AssertionError(
+        "no .pas file defines ProcessSingleRequest, so the search for the "
+        "dispatch unit has gone blind and these tests check nothing")
+
+
+DISPATCHER = _dispatch_unit()
 
 
 def _function_source(text: str, name: str) -> str:

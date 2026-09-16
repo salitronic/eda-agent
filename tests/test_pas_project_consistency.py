@@ -298,6 +298,116 @@ def test_the_undeclared_control_list_does_not_go_stale():
         f"UNDECLARED_CONTROLS: {resolved}")
 
 
+def _prjscr_start_proc() -> tuple[str, str]:
+    """The (file, procedure) the PrjScr nominates as the run entry point."""
+    text = PRJSCR.read_text(encoding="utf-8")
+    m = re.search(r"^StartProcName=([A-Za-z0-9_.]+)>(\w+)\s*$", text,
+                  flags=re.MULTILINE)
+    assert m, "StartProcName not found in Altium_API.PrjScr"
+    return m.group(1), m.group(2)
+
+
+def test_prjscr_entry_point_is_a_parameterless_proc_in_that_file():
+    """Attaching is `Run Script... > <file> > <proc>`, and Altium's dialog
+    lists a procedure under the file that DEFINES it, and only if it takes
+    no parameters.
+
+    So the entry point is pinned to a location, not just a name, and
+    moving the procedure to another unit silently breaks the attach step
+    for every user while the whole test suite stays green: nothing else
+    here reads StartProcName. Giving it an argument breaks it just as
+    quietly, by dropping it out of the dialog altogether.
+
+    Caught for real: relocating the poll loop into StatusForm.pas took
+    StartMCPServer with it and left the PrjScr, the README, the CLI's
+    closing instructions and both recovery hints pointing at a procedure
+    that was no longer in Dispatcher.pas.
+    """
+    entry_file, proc = _prjscr_start_proc()
+    path = SCRIPTS_DIR / entry_file
+    assert path.exists(), (
+        f"Altium_API.PrjScr's StartProcName names {entry_file}, which is "
+        f"not on disk.")
+
+    source = path.read_text(encoding="utf-8", errors="replace")
+    assert re.search(rf"^\s*Procedure\s+{re.escape(proc)}\s*;",
+                     source, flags=re.MULTILINE | re.IGNORECASE), (
+        f"Altium_API.PrjScr points the Run Script dialog at "
+        f"{entry_file} > {proc}, but {entry_file} does not define a "
+        f"parameterless `Procedure {proc};`. Either move the procedure "
+        f"back, update StartProcName, or drop the parameter -- the "
+        f"dialog only lists parameterless procedures, under the file "
+        f"that defines them.")
+
+    # A second definition is a duplicate identifier in the concatenated
+    # bundle, and leaves it ambiguous which one the dialog offers.
+    defining = [f for f in _build_py_files()
+                if re.search(rf"^\s*Procedure\s+{re.escape(proc)}\s*;",
+                             (SCRIPTS_DIR / f).read_text(encoding="utf-8",
+                                                         errors="replace"),
+                             flags=re.MULTILINE | re.IGNORECASE)]
+    assert defining == [entry_file], (
+        f"`Procedure {proc};` should be defined once, in {entry_file}, "
+        f"but is defined in: {defining}.")
+
+
+# Places that spell out the attach step for a user. Prose naming the
+# procedure without naming a file is fine and is not checked.
+ENTRY_POINT_DOCS = (
+    "README.md",
+    "docs/RELEASE_VERIFICATION.md",
+    "src/eda_agent/cli.py",
+    "src/eda_agent/diag/doctor.py",
+    "src/eda_agent/tools/application.py",
+    "src/eda_agent/bridge/recovery.py",
+)
+
+
+def test_docs_name_the_same_entry_file_as_the_prjscr():
+    """Where a doc names a .pas file next to the entry procedure, it has
+    to be the file the PrjScr points the dialog at.
+
+    These strings are what the user follows after an install, and what
+    the bridge hands back when it cannot be reached, so drift here sends
+    someone to a file that does not offer the procedure -- at exactly the
+    moment they are already stuck. The test that pins StartProcName to a
+    real definition does not cover these: the PrjScr and the six strings
+    can agree with each other and all be wrong together, or the PrjScr
+    can be corrected alone and leave the prose behind.
+
+    Deliberately narrow: only mentions with a .pas filename within ~90
+    characters are judged, so ordinary prose ("re-launch StartMCPServer")
+    stays free.
+    """
+    entry_file, proc = _prjscr_start_proc()
+    checked = 0
+    wrong = []
+    for rel in ENTRY_POINT_DOCS:
+        path = REPO_ROOT / rel
+        assert path.exists(), (
+            f"{rel} is listed in ENTRY_POINT_DOCS but is not on disk; "
+            f"fix the path or drop the entry.")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(re.escape(proc), text):
+            window = text[max(0, m.start() - 90): m.end() + 90]
+            named = set(re.findall(r"([A-Za-z0-9_]+\.pas)", window))
+            if not named:
+                continue
+            checked += 1
+            if named != {entry_file}:
+                line = text.count("\n", 0, m.start()) + 1
+                wrong.append(f"{rel}:{line} names {sorted(named)}")
+
+    assert checked >= 5, (
+        f"only {checked} file-qualified mentions of {proc} found across "
+        f"{len(ENTRY_POINT_DOCS)} documents; the match went blind and this "
+        f"check is no longer testing anything.")
+    assert not wrong, (
+        f"these name a different .pas file than Altium_API.PrjScr's "
+        f"StartProcName ({entry_file} > {proc}): {wrong}. The user follows "
+        f"these strings to attach, so they have to agree with the dialog.")
+
+
 def test_disk_pas_files_are_in_build_or_excluded():
     """Every .pas file on disk is either in build.py FILES or in the
     known exception sets (PRJSCR_ONLY for IDE-only, EXCLUDED for

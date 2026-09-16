@@ -102,9 +102,18 @@ class _Pascal:
         self.sources = _pascal_sources()
         self.bodies = {m: _function_bodies(t) for m, t in self.sources.items()}
 
-        routes = dict(_ROUTE.findall(
-            (PASCAL_DIR / "Dispatcher.pas").read_text(
-                encoding="utf-8", errors="replace")))
+        # Found by content, not by filename. The routing lived in
+        # Dispatcher.pas until the polling loop became a timer on the
+        # dashboard, which forced ProcessCommand into StatusForm.pas: a
+        # form's event handler resolves only inside the form's own unit.
+        # Nothing this class models changed, so a filename is the wrong
+        # thing to pin it to.
+        routes: dict[str, str] = {}
+        for _text in [t for _, t in sorted(self.sources.items())]:
+            found = dict(_ROUTE.findall(_text))
+            if found:
+                routes = found
+                break
         assert routes, "could not parse the dispatcher's category routing"
         module_of = {fn: m for fn in set(routes.values())
                      for m, t in self.sources.items()

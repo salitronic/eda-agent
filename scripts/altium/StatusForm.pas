@@ -628,10 +628,10 @@ Begin
 End;
 
 
-Procedure StatusFormClose(Sender : TObject; Var Action : TCloseAction);
-Begin
-    Try Running := False; Except End;
-End;
+{ StatusFormClose lives at the END of this unit: closing the form has to     }
+{ finalise the pump, and the pump is defined down there. DelphiScript has no }
+{ forward declarations, and a DFM handler binds by name anywhere within the  }
+{ form's own unit, so position does not affect the binding.                   }
 
 
 { Action buttons ============================================================ }
@@ -875,4 +875,664 @@ Begin
         tab_Log.Color := COLOR_BG_CARD;
         tab_Log.Font.Color := COLOR_TEXT_MUTED;
     Except End;
+End;
+
+
+{ ============================================================================ }
+{ THE PUMP                                                                     }
+{                                                                              }
+{ Dispatch runs on tmr_Poll, declared in StatusForm.dfm. It lives in THIS unit }
+{ and not in Dispatcher.pas for a measured reason: Altium resolves a form's    }
+{ event handler only within the unit that owns the form, and a handler defined }
+{ elsewhere never fires and never complains. A control timer in the form's own }
+{ unit fired 17 times in the same run where the cross-unit one fired zero.     }
+{ Everything the tick touches therefore has to be reachable from here, which   }
+{ is why ProcessCommand and ProcessSingleRequest moved out of Dispatcher.pas.  }
+{                                                                              }
+{ The timer also only ticks while its form is VISIBLE: hiding the form         }
+{ suspends it (measured, one tick then nothing, on two runs) and re-showing    }
+{ resumes it. So the pump is tied to the dashboard being on screen, and        }
+{ HideStatusForm is only ever called when the session is ending.               }
+{ ============================================================================ }
+
+Const
+    { How many queued requests one tick will dispatch before yielding. The old }
+    { blocking loop handled one request per 10 ms sleep; a timer's real floor  }
+    { is coarser (~16 ms), so a burst would otherwise pay that floor once per  }
+    { request. Draining absorbs the burst instead. Bounded rather than         }
+    { "until empty" so a client that writes requests faster than they are      }
+    { served can still never starve the UI.                                     }
+    PUMP_DRAIN_MAX = 32;
+
+Var
+    { Dashboard counters, moved here with the dispatch code. }
+    StatusStartTick      : Cardinal;
+    StatusRequestCount   : Integer;
+    StatusLastCommand    : String;
+    StatusTotalAltiumMs  : Cardinal;
+
+    { Pump state. All of these were LOCALS of the old blocking StartMCPServer, }
+    { which could keep them on its stack because it never returned. A tick     }
+    { returns between polls, so they have to outlive it.                       }
+    PumpStopPath         : String;
+    PumpIdleCount        : Integer;
+    PumpLastActivityMs   : Cardinal;
+    PumpInterval         : Integer;
+    PumpInTick           : Boolean;
+    PumpFinalised        : Boolean;
+    { True when the session is ending because ALTIUM is closing, as
+      opposed to Detach, the stop file, the stop command or auto-shutdown.
+      The difference decides how much teardown is safe to attempt. }
+    PumpQuitting         : Boolean;
+
+
+Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
+Var
+    Category, Action : String;
+    DotPos : Integer;
+Begin
+    DotPos := Pos('.', Command);
+    If DotPos > 0 Then
+    Begin
+        Category := Copy(Command, 1, DotPos - 1);
+        Action := Copy(Command, DotPos + 1, Length(Command));
+    End
+    Else
+    Begin
+        Category := Command;
+        Action := '';
+    End;
+
+    Case Category Of
+        'application': Result := HandleApplicationCommand(Action, Params, RequestId);
+        'project':     Result := HandleProjectCommand(Action, Params, RequestId);
+        'library':     Result := HandleLibraryCommand(Action, Params, RequestId);
+        'generic':     Result := HandleGenericCommand(Action, Params, RequestId);
+        'pcb':         Result := HandlePCBCommand(Action, Params, RequestId);
+        'audit':       Result := HandleAuditCommand(Action, Params, RequestId);
+    Else
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
+            'Unknown command category: ' + Category +
+            '. Use generic.* for object operations, pcb.* for PCB-specific ' +
+            'commands, or audit.* for design-lint checks.');
+    End;
+End;
+
+{..............................................................................}
+{ Process a single request if one exists. Returns True iff a request was found.}
+{                                                                                }
+{ The dispatcher scans for any request_*.json file in the workspace, extracts  }
+{ the ID from the filename, reads and deletes the request, dispatches, and    }
+{ writes response_<id>.json. The handler returns the JSON envelope as a       }
+{ String; the dispatcher writes the file. Handlers that previously bypassed    }
+{ the dispatcher's write via the ResponseAlreadyWritten flag have all been     }
+{ migrated to the standard pattern.                                            }
+{..............................................................................}
+
+{..............................................................................}
+{ CommandIsReadOnly - whether a command leaves the design untouched.           }
+{                                                                              }
+{ Used for ONE thing: deciding whether the compiled-netlist cache survives a   }
+{ command. SmartCompile skips DM_Compile for COMPILE_CACHE_TTL_MS when the     }
+{ project reports no dirty documents, and InvalidateCompileCache existed but   }
+{ was never called from anywhere, so a write followed within that window by a  }
+{ connectivity read handed back the netlist from BEFORE the write. Whether it  }
+{ did depended on whether that particular handler happened to dirty the        }
+{ document, which is not uniform: many go through ProcessControl, which marks  }
+{ the document modified, and others assign through SetState_ and do not.       }
+{                                                                              }
+{ THE UNKNOWN CASE COUNTS AS A WRITE. Only the prefixes below are treated as   }
+{ leaving the design alone, so a command this list has never heard of, and     }
+{ every command added later, invalidates. An unnecessary invalidation costs    }
+{ one recompile; a missed one returns connectivity that predates the edit.     }
+{..............................................................................}
+
+Function ActionHasPrefix(Verb : String; Prefix : String) : Boolean;
+Begin
+    Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
+End;
+
+Function CommandIsReadOnly(Command : String) : Boolean;
+Var
+    Verb : String;
+    DotPos : Integer;
+Begin
+    Verb := LowerCase(Trim(Command));
+    DotPos := Pos('.', Verb);
+    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
+
+    Result := ActionHasPrefix(Verb, 'get_')
+           Or ActionHasPrefix(Verb, 'list_')
+           Or ActionHasPrefix(Verb, 'query')
+           Or ActionHasPrefix(Verb, 'read_')
+           Or ActionHasPrefix(Verb, 'find_')
+           Or ActionHasPrefix(Verb, 'count')
+           Or ActionHasPrefix(Verb, 'audit_')
+           Or ActionHasPrefix(Verb, 'check_')
+           Or ActionHasPrefix(Verb, 'calc_')
+           Or ActionHasPrefix(Verb, 'export_')
+           Or ActionHasPrefix(Verb, 'render_')
+           Or ActionHasPrefix(Verb, 'probe_')
+           Or ActionHasPrefix(Verb, 'inspect_')
+           Or ActionHasPrefix(Verb, 'diff_')
+           Or ActionHasPrefix(Verb, 'compare_')
+           Or (Verb = 'ping');
+End;
+
+Function ProcessSingleRequest(Dummy : Integer): Boolean;
+Var
+    RequestPath, RequestId : String;
+    RequestContent, ResponseContent : String;
+    Command, Params, ProtoVer, EnvelopeError : String;
+    ExceptionMsg : String;
+    FocusBefore, FocusAfter : String;
+    StartMs, DurationMs : Cardinal;
+    ResultTag : String;
+    DashIsError : Boolean;
+    DashDetail, DashErrPayload, DashCode : String;
+Begin
+    Result := False;
+    EnsureWorkspaceDir(0);
+
+    If Not ScanForRequestFile(RequestPath, RequestId) Then Exit;
+
+    // Read the request file
+    RequestContent := ReadFileContent(RequestPath);
+    // Remove the request file regardless of read outcome so we never reprocess
+    DeleteFile(RequestPath);
+
+    If RequestContent = '' Then
+    Begin
+        { ReadFileContent already retried 12 times over ~180ms for a       }
+        { transient sharing violation, so an empty result here means the   }
+        { file was genuinely empty or still locked. Deleting it and        }
+        { exiting SILENTLY left the caller to wait out its entire deadline }
+        { and report a plain timeout, which reads exactly like a wedged    }
+        { polling loop and sends the user hunting the wrong fault.          }
+        {                                                                   }
+        { The id came from the FILENAME via ScanForRequestFile and has not  }
+        { been overwritten by the body's id yet, so the call can still be   }
+        { answered with the actual reason.                                  }
+        If IsValidRequestId(RequestId) Then
+            WriteResponseFile(RequestId,
+                BuildErrorResponse(RequestId, 'REQUEST_UNREADABLE',
+                    'Request file was empty or unreadable after 12 retries '
+                    + 'and has been discarded. The polling loop is healthy; '
+                    + 'retry the call.'));
+        Exit;
+    End;
+
+    // ID arrives in the JSON body. Per-request response files use it for
+    // the filename so concurrent callers each get an isolated response file.
+    RequestId := ExtractJsonValue(RequestContent, 'id');
+    Command := ExtractJsonValue(RequestContent, 'command');
+    Params := ExtractJsonValue(RequestContent, 'params');
+    ProtoVer := ExtractJsonValue(RequestContent, 'protocol_version');
+
+    EnvelopeError := ValidateRequestEnvelope(RequestId, Command);
+    If EnvelopeError <> '' Then
+    Begin
+        // Without a valid id we can't write a per-request response file;
+        // fall back to writing response.json so Python can still pick it up.
+        If IsValidRequestId(RequestId) Then
+            WriteResponseFile(RequestId,
+                BuildErrorResponse(RequestId, 'MALFORMED_REQUEST', EnvelopeError))
+        Else
+            WriteFileContent(WorkspaceDir + 'response.json',
+                BuildErrorResponse('', 'MALFORMED_REQUEST', EnvelopeError));
+        Result := True;
+        Exit;
+    End;
+
+    If (ProtoVer <> '') And (ProtoVer <> IntToStr(PROTOCOL_VERSION)) Then
+    Begin
+        WriteResponseFile(RequestId,
+            BuildErrorResponseDetailed(RequestId, 'PROTOCOL_VERSION_MISMATCH',
+                'Client protocol_version=' + ProtoVer +
+                ' does not match server PROTOCOL_VERSION=' + IntToStr(PROTOCOL_VERSION) +
+                '. Update the eda-agent client or restart the Altium script.',
+                '{"client_version":' + ProtoVer +
+                ',"server_version":' + IntToStr(PROTOCOL_VERSION) + '}'));
+        Result := True;
+        Exit;
+    End;
+
+    StatusLastCommand := Command;
+    Inc(StatusRequestCount);
+    StartMs := GetTickCount;
+    ResultTag := 'OK';
+
+    { MCP liveness: any inbound command (typically application.ping every }
+    { 30 s) keeps the Open Dashboard button enabled.                       }
+    LastPingMs := StartMs;
+
+    { Spinner + in-flight readout on the dashboard. Reset on exit so the }
+    { status pill drops back to idle/paused/green when we're done.       }
+    SetInFlight(Command);
+
+    { WHERE THE CALLER WAS LOOKING, BEFORE THE HANDLER RAN.
+      Nearly every tool acts on the focused document, and several change
+      it as a side effect of doing their job. Nothing announced that.
+      Measured: lib_probe_footprint focused a PcbLib to read it, the
+      obj_switch_view that followed switched the LIBRARY into 3D, and the
+      session spent a long time looking for a placement bug that was not
+      there.
+      Captured here rather than per handler because there are hundreds of
+      them and this is the one place every command passes through. }
+    FocusBefore := CurrentFocusedDocPath(0);
+    ResetNextStep(0);
+
+    ExceptionMsg := '';
+    { Heartbeat: write progress_<id>.json so Python can distinguish "still      }
+    { working" from "polling loop dead" when the 10 s default deadline runs   }
+    { out on a legitimately-slow handler. Delete only AFTER writing the       }
+    { response, so at no point are both files missing.                        }
+    StartProgress(RequestId);
+    Try
+        Try
+            ResponseContent := ProcessCommand(Command, Params, RequestId);
+        Except
+            ExceptionMsg := 'Unhandled exception processing: ' + Command;
+            ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
+            ResultTag := 'EXCEPTION';
+        End;
+
+        { The compiled netlist is stale the moment anything is written, and
+          this is the one place every command passes through, so it is done
+          here rather than in each of the hundreds of handlers.
+
+          On the exception path too, deliberately: a handler that threw part
+          way through may well have written something first, and that is
+          exactly when a cached netlist is worth least. }
+        If Not CommandIsReadOnly(Command) Then InvalidateCompileCache(0);
+
+        If ResponseContent = '' Then
+        Begin
+            // Handler returned nothing, degenerate but recoverable. Synthesise
+            // an INTERNAL_ERROR rather than leaving the caller polling forever.
+            ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR',
+                'Handler returned empty response for: ' + Command);
+            ResultTag := 'EMPTY';
+        End;
+
+        { Say so if the active document moved. Appended as a sibling of
+          data rather than merged into it, because data is whatever the
+          handler chose to return and this must not depend on its shape.
+          Silent when nothing moved, which is the overwhelming majority. }
+        { The follow-up this reply owes, if the handler named one. }
+        If PendingNextStep(0) <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent,
+                JsonStr('next_step', PendingNextStep(0)));
+
+        FocusAfter := CurrentFocusedDocPath(0);
+        If FocusAfter <> FocusBefore Then
+            ResponseContent := AppendEnvelopeField(ResponseContent,
+                '"active_document_changed":' + JsonObj(
+                    JsonStr('from', FocusBefore) + ',' +
+                    JsonStr('to', FocusAfter) + ',' +
+                    JsonStr('note', 'this command moved the focused '
+                        + 'document. Tools that act on the focused '
+                        + 'document will now act on the new one.')));
+
+        WriteResponseFile(RequestId, ResponseContent);
+    Finally
+        EndProgress(RequestId);
+    End;
+
+    DurationMs := GetTickCount - StartMs;
+    StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
+
+    AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
+              + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
+
+    { Surface the error message to the dashboard (inline detail row + last- }
+    { error banner) when the response is success=false. ExtractJsonValue   }
+    { handles the nested error/code/message path via two successive calls. }
+    DashIsError := (ResultTag = 'EXCEPTION');
+    DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+    DashDetail := '';
+    DashCode := '';
+    If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+    Begin
+        DashIsError := True;
+        DashCode    := ExtractJsonValue(DashErrPayload, 'code');
+        DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+        { Explicit Begin/End around each branch, DelphiScript parser   }
+        { trips on `Else If` without them.                               }
+        If (DashCode <> '') And (DashDetail <> '') Then
+        Begin
+            DashDetail := DashCode + ': ' + DashDetail;
+        End
+        Else
+        Begin
+            If (DashCode <> '') Then DashDetail := DashCode;
+        End;
+    End;
+    AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
+
+    ResetInFlight(0);
+
+    Result := True;
+End;
+
+
+{..............................................................................}
+{ Clean up state left by the MCP server before exiting. Deletes any leftover   }
+{ per-request IPC files and flushes the UI.                                    }
+{                                                                              }
+{ Lives here rather than in Dispatcher.pas because FinalisePump below calls it }
+{ and Dispatcher.pas compiles LAST, so a call the other way would point        }
+{ forward and DelphiScript has no forward declarations.                        }
+{..............................................................................}
+
+Procedure CleanupMCPServer(Dummy : Integer);
+Begin
+    CleanupOrphanRequests(0);
+    CleanupOrphanProgress(0);
+    Application.ProcessMessages;
+End;
+
+
+{..............................................................................}
+{ End the session: stop the timer, log the session end, put the dashboard away }
+{ and clear the IPC files.                                                     }
+{                                                                              }
+{ IDEMPOTENT, and it has to be, because two different paths reach it. Closing  }
+{ the form hides it, and a hidden form's timer stops, so the close handler     }
+{ must finalise on the spot rather than leave it to a tick that is never       }
+{ coming. Every other stop (Detach, stop file, stop command, auto-shutdown,    }
+{ Altium quitting) leaves the form up, so the next tick finalises instead.     }
+{..............................................................................}
+
+Procedure FinalisePump(Dummy : Integer);
+Var
+    QuitTag : String;
+Begin
+    If PumpFinalised Then Exit;
+    PumpFinalised := True;
+    Running := False;
+
+    { FIRST, and unconditionally. A tick that fires after this point would }
+    { run against an engine Altium may already be unloading.                }
+    Try tmr_Poll.Enabled := False; Except End;
+
+    QuitTag := 'no';
+    If PumpQuitting Then QuitTag := 'yes';
+    Try
+        AppendLog(FormatLogStamp(0) + ',0,_session_end,requests='
+                  + IntToStr(StatusRequestCount) + ',quitting=' + QuitTag);
+    Except End;
+
+    { WHEN ALTIUM IS QUITTING, STOP HERE.                                   }
+    {                                                                       }
+    { Measured 2026-09-16: with the timer pump, closing Altium while        }
+    { attached no longer hangs it. Altium ran its whole shutdown through to }
+    { "Application Finalized" and exited, and Windows logged neither a hang }
+    { nor a crash. What it DID raise was an Access Violation in             }
+    { ScriptingSystem.DLL (read of FFFFFFFFFFFFFFFF) during teardown.       }
+    {                                                                       }
+    { The two steps below are how you earn that: HideStatusForm touches a   }
+    { form Altium is in the middle of destroying, and CleanupMCPServer      }
+    { calls Application.ProcessMessages, which pumps the message loop while }
+    { the host unloads the scripting engine underneath it. Neither buys     }
+    { anything on this path. Altium destroys the form itself, and orphaned  }
+    { IPC files are purged at the next _session_start, which is exactly     }
+    { where the count in the log comes from.                                }
+    {                                                                       }
+    { On every other exit, Detach, the stop file, application.stop_server   }
+    { and auto-shutdown, the engine is alive and Altium keeps running, so   }
+    { the dashboard must actually go away and the workspace must be tidied. }
+    If PumpQuitting Then Exit;
+
+    HideStatusForm(0);
+    CleanupMCPServer(0);
+End;
+
+
+{..............................................................................}
+{ One poll tick. Replaces one iteration of the old `While Running Do` loop,    }
+{ with the same stop conditions in the same order.                             }
+{..............................................................................}
+
+Procedure tmr_PollTimer(Sender : TObject);
+Var
+    HadRequest : Boolean;
+    Drained    : Integer;
+    NowMs      : Cardinal;
+Begin
+    { RE-ENTRANCY GUARD. A tick is not atomic: a handler can run for seconds  }
+    { and calls Application.ProcessMessages while it works, which lets this    }
+    { same timer fire again underneath it. Unguarded, the second tick would    }
+    { pick up the NEXT request while the first is still in flight and the      }
+    { counters and the in-flight pill would interleave.                        }
+    If PumpInTick Then Exit;
+    PumpInTick := True;
+    Try
+        Try
+            If Not Running Then
+            Begin
+                FinalisePump(0);
+                Exit;
+            End;
+
+            { Altium is closing. The old loop could not get here, because the  }
+            { close was dispatched inside its own ProcessMessages and never    }
+            { came back; the probe measured a DFM timer still ticking for      }
+            { three seconds after IsQuitting flipped, which is what makes this }
+            { check reachable at all.                                          }
+            Try
+                If Client.IsQuitting Then
+                Begin
+                    PumpQuitting := True;
+                    FinalisePump(0);
+                    Exit;
+                End;
+            Except
+                { The probe itself throwing means the client is already }
+                { going away, which is the quitting case just the same. }
+                PumpQuitting := True;
+                FinalisePump(0);
+                Exit;
+            End;
+
+            If FileExists(PumpStopPath) Then
+            Begin
+                DeleteFile(PumpStopPath);
+                FinalisePump(0);
+                Exit;
+            End;
+
+            { Renew button: reset the real idle deadline once per click. }
+            If RenewRequested Then
+            Begin
+                PumpLastActivityMs := GetTickCount;
+                RenewRequested := False;
+                UpdateStatsLine(
+                    (GetTickCount - StatusStartTick) Div 1000,
+                    StatusRequestCount,
+                    StatusTotalAltiumMs,
+                    AutoShutdownMs Div 1000);
+            End;
+
+            { Auto-shutdown after prolonged inactivity. Paused sessions   }
+            { never auto-shutdown so the user can step away indefinitely. }
+            If PausedFlag Then
+                PumpLastActivityMs := GetTickCount;
+            If AutoShutdownMs > 0 Then
+            Begin
+                NowMs := GetTickCount;
+                If NowMs >= PumpLastActivityMs Then
+                Begin
+                    If (NowMs - PumpLastActivityMs) > AutoShutdownMs Then
+                    Begin
+                        FinalisePump(0);
+                        Exit;
+                    End;
+                End;
+            End;
+
+            If PausedFlag Then
+            Begin
+                { Skip dispatch entirely while paused, but still refresh the }
+                { stats so the dashboard countdown stays alive.               }
+                UpdateStatsLine(
+                    (GetTickCount - StatusStartTick) Div 1000,
+                    StatusRequestCount,
+                    StatusTotalAltiumMs,
+                    AutoShutdownMs Div 1000);
+                Exit;
+            End;
+
+            { Drain rather than one-per-tick: see PUMP_DRAIN_MAX. Running is }
+            { re-tested each pass so a Detach or a close mid-burst stops it. }
+            Drained := 0;
+            HadRequest := False;
+            While (Drained < PUMP_DRAIN_MAX) And Running Do
+            Begin
+                If Not ProcessSingleRequest(0) Then Break;
+                HadRequest := True;
+                Inc(Drained);
+                { Yield between requests so a long drain cannot freeze the UI. }
+                { Safe against the timer re-entering here: the guard holds.    }
+                Application.ProcessMessages;
+            End;
+
+            If HadRequest Then
+            Begin
+                PumpIdleCount := 0;
+                PumpLastActivityMs := GetTickCount;
+                If PumpInterval <> PollIntervalActiveMs Then
+                Begin
+                    PumpInterval := PollIntervalActiveMs;
+                    Try tmr_Poll.Interval := PumpInterval; Except End;
+                End;
+                UpdateStatusHeader('MCP: idle');
+                UpdateStatsLine(
+                    (GetTickCount - StatusStartTick) Div 1000,
+                    StatusRequestCount,
+                    StatusTotalAltiumMs,
+                    (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
+                { Perf row already updated in-place by TrackPerf (called }
+                { from AppendLogLine inside ProcessSingleRequest). Skip  }
+                { the full RefreshPerfPanel rebuild that used to flash  }
+                { the visible memo on every command.                     }
+            End
+            Else
+            Begin
+                Inc(PumpIdleCount);
+                { Back off to the idle interval. Assigning Interval restarts }
+                { the timer, so only touch it when the value actually        }
+                { changes.                                                    }
+                If PumpIdleCount > IdleThreshold Then
+                Begin
+                    If PumpInterval <> PollIntervalIdleMs Then
+                    Begin
+                        PumpInterval := PollIntervalIdleMs;
+                        Try tmr_Poll.Interval := PumpInterval; Except End;
+                    End;
+                End;
+                If (PumpIdleCount Mod 10) = 0 Then
+                    UpdateStatsLine(
+                        (GetTickCount - StatusStartTick) Div 1000,
+                        StatusRequestCount,
+                        StatusTotalAltiumMs,
+                        (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
+            End;
+        Except
+            { Altium tearing down underneath the tick. Stop quietly, exactly }
+            { as the old loop's outer Try/Except did. Treated as quitting:    }
+            { whatever threw, the engine is not in a state worth poking       }
+            { further on the way out.                                          }
+            PumpQuitting := True;
+            Try FinalisePump(0); Except End;
+        End;
+    Finally
+        PumpInTick := False;
+    End;
+End;
+
+
+{..............................................................................}
+{ Start MCP server: arm the poll timer and RETURN.                             }
+{                                                                              }
+{ The return is the whole point. This used to block for the entire session,    }
+{ holding Altium's single-threaded scripting engine, which is what made        }
+{ closing Altium hang. Now the engine is free between ticks and Altium's       }
+{ close path never waits on a script.                                          }
+{                                                                              }
+{ Stop methods are unchanged: send application.stop_server, drop a 'stop' file }
+{ in the workspace, press Detach, close the dashboard, or wait for             }
+{ auto-shutdown. All tunables still come from mcp_config.json via              }
+{ LoadMCPConfig; PollIntervalActiveMs and PollIntervalIdleMs are now the       }
+{ timer's interval rather than a Sleep length. YieldIterations and             }
+{ YieldEveryNActive no longer apply: they existed to hand time back to Altium  }
+{ from inside a loop that never returned, and a timer yields by construction.  }
+{ They stay in the config so an existing mcp_config.json still loads.          }
+{                                                                              }
+{ Takes a Dummy argument so it stays OUT of the Run Script dialog. The entry   }
+{ the user picks is still StartMCPServer in Dispatcher.pas, which calls this;  }
+{ the dialog lists every PARAMETERLESS procedure, so without the argument the  }
+{ attach step would sprout a second, near-identical entry to choose between.   }
+{..............................................................................}
+
+Procedure StartMCPPump(Dummy : Integer);
+Begin
+    If Running Then Exit;
+
+    InitDefaultConfig(0);
+    EnsureWorkspaceDir(0);
+    LoadMCPConfig(0);
+    { Startup purge: nothing on disk can belong to a live exchange, because no
+      pump was running to serve it. Responses are purged here but NOT in
+      CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
+    CleanupOrphanRequests(0);
+    CleanupOrphanResponses(0);
+    CleanupOrphanProgress(0);
+
+    Running := True;
+    PumpStopPath := WorkspaceDir + 'stop';
+    If FileExists(PumpStopPath) Then DeleteFile(PumpStopPath);
+
+    PumpIdleCount := 0;
+    PumpLastActivityMs := GetTickCount;
+    PumpInTick := False;
+    PumpFinalised := False;
+    PumpQuitting := False;
+
+    StatusStartTick := GetTickCount;
+    StatusRequestCount := 0;
+    StatusLastCommand := '';
+    StatusTotalAltiumMs := 0;
+
+    { The timer only ticks while the form is visible, so this is not just  }
+    { cosmetic: showing the dashboard is what starts the pump running.     }
+    ShowStatusForm(0);
+    UpdateStatusHeader('MCP: idle');
+    UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
+    AppendLog(FormatLogStamp(0) + ',0,_session_start,version=' + SCRIPT_VERSION
+              + ',protocol=' + IntToStr(PROTOCOL_VERSION));
+
+    PumpInterval := PollIntervalActiveMs;
+    Try
+        tmr_Poll.Interval := PumpInterval;
+        tmr_Poll.Enabled := True;
+    Except End;
+End;
+
+
+{..............................................................................}
+{ Closing the dashboard ends the session.                                      }
+{                                                                              }
+{ Defined here, at the end of the unit, because it finalises the pump and      }
+{ DelphiScript has no forward declarations. A DFM handler binds by name        }
+{ anywhere inside the form's own unit, so the position costs nothing.          }
+{                                                                              }
+{ Finalises INLINE rather than just clearing Running: the form hides as it     }
+{ closes, a hidden form's timer stops, and the tick that would otherwise have  }
+{ written _session_end and cleared the IPC files would never run.              }
+{..............................................................................}
+
+Procedure StatusFormClose(Sender : TObject; Var Action : TCloseAction);
+Begin
+    Try FinalisePump(0); Except End;
 End;

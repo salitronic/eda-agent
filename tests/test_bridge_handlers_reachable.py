@@ -258,10 +258,19 @@ KNOWN_UNHANDLED: dict[str, str] = {}
 
 def _category_to_module() -> dict[str, str]:
     """Parsed from ProcessCommand's ``Case Category Of`` block."""
-    text = (PASCAL_DIR / "Dispatcher.pas").read_text(
-        encoding="utf-8", errors="replace")
-    routes = dict(re.findall(
-        r"'(\w+)':\s*Result\s*:=\s*(Handle\w+Command)", text))
+    # Located by content: the routing moved from Dispatcher.pas into
+    # StatusForm.pas when the poll loop became a timer on the dashboard,
+    # and a filename would pin this to where it happened to be.
+    routes: dict[str, str] = {}
+    for path in sorted(PASCAL_DIR.glob("*.pas")):
+        if path.name == "Altium_MCP.pas":
+            continue
+        found = dict(re.findall(
+            r"'(\w+)':\s*Result\s*:=\s*(Handle\w+Command)",
+            path.read_text(encoding="utf-8", errors="replace")))
+        if found:
+            routes = found
+            break
     assert routes, "could not parse the dispatcher's category routing"
 
     defined_in: dict[str, str] = {}

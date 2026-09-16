@@ -645,4 +645,11 @@ object StatusForm: TStatusForm
     Left = 340
     Top = 8
   end
+  object tmr_Poll: TTimer
+    Enabled = False
+    Interval = 10
+    OnTimer = tmr_PollTimer
+    Left = 308
+    Top = 8
+  end
 end

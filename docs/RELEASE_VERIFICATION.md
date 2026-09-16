@@ -1,4 +1,4 @@
-# Release verification: 2026.09.13.3
+# Release verification: 2026.09.16.2
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -108,7 +108,7 @@ identifier does, so they are safe to run in any order and safe to run
 last. The cost of getting one wrong is a wrong answer, not a dead
 bridge.
 
-### Carried into 2026.09.13.3: five fixes whose symptom was silence
+### Carried into 2026.09.16.2: five fixes whose symptom was silence
 
 These came out of one live session and a bug report, and they share a
 shape: the tool reported success, the board or sheet did not agree, and
@@ -207,8 +207,8 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.09.13.3`, `version_match` =
-`true`, and `mcp_server_version` = `0.5.0`.
+Expect `altium_script_version` = `2026.09.16.2`, `version_match` =
+`true`, and `mcp_server_version` = `0.6.0`.
 
 Those are two different versions and they fail differently.
 `altium_script_version` is the Pascal that Altium compiled;
