@@ -237,15 +237,20 @@ def _svg_instance(
             # passives (R/C/etc) since their pin names are usually "1"/"2".
             pin = inst.symbol.pin_by_id(endpoint.pin_id)
             if pin and pin.name and pin.name not in (pin.designator, ""):
-                # Place name 40 mils inside the body along pin direction.
-                name_x = body_x + 80 * dx
-                name_y = body_y + 80 * dy
+                # INSIDE the body. (dx, dy) points OUT along the pin, from
+                # the body edge to the wire end, so the name steps against
+                # it. Stepping with it drew every name on its own pin line,
+                # on top of the pin number, which is not where Altium puts
+                # a pin name and made every IC in a preview look cluttered.
+                name_x = body_x - 40 * dx
+                name_y = body_y - 40 * dy
                 nx, ny = _mils_to_svg(name_x, name_y, sheet, options)
-                # Anchor based on pin direction so the label reads inward.
-                anchor = "middle"
+                # Grow away from the edge, into the body.
+                anchor = "end" if dx > 0 else "start" if dx < 0 else "middle"
                 out.append(
                     f'<text x="{nx:.1f}" y="{ny:.1f}" font-size="9" '
-                    f'fill="#444" text-anchor="{anchor}">'
+                    f'fill="#444" text-anchor="{anchor}" '
+                    f'dominant-baseline="middle">'
                     f'{html_escape(pin.name)}</text>'
                 )
     out.append("</g>")  # close component group

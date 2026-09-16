@@ -360,16 +360,14 @@ def build_canvas_from_plan(
             est = _bbox_half(_pins.get(refdes, 2))
             if hx > est or hy > est:
                 shove_half[refdes] = (max(hx, est), max(hy, est))
-        placements, residual_overlaps = _hard_shove_pass(
-            plan, placements, body_half=shove_half)
-        if residual_overlaps:
-            result.notes.append(PipelineNote(
-                severity="warning",
-                text=(
-                    f"post-priors shove left {residual_overlaps} residual "
-                    f"overlap(s); wires may pass through component bodies"
-                ),
-            ))
+        # The shove's own residual count is not reported: it judges the
+        # shove's size model at this point, and every pass below still
+        # moves parts. Overlaps are counted on the finished canvas (4d).
+        # Parts beside the same IC face slide past each other rather than
+        # one being pushed round the IC's corner (see _hard_shove_pass).
+        placements, _shove_residual = _hard_shove_pass(
+            plan, placements, body_half=shove_half,
+            face_of=_satellite_faces(plan, placements, symbols))
 
         # 2c'. Re-tighten crystal oscillator clusters. The shove sizes
         # parts by pin count, so it reads a crystal's two small load caps
@@ -614,6 +612,27 @@ def build_canvas_from_plan(
     result.power_port_count = len(canvas.power_ports)
     result.junction_count = len(canvas.junctions)
 
+    # 4d. Overlapping bodies, counted on the FINISHED canvas with the
+    # scorer's own test. An overlap is a drawing fault rather than a wrong
+    # netlist, so the build still succeeds and this warning is the only
+    # signal a caller gets. It used to be the overlap shove's residual
+    # count, which is wrong in both directions because the passes after the
+    # shove still move parts. MEASURED on the KiCad power-supply-2 demo: one
+    # layout finished with two bodies overlapping and no warning, another
+    # warned of two overlaps on a canvas that finished with none. The polish
+    # rebuild skips the shove, so the layout actually returned never warned.
+    from eda_agent.design.quality import _count_body_overlaps
+    for _sheet in plan.sheets:
+        _overlaps = _count_body_overlaps(
+            [inst.world_bbox() for inst in canvas.instances_on(_sheet.name)])
+        if _overlaps:
+            result.notes.append(PipelineNote(
+                severity="warning",
+                text=(f"{_overlaps} residual overlap(s) between component "
+                      f"bodies on sheet {_sheet.name!r}; wires may pass "
+                      f"through component bodies"),
+            ))
+
     # 5. Canvas validation. Catch the class of bug where a plan net
     # silently failed to produce any wire/label/port on the canvas
     # (would emit to Altium as a no-op, then surface much later as an
@@ -763,7 +782,163 @@ def _count_pin_side_violations(
             sat_side = (sat_cx > ic_cx) - (sat_cx < ic_cx)
             if sat_side != 0 and sat_side != pin_side:
                 violations += 1
-    return violations
+    # Above or below counts too. The test above compares x only, so a part
+    # parked over or under its IC passed it. MEASURED on the KiCad 10 demo
+    # sheets, over the same parts a human drew: a small part wired on signal
+    # nets to one IC sits beyond its pins' face 89% of the time for humans
+    # and 67% for this engine, with 30% of the engine's above or below it
+    # against 7% of the humans'. Counting them moved selection to 71% over
+    # 27 sheets for 2 more crossings in total.
+    return violations + _count_perpendicular_satellites(canvas, plan)
+
+
+def _count_perpendicular_satellites(
+    canvas: SchematicCanvas, plan: DesignPlan
+) -> int:
+    """Small parts drawn beside the wrong FACE of the IC they wire to.
+
+    A part with at most three pins whose signal nets reach exactly one IC,
+    on IC pins that all sit on one face of its body, belongs beyond that
+    face. It is counted when its centre lies beyond one of the two ADJACENT
+    faces instead. The opposite face is already a violation in
+    ``_count_pin_side_violations``, and a centre inside the IC's outline is
+    an overlap, not a side.
+
+    Rail caps are not counted, and not by oversight: power and ground nets
+    carry no side here, and the same measurement found humans put 43% of
+    single-IC rail caps above or below their IC. Penalising the far side
+    for them only moved them there and added crossings.
+    """
+    pin_counts: dict[str, int] = {}
+    nets_of: dict[str, list] = {}
+    for net in plan.nets:
+        for pr in net.pins:
+            pin_counts[pr.refdes] = pin_counts.get(pr.refdes, 0) + 1
+            nets_of.setdefault(pr.refdes, []).append(net)
+    inst_by_refdes = {i.refdes: i for i in canvas.instances}
+    ics = {r for r, n in pin_counts.items()
+           if n >= 4 and r in inst_by_refdes}
+
+    def pin_face(x: int, y: int, bb) -> Optional[str]:
+        if x <= bb.x_min:
+            return "L"
+        if x >= bb.x_max:
+            return "R"
+        if y <= bb.y_min:
+            return "B"
+        if y >= bb.y_max:
+            return "T"
+        return None
+
+    def part_face(part_bb, bb) -> Optional[str]:
+        # Beyond a corner, the face it is further past.
+        cx = (part_bb.x_min + part_bb.x_max) / 2.0
+        cy = (part_bb.y_min + part_bb.y_max) / 2.0
+        gx = (cx - bb.x_max if cx > bb.x_max
+              else cx - bb.x_min if cx < bb.x_min else 0.0)
+        gy = (cy - bb.y_max if cy > bb.y_max
+              else cy - bb.y_min if cy < bb.y_min else 0.0)
+        if not gx and not gy:
+            return None
+        if abs(gx) >= abs(gy):
+            return "R" if gx > 0 else "L"
+        return "T" if gy > 0 else "B"
+
+    opposite = {"L": "R", "R": "L", "T": "B", "B": "T"}
+    count = 0
+    for refdes, n_pins in pin_counts.items():
+        inst = inst_by_refdes.get(refdes)
+        if inst is None or refdes in ics or n_pins > 3:
+            continue
+        signals = [n for n in nets_of[refdes]
+                   if not (_is_power_net(n) or _is_ground_net(n))]
+        ic_pins = [(pr.refdes, pr.pin) for n in signals for pr in n.pins
+                   if pr.refdes in ics]
+        if len({r for r, _ in ic_pins}) != 1:
+            continue
+        ic_inst = inst_by_refdes[ic_pins[0][0]]
+        if ic_inst.sheet != inst.sheet:
+            continue
+        bb = ic_inst.world_bbox()
+        faces = set()
+        for ic_refdes, pin in ic_pins:
+            ep = canvas.pin_world(ic_refdes, pin)
+            if ep is not None:
+                faces.add(pin_face(ep.x, ep.y, bb))
+        faces.discard(None)
+        if len(faces) != 1:
+            continue
+        face = faces.pop()
+        mine = part_face(inst.world_bbox(), bb)
+        if mine is not None and mine not in (face, opposite[face]):
+            count += 1
+    return count
+
+
+def _satellite_faces(
+    plan: DesignPlan,
+    placements: list,
+    symbols: dict,
+) -> dict[str, tuple[str, str]]:
+    """Small parts that belong beside one face of one IC, as placed.
+
+    ``{refdes: (ic refdes, face)}`` for every part with at most three pins
+    whose signal nets reach exactly one IC, on IC pins that all sit on one
+    face of its body. Faces are "L", "R", "T" and "B" in the world frame, so
+    the IC's rotation and flip count. ``symbols`` is keyed like the
+    pipeline's extraction, by (lib_path, lib_ref).
+
+    Feeds the overlap shove's same-face rule. It picks parts out the way
+    ``_count_perpendicular_satellites`` does on the finished canvas, but
+    from placements, before any wire exists.
+    """
+    pin_counts: dict[str, int] = {}
+    nets_of: dict[str, list] = {}
+    for net in plan.nets:
+        for pr in net.pins:
+            pin_counts[pr.refdes] = pin_counts.get(pr.refdes, 0) + 1
+            nets_of.setdefault(pr.refdes, []).append(net)
+    pos = {p.refdes: p for p in placements}
+    symbol_of = {part.refdes: symbols.get((part.lib_path or "", part.lib_ref))
+                 for part in plan.parts}
+    ics = {r for r, n in pin_counts.items() if n >= 4 and r in pos}
+
+    out: dict[str, tuple[str, str]] = {}
+    for refdes, n_pins in pin_counts.items():
+        if refdes in ics or refdes not in pos or n_pins > 3:
+            continue
+        signals = [n for n in nets_of[refdes]
+                   if not (_is_power_net(n) or _is_ground_net(n))]
+        ic_pins = [(pr.refdes, str(pr.pin)) for n in signals for pr in n.pins
+                   if pr.refdes in ics]
+        if len({r for r, _ in ic_pins}) != 1:
+            continue
+        ic = ic_pins[0][0]
+        model, ic_place = symbol_of.get(ic), pos[ic]
+        if model is None or ic_place.sheet != pos[refdes].sheet:
+            continue
+        flipped = getattr(ic_place, "flipped", False)
+        ox, oy = _center_offset(model, ic_place.rotation, flipped)
+        inst = SymbolInstance(refdes=ic, symbol=model,
+                              x=ic_place.x_mils - ox, y=ic_place.y_mils - oy,
+                              rotation=ic_place.rotation, flipped=flipped)
+        bb = inst.world_bbox()
+        faces = set()
+        for _, pin in ic_pins:
+            ep = inst.pin_world(pin)
+            if ep is None:
+                continue
+            if ep.x <= bb.x_min:
+                faces.add("L")
+            elif ep.x >= bb.x_max:
+                faces.add("R")
+            elif ep.y <= bb.y_min:
+                faces.add("B")
+            elif ep.y >= bb.y_max:
+                faces.add("T")
+        if len(faces) == 1:
+            out[refdes] = (ic, faces.pop())
+    return out
 
 
 def _count_polarity_inversions(
@@ -1529,6 +1704,27 @@ def build_best_canvas_from_plan(
                 f"{type(pol_exc).__name__}: {pol_exc}"),
         ))
 
+    # Loose wire ends, cut on the WINNER only, for the same reason as the
+    # stub upgrade below. MEASURED with the full sweep: cutting inside every
+    # candidate build changed the scores the selection compares, and
+    # changed the winner on the buck benchmark and the 555 test board. Both
+    # came out worse: buck's score went from 710 to 747, and the 555 went
+    # from 1 wire crossing to 6. Cut here, the choice stays as it was.
+    trimmed = sum(
+        _trim_dangling_wires(best_result.canvas, s.name)
+        for s in best_result.canvas.sheets)
+    if trimmed:
+        # Text was placed around wire that is now gone; settle it against
+        # what is left, as the stub upgrade does after it moves glyphs.
+        from eda_agent.design.text_placement import place_instance_text
+        place_instance_text(best_result.canvas)
+        best_result.notes.append(PipelineNote(
+            severity="info",
+            text=(
+                f"{trimmed} wire segment(s) cut back or removed because "
+                f"they ended in empty space"),
+        ))
+
     # LAST, on the winner only. Moving a repair glyph off its pin onto a
     # short stub is how the sheet is drawn by hand, but it adds wire, and
     # wire drawn before this point would enter the scored objective and
@@ -1560,6 +1756,11 @@ def build_best_canvas_from_plan(
                 "repair-port stub upgrade failed and was skipped: "
                 f"{type(stub_exc).__name__}: {stub_exc}"),
         ))
+    # The counts were taken inside the candidate build; the two passes above
+    # change the winner's wires afterwards.
+    best_result.wire_count = len(best_result.canvas.wires)
+    best_result.junction_count = len(best_result.canvas.junctions)
+    best_result.power_port_count = len(best_result.canvas.power_ports)
     return best_result
 
 
@@ -2044,6 +2245,136 @@ def _point_on_segment(
         lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
         return lo <= px <= hi
     return False  # diagonal segments not used by the router
+
+
+def _trim_dangling_wires(canvas: SchematicCanvas, sheet_name: str) -> int:
+    """Cut back wire that ends in empty space, then recount junction dots.
+
+    Every pin gets a stub before its net is routed (pass 1 of
+    ``_wire_sheet``), and the route does not always use it: it can join
+    at the pin itself, or branch off part way along the stub. What is
+    left then ends in empty space, and the fourth pin down an IC side
+    carries a 600-mil stub, which reads as a connection to whatever it
+    points at.
+
+    MEASURED before this pass, counting wire ends that touch nothing: the
+    blinker555 benchmark plan drew 4 on its base layout, and buck and mcu
+    3 each on their selected layouts. The shapes were a stub the route
+    never used, the tail of a stub past the point where the route
+    branched off it, and a stub pointing away from a route that arrived
+    at the pin from another side.
+
+    A wire end is USED when a pin end, a net label, a power port, a bus
+    entry or another wire (its end or its span) touches it. A wire keeps
+    the span between the outermost used points on it, counting a junction
+    dot where another wire crosses it, and a wire with fewer than two is
+    removed. Repeated until nothing changes, because removing one segment
+    frees the end of the one it joined.
+
+    Run on the chosen layout only, from ``build_best_canvas_from_plan``,
+    never inside a candidate build: cutting wire changes a candidate's
+    score, and that changed which layout won.
+
+    Junction dots are recounted only when something was cut: a dot needs
+    three arms on one net, and cutting a tail past a branch leaves a
+    corner. A sheet with nothing to cut keeps its dots as they were.
+
+    Returns the number of wire segments removed or shortened.
+    """
+    fixed: set[tuple[int, int]] = set()
+    for inst in canvas.instances_on(sheet_name):
+        fixed.update((e.x, e.y) for e in inst.all_pin_endpoints())
+    fixed.update((lab.x, lab.y) for lab in canvas.labels_on(sheet_name))
+    fixed.update((p.x, p.y) for p in canvas.power_ports_on(sheet_name))
+    for be in canvas.bus_entries_on(sheet_name):
+        fixed.add((be.x1, be.y1))
+        fixed.add((be.x2, be.y2))
+    # A junction dot is a connection where two wires CROSS with neither
+    # ending there, so a wire must be kept up to it. MEASURED on the buck
+    # benchmark: J1.1's stub was crossed by a VIN wire at a dot 100 mils
+    # along, its far end touched nothing, and counting wire ends alone
+    # removed the whole stub and cut J1.1 off the rail. A dot counts only
+    # where another wire passes, so a stale one at a bare end keeps nothing.
+    dots = {(j.x, j.y) for j in canvas.junctions_on(sheet_name)}
+
+    wires: dict[int, WireSegment] = {
+        i: w for i, w in enumerate(canvas.wires) if w.sheet == sheet_name}
+    cut = 0
+    changed = True
+    while changed:
+        changed = False
+        for i in list(wires):
+            if i not in wires:
+                continue
+            w = wires[i]
+            if w.x1 != w.x2 and w.y1 != w.y2:
+                continue  # diagonal; the router never draws one
+            rest = [o for j, o in wires.items() if j != i]
+
+            def _touched(px: int, py: int) -> bool:
+                return (px, py) in fixed or any(
+                    _point_on_segment(px, py, o.x1, o.y1, o.x2, o.y2)
+                    for o in rest)
+
+            a_used = _touched(w.x1, w.y1)
+            b_used = _touched(w.x2, w.y2)
+            if a_used and b_used:
+                continue
+            used = [pt for pt in fixed if _point_on_segment(
+                pt[0], pt[1], w.x1, w.y1, w.x2, w.y2)]
+            used += [
+                pt for pt in dots
+                if _point_on_segment(pt[0], pt[1], w.x1, w.y1, w.x2, w.y2)
+                and any(_point_on_segment(pt[0], pt[1], o.x1, o.y1, o.x2, o.y2)
+                        for o in rest)
+            ]
+            for o in rest:
+                for pt in ((o.x1, o.y1), (o.x2, o.y2)):
+                    if _point_on_segment(pt[0], pt[1], w.x1, w.y1, w.x2, w.y2):
+                        used.append(pt)
+            if a_used:
+                used.append((w.x1, w.y1))
+            if b_used:
+                used.append((w.x2, w.y2))
+            ends = sorted(set(used))
+            if len(ends) < 2:
+                del wires[i]
+            else:
+                (nx1, ny1), (nx2, ny2) = ends[0], ends[-1]
+                if {(nx1, ny1), (nx2, ny2)} == {(w.x1, w.y1), (w.x2, w.y2)}:
+                    continue  # nothing left to cut; also what stops a loop
+                wires[i] = replace(w, x1=nx1, y1=ny1, x2=nx2, y2=ny2)
+            cut += 1
+            changed = True
+
+    if not cut:
+        return 0
+    canvas.wires = [
+        wires[i] if w.sheet == sheet_name else w
+        for i, w in enumerate(canvas.wires)
+        if w.sheet != sheet_name or i in wires
+    ]
+
+    sheet_wires = canvas.wires_on(sheet_name)
+
+    def _arms(px: int, py: int, net: str) -> int:
+        arms = 0
+        for w in sheet_wires:
+            if w.net != net:
+                continue
+            if (px, py) in ((w.x1, w.y1), (w.x2, w.y2)):
+                arms += 1
+            elif _point_on_segment(px, py, w.x1, w.y1, w.x2, w.y2):
+                arms += 2
+        return arms
+
+    canvas.junctions = [
+        j for j in canvas.junctions
+        if j.sheet != sheet_name or any(
+            _arms(j.x, j.y, w.net) >= 3 for w in sheet_wires
+            if _point_on_segment(j.x, j.y, w.x1, w.y1, w.x2, w.y2))
+    ]
+    return cut
 
 
 def _validate_canvas_against_plan(
@@ -3111,9 +3442,22 @@ def _clearance_to_bodies(
     return best
 
 
+def _glyph_box(x: int, y: int, text: str) -> tuple[int, int, int, int]:
+    """A power-port glyph's footprint: the bar or symbol plus its name.
+
+    Uses the text placer's own character metrics rather than a second set,
+    so the collision checks and the text placer agree on what overlaps.
+    """
+    from eda_agent.design.text_placement import CHAR_W, LINE_H
+
+    half = max(100, (CHAR_W * max(1, len(text))) // 2)
+    return (x - half, y - LINE_H, x + half, y + LINE_H)
+
+
 def _glyph_would_hit_text(
     x: int, y: int, text: str, canvas: SchematicCanvas, sheet: str,
     skip_index: int,
+    foreign_pin_boxes: Optional[list[tuple[int, int, int, int]]] = None,
 ) -> bool:
     """True if a glyph at (x, y) would collide with text already placed.
 
@@ -3123,6 +3467,12 @@ def _glyph_would_hit_text(
     its account would forfeit the improvement for a collision that is
     about to be resolved anyway. Net labels are never moved, so a glyph
     dropped on one stays there.
+
+    ``foreign_pin_boxes`` are the pin lines of OTHER nets, and of pins on
+    no net, each widened into a box. A glyph drawn across one reads as a
+    connection to that pin, and nothing downstream moves glyphs, so a
+    caller that knows which pins are foreign passes them in. None checks
+    no pins, as before this parameter existed.
 
     Extents use the text placer's own character metrics rather than a
     second set, so the two agree on what overlaps.
@@ -3134,14 +3484,14 @@ def _glyph_would_hit_text(
         x1 = tx - w if just == 2 else tx
         return (x1, ty, x1 + w, ty + LINE_H)
 
-    # The glyph's own footprint: the bar/symbol plus its name underneath.
-    half = max(100, (CHAR_W * max(1, len(text))) // 2)
-    mine = (x - half, y - LINE_H, x + half, y + LINE_H)
+    mine = _glyph_box(x, y, text)
 
     def _hits(box) -> bool:
         return not (mine[2] <= box[0] or box[2] <= mine[0]
                     or mine[3] <= box[1] or box[3] <= mine[1])
 
+    if any(_hits(box) for box in foreign_pin_boxes or ()):
+        return True
     for lab in canvas.labels:
         if lab.sheet != sheet:
             continue
@@ -3156,9 +3506,7 @@ def _glyph_would_hit_text(
         # 200-mil stub, which silently rejected every vertical move.
         if i == skip_index or other.sheet != sheet:
             continue
-        o_half = max(100, (CHAR_W * max(1, len(other.text))) // 2)
-        if _hits((other.x - o_half, other.y - LINE_H,
-                  other.x + o_half, other.y + LINE_H)):
+        if _hits(_glyph_box(other.x, other.y, other.text)):
             return True
     return False
 
@@ -3255,6 +3603,24 @@ def upgrade_repair_ports_to_stubs(
                 and w.net == net.name
                 for pt in ((w.x1, w.y1), (w.x2, w.y2))
             }
+            # Pin lines of every OTHER net, and of pins on no net. A glyph
+            # parked across one reads as a connection to that pin, and a
+            # 200-mil stub can carry a glyph off its own pin onto the line
+            # of the pin beside it. MEASURED at the full sweep on the 555
+            # test board: without this gate the pass left one glyph across
+            # a foreign pin line, with it none.
+            foreign_pin_boxes: list[tuple[int, int, int, int]] = []
+            for inst in canvas.instances_on(sheet):
+                for ep in inst.all_pin_endpoints():
+                    if pin_net.get((ep.x, ep.y)) == net.name:
+                        continue
+                    pdx, pdy = _pin_direction_vector(ep.orientation)
+                    bx, by = ep.x - ep.length * pdx, ep.y - ep.length * pdy
+                    foreign_pin_boxes.append((
+                        min(ep.x, bx) - _PIN_OBSTACLE_HALF,
+                        min(ep.y, by) - _PIN_OBSTACLE_HALF,
+                        max(ep.x, bx) + _PIN_OBSTACLE_HALF,
+                        max(ep.y, by) + _PIN_OBSTACLE_HALF))
             for idx, port in enumerate(canvas.power_ports):
                 if port.sheet != sheet or port.text != net.name:
                     continue
@@ -3265,11 +3631,6 @@ def upgrade_repair_ports_to_stubs(
                 dx, dy = _pin_direction_vector(pin_dir.get(key, 0))
                 if (dx, dy) == (0, 0):
                     continue
-                length = _adaptive_stub_length(
-                    port.x, port.y, dx, dy, bboxes,
-                    base_length=_REPAIR_STUB_LEN_MILS)
-                ex = port.x + dx * length
-                ey = port.y + dy * length
                 foreign_points = {
                     pt for pt, owner in pin_net.items()
                     if owner != net.name
@@ -3282,14 +3643,33 @@ def upgrade_repair_ports_to_stubs(
                     (w.x1, w.y1, w.x2, w.y2) for w in canvas.wires
                     if w.sheet == sheet and w.net != net.name
                 ]
+                length = _adaptive_stub_length(
+                    port.x, port.y, dx, dy, bboxes,
+                    base_length=_REPAIR_STUB_LEN_MILS)
+                ex = port.x + dx * length
+                ey = port.y + dy * length
                 if not _repair_stub_is_safe(port.x, port.y, ex, ey,
                                             foreign_points, foreign_wires):
                     continue
                 # Net labels are NOT moved by the text placer, so a glyph
                 # landing on one stays landed on it. Checked here because
-                # nothing downstream will clean it up.
-                if _glyph_would_hit_text(ex, ey, port.text, canvas, sheet,
-                                         skip_index=idx):
+                # nothing downstream will clean it up. The same goes for a
+                # glyph dropped across another net's pin line.
+                #
+                # Only a pin line the glyph is not ALREADY across counts: a
+                # stub that keeps it across the same line makes nothing
+                # worse. MEASURED at the full sweep: every move refused for
+                # a pin line on the mcu board (three VDD_3V3 glyphs) kept
+                # the glyph across the one line it was on and added none,
+                # so refusing them left three glyphs crowded on their pins.
+                gx1, gy1, gx2, gy2 = _glyph_box(port.x, port.y, port.text)
+                pin_lines_not_yet_crossed = [
+                    b for b in foreign_pin_boxes
+                    if gx2 <= b[0] or b[2] <= gx1
+                    or gy2 <= b[1] or b[3] <= gy1]
+                if _glyph_would_hit_text(
+                        ex, ey, port.text, canvas, sheet, skip_index=idx,
+                        foreign_pin_boxes=pin_lines_not_yet_crossed):
                     continue
                 # And it must not make the drawing worse. Rejects nothing
                 # on the current benchmark boards; kept because the stub
@@ -3486,8 +3866,16 @@ def _ic_pin_offsets(
         s = symbols.get((part.lib_path, part.lib_ref))
         if s is None:
             continue
+        # From the body CENTRE, not the symbol origin: both placers add the
+        # offset to the IC's centre and read the pin's side from its sign. A
+        # real library symbol anchors at a corner. MEASURED on a TPS54331D
+        # whose origin sits on the body's left edge: offsets taken from the
+        # origin put every left-side pin at x 0 and every right-side pin at
+        # +1300, so no part was ever sent to the chip's left. The synthetic
+        # benchmark symbols are centred on their origin, where the two agree.
+        cx, cy = _center_offset(s, 0)
         inst = SymbolInstance(refdes=part.refdes, symbol=s, x=0, y=0, rotation=0)
         out[part.refdes] = {
-            ep.pin_id: (ep.x, ep.y) for ep in inst.all_pin_endpoints()
+            ep.pin_id: (ep.x - cx, ep.y - cy) for ep in inst.all_pin_endpoints()
         }
     return out

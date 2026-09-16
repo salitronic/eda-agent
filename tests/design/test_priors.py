@@ -842,6 +842,65 @@ def test_a_slot_on_top_of_another_part_is_refused():
     assert all(p.x_mils == 4000 for p in others), "the rest still tightened"
 
 
+def test_a_slot_too_close_to_another_banks_cap_is_refused():
+    """Two banks re-seat one after the other, so one can land on the other.
+
+    MEASURED on the KiCad power-supply-2 demo: the slot check skipped every
+    banked cap rather than only the cap's own bank, and C309 was re-seated
+    100 mils from C334 of a neighbouring bank. Nothing after this pass moves
+    either of them apart.
+
+    The other bank's caps also have to be judged where they sit NOW. U1's
+    bank goes first and moves C3 in from 600 mils away, so a check against
+    where C3 started would still let C5 in.
+    """
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.plan import DesignPlan
+    from eda_agent.design.priors import resnap_decoupling_bank
+
+    def pins(*refs):
+        return [{"refdes": r, "pin": p} for r, p in refs]
+
+    at = {"U1": (2000, 3000), "U2": (6000, 3000),
+          # U1's bank tightens into a column at x 4000, y 2600 to 3400,
+          # which brings C3 in from (4600, 3100) to (4000, 3400).
+          "C1": (4000, 3000), "C2": (3900, 2000), "C3": (4600, 3100),
+          # U2's bank tightens into the column above, y 3800 to 4600, which
+          # would put C5 400 mils from C3: closer than two bodies outside
+          # one bank may sit.
+          "C4": (4000, 4200), "C5": (4700, 3800), "C6": (3900, 4700)}
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": r[0], "lib_path": "/x.SchLib"}
+                  for r in at],
+        "nets": [
+            {"name": "VA", "is_power": True,
+             "pins": pins(("U1", "1"), ("U1", "2"), ("U1", "3"),
+                          ("C1", "1"), ("C2", "1"), ("C3", "1"))},
+            {"name": "VB", "is_power": True,
+             "pins": pins(("U2", "1"), ("U2", "2"), ("U2", "3"),
+                          ("C4", "1"), ("C5", "1"), ("C6", "1"))},
+            {"name": "GND", "is_ground": True,
+             "pins": pins(("U1", "4"), ("U2", "4"),
+                          *[(f"C{i}", "2") for i in range(1, 7)])},
+        ],
+    })
+    before = [PlacedPart(refdes=r, sheet="main", x_mils=x, y_mils=y,
+                         rotation=0 if r.startswith("U") else 270)
+              for r, (x, y) in at.items()]
+    body_half = {r: (300, 300) if r.startswith("U") else (80, 80) for r in at}
+
+    out = {p.refdes: (p.x_mils, p.y_mils)
+           for p in resnap_decoupling_bank(plan, before, body_half=body_half)}
+    assert (out["C2"], out["C1"], out["C3"]) == \
+        ((4000, 2600), (4000, 3000), (4000, 3400)), "U1's bank tightened"
+    assert out["C5"] == at["C5"], (
+        f"C5 was re-seated to {out['C5']}, against U1's bank")
+    assert (out["C4"], out["C6"]) == ((4000, 4200), (4000, 4600)), (
+        "the rest of U2's bank still tightened")
+
+
 
 # ------------- one oscillator per cap pair, and per IC ---------------------
 

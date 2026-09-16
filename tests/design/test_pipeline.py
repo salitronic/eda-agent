@@ -1511,6 +1511,229 @@ def test_corner_origin_symbol_placed_by_body_center():
     assert abs(cy - 4000) <= 300, f"body centre y {cy} far from 4000"
 
 
+def test_ic_pin_offsets_are_measured_from_the_body_centre():
+    """Both pin-aware placers read which side a pin is on from its offset.
+
+    ``_force_directed_layout`` pulls a part toward IC centre + offset, and
+    ``_pin_side_adjust`` puts a part left or right of the IC by the sign of
+    the mean x-offset, so an offset measured from anywhere but the body
+    centre gets sides wrong. Measured on a real TPS54331D, whose origin sits
+    on the body's left edge: every left-side pin came back at x-offset 0 and
+    every right-side pin at +1300, so no part was ever moved to the chip's
+    left. The synthetic benchmark symbols are drawn centred on their origin,
+    where the two frames agree, which is why no benchmark board showed it.
+    """
+    from eda_agent.design.pipeline import _ic_pin_offsets
+    from eda_agent.design.sugiyama import _pin_side_adjust
+
+    # Body in +x / -y of the origin, as a real library draws it.
+    corner_ic = SymbolModel(
+        lib_path=_LIB, lib_ref="CORNER_IC",
+        pins=(
+            SymbolPin(designator="1", name="IN", x=300, y=-300,
+                      orientation=2, length=300, electrical_type="input"),
+            SymbolPin(designator="2", name="OUT", x=1500, y=-300,
+                      orientation=0, length=300, electrical_type="output"),
+            SymbolPin(designator="3", name="GND", x=300, y=-1700,
+                      orientation=2, length=300, electrical_type="power"),
+            SymbolPin(designator="4", name="VCC", x=1500, y=-1700,
+                      orientation=0, length=300, electrical_type="power"),
+        ),
+        body_bbox=SymbolBBox(x_min=300, y_min=-1900, x_max=1500, y_max=0),
+    )
+    syms = {(_LIB, "CORNER_IC"): corner_ic, (_LIB, "RES"): _passive("RES")}
+
+    def part(refdes, lib_ref):
+        return {"refdes": refdes, "lib_ref": lib_ref, "lib_path": _LIB,
+                "status": "existing", "sheet": "main"}
+
+    def pins(*refs):
+        return [{"refdes": r, "pin": p} for r, p in refs]
+
+    plan = DesignPlan.model_validate({
+        "spec": "x", "summary": "x",
+        "sheets": [{"name": "main"}],
+        "parts": [part("U1", "CORNER_IC"), part("R1", "RES"),
+                  part("R2", "RES")],
+        "nets": [
+            {"name": "IN", "pins": pins(("U1", "1"), ("R1", "1"))},
+            {"name": "OUT", "pins": pins(("U1", "2"), ("R2", "1"))},
+            {"name": "GND", "is_ground": True,
+             "pins": pins(("U1", "3"), ("R1", "2"))},
+            {"name": "VCC", "is_power": True,
+             "pins": pins(("U1", "4"), ("R2", "2"))},
+        ],
+    })
+
+    offsets = _ic_pin_offsets(plan, MockExtractor(syms))
+    # Body centre (900, -950); each wire end sits 300 beyond its pin root.
+    assert offsets == {"U1": {"1": (-900, 650), "2": (900, 650),
+                              "3": (-900, -750), "4": (900, -750)}}
+
+    # Asked of the consumer directly, from a layering with both resistors in
+    # the column right of the chip. A whole layout is no check here: on this
+    # sheet the hop layering already puts R1 on the left, so it comes out
+    # the same whichever offsets it is given.
+    layers = _pin_side_adjust(plan, {"U1": 0, "R1": 1, "R2": 1}, offsets)
+    assert layers["R1"] < layers["U1"] < layers["R2"], layers
+
+
+def test_a_part_above_the_ic_face_it_wires_to_is_a_side_violation():
+    """Beside the wrong FACE is wrong, not only the far side.
+
+    MEASURED on the KiCad 10 demo sheets: humans put a small part wired to
+    one IC beyond the face its pins are on 89% of the time, this engine 67%,
+    and 30% of the engine's sat above or below. The old count compared x
+    only, so a part directly over its IC's centre cost nothing in ranking.
+    """
+    from eda_agent.design.canvas import SchematicCanvas, Sheet, SymbolInstance
+    from eda_agent.design.pipeline import (
+        PipelineResult,
+        _count_pin_side_violations,
+        _selection_rank_cost,
+    )
+
+    # Every pin on the LEFT face; wire ends at x = -300.
+    left_pins_ic = SymbolModel(
+        lib_path=_LIB, lib_ref="LEFT4",
+        pins=tuple(SymbolPin(designator=str(i), name=str(i), x=-200,
+                             y=150 - 100 * (i - 1), orientation=2,
+                             length=100, electrical_type="passive")
+                   for i in range(1, 5)),
+        body_bbox=SymbolBBox(x_min=-200, y_min=-200, x_max=200, y_max=200),
+    )
+    resistor = SymbolModel(
+        lib_path=_LIB, lib_ref="R2P",
+        pins=(SymbolPin(designator="1", name="1", x=-100, y=0, orientation=2,
+                        length=100, electrical_type="passive"),
+              SymbolPin(designator="2", name="2", x=100, y=0, orientation=0,
+                        length=100, electrical_type="passive")),
+        body_bbox=SymbolBBox(x_min=-100, y_min=-40, x_max=100, y_max=40),
+    )
+
+    def pins(*refs):
+        return [{"refdes": r, "pin": p} for r, p in refs]
+
+    plan = DesignPlan.model_validate({
+        "spec": "x", "summary": "x", "sheets": [{"name": "main"}],
+        "parts": [{"refdes": "U1", "lib_ref": "LEFT4", "lib_path": _LIB},
+                  {"refdes": "R1", "lib_ref": "R2P", "lib_path": _LIB}],
+        "nets": [
+            {"name": "SIG", "pins": pins(("U1", "1"), ("R1", "1"))},
+            {"name": "GND", "is_ground": True,
+             "pins": pins(("U1", "2"), ("U1", "3"), ("U1", "4"),
+                          ("R1", "2"))},
+        ],
+    })
+
+    def canvas_with_r1_at(x, y):
+        canvas = SchematicCanvas()
+        canvas.add_sheet(Sheet(name="main"))
+        canvas.add_instance(SymbolInstance(
+            refdes="U1", symbol=left_pins_ic, x=5000, y=5000, rotation=0))
+        canvas.add_instance(SymbolInstance(
+            refdes="R1", symbol=resistor, x=x, y=y, rotation=0))
+        return canvas
+
+    beside = canvas_with_r1_at(4000, 5000)
+    above = canvas_with_r1_at(5000, 6000)       # over the IC's centre
+    far_side = canvas_with_r1_at(6000, 5000)
+
+    assert _count_pin_side_violations(beside, plan) == 0
+    assert _count_pin_side_violations(above, plan) == 1
+    # Counted once: the far side is the x test's, not also this one's.
+    assert _count_pin_side_violations(far_side, plan) == 1
+    # And it reaches selection, at the side-violation weight.
+    assert (_selection_rank_cost(PipelineResult(canvas=above), plan)
+            - _selection_rank_cost(PipelineResult(canvas=beside), plan)) \
+        == pytest.approx(120.0)
+
+
+def _satellites_of_two_ics():
+    """U1 has every pin on its left face; U2 is the same symbol turned 180.
+
+    R1 wires only to U1, R3 only to U2, R2 to both. Returns (plan, symbols,
+    placements).
+    """
+    from eda_agent.design.layout import PlacedPart
+
+    left_pins_ic = SymbolModel(
+        lib_path=_LIB, lib_ref="LEFT4",
+        pins=tuple(SymbolPin(designator=str(i), name=str(i), x=-200,
+                             y=150 - 100 * (i - 1), orientation=2,
+                             length=100, electrical_type="passive")
+                   for i in range(1, 5)),
+        body_bbox=SymbolBBox(x_min=-200, y_min=-200, x_max=200, y_max=200),
+    )
+    resistor = SymbolModel(
+        lib_path=_LIB, lib_ref="R2P",
+        pins=(SymbolPin(designator="1", name="1", x=-100, y=0, orientation=2,
+                        length=100, electrical_type="passive"),
+              SymbolPin(designator="2", name="2", x=100, y=0, orientation=0,
+                        length=100, electrical_type="passive")),
+        body_bbox=SymbolBBox(x_min=-100, y_min=-40, x_max=100, y_max=40),
+    )
+
+    def pins(*refs):
+        return [{"refdes": r, "pin": p} for r, p in refs]
+
+    plan = DesignPlan.model_validate({
+        "spec": "x", "summary": "x", "sheets": [{"name": "main"}],
+        "parts": [{"refdes": r, "lib_ref": lib, "lib_path": _LIB}
+                  for r, lib in (("U1", "LEFT4"), ("U2", "LEFT4"),
+                                 ("R1", "R2P"), ("R2", "R2P"), ("R3", "R2P"))],
+        "nets": [
+            {"name": "A", "pins": pins(("U1", "1"), ("R1", "1"))},
+            {"name": "B", "pins": pins(("U1", "2"), ("R2", "1"))},
+            {"name": "C", "pins": pins(("U2", "2"), ("R2", "2"))},
+            {"name": "D", "pins": pins(("U2", "1"), ("R3", "1"))},
+            {"name": "GND", "is_ground": True,
+             "pins": pins(("U1", "3"), ("U1", "4"), ("U2", "3"), ("U2", "4"),
+                          ("R1", "2"), ("R3", "2"))},
+        ],
+    })
+    placements = [
+        PlacedPart(refdes=r, sheet="main", x_mils=x, y_mils=3000, rotation=rot)
+        for r, x, rot in (("U1", 3000, 0), ("U2", 7000, 180), ("R1", 2000, 0),
+                          ("R2", 5000, 0), ("R3", 8000, 0))]
+    symbols = {(_LIB, "LEFT4"): left_pins_ic, (_LIB, "R2P"): resistor}
+    return plan, symbols, placements
+
+
+def test_a_satellite_belongs_beside_its_ic_face_as_placed():
+    """The face comes from the IC's pins in the WORLD frame, rotation included.
+
+    U2 is U1's symbol turned 180, so its left-face pins sit on its right. R2
+    wires to both ICs and so belongs beside neither.
+    """
+    from eda_agent.design.pipeline import _satellite_faces
+
+    plan, symbols, placements = _satellites_of_two_ics()
+    assert _satellite_faces(plan, placements, symbols) == {
+        "R1": ("U1", "L"), "R3": ("U2", "R")}
+
+
+def test_the_overlap_shove_is_given_the_satellite_faces(monkeypatch):
+    """Covers the call site: the same-face rule does nothing unless the
+    pipeline hands the shove the faces."""
+    import eda_agent.design.pipeline as pipeline
+
+    plan, symbols, placements = _satellites_of_two_ics()
+    seen = []
+    real = pipeline._hard_shove_pass
+
+    def spy(plan_, placed, **kwargs):
+        seen.append(kwargs.get("face_of"))
+        return real(plan_, placed, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_hard_shove_pass", spy)
+    pipeline.build_canvas_from_plan(
+        plan, MockExtractor(symbols),
+        layout_overrides={p.refdes: p for p in placements},
+        strict_shorts=False)
+    assert seen == [{"R1": ("U1", "L"), "R3": ("U2", "R")}]
+
+
 def test_offgrid_symbol_pins_snap_to_wiring_grid():
     """A symbol whose local pin coordinates sit OFF the 100-mil grid must
     still end up with on-grid world pins (snapped by pin residual, not by
@@ -1903,6 +2126,105 @@ def test_gate_ignores_another_sheet():
     canvas = _fake_canvas(labels=[("THR", 1000, 1200, "other")])
     assert not _glyph_would_hit_text(
         1000, 1200, "VCC", canvas, "main", skip_index=-1)
+
+
+def test_gate_rejects_a_glyph_across_another_nets_pin_line():
+    """A glyph drawn across a foreign pin line reads as a connection to it."""
+    from eda_agent.design.pipeline import _glyph_would_hit_text
+
+    pin_line = [(950, 1150, 1250, 1250)]
+    assert _glyph_would_hit_text(
+        1000, 1200, "VCC", _fake_canvas(), "main", skip_index=-1,
+        foreign_pin_boxes=pin_line)
+    assert not _glyph_would_hit_text(
+        1000, 1600, "VCC", _fake_canvas(), "main", skip_index=-1,
+        foreign_pin_boxes=pin_line)
+
+
+def _stub_upgrade_beside_a_pin(u2_net, *, pin_length, orientation, at, body):
+    """Run the stub upgrade on one VCC repair glyph with U2's pin nearby.
+
+    U1's pin end is at (100, 0) pointing right, so a 200-mil stub carries
+    the glyph to (300, 0). U2 has a single pin at its origin, on ``u2_net``.
+    Returns (glyphs moved, where the glyph ended up).
+    """
+    from eda_agent.design.canvas import (
+        PowerPort,
+        SchematicCanvas,
+        Sheet,
+        SymbolInstance,
+    )
+    from eda_agent.design.pipeline import upgrade_repair_ports_to_stubs
+
+    def one_pin(lib_ref, pin_orientation, length, bbox):
+        return SymbolModel(
+            lib_path=_LIB, lib_ref=lib_ref,
+            pins=(SymbolPin(designator="1", name="1", x=0, y=0,
+                            orientation=pin_orientation, length=length,
+                            electrical_type="passive"),),
+            body_bbox=bbox)
+
+    canvas = SchematicCanvas()
+    canvas.add_sheet(Sheet(name="main"))
+    canvas.add_instance(SymbolInstance(
+        refdes="U1", x=0, y=0, rotation=0,
+        symbol=one_pin("U1PIN", 0, 100, SymbolBBox(x_min=-200, y_min=-100,
+                                                   x_max=0, y_max=100))))
+    canvas.add_instance(SymbolInstance(
+        refdes="U2", x=at[0], y=at[1], rotation=0,
+        symbol=one_pin("U2PIN", orientation, pin_length, body)))
+    canvas.power_ports.append(PowerPort(text="VCC", x=100, y=0, style="bar"))
+    nets = {"VCC": [("U1", "1"), ("R1", "1")],
+            "N": [("R2", "1"), ("R2", "2")]}
+    nets[u2_net].append(("U2", "1"))
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t", "sheets": [{"name": "main"}],
+        "parts": [{"refdes": r, "lib_ref": "X"}
+                  for r in ("U1", "U2", "R1", "R2")],
+        "nets": [{"name": name, "is_power": name == "VCC",
+                  "pins": [{"refdes": r, "pin": p} for r, p in refs]}
+                 for name, refs in nets.items()],
+    })
+    moved = upgrade_repair_ports_to_stubs(canvas, plan)
+    glyph = canvas.power_ports[0]
+    return moved, (glyph.x, glyph.y)
+
+
+def test_stub_upgrade_puts_no_glyph_across_another_nets_pin():
+    """Covers the pin-line gate's CALL SITE, not just its logic.
+
+    Built by hand because a board-level count cannot fail. An earlier
+    version compared glyphs across foreign pin lines with the pass on and
+    off on the benchmark boards, and still passed with the gate deleted:
+    none of those boards offers the pass such a move.
+
+    U2's pin line hangs down across where the stub would put the glyph and
+    clear of where it sits now. The same drawing runs twice, changing only
+    which net U2's pin is on, so a refusal can come from nothing but the
+    foreign-pin check.
+    """
+    # Pin line from (300, 150) down to (300, 50), clear of the stub itself.
+    beside = dict(pin_length=100, orientation=3, at=(300, 150),
+                  body=SymbolBBox(x_min=-100, y_min=0, x_max=100, y_max=200))
+    # Control: U2's pin is on VCC too, so nothing foreign is in the way.
+    assert _stub_upgrade_beside_a_pin("VCC", **beside) == (1, (300, 0))
+    # On another net, the same move would draw VCC across U2's pin.
+    assert _stub_upgrade_beside_a_pin("N", **beside) == (0, (100, 0))
+
+
+def test_stub_upgrade_still_moves_a_glyph_already_across_that_pin_line():
+    """The gate refuses a move ONTO a foreign pin line, not along one.
+
+    MEASURED at the full sweep: every move the gate refused on the mcu board
+    (three VDD_3V3 glyphs) went from lying across one foreign pin line to
+    lying across that same line and no other. Refusing them changed nothing
+    about what the glyph touches and left three glyphs crowded on their pins.
+    """
+    # Pin line from (600, 50) left to (100, 50): under the glyph where it
+    # sits and where the stub would take it, and clear of the stub itself.
+    beside = dict(pin_length=500, orientation=2, at=(600, 50),
+                  body=SymbolBBox(x_min=0, y_min=-100, x_max=200, y_max=100))
+    assert _stub_upgrade_beside_a_pin("N", **beside) == (1, (300, 0))
 
 
 def test_stub_upgrade_drops_no_glyph_onto_a_net_label():
@@ -2530,6 +2852,45 @@ def test_surviving_body_overlaps_are_reported_not_shipped_silently():
     assert said, (
         f"{overlaps} component bodies overlap and nothing in the result "
         f"says so; the caller has no way to know")
+
+
+def test_overlap_warning_describes_the_finished_canvas():
+    """The warning has to be about the sheet the caller actually gets.
+
+    It used to be the overlap shove's residual count, taken before passes
+    that still move parts, and the polish rebuild that produces the returned
+    layout skips the shove altogether. Hermetic, so it holds where the KiCad
+    demo behind the test above is not installed.
+    """
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.pipeline import build_canvas_from_plan
+
+    syms = {(_LIB, "RES"): _passive("RES")}
+
+    def pins(*refs):
+        return [{"refdes": r, "pin": p} for r, p in refs]
+
+    plan = DesignPlan.model_validate({
+        "spec": "x", "summary": "x", "sheets": [{"name": "main"}],
+        "parts": [{"refdes": r, "lib_ref": "RES", "lib_path": _LIB,
+                   "status": "existing", "sheet": "main"}
+                  for r in ("R1", "R2")],
+        "nets": [{"name": "A", "pins": pins(("R1", "1"), ("R2", "1"))},
+                 {"name": "B", "pins": pins(("R1", "2"), ("R2", "2"))}],
+    })
+
+    def warnings(r2_x):
+        overrides = {
+            r: PlacedPart(refdes=r, sheet="main", x_mils=x, y_mils=4000,
+                          rotation=0)
+            for r, x in (("R1", 4000), ("R2", r2_x))}
+        result = build_canvas_from_plan(
+            plan, MockExtractor(syms), layout_overrides=overrides,
+            polish=True, strict_shorts=False)
+        return [n.text for n in result.notes if "residual overlap" in n.text]
+
+    assert warnings(r2_x=4000), "two bodies on one spot and no warning"
+    assert not warnings(r2_x=6000), "a warning on a sheet with no overlap"
 
 
 # ---------- the polish must not swallow the passes that follow it ----------

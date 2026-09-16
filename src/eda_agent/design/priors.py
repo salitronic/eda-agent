@@ -874,7 +874,6 @@ def resnap_decoupling_bank(
         return int(round(v / grid_mils)) * grid_mils
 
     out_by_refdes = dict(by_refdes)
-    banked = {c for caps in groups.values() for c in caps}
     for anchor, caps in sorted(groups.items()):
         pts = [(by_refdes[c].x_mils, by_refdes[c].y_mils) for c in caps]
         spread_x = max(p[0] for p in pts) - min(p[0] for p in pts)
@@ -893,8 +892,8 @@ def resnap_decoupling_bank(
             slot = centre + (i - (n - 1) / 2.0) * _BANK_PITCH_MILS
             tx = _snap(slot if along_x else shared)
             ty = _snap(shared if along_x else slot)
-            if _bank_slot_is_blocked(cap, tx, ty, plan, by_refdes, banked,
-                                     pin_counts, body_half):
+            if _bank_slot_is_blocked(cap, tx, ty, plan, out_by_refdes,
+                                     set(caps), pin_counts, body_half):
                 continue
             p = by_refdes[cap]
             out_by_refdes[cap] = PlacedPart(
@@ -908,22 +907,28 @@ def _bank_slot_is_blocked(
     tx: int,
     ty: int,
     plan: DesignPlan,
-    by_refdes: dict,
-    banked: "set[str]",
+    positions: dict,
+    own_bank: "set[str]",
     pin_counts: dict,
     body_half,
 ) -> bool:
     """True when re-seating ``cap`` at (tx, ty) would sit on another part.
 
-    Only parts OUTSIDE the bank are consulted. Members of the same bank are
-    being re-spaced together at a known pitch, so measuring them against each
-    other would have every cap block its own neighbour.
+    Only parts OUTSIDE the cap's own bank are skipped. Members of the same
+    bank are being re-spaced together at a known pitch, so measuring them
+    against each other would have every cap block its own neighbour.
+
+    The caps of OTHER banks count like any other part, at ``positions``, i.e.
+    where they sit now, after any bank re-seated before this one. MEASURED on
+    the KiCad power-supply-2 demo: skipping every banked cap put C309 100
+    mils from C334 of a neighbouring bank, and nothing after this pass moved
+    either of them apart.
     """
     from eda_agent.design.force_directed import bodies_overlap
 
     mine = _half_extent(cap, body_half, pin_counts)
-    for other, op in by_refdes.items():
-        if other == cap or other in banked:
+    for other, op in positions.items():
+        if other == cap or other in own_bank:
             continue
         if bodies_overlap(tx, ty, op.x_mils, op.y_mils, mine,
                           _half_extent(other, body_half, pin_counts)):

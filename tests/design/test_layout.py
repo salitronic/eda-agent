@@ -1583,6 +1583,57 @@ def test_the_shove_places_on_the_sheet_the_plan_declares():
         f"A3 sheet")
 
 
+def test_parts_beside_the_same_ic_face_are_shoved_along_it():
+    """Crowded neighbours slide past each other, not round the IC's corner.
+
+    MEASURED on the KiCad 10 demo sheets: most parts that lost their side of
+    an IC lost it in this pass, pushed across the face by a neighbour on the
+    same face along whichever axis overlapped less. Two parts bound to one
+    face may now only separate along it.
+    """
+    from eda_agent.design.force_directed import _hard_shove_pass, _same_face_axis
+    from eda_agent.design.layout import PlacedPart
+    from eda_agent.design.plan import DesignPlan
+
+    plan = DesignPlan.model_validate({
+        "spec": "t", "summary": "t",
+        "sheets": [{"name": "main", "size": "A4"}],
+        "parts": [{"refdes": r, "lib_ref": "R", "lib_path": "/x.SchLib"}
+                  for r in ("R1", "R2")],
+        "nets": [{"name": "N", "pins": [{"refdes": "R1", "pin": "1"},
+                                        {"refdes": "R2", "pin": "1"}]}],
+    })
+    # Two tall parts exactly on top of each other: the x overlap is the
+    # shallower, so an unrestricted shove separates them in x.
+    half = {"R1": (40, 100), "R2": (40, 100)}
+
+    def shove(face_of):
+        before = [PlacedPart(refdes=r, sheet="main", x_mils=3000, y_mils=4000,
+                             rotation=0) for r in ("R1", "R2")]
+        out, residual = _hard_shove_pass(plan, before, body_half=half,
+                                         face_of=face_of)
+        return {p.refdes: (p.x_mils, p.y_mils) for p in out}, residual
+
+    free, _ = shove(None)
+    assert {x for x, _ in free.values()} != {3000}, (
+        "control: the unrestricted shove no longer moves them in x")
+
+    left, residual = shove({"R1": ("U1", "L"), "R2": ("U1", "L")})
+    assert residual == 0
+    assert all(x == 3000 for x, _ in left.values()), left
+
+    top, residual = shove({"R1": ("U1", "T"), "R2": ("U1", "T")})
+    assert residual == 0
+    assert all(y == 4000 for _, y in top.values()), top
+
+    # Anything short of the same face of the same IC is not restricted.
+    assert _same_face_axis("R1", "R2", {"R1": ("U1", "L"),
+                                        "R2": ("U2", "L")}) is None
+    assert _same_face_axis("R1", "R2", {"R1": ("U1", "L"),
+                                        "R2": ("U1", "B")}) is None
+    assert _same_face_axis("R1", "R2", {"R1": ("U1", "L")}) is None
+
+
 def test_the_two_overlap_tests_agree():
     """``bodies_overlap`` and ``_overlap_pair`` must answer alike.
 
