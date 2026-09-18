@@ -14,6 +14,17 @@ Begin
     Result := Round(Coord / 10000);
 End;
 
+{ sub-mil coordinates: local patch 2026-09-18 }
+Function MilsToCoordF(Mils : Double) : TCoord;
+Begin
+    Result := Round(Mils * 10000);  // 1 mil = 10000 internal units, keeps 1e-4 mil
+End;
+
+Function CoordToMilsF(Coord : TCoord) : Double;
+Begin
+    Result := Coord / 10000;
+End;
+
 Function MMToCoord(MM : Double) : TCoord;
 Begin
     Result := Round(MM * 10000000 / 25.4);

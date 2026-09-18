@@ -4771,7 +4771,8 @@ Var
     Via : IPCB_Via;
     XStr, YStr, NetStr, SizeStr, HoleSizeStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
-    ViaX, ViaY, ViaSize, ViaHole : Integer;
+    ViaX, ViaY : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    ViaSize, ViaHole : Integer;
     LowLayer, HighLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -4795,8 +4796,8 @@ Begin
         Exit;
     End;
 
-    ViaX := StrToIntDef(XStr, 0);
-    ViaY := StrToIntDef(YStr, 0);
+    ViaX := StrToFloatDef(XStr, 0);
+    ViaY := StrToFloatDef(YStr, 0);
     ViaSize := StrToIntDef(SizeStr, 50);    // Default 50 mils pad size
     ViaHole := StrToIntDef(HoleSizeStr, 28); // Default 28 mils hole
 
@@ -4830,8 +4831,8 @@ Begin
             Exit;
         End;
 
-        Via.x := MilsToCoord(ViaX);
-        Via.y := MilsToCoord(ViaY);
+        Via.x := MilsToCoordF(ViaX);
+        Via.y := MilsToCoordF(ViaY);
         Via.Size := MilsToCoord(ViaSize);
         Via.HoleSize := MilsToCoord(ViaHole);
 
@@ -4859,8 +4860,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x":' + IntToStr(ViaX) + ','
-        + '"y":' + IntToStr(ViaY) + ','
+        + '"x":' + FloatToJsonStr(ViaX) + ','
+        + '"y":' + FloatToJsonStr(ViaY) + ','
         + '"size":' + IntToStr(ViaSize) + ','
         + '"hole_size":' + IntToStr(ViaHole) + ','
         + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
@@ -4878,7 +4879,8 @@ Var
     Track : IPCB_Track;
     X1Str, Y1Str, X2Str, Y2Str, WidthStr, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
-    TX1, TY1, TX2, TY2, TWidth : Integer;
+    TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    TWidth : Integer;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -4902,10 +4904,10 @@ Begin
         Exit;
     End;
 
-    TX1 := StrToIntDef(X1Str, 0);
-    TY1 := StrToIntDef(Y1Str, 0);
-    TX2 := StrToIntDef(X2Str, 0);
-    TY2 := StrToIntDef(Y2Str, 0);
+    TX1 := StrToFloatDef(X1Str, 0);
+    TY1 := StrToFloatDef(Y1Str, 0);
+    TX2 := StrToFloatDef(X2Str, 0);
+    TY2 := StrToFloatDef(Y2Str, 0);
     TWidth := StrToIntDef(WidthStr, 10);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
@@ -4927,10 +4929,10 @@ Begin
             Exit;
         End;
 
-        Track.x1 := MilsToCoord(TX1);
-        Track.y1 := MilsToCoord(TY1);
-        Track.x2 := MilsToCoord(TX2);
-        Track.y2 := MilsToCoord(TY2);
+        Track.x1 := MilsToCoordF(TX1);
+        Track.y1 := MilsToCoordF(TY1);
+        Track.x2 := MilsToCoordF(TX2);
+        Track.y2 := MilsToCoordF(TY2);
         Track.Width := MilsToCoord(TWidth);
 
         Track.Layer := TargetLayer;
@@ -4954,10 +4956,10 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + IntToStr(TX1) + ','
-        + '"y1":' + IntToStr(TY1) + ','
-        + '"x2":' + IntToStr(TX2) + ','
-        + '"y2":' + IntToStr(TY2) + ','
+        + '"x1":' + FloatToJsonStr(TX1) + ','
+        + '"y1":' + FloatToJsonStr(TY1) + ','
+        + '"x2":' + FloatToJsonStr(TX2) + ','
+        + '"y2":' + FloatToJsonStr(TY2) + ','
         + '"width":' + IntToStr(TWidth) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}');
 End;
@@ -4976,7 +4978,8 @@ Var
     Track : IPCB_Track;
     TracksStr, TrackStr, Remaining, Field : String;
     PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
-    TX1, TY1, TX2, TY2, TWidth : Integer;
+    TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    TWidth : Integer;
     LayerStr, NetStr, BadLayers : String;
     FoundNet : IPCB_Net;
     TrackLayer : TLayer;
@@ -5055,10 +5058,10 @@ Begin
                 Inc(FieldIdx);
             End;
 
-            TX1 := StrToIntDef(F0, 0);
-            TY1 := StrToIntDef(F1, 0);
-            TX2 := StrToIntDef(F2, 0);
-            TY2 := StrToIntDef(F3, 0);
+            TX1 := StrToFloatDef(F0, 0);
+            TY1 := StrToFloatDef(F1, 0);
+            TX2 := StrToFloatDef(F2, 0);
+            TY2 := StrToFloatDef(F3, 0);
             TWidth := StrToIntDef(F4, 10);
             LayerStr := F5;
             NetStr := F6;
@@ -5084,10 +5087,10 @@ Begin
                 Continue;
             End;
 
-            Track.x1 := MilsToCoord(TX1);
-            Track.y1 := MilsToCoord(TY1);
-            Track.x2 := MilsToCoord(TX2);
-            Track.y2 := MilsToCoord(TY2);
+            Track.x1 := MilsToCoordF(TX1);
+            Track.y1 := MilsToCoordF(TY1);
+            Track.x2 := MilsToCoordF(TX2);
+            Track.y2 := MilsToCoordF(TY2);
             Track.Width := MilsToCoord(TWidth);
 
             Track.Layer := TrackLayer;
@@ -8114,7 +8117,8 @@ Function PCB_PlacePad(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Pad : IPCB_Pad;
-    X, Y, XSize, YSize, HoleSize : Integer;
+    X, Y : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    XSize, YSize, HoleSize : Integer;
     Shape, NameStr, NetStr, LayerStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
@@ -8126,8 +8130,8 @@ Begin
         Exit;
     End;
 
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     XSize := StrToIntDef(ExtractJsonValue(Params, 'x_size'), 60);
     YSize := StrToIntDef(ExtractJsonValue(Params, 'y_size'), 60);
     HoleSize := StrToIntDef(ExtractJsonValue(Params, 'hole_size'), 0);
@@ -8156,8 +8160,8 @@ Begin
             Exit;
         End;
 
-        Pad.X := MilsToCoord(X);
-        Pad.Y := MilsToCoord(Y);
+        Pad.X := MilsToCoordF(X);
+        Pad.Y := MilsToCoordF(Y);
         Pad.TopXSize := MilsToCoord(XSize);
         Pad.TopYSize := MilsToCoord(YSize);
         Pad.HoleSize := MilsToCoord(HoleSize);
@@ -8184,7 +8188,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+        '{"placed":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
         + '"x_size":' + IntToStr(XSize) + ',"y_size":' + IntToStr(YSize) + ','
         + '"hole_size":' + IntToStr(HoleSize) + ','
         + '"shape":"' + EscapeJsonString(Shape) + '",'
