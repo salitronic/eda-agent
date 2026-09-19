@@ -117,7 +117,7 @@ Begin
         Begin
             PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
             If PosFound Then
-                Result := IntToStr(CoordToMils(PosVal))
+                Result := FloatToJsonStr(CoordToMilsF(PosVal))   { sub-mil coordinates: local patch 2026-09-18 }
             Else
             Begin
                 { A track has two ends and a region has an outline, so       }
@@ -146,24 +146,24 @@ Begin
         { Narrow to a typed local via ObjectId (no Forward casts in script).  }
         Else If PropName = 'X1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X1)); End;
         End
         Else If PropName = 'Y1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y1)); End;
         End
         Else If PropName = 'X2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X2)); End;
         End
         Else If PropName = 'Y2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y2)); End;
         End
         Else If PropName = 'Width' Then
         Begin
             If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Width)); End
-            Else If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.Width)); End;
+            Else If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.LineWidth)); End;
         End
         Else If PropName = 'XCenter' Then
         Begin
