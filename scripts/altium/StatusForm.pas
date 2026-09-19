@@ -1284,8 +1284,26 @@ Begin
     { the dashboard must actually go away and the workspace must be tidied. }
     If PumpQuitting Then Exit;
 
+    { Detach, the stop file, application.stop_server and auto-shutdown all }
+    { land here: Altium keeps running, so the dashboard must go away and   }
+    { the workspace must be tidied.                                         }
+    {                                                                      }
+    { DO NOT CALL CleanupMCPServer HERE. Its Application.ProcessMessages   }
+    { pumps the message loop from inside this form's OWN timer handler,    }
+    { while that same form is being hidden, which re-enters the form as it }
+    { tears down. Measured 2026-09-18: pressing Detach raised "Access      }
+    { violation ... in module 'ScriptingSystem.DLL'. Read of address       }
+    { FFFFFFFFFFFFFFFF", the same signature the quit path produced before  }
+    { it stopped pumping. The old blocking loop ran this from              }
+    { StartMCPServer's exit rather than from a timer event on the form,    }
+    { which is why it only appeared once dispatch moved onto the timer.    }
+    {                                                                      }
+    { The orphan sweeps below are the part that actually matters; the      }
+    { message pump was only ever there to flush the UI, and the tick       }
+    { returning to Altium does that by itself.                             }
+    CleanupOrphanRequests(0);
+    CleanupOrphanProgress(0);
     HideStatusForm(0);
-    CleanupMCPServer(0);
 End;
 
 

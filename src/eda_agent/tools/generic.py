@@ -533,6 +533,49 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_mirror_component(
+        designator: str,
+        mirrored: bool | None = None,
+        doc_path: str = "",
+    ) -> dict[str, Any]:
+        """Mirror a placed schematic component horizontally.
+
+        USE THIS RATHER THAN WRITING `IsMirrored`. Setting that property
+        with `obj_modify` does not mirror anything: measured on AD26, the
+        flag is set, it reads back, Altium's own Properties panel shows
+        Mirrored ticked, and the part does not move. The canvas draws
+        from the component's primitives, so a flag-only write leaves
+        nothing new to draw and no redraw call can rescue it.
+
+        Altium's own mirror does both halves at once, setting the flag
+        AND reflecting the primitives, and so does this. That matters
+        twice over: a part mirrored here is identical on disk to one
+        mirrored by hand, and the flag is instance data, so the result
+        survives Update From Libraries. Reflecting the primitives alone
+        would be undone the next time anyone re-instantiates the symbol.
+
+        Args:
+            designator: component to mirror, e.g. "U1"
+            mirrored: True or False for an absolute state; omit to
+                toggle. Asking for the state it already has is a no-op,
+                not a second reflection.
+            doc_path: sheet to act on. Defaults to the focused schematic.
+
+        Returns:
+            Dictionary with designator, mirrored (the resulting state),
+            primitives_moved, and changed.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"designator": designator}
+        if doc_path:
+            params["doc_path"] = doc_path
+        if mirrored is not None:
+            params["mirrored"] = "true" if mirrored else "false"
+        return await bridge.send_command_async(
+            "generic.mirror_component", params
+        )
+
+    @mcp.tool()
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:

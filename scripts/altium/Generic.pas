@@ -841,9 +841,53 @@ Begin
         // Boolean properties
         Else If PropName = 'IsHidden'    Then Obj.IsHidden := StrToBool(Value)
         Else If PropName = 'IsSolid'     Then Obj.IsSolid := StrToBool(Value)
-        Else If PropName = 'IsMirrored'  Then Obj.IsMirrored := StrToBool(Value)
+        { MIRROR IS NOT A PLAIN PROPERTY WRITE.                              }
+        {                                                                    }
+        { Measured 2026-09-18 on a placed NE555: obj_modify reported         }
+        { matched=1, saved=true, failed=0, and obj_query read IsMirrored     }
+        { back as "true", while the editor kept drawing the component        }
+        { unmirrored. That held across a focus switch to the sheet, which    }
+        { forces a full redraw, so it is not a stale viewport. The plain     }
+        { assignment lands somewhere the getter reads and the renderer does  }
+        { not, which is the worst shape of failure available: the usual way  }
+        { to verify a write agrees with you.                                 }
+        {                                                                    }
+        { SetState_IsMirrored is the SDK writer for the same property, the   }
+        { same pattern UniqueId and CurrentPartID already use above.         }
+        { GUARDED BY ObjectId: it lives on ISch_Component, and calling it on }
+        { an object that lacks it is an undeclared identifier, which raises  }
+        { a modal Try/Except cannot catch and wedges the polling loop. See   }
+        { the PartCount note above for that failure in the wild.             }
+        Else If PropName = 'IsMirrored' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                { SetState_IsMirrored ONLY, never followed by the raw       }
+                { property assignment. The SDK writer applies the mirror    }
+                { AND the geometry that goes with it; assigning the bare    }
+                { flag afterwards stamps the flag back over the top and     }
+                { leaves the drawn shape and the flag disagreeing, which is }
+                { unrecoverable from script: measured 2026-09-18, the part  }
+                { then kept its old picture through GraphicallyInvalidate,  }
+                { SetState_xSizeySize, a deselect, and a full Sch:Zoom      }
+                { repaint at a new scale, and only a document reload fixed  }
+                { it. FormatCopy makes exactly this split, SetState_ for    }
+                { components and the plain property only for non-component  }
+                { primitives.                                                }
+                Comp := Obj;
+                Try Comp.SetState_IsMirrored(StrToBool(Value)); Except End;
+            End
+            Else
+            Begin
+                Try Obj.IsMirrored := StrToBool(Value); Except End;
+            End;
+        End
         Else If PropName = 'Selection'   Then Obj.Selection := StrToBool(Value)
         Else Matched := False;
+
+        { The geometry recompute and the repaint do NOT belong here. They   }
+        { must happen after the SCHM_EndModify bracket closes; see          }
+        { RefreshSchObjectRender below and its call site in the modify loop.}
 
         If Not Matched Then Result := 0
         Else If Not WroteOK Then Result := -1
@@ -861,6 +905,48 @@ End;
 { FilterStr format: "PropName=Value|PropName2=Value2" (AND logic)            }
 { Empty filter matches everything.                                           }
 {..............................................................................}
+
+{..............................................................................}
+{ RefreshSchObjectRender - rebuild what an edited object draws as.             }
+{                                                                              }
+{ CALL THIS AFTER SCHM_EndModify, NEVER INSIDE THE BRACKET.                    }
+{                                                                              }
+{ A component caches its own bounding geometry, and a property that changes    }
+{ how it draws leaves that cache describing the OLD shape. Invalidating asks   }
+{ Altium to paint again, not to work out what to paint, so the stale cache is  }
+{ repainted faithfully. SetState_xSizeySize is what recomputes it, and it is   }
+{ what the scripts that mirror successfully all call (FormatCopy,              }
+{ CompPlaceFromLib, CompRename2, annotated there as "recalc bounding rect").   }
+{                                                                              }
+{ MEASURED 2026-09-18, and the ordering is the whole point. With the recompute }
+{ and the invalidate issued INSIDE the Begin/EndModify bracket, the canvas     }
+{ lagged the model by exactly one change: after writing IsMirrored=True the    }
+{ Properties panel showed Mirrored ticked while the sheet drew the part        }
+{ unmirrored, and after writing False it showed unticked while the sheet drew  }
+{ it mirrored. The value was never wrong; the picture was always one edit      }
+{ behind. Neither a focus switch, nor GraphicallyInvalidate, nor a full        }
+{ Sch:Zoom Action=All repaint corrected it, because each of those repaints     }
+{ from the cache rather than rebuilding it.                                    }
+{                                                                              }
+{ Component-guarded: SetState_xSizeySize is an ISch_Component method, and      }
+{ calling it on an object without it is an undeclared identifier, which raises }
+{ a modal Try/Except cannot catch and wedges the polling loop.                 }
+{..............................................................................}
+
+Procedure RefreshSchObjectRender(Obj : ISch_GraphicalObject);
+Var
+    Comp : ISch_Component;
+Begin
+    If Obj = Nil Then Exit;
+    { SetState_xSizeySize USED TO BE CALLED HERE AND IS NOT ANY MORE.        }
+    { It was added chasing a redraw theory that measurement later killed:    }
+    { the canvas draws from primitive geometry, so a property write that     }
+    { moves nothing has nothing to redraw. Worse, it is the most likely      }
+    { cause of a component's pins relocating on their own during that        }
+    { investigation, which is a silent edit to a design. Mirroring is now    }
+    { handled properly by Gen_MirrorSchComponent, which moves the geometry.  }
+    Try Obj.GraphicallyInvalidate; Except End;
+End;
 
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
 Var
@@ -1379,6 +1465,11 @@ Begin
                 SchBeginModify(Obj);
                 ApplySetProperties(Obj, SetStr);
                 SchEndModify(Obj);
+                { AFTER the bracket, not inside it: a recompute or an     }
+                { invalidate issued mid-modify is consumed by EndModify   }
+                { repainting from the pre-change cache, which leaves the  }
+                { canvas exactly one edit behind the model.                }
+                RefreshSchObjectRender(Obj);
             End;
 
             Inc(TotalMatched);
@@ -2196,28 +2287,49 @@ Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     Board := GetPCBBoardAnywhere(0);
 
+    { ACTION VALUES ARE NOT FREE TEXT. Altium accepts an unknown process     }
+    { parameter without complaint and falls back to its own dialog, which is }
+    { how "zoom" came to open a Zoom dialog instead of zooming (reported     }
+    { 2026-09-18). The values below are the ones actually attested: 'All' is }
+    { documented for both PCB:Zoom and Sch:Zoom (system-api.html, and five   }
+    { examples in the PCB reference), and 'Redraw' for PCB:Zoom. The old     }
+    { 'ZoomToFit' / 'ZoomToSelection' appear in no Altium documentation or   }
+    { third-party script; the only hits were this repository's own copy      }
+    { vendored into reference/, which is not corroboration.                  }
+    If (SchDoc = Nil) And (Board = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No schematic or PCB document is open to zoom.');
+        Exit;
+    End;
+
     If Action = 'fit' Then
     Begin
-        If SchDoc <> Nil Then RunProcess('Sch:ZoomToFit')
-        Else If Board <> Nil Then
-        Begin
-            ResetParameters;
-            AddStringParameter('Action', 'ZoomToFit');
-            RunProcess('PCB:Zoom');
-        End;
+        ResetParameters;
+        AddStringParameter('Action', 'All');
+        If SchDoc <> Nil Then RunProcess('Sch:Zoom')
+        Else RunProcess('PCB:Zoom');
     End
     Else If Action = 'selection' Then
     Begin
-        If SchDoc <> Nil Then RunProcess('Sch:ZoomToSelected')
-        Else If Board <> Nil Then
-        Begin
-            ResetParameters;
-            AddStringParameter('Action', 'ZoomToSelection');
-            RunProcess('PCB:Zoom');
-        End;
+        { 'Selected' is attested in third-party PCB scripts but not in the   }
+        { Altium documentation, and never for Sch:Zoom. Reported rather than }
+        { claimed: the caller is told the zoom was dispatched, not that the  }
+        { viewport moved.                                                     }
+        ResetParameters;
+        AddStringParameter('Action', 'Selected');
+        If SchDoc <> Nil Then RunProcess('Sch:Zoom')
+        Else RunProcess('PCB:Zoom');
+    End
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'action must be "fit" or "selection", got "' + Action + '"');
+        Exit;
     End;
 
-    Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '"}');
+    Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '",'
+        + '"dispatched":true}');
 End;
 
 {..............................................................................}
@@ -3115,6 +3227,279 @@ End;
 {..............................................................................}
 { Force refresh/redraw of the current document                               }
 {..............................................................................}
+
+{..............................................................................}
+{ Gen_MirrorSchComponent - mirror a placed component horizontally.             }
+{                                                                              }
+{ WHAT ALTIUM ITSELF DOES, measured 2026-09-19 by toggling Mirrored in the     }
+{ Properties panel and reading the result back: it sets IsMirrored AND         }
+{ reflects the component's primitives. On an NE555 at Location.X 5700, pin     }
+{ RESET moved from Location.X 6200 to 5200 and its Orientation flipped 0 to 2, }
+{ while IsMirrored went False to True. Both halves, one operation.             }
+{                                                                              }
+{ WRITING THE FLAG ALONE DOES NOTHING VISIBLE, which is the defect reported    }
+{ from the field. obj_modify set IsMirrored, the value read back, Altium's own }
+{ Properties panel showed Mirrored ticked, and the part did not move. The      }
+{ canvas draws from the primitives, so there was nothing new to draw: no       }
+{ repaint call can help, and a whole afternoon of GraphicallyInvalidate,       }
+{ SetState_xSizeySize and Sch:Zoom variants confirmed it the hard way.         }
+{                                                                              }
+{ REFLECTING THE PRIMITIVES ALONE IS ALSO WRONG. It draws correctly and is     }
+{ then discarded by Update From Libraries, which re-instantiates the symbol    }
+{ from the library. The flag is instance data and survives that. Writing both  }
+{ is what Altium stores, so a part mirrored here is identical on disk to one   }
+{ mirrored by hand, which is also why this cannot double-mirror on reload:     }
+{ there is one representation, not two competing ones.                          }
+{                                                                              }
+{ Params: designator (required), doc_path (optional, defaults to the focused   }
+{ sheet), mirrored (optional "true"/"false"; omitted means toggle).            }
+{..............................................................................}
+
+Function Gen_MirrorSchComponent(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter, PIter : ISch_Iterator;
+    Comp, Found : ISch_Component;
+    Prim : ISch_GraphicalObject;
+    Designator, DocPath, StateStr : String;
+    Loc : TLocation;
+    Crn : TLocation;
+    Vtx : TLocation;
+    CompX : Integer;
+    Ori, Moved, Swap, Skipped, Kind, Cnt, I : Integer;
+    SkippedIds : String;
+    WantMirror, Explicit : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    DocPath    := ExtractJsonValue(Params, 'doc_path');
+    StateStr   := ExtractJsonValue(Params, 'mirrored');
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'designator is required');
+        Exit;
+    End;
+
+    If DocPath <> '' Then SchDoc := SchServer.GetSchDocumentByPath(DocPath)
+    Else SchDoc := SchServer.GetCurrentSchDocument;
+
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document. Pass doc_path to an open .SchDoc, or '
+            + 'focus one first.');
+        Exit;
+    End;
+
+    Found := Nil;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := Iter.FirstSchObject;
+        While Comp <> Nil Do
+        Begin
+            If Comp.Designator.Text = Designator Then
+            Begin
+                Found := Comp;
+                Break;
+            End;
+            Comp := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+
+    If Found = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No component with designator "' + Designator + '" on '
+            + SchDoc.DocumentName);
+        Exit;
+    End;
+
+    Explicit := (StateStr <> '');
+    WantMirror := Not Found.IsMirrored;
+    If Explicit Then WantMirror := StrToBool(StateStr);
+
+    { An explicit request for the state it is already in must not reflect     }
+    { the geometry, or the part silently ends up mirrored the wrong way.      }
+    If Explicit And (WantMirror = Found.IsMirrored) Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"designator":"' + EscapeJsonString(Designator) + '",'
+            + '"mirrored":' + BoolToJsonStr(WantMirror) + ','
+            + '"primitives_moved":0,"changed":false}');
+        Exit;
+    End;
+
+    CompX := Found.Location.X;
+    Moved := 0;
+    Skipped := 0;
+    SkippedIds := '';
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginModify(Found);
+
+    PIter := Found.SchIterator_Create;
+    Try
+        Prim := PIter.FirstSchObject;
+        While Prim <> Nil Do
+        Begin
+            { NOT EVERY PRIMITIVE HAS Location.                               }
+            {                                                                 }
+            { A polygon carries a vertex ARRAY instead, and asking it for     }
+            { Location raises "Undeclared identifier: Location", which is a   }
+            { modal Try/Except CANNOT catch and which halts the script engine }
+            { mid-loop. Measured 2026-09-19 on a 1N4007 placed from a real    }
+            { library: its triangle is a polygon and the bridge wedged on     }
+            { exactly that line, needing the dialog dismissed and             }
+            { StartMCPServer relaunched.                                      }
+            {                                                                 }
+            { So dispatch on ObjectId and touch nothing unrecognised. An      }
+            { unhandled type is COUNTED, not silently ignored, because a      }
+            { half-mirrored symbol that reports success is worse than one     }
+            { that says which parts it could not move.                        }
+            Kind := Prim.ObjectId;
+
+            If (Kind = ePin) Or (Kind = eParameter) Or (Kind = eLabel)
+               Or (Kind = eRectangle) Or (Kind = eRoundRectangle)
+               Or (Kind = eLine) Or (Kind = eImage) Then
+            Begin
+                { The materialized local is required, a direct write to       }
+                { Prim.Location.X does not take.                               }
+                Try
+                    Loc := Prim.Location;
+                    Loc.X := CompX + (CompX - Loc.X);
+                    Prim.Location := Loc;
+                    Moved := Moved + 1;
+                Except End;
+            End
+            Else If (Kind = ePolygon) Or (Kind = ePolyline) Or (Kind = eBezier) Then
+            Begin
+                { Vertex arrays are 1-based in Altium. Reflect every point;   }
+                { there is no Location to move.                                }
+                Cnt := 0;
+                Try Cnt := Prim.GetState_VerticesCount; Except End;
+                For I := 1 To Cnt Do
+                Begin
+                    Try
+                        Vtx := Prim.GetState_Vertex(I);
+                        Vtx.X := CompX + (CompX - Vtx.X);
+                        Prim.SetState_Vertex(I, Vtx);
+                    Except End;
+                End;
+                If Cnt > 0 Then Moved := Moved + 1
+                Else Skipped := Skipped + 1;
+            End
+            Else
+            Begin
+                { eArc and eEllipse land here deliberately. Their position     }
+                { would reflect fine, but a horizontal mirror must also swap   }
+                { the sweep (new start = 180 - old end), and that is not       }
+                { written yet. Moving one without its angles draws a wrong     }
+                { symbol, so it is left alone and reported.                    }
+                {                                                              }
+                { The ObjectId is RECORDED, not just counted. On a minimal     }
+                { symbol one unmoved graphic wrecks the part while a busier    }
+                { one still looks plausible, so "5 skipped" is not actionable  }
+                { and "kind 13 skipped" is.                                     }
+                Skipped := Skipped + 1;
+                If Pos(IntToStr(Kind), SkippedIds) = 0 Then
+                    SkippedIds := SkippedIds + IntToStr(Kind) + ' ';
+            End;
+
+            { A TWO-POINT PRIMITIVE NEEDS BOTH POINTS REFLECTED.              }
+            {                                                                 }
+            { Reflecting only Location TRANSLATES the shape instead of        }
+            { mirroring it: measured 2026-09-19, U1's body rectangle ended up }
+            { offset to one side of its own pins while the pins themselves    }
+            { were correct. A pin has a single point, which is why it looked  }
+            { right and the body did not.                                      }
+            {                                                                 }
+            { Guarded by ObjectId rather than probed with Try/Except: Corner  }
+            { does not exist on a pin, and an undeclared identifier raises a  }
+            { modal that Try/Except cannot catch and that wedges the loop.    }
+            If (Kind = eRectangle) Or (Kind = eRoundRectangle) Or (Kind = eLine) Then
+            Begin
+                Try
+                    Crn := Prim.Corner;
+                    Crn.X := CompX + (CompX - Crn.X);
+                    Prim.Corner := Crn;
+
+                    { Reflection swaps left and right, so a rectangle whose   }
+                    { Location was its lower-left now holds the lower-RIGHT.  }
+                    { Put them back in order; a line does not care which end  }
+                    { is which, and normalising it changes nothing drawn.     }
+                    Loc := Prim.Location;
+                    If Loc.X > Crn.X Then
+                    Begin
+                        Swap := Loc.X;
+                        Loc.X := Crn.X;
+                        Crn.X := Swap;
+                        Prim.Location := Loc;
+                        Prim.Corner := Crn;
+                    End;
+                Except End;
+            End;
+
+            { A horizontal mirror flips a pin that points left or right and   }
+            { leaves a vertical one pointing the same way; only its X moved.  }
+            If Kind = ePin Then
+            Begin
+                Try
+                    Ori := Prim.Orientation;
+                    If Ori = 0 Then Prim.Orientation := 2
+                    Else If Ori = 2 Then Prim.Orientation := 0;
+                Except End;
+            End;
+
+            Prim := PIter.NextSchObject;
+        End;
+    Finally
+        Found.SchIterator_Destroy(PIter);
+    End;
+
+    { DESIGNATOR AND COMMENT ARE NOT CHILDREN OF THE ITERATOR.                }
+    {                                                                         }
+    { They hang off the component as sub-objects, so the loop above never     }
+    { sees them and they stayed put while the symbol moved out from under     }
+    { them. Reported on all three library parts, 2026-09-19. Same             }
+    { materialized-local pattern as Generic.pas:8586, which already writes    }
+    { these two locations.                                                     }
+    Try
+        Loc := Found.Designator.Location;
+        Loc.X := CompX + (CompX - Loc.X);
+        Found.Designator.Location := Loc;
+    Except End;
+    Try
+        Loc := Found.Comment.Location;
+        Loc.X := CompX + (CompX - Loc.X);
+        Found.Comment.Location := Loc;
+    Except End;
+
+    { The flag last, so the instance records what the geometry now shows.     }
+    Try Found.SetState_IsMirrored(WantMirror); Except End;
+
+    SchEndModify(Found);
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+
+    Try Found.GraphicallyInvalidate; Except End;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"designator":"' + EscapeJsonString(Designator) + '",'
+        + '"mirrored":' + BoolToJsonStr(WantMirror) + ','
+        + '"primitives_moved":' + IntToStr(Moved) + ','
+        { Non-zero means the mirror is INCOMPLETE: a primitive type this  }
+        { handler does not know how to reflect was left where it was, so  }
+        { the symbol is now part-mirrored. Reported rather than hidden.   }
+        + '"primitives_skipped":' + IntToStr(Skipped) + ','
+        + '"skipped_kinds":"' + Trim(SkippedIds) + '",'
+        + '"changed":true}');
+End;
 
 Function Gen_RefreshDocument(RequestId : String) : String;
 Var
@@ -4068,7 +4453,9 @@ Begin
     { This replaces the broken PlaceSchComponent + Comp.Location :=         }
     { Point(...) approach which 16-bit-truncates coords and pops modal      }
     { errors.                                                               }
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    { Load the symbol BEFORE opening the sheet's transaction. The retry below }
+    { can open a library DOCUMENT, and doing that between PreProcess and      }
+    { PostProcess would nest a document change inside the sheet's edit.       }
     Comp := Nil;
     Try
         Comp := SchServer.LoadComponentFromLibrary(LibRef, LibPath);
@@ -4076,14 +4463,53 @@ Begin
         Comp := Nil;
     End;
 
+    { AUTO-OPEN, THEN RETRY ONCE.                                             }
+    {                                                                         }
+    { LoadComponentFromLibrary answers from the library as the EDITOR holds   }
+    { it, not from the file, so a library sitting on disk unopened returns    }
+    { Nil here even though ResolveLibRef read the very same symbol out of it  }
+    { moments ago. That split is the whole defect: validation succeeds off    }
+    { disk, placement fails in memory, and the caller is told the symbol      }
+    { could not be placed by a library that demonstrably contains it.         }
+    {                                                                         }
+    { Installing the .IntLib does not help, and neither does opening the      }
+    { .LibPkg: a library package holds no schematic documents, so nothing is  }
+    { loaded by opening it. The source .SchLib itself has to be resident.     }
+    {                                                                         }
+    { FocusSchLib is the same WorkspaceManager:OpenObject the lib_ handlers   }
+    { already use, and it verifies it landed on the requested library rather  }
+    { than leaving a previous one current.                                    }
     If Comp = Nil Then
     Begin
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        If FocusSchLib(LibPath) <> Nil Then
+        Begin
+            Try
+                Comp := SchServer.LoadComponentFromLibrary(LibRef, LibPath);
+            Except
+                Comp := Nil;
+            End;
+        End;
+
+        { FocusSchLib focuses the library it opened. Put the sheet back,      }
+        { whether or not the retry worked, so placing a part never leaves the }
+        { user looking at a library instead of their schematic.                }
+        Try
+            SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
+            If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
+        Except End;
+    End;
+
+    If Comp = Nil Then
+    Begin
         Result := BuildErrorResponse(RequestId, 'PLACE_FAILED',
             'LoadComponentFromLibrary returned nil for ' + LibRef +
-            ' from ' + LibPath);
+            ' from ' + LibPath +
+            '. The library was opened and the load retried, so the symbol is '
+            + 'unreadable rather than absent.');
         Exit;
     End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
 
     Try SchDoc.AddSchObject(Comp); Except End;
     Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
@@ -10535,6 +10961,7 @@ Begin
         'switch_view':      Result := Gen_SwitchView(Params, RequestId);
         'measure_distance': Result := Gen_MeasureDistance(Params, RequestId);
         'get_erc_violations': Result := Gen_GetErcViolations(Params, RequestId);
+        'mirror_component': Result := Gen_MirrorSchComponent(Params, RequestId);
         'refresh_document': Result := Gen_RefreshDocument(RequestId);
         'get_unconnected_pins': Result := Gen_GetUnconnectedPins(Params, RequestId);
         'place_wire':       Result := Gen_PlaceWire(Params, RequestId);
