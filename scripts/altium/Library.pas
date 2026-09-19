@@ -579,48 +579,79 @@ End;
 { after each step), so it is used here rather than a property that reports    }
 { success and changes nothing.                                                }
 {                                                                             }
-{ Bounded by PartCount: the command WRAPS past the last part, so a target     }
-{ that can never be reached would spin forever rather than fail.              }
-{ Returns whether the editor is now showing Target.                           }
+{ ONE STEP, NOT A SEARCH, and this is the second version of this function.   }
+{ The first walked NextComponentPart until the DOCUMENT reported the target.  }
+{ That walk is unnecessary, because the command's destination is determined:  }
 {                                                                             }
-{ TRUE ALSO WHEN THE PART ID CANNOT BE READ, because a build that does not    }
-{ report one leaves nothing to check and refusing there would break every     }
-{ single-part symbol. FALSE only when the id WAS readable and the target was  }
-{ never reached, which is the case a caller must not act on: the editor is    }
-{ then showing some other part, and a query against it answers about the      }
-{ wrong one. That silent answer is the whole defect this replaces.            }
+{   Component.CurrentPartID := K   sets the property and does NOT move the    }
+{                                  displayed part.                            }
+{   SCH:NextComponentPart          moves the display to CurrentPartID + 1     }
+{                                  and syncs the property to where it landed. }
+{                                                                             }
+{ So parking the property one below the target and stepping once arrives at   }
+{ the target directly. Reported against a 4-part TPS23881B on AD 26.8.1.31    }
+{ (GH #11), where it was verified by prediction rather than observation: with }
+{ the display on part 4 and CurrentPartID set to 1, the model says the step   }
+{ lands on part 2, and it did, returning exactly the 17 pins part 2 holds.    }
+{                                                                             }
+{ WHY THE WALK HAD TO GO, and it is not tidying. The walk was gated on a      }
+{ readback it could not count on: GetState_CurrentSchComponentPartId is       }
+{ DECLARED on that build but returns -1 at runtime, and the guard treated     }
+{ "cannot read" as "nothing to check" and returned True WITHOUT STEPPING AT   }
+{ ALL. So a query scoped to part 3 was answered about whatever part happened  }
+{ to be displayed, reporting success, which is the exact defect the walk was  }
+{ added to stop. A guard that passes in precisely the case it exists to catch }
+{ is worse than no guard, because the caller stops looking.                   }
+{                                                                             }
+{ Target is always >= 2 here: the caller only steps when a part was named,    }
+{ and part 1 is where selecting the component already leaves the editor.      }
+{ That matters, because the step cannot REACH part 1 (CurrentPartID clamps    }
+{ at 1, so stepping from it goes to 2) and SCH:PrevComponentPart does not     }
+{ exist; Altium accepts the unknown process name and does nothing.            }
+{                                                                             }
+{ VERIFIED TWO WAYS, and it now fails closed. The document's part id is still }
+{ preferred. When it cannot be read, CurrentPartID is read back INSTEAD, and  }
+{ that readback is meaningful only because of the order above: we parked it   }
+{ at Target - 1 ourselves, so if the step did nothing it still reads          }
+{ Target - 1, and only a step that actually moved makes it read Target. That  }
+{ is why the property is trusted here and nowhere else, and why the old note  }
+{ against reading it does not apply: it is not being asked what is displayed, }
+{ it is being asked whether the command ran.                                  }
 Function StepLibComponentPartTo(SchLib : ISch_Lib; Component : ISch_Component;
     Target : Integer) : Boolean;
 Var
-    Count, Steps, Seen : Integer;
+    Count, Seen, Parked : Integer;
 Begin
-    Result := True;
+    Result := False;
 
     Count := 1;
     Try Count := Component.PartCount; Except End;
     If Count < 1 Then Count := 1;
 
-    Seen := CurrentLibPartId(SchLib);
-    { No reported part id means there is nothing to verify against, and       }
-    { stepping blind would move the editor off whatever the user was on.      }
-    If Seen < 0 Then Exit;
-
-    Steps := 0;
-    While (Seen <> Target) And (Steps < Count) Do
+    { A symbol with one part has nowhere to go and nothing to verify. }
+    If (Count <= 1) And (Target <= 1) Then
     Begin
-        ResetParameters;
-        RunProcess('SCH:NextComponentPart');
-        Steps := Steps + 1;
-        Seen := CurrentLibPartId(SchLib);
-        { Readable a moment ago and not now: stop, and do not claim the  }
-        { editor is on the target when that can no longer be checked.    }
-        If Seen < 0 Then
-        Begin
-            Result := False;
-            Exit;
-        End;
+        Result := True;
+        Exit;
     End;
 
+    Parked := Target - 1;
+    If Parked < 1 Then Parked := 1;
+    Try Component.CurrentPartID := Parked; Except End;
+
+    ResetParameters;
+    RunProcess('SCH:NextComponentPart');
+
+    Seen := CurrentLibPartId(SchLib);
+    If Seen >= 0 Then
+    Begin
+        Result := (Seen = Target);
+        Exit;
+    End;
+
+    { Document silent. Did the command move the property off where we put it? }
+    Seen := -1;
+    Try Seen := Component.CurrentPartID; Except End;
     Result := (Seen = Target);
 End;
 
@@ -679,9 +710,10 @@ Begin
     { ignored outright. Nothing errored either way.                           }
     {                                                                          }
     { The displayed part is moved by the editor's own command, not by a       }
-    { property. Step it and read the document's part id back after each step. }
-    { Bounded by PartCount because the command WRAPS at the last part, so an  }
-    { unreachable target would otherwise spin forever.                        }
+    { property. StepLibComponentPartTo parks CurrentPartID one below the      }
+    { target and issues one SCH:NextComponentPart, which lands on the target  }
+    { and syncs the property to it; see the note on that function for why it  }
+    { no longer walks, and for the readback that used to fail open.           }
     { NIL RATHER THAN THE WRONG PART. Returning the component when the
       editor never reached the requested part is exactly what GH #11
       reported: a query scoped to part 3 answered about part 1 and
