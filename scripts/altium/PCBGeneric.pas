@@ -163,7 +163,7 @@ Begin
         Else If PropName = 'Width' Then
         Begin
             If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Width)); End
-            Else If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.Width)); End;
+            Else If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.LineWidth)); End;
         End
         Else If PropName = 'XCenter' Then
         Begin
