@@ -11,6 +11,7 @@ Altium script run picks up the new values.
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -58,13 +59,85 @@ def _default_workspace_dir() -> Path:
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "workspace"
+    if _under_wsl():
+        # USERPROFILE is not set under WSL, so the Path.home() line below
+        # would put the IPC directory on the distro's ext4 filesystem, which
+        # Windows can only reach over the 9P share. GH #32 reports Altium
+        # enumerating request files there and then failing to read their
+        # contents, which surfaces as REQUEST_UNREADABLE while the polling
+        # loop reports itself healthy. A drvfs path is NTFS on both sides and
+        # sidesteps the question. Overridable by EDA_AGENT_WORKSPACE above.
+        return Path("/mnt/c/ProgramData/eda-agent/workspace")
     return Path.home() / "EDA Agent" / "workspace"
+
+
+def _pointer_encoding() -> str:
+    """Codec for the pointer file, which DelphiScript reads a byte at a time.
+
+    ``mbcs`` is the Windows ANSI codepage and is the right answer there, but
+    the codec DOES NOT EXIST off Windows: under WSL it raises LookupError,
+    which the caller's best-effort handler swallowed, so the pointer file was
+    silently never written at all. That is the step GH #32 had to do by hand
+    before anything worked, and it is invisible from the outside because
+    nothing fails loudly.
+
+    cp1252 is the stand-in from WSL. For an ASCII path, which covers the
+    overwhelming majority, the bytes are identical to any Windows ANSI
+    codepage, so the Pascal side reads the same string either way.
+    """
+    return "mbcs" if sys.platform == "win32" else "cp1252"
+
+
+def _under_wsl() -> bool:
+    """Is this a Linux kernel running under Windows?"""
+    if sys.platform == "win32":
+        return False
+    try:
+        release = Path("/proc/sys/kernel/osrelease").read_text(
+            encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in release or "wsl" in release
+
+
+def _windows_path_str(path: Path) -> str:
+    """``path`` as the Windows process on the other side of the bridge sees it.
+
+    On Windows this is just ``str``. Under WSL it is not: the pointer file is
+    read by DelphiScript, which is a Windows process and cannot resolve
+    ``/mnt/c/...`` or ``/home/...``. Writing ``str(path)`` there produced
+    ``/mnt/c/ProgramData/eda-agent/workspace`` with a backslash glued on
+    the end, which resolves to nothing on either side. Reported in GH #32, where it had to be corrected by hand and then
+    made read-only, because every server start wrote it again.
+
+    ``wslpath -w`` is a Linux binary, so it works even where Windows interop
+    is unregistered and no .exe can run at all. Falls back to the plain
+    string if it is missing, which leaves the previous behaviour rather than
+    raising inside a best-effort write.
+    """
+    if not _under_wsl():
+        return str(path)
+    try:
+        completed = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            capture_output=True,
+            timeout=10,
+        )
+        if completed.returncode == 0:
+            translated = completed.stdout.decode(
+                "utf-8", errors="ignore").strip()
+            if translated:
+                return translated
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("wslpath translation failed for %s: %s", path, e)
+    return str(path)
 
 
 def write_workspace_pointer(workspace_dir: Path) -> None:
     """Write the workspace path to the pointer file that DelphiScript reads.
 
-    Encoding is ``mbcs`` (the Windows ANSI codepage) because that is what
+    Encoding is the Windows ANSI codepage (``mbcs`` on Windows, cp1252 as
+    its stand-in under WSL) because that is what
     DelphiScript's single-byte file read decodes -- ascii raised
     UnicodeEncodeError for an accented user-profile path (and that error
     escaped the OSError guard), while utf-8 would mojibake the same path
@@ -90,10 +163,10 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        path_str = str(workspace_dir)
+        path_str = _windows_path_str(workspace_dir)
         if not path_str.endswith("\\"):
             path_str += "\\"
-        target.write_text(path_str, encoding="mbcs")
+        target.write_text(path_str, encoding=_pointer_encoding())
     except (OSError, PermissionError, UnicodeEncodeError, LookupError):
         # LookupError: "mbcs" only exists on Windows; the pointer file is
         # meaningless elsewhere anyway.

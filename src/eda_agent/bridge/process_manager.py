@@ -3,13 +3,99 @@
 """Altium process detection and management."""
 
 import logging
+import subprocess
 import sys
 import time
+from pathlib import Path
 import psutil
 from typing import Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger("eda_agent.bridge.process")
+
+
+# ---------------------------------------------------------------------------
+# Seeing the Windows process table from WSL.
+#
+# Under WSL the server runs in its own PID namespace. The Toolhelp scan below
+# is Windows-only and answers None here, and psutil enumerates the LINUX
+# namespace, which the Windows desktop Altium is not in and never will be. So
+# the check that gates every send_command answered "not running" about a
+# process it had no way to see, and every call was refused while the polling
+# loop was healthy and answering. Reported in GH #32 with a working diagnosis.
+#
+# tasklist.exe reports the Windows process list and is reachable over WSL
+# interop. MEASURED 2026-09-20 on Ubuntu-24.04: interop is NOT always there.
+# With systemd enabled, binfmt_misc can come up with no WSLInterop entry, and
+# then every Windows binary fails with "Exec format error" even though /mnt/c
+# holds them and WSL_INTEROP is set in the environment. So interop is a fast
+# path when present, never the thing correctness rests on, and that
+# environment variable is not a usable probe for it: only running something
+# tells you.
+# ---------------------------------------------------------------------------
+
+_WSL_TASKLIST = Path("/mnt/c/Windows/System32/tasklist.exe")
+
+# Short on purpose: this sits inside the gate that runs before commands, so a
+# wedged interop must not become the command's latency.
+_TASKLIST_TIMEOUT_S = 5.0
+
+
+def _under_wsl() -> bool:
+    """Is this a Linux kernel running under Windows?
+
+    Distinguishes "cannot see Windows processes because they are behind a
+    namespace boundary" from "cannot see them because there is no Windows
+    here". Plain Linux keeps the honest negative.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        release = Path("/proc/sys/kernel/osrelease").read_text(
+            encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in release or "wsl" in release
+
+
+def _windows_tasklist_rows() -> Optional[list]:
+    """``(pid, name)`` for every Windows process, or None when there is no
+    Windows side to ask.
+
+    None is a different answer from ``[]``. None means "could not look",
+    which must never be read as "Altium is absent"; ``[]`` means the list
+    came back and held nothing.
+    """
+    if sys.platform == "win32":
+        return None
+    if not _WSL_TASKLIST.exists():
+        return None
+    try:
+        completed = subprocess.run(
+            [str(_WSL_TASKLIST), "/FO", "CSV", "/NH"],
+            capture_output=True,
+            timeout=_TASKLIST_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        # OSError covers interop-not-registered, where executing a PE binary
+        # fails outright rather than returning a non-zero code.
+        logger.debug("WSL tasklist scan unavailable: %s", e)
+        return None
+    if completed.returncode != 0:
+        return None
+    rows = []
+    # Process names are ASCII; the surrounding locale text is not worth
+    # guessing an encoding for.
+    text = completed.stdout.decode("utf-8", errors="ignore")
+    for line in text.splitlines():
+        fields = [f.strip().strip('"') for f in line.split(",")]
+        if len(fields) < 2:
+            continue
+        name, pid_text = fields[0], fields[1]
+        if not pid_text.isdigit():
+            continue
+        rows.append((int(pid_text), name))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +223,21 @@ class AltiumProcessManager:
         fetches exe and cmdline for each."""
         wanted = {n.upper() for n in self.PROCESS_NAMES}
         out: list[AltiumProcessInfo] = []
+        # WSL with interop: enumerate the Windows side. tasklist carries no
+        # exe path or command line, so those stay empty; the selection logic
+        # falls back to the single-candidate case, and the file channel is
+        # what reaches Altium either way.
+        rows = _windows_tasklist_rows()
+        if rows is not None:
+            for pid, name in rows:
+                if name.upper() in wanted:
+                    out.append(AltiumProcessInfo(
+                        pid=pid,
+                        name=name,
+                        exe_path="",
+                        cmdline=None,
+                    ))
+            return out
         for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
             try:
                 proc_name = proc.info["name"] or ""
@@ -254,6 +355,27 @@ class AltiumProcessManager:
         native = _scan_process_names_native(wanted)
         if native is not None:
             return native
+
+        # WSL, interop working: ask the list that actually decides whether
+        # the bridge can work, which is the Windows one.
+        rows = _windows_tasklist_rows()
+        if rows is not None:
+            return any(name.upper() in wanted for _pid, name in rows)
+
+        # WSL, interop unavailable: NOTHING HERE CAN ANSWER THE QUESTION, and
+        # saying False would be a claim rather than an answer. psutil below
+        # would return False every time, which is how a healthy bridge came
+        # to be reported as "Altium is not running" for every single call.
+        # Report True and let the request itself find out: a real absence
+        # then surfaces as the IPC timeout, which names the fault and lists
+        # the steps, instead of a confident wrong diagnosis up front.
+        if _under_wsl():
+            logger.debug(
+                "under WSL with no interop: cannot enumerate Windows "
+                "processes, so proceeding and letting the IPC timeout "
+                "diagnose instead of refusing up front")
+            return True
+
         # Fallback: psutil. Slower, but correct on non-Windows / if the
         # native path failed.
         try:
