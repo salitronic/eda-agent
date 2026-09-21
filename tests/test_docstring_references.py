@@ -158,8 +158,10 @@ NON_TOOL_NAMES = {
     # Return-dict keys.
     "sch_lib_found", "pcb_lib_found", "sch_lib_path", "pcb_lib_path",
     "pcb_only", "sch_only",
-    # Parameter names.
-    "lib_path", "lib_ref",
+    # Parameter names. These are fields inside a call, not tools, and
+    # lib_reference only looks like one because it shares the lib_ prefix
+    # that the scan uses to recognise library tools.
+    "lib_path", "lib_ref", "lib_reference",
 }
 
 #: Prefixes this server uses for tool names. A backticked identifier
