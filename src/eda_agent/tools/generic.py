@@ -7,12 +7,61 @@ All intelligence lives in the Python/MCP side, the DelphiScript is just
 a pass-through layer for object iteration, property access, and process execution.
 """
 
+import difflib
 from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from .pin_hints import pin_location_hint
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
+
+
+#: Every key ``sch_place_components`` reads from a placement dict.
+#:
+#: A KEY OUTSIDE THIS SET IS A CALLER MISTAKE AND MUST NOT BE IGNORED.
+#: Dropping it silently is how a single typo became hours of debugging in
+#: the field on 2026-09-21: ``source_library`` was passed instead of
+#: ``library_path``, the field went missing, the Pascal received an empty
+#: library path, and LoadComponentFromLibrary returned Nil -- reported as
+#: ``LOAD_FAILED``, which names the LIBRARY. Four spellings of the path,
+#: two sheets, an extracted .SchLib and the native Place Part dialog were
+#: all tried against an error whose real cause was the key name, because
+#: nothing anywhere said the field had not arrived.
+#:
+#: The tool's own arguments are already protected: an unknown top-level
+#: argument is rejected by the schema. Only the contents of these dicts
+#: were unchecked.
+PLACEMENT_KEYS = frozenset({
+    "library_path",
+    "lib_reference",
+    "x",
+    "y",
+    "rotation",
+    "designator",
+    "footprint",
+})
+
+
+def unknown_placement_keys(
+    placements: list[dict[str, Any]],
+) -> dict[str, Optional[str]]:
+    """``{unrecognised_key: nearest_valid_key_or_None}``.
+
+    The suggestion matters more than the rejection: ``source_library``
+    resolves to ``library_path`` and ``lib_ref`` to ``lib_reference``,
+    which are exactly the two mistakes that have actually been made.
+    """
+    found: dict[str, Optional[str]] = {}
+    for item in placements:
+        if not isinstance(item, dict):
+            continue
+        for key in item:
+            if key in PLACEMENT_KEYS or key in found:
+                continue
+            near = difflib.get_close_matches(
+                str(key), sorted(PLACEMENT_KEYS), n=1, cutoff=0.5)
+            found[key] = near[0] if near else None
+    return found
 
 
 #: How many components in one call count as "drawing a sheet" rather than
@@ -2600,6 +2649,25 @@ def register_generic_tools(mcp):
         Returns:
             Dict with placed, failed, total counts.
         """
+        unknown = unknown_placement_keys(placements)
+        if unknown:
+            described = []
+            for key in sorted(unknown):
+                near = unknown[key]
+                described.append(
+                    f"{key!r}" + (f" (did you mean {near!r}?)" if near else ""))
+            return {
+                "error": "UNKNOWN_PLACEMENT_KEYS",
+                "reason": (
+                    "placement dicts carry keys this tool does not read, "
+                    "and acting on the rest would place parts from a "
+                    "library path that never arrived: " + ", ".join(described)),
+                "valid_keys": sorted(PLACEMENT_KEYS),
+                "placed": 0,
+                "failed": 0,
+                "total": len(placements),
+            }
+
         op_strs: list[str] = []
         for p in placements:
             lib_ref = str(p.get("lib_reference", "")).strip()

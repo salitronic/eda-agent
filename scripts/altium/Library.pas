@@ -3839,7 +3839,7 @@ Begin
     // a fast metadata reader, it returns CompName, AliasName, PartCount and
     // Description directly from the lib file without loading every symbol's
     // primitives, so the cheap path scales linearly with file IO.
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'READER_FAILED', 'Failed to create library reader for: ' + LibPath);
@@ -3988,7 +3988,7 @@ Begin
     Result := False;
     LowerQuery := LowerCase(Query);
 
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then Exit;
 
     Try
@@ -4295,7 +4295,7 @@ Begin
 
         { Read Altium's own copy of the name at this position. }
         WantName := '';
-        LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+        LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
         If LibReader = Nil Then
         Begin
             ErrCode := 'READER_FAILED';
@@ -4469,7 +4469,7 @@ Begin
     AliasName := '';
     PartCount := 1;
     FoundInfo := False;
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader <> Nil Then
     Begin
         Try
@@ -4954,12 +4954,12 @@ Begin
     If (PathA = '') Or (PathB = '') Then
     Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'library_a and library_b are required'); Exit; End;
 
-    ReaderA := SchServer.CreateLibCompInfoReader(PathA);
+    ReaderA := SchServer.CreateLibCompInfoReader(SafeSchLibPath(PathA));
     If ReaderA = Nil Then Begin Result := BuildErrorResponse(RequestId, 'READER_FAILED', 'Cannot read library A'); Exit; End;
     ReaderA.ReadAllComponentInfo;
     NumA := ReaderA.NumComponentInfos;
 
-    ReaderB := SchServer.CreateLibCompInfoReader(PathB);
+    ReaderB := SchServer.CreateLibCompInfoReader(SafeSchLibPath(PathB));
     If ReaderB = Nil Then
     Begin
         SchServer.DestroyCompInfoReader(ReaderA);
@@ -6033,7 +6033,7 @@ Begin
     { in document order; for each name we load the live ISch_Component via }
     { GetState_SchComponentByLibRef to read its designator/comment/parameter}
     { style records. This is the same pattern Lib_GetComponents uses.        }
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'READER_FAILED',
@@ -6432,7 +6432,7 @@ Begin
             { Bulk mode: walk library via CompInfoReader, same enumeration as }
             { Lib_GetComponents and Lib_AuditStyles.                            }
             Scope := 'bulk';
-            LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+            LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
             If LibReader = Nil Then
             Begin
                 Result := BuildErrorResponse(RequestId, 'READER_FAILED',
@@ -6695,7 +6695,7 @@ Begin
             Else
             Begin
                 Scope := 'bulk';
-                LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+                LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
                 If LibReader = Nil Then
                 Begin
                     Result := BuildErrorResponse(RequestId, 'READER_FAILED',

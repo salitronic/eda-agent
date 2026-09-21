@@ -35,6 +35,154 @@ Begin
     Result := Coord * 25.4 / 10000000;
 End;
 
+{..............................................................................}
+{ ResolveSchLibForLoad - any library path in, a loadable .SchLib path out.     }
+{                                                                              }
+{ NEVER HAND AN .IntLib TO ALTIUM FROM THIS BRIDGE. CreateLibCompInfoReader    }
+{ and LoadComponentFromLibrary both accept the path and then raise the         }
+{ "Open Integrated Library" modal, which no Try/Except can catch and which     }
+{ wedges the polling loop. Reported from the field 2026-09-21 as a repeating   }
+{ dialog storm that had to be cleared with "Apply to all libraries" before     }
+{ the bridge answered again.                                                   }
+{                                                                              }
+{ THE ROUND TRIP IS WHY THIS KEEPS HAPPENING, and it is not caller error. A    }
+{ PLACED component records its source library as the .IntLib, so every path    }
+{ that READS a design (plan_from_sheet, component metadata) reports .IntLib,   }
+{ and every path that WRITES one needs .SchLib. Reading produced exactly what  }
+{ writing rejected, and the only symptom was LOAD_FAILED.                      }
+{                                                                              }
+{ The two candidate locations are the ones Lib_ExtractIntLib already probes    }
+{ after running IntegratedLibrary:ExtractSources: a sibling folder named after }
+{ the IntLib, then beside the IntLib itself. Both are checked with FileExists  }
+{ rather than handed to Altium, so an unresolvable path costs a disk stat and  }
+{ not a modal.                                                                 }
+{                                                                              }
+{ Returns '' when nothing usable exists, with Reason saying what was tried.    }
+{..............................................................................}
+
+Function ResolveSchLibForLoad(LibPath : String; Var Reason : String) : String;
+Var
+    Ext, BaseName, ParentDir, GrandDir, Candidate, Tried : String;
+Begin
+    Result := '';
+    Reason := '';
+    If LibPath = '' Then
+    Begin
+        Reason := 'no library path given';
+        Exit;
+    End;
+
+    Ext := UpperCase(ExtractFileExt(LibPath));
+
+    If Ext = '.SCHLIB' Then
+    Begin
+        If FileExists(LibPath) Then Result := LibPath
+        Else Reason := 'no such .SchLib on disk: ' + LibPath;
+        Exit;
+    End;
+
+    If Ext = '.INTLIB' Then
+    Begin
+        BaseName := ChangeFileExt(ExtractFileName(LibPath), '');
+        ParentDir := ExtractFilePath(LibPath);
+
+        Candidate := ParentDir + BaseName + '\' + BaseName + '.SchLib';
+        Tried := Candidate;
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+
+        Candidate := ParentDir + BaseName + '.SchLib';
+        Tried := Tried + ' and ' + Candidate;
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+
+        { THE LIBRARY-PACKAGE LAYOUT, which is what real libraries use and   }
+        { what the first two candidates miss. A .LibPkg compiles its .IntLib }
+        { into "Project Outputs for <Base>\", so the source .SchLib sits one }
+        { level UP from the .IntLib, beside the .LibPkg:                     }
+        {                                                                     }
+        {   <Base>\<Base>.SchLib                     <- source           }
+        {   <Base>\Project Outputs for <Base>\<Base>.IntLib <- compiled   }
+        {                                                                     }
+        { MEASURED 2026-09-21 against a real library package:                  }
+        { neither of the candidates above exists for them, only this one.     }
+        { Walking up by name rather than matching the folder's title keeps    }
+        { this working when the output folder is renamed or localised.        }
+        { Trimmed by hand: ExcludeTrailingBackslash is NOT declared in    }
+        { DelphiScript, and calling an undeclared identifier raises the    }
+        { modal this whole resolver exists to avoid. Copy/Length/          }
+        { ExtractFilePath are all attested in this codebase.               }
+        GrandDir := ParentDir;
+        If Length(GrandDir) > 0 Then
+            If Copy(GrandDir, Length(GrandDir), 1) = '\' Then
+                GrandDir := Copy(GrandDir, 1, Length(GrandDir) - 1);
+        GrandDir := ExtractFilePath(GrandDir);
+        If GrandDir <> '' Then
+        Begin
+            Candidate := GrandDir + BaseName + '.SchLib';
+            Tried := Tried + ' and ' + Candidate;
+            If FileExists(Candidate) Then
+            Begin
+                Result := Candidate;
+                Exit;
+            End;
+        End;
+
+        Reason := 'an .IntLib cannot be loaded directly and no extracted '
+            + '.SchLib was found. Looked in ' + Tried
+            + '. Run lib_extract_intlib on ' + LibPath + ' first.';
+        Exit;
+    End;
+
+    { No extension, or something else: only a bare name is worth a guess, and }
+    { only as a .SchLib. A bare name is NOT resolved against the library      }
+    { search path here on purpose, because that is the lookup that silently   }
+    { returns a reader for a different library.                               }
+    If Ext = '' Then
+    Begin
+        Candidate := LibPath + '.SchLib';
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+        Reason := 'library path has no extension and ' + Candidate
+            + ' does not exist; pass the full path to the .SchLib';
+        Exit;
+    End;
+
+    Reason := 'unsupported library type "' + Ext + '"; pass a .SchLib path';
+End;
+
+{ SafeSchLibPath - a library path that is safe to hand to Altium.              }
+{                                                                              }
+{ Wraps ResolveSchLibForLoad for the call sites that already handle a Nil      }
+{ reader and want no new error handling. An .IntLib that cannot be resolved    }
+{ comes back as '' rather than being passed through, because passing it is     }
+{ precisely what raises the modal; the caller's existing "reader is Nil" arm   }
+{ then reports an ordinary error. Anything else that fails to resolve is       }
+{ returned unchanged, so this cannot turn a call that works today into a       }
+{ failure.                                                                     }
+Function SafeSchLibPath(LibPath : String) : String;
+Var
+    Resolved, Reason : String;
+Begin
+    Resolved := ResolveSchLibForLoad(LibPath, Reason);
+    If Resolved <> '' Then
+    Begin
+        Result := Resolved;
+        Exit;
+    End;
+    If UpperCase(ExtractFileExt(LibPath)) = '.INTLIB' Then Result := ''
+    Else Result := LibPath;
+End;
+
 Function CoordWithinTol(A, B, Tol : Integer) : Boolean;
 Begin
     Result := Abs(A - B) <= Tol;

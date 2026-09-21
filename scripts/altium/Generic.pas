@@ -4314,12 +4314,23 @@ Var
     Reader : ILibCompInfoReader;
     Info : IComponentInfo;
     Count, I, Shown : Integer;
+    Resolved, Reason : String;
 Begin
     Result := False;
     Available := '';
     If LibPath = '' Then Exit;
+    { Same reason as the placement path: an .IntLib reaching                }
+    { CreateLibCompInfoReader is what raises the uncatchable modal. Every   }
+    { caller of this function benefits from resolving here as well, because }
+    { not all of them resolve first.                                         }
+    Resolved := ResolveSchLibForLoad(LibPath, Reason);
+    If Resolved = '' Then
+    Begin
+        Available := Reason;
+        Exit;
+    End;
     Try
-        Reader := SchServer.CreateLibCompInfoReader(LibPath);
+        Reader := SchServer.CreateLibCompInfoReader(Resolved);
     Except
         Reader := Nil;
     End;
@@ -4376,6 +4387,7 @@ End;
 Function Gen_PlaceSchComponentFromLibrary(Params : String; RequestId : String) : String;
 Var
     LibPath, LibRef, DesigStr, FootprintStr, AvailHint, SheetPath : String;
+    ResolvedLib, LibReason : String;
     X, Y, Rotation, OrientationVal : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -4386,6 +4398,22 @@ Begin
     DesigStr := ExtractJsonValue(Params, 'designator');
     FootprintStr := ExtractJsonValue(Params, 'footprint');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
+
+    { Resolve before Altium sees the path: an .IntLib raises the "Open      }
+    { Integrated Library" modal, which nothing here can catch and which     }
+    { stops the polling loop until a human dismisses it. A placed component }
+    { reports its library AS an .IntLib, so a caller copying source_library }
+    { off the sheet lands here every time.                                   }
+    If LibPath <> '' Then
+    Begin
+        ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
+        If ResolvedLib = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_LOADABLE', LibReason);
+            Exit;
+        End;
+        LibPath := ResolvedLib;
+    End;
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
@@ -7947,6 +7975,7 @@ Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
     OpCount, Placed, Failed, Rotation, OrientationVal : Integer;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
+    ResolvedLib, LibReason : String;
     X, Y : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -7995,6 +8024,51 @@ Begin
                     FailedRefdes := FailedRefdes + Desig + ':MISSING_LIB_REF';
                 End;
                 Continue;
+            End;
+
+            { AN ABSENT PATH IS NOT A FAILED LOAD, and conflating the two    }
+            { cost a user most of a day. LoadComponentFromLibrary with an    }
+            { empty path returns Nil, which used to be reported as           }
+            { LOAD_FAILED: an error that points at the library, when the     }
+            { library was never named. It happens whenever the caller        }
+            { spells the field wrong, because an unread key just vanishes.   }
+            { Say which of the two it was.                                    }
+            If LibPath = '' Then
+            Begin
+                Inc(Failed);
+                If Desig <> '' Then
+                Begin
+                    If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+                    FailedRefdes := FailedRefdes + Desig + ':NO_LIBRARY_PATH';
+                End;
+                If AvailHint = '' Then
+                    AvailHint := 'library_path was empty for at least one '
+                        + 'placement: the key is "library_path", and a '
+                        + 'misspelled key is dropped before it reaches here';
+                Continue;
+            End;
+
+            { RESOLVE BEFORE ALTIUM SEES THE PATH. An .IntLib handed to     }
+            { CreateLibCompInfoReader or LoadComponentFromLibrary raises the }
+            { "Open Integrated Library" modal, which nothing here can catch  }
+            { and which stops the polling loop until a human clicks it. A    }
+            { placed component reports its library AS an .IntLib, so callers }
+            { copying source_library off the sheet hit this every time.      }
+            If LibPath <> '' Then
+            Begin
+                ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
+                If ResolvedLib = '' Then
+                Begin
+                    Inc(Failed);
+                    If Desig <> '' Then
+                    Begin
+                        If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+                        FailedRefdes := FailedRefdes + Desig + ':UNRESOLVABLE_LIBRARY';
+                    End;
+                    If AvailHint = '' Then AvailHint := LibReason;
+                    Continue;
+                End;
+                LibPath := ResolvedLib;
             End;
 
             { Pre-validate to short-circuit any internal-popup path. }
