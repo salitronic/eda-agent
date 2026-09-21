@@ -528,11 +528,13 @@ def register_library_tools(mcp):
         # straight into the string, so any of them carrying ";" or "~~"
         # reshaped the payload -- a pin name lifted from a datasheet
         # table is enough to do it by accident.
-        pins_payload, _ = _pins_payload(geom.pins)
-        pins_res = await bridge.send_command_async(
-            "library.add_pins", {"pins": pins_payload})
-
-        # Body: Altium standard light-yellow fill (discipline rule 17).
+        # BODY FIRST, THEN PINS, AND THE ORDER IS NOT COSMETIC.
+        # Altium exposes no z-order on schematic primitives: drawing order
+        # IS insertion order, and there is no send-to-back to undo it. This
+        # rectangle is solid (fill_color sets IsSolid), so adding it after
+        # the pins paints it straight over the pin names, and the only
+        # remedy is rebuilding the whole symbol. Reported from the field
+        # 2026-09-21 after exactly that rebuild.
         body = geom.body
         rect_res = await bridge.send_command_async(
             "library.add_symbol_rectangle",
@@ -543,6 +545,10 @@ def register_library_tools(mcp):
                 "border_color": 0,
             },
         )
+
+        pins_payload, _ = _pins_payload(geom.pins)
+        pins_res = await bridge.send_command_async(
+            "library.add_pins", {"pins": pins_payload})
 
         return {
             "symbol": name,
@@ -770,6 +776,13 @@ def register_library_tools(mcp):
         border_color: int = 0,
     ) -> dict[str, Any]:
         """Add a rectangle to the current symbol body.
+
+        ADD THE BODY BEFORE THE PINS. Altium exposes no z-order on
+        schematic primitives, so drawing order is insertion order and
+        there is no send-to-back to correct it afterwards. A rectangle
+        given a `fill_color` is SOLID, and one added after the pins paints
+        over the pin names; the only fix is rebuilding the symbol. Build
+        order is body, then pins, then anything drawn on top.
 
         Args:
             x1: First corner X in mils
