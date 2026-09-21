@@ -155,8 +155,6 @@ End;
 { no save_all changes are needed.                                            }
 Procedure MarkLibDirty(SchLib : ISch_Lib);
 Var
-    Workspace : IWorkspace;
-    Doc : IDocument;
     FullPath : String;
     ServerDoc : IServerDocument;
 Begin
@@ -170,22 +168,42 @@ Begin
     NoteNextStep('This edit is in memory only. Run app_save_all to write '
         + 'it to disk, and check still_dirty in the reply.');
 
-    Workspace := GetWorkspace;
-    If Workspace <> Nil Then
+    { MARK THE LIBRARY THAT WAS EDITED, NOT WHATEVER HAPPENS TO BE FOCUSED.
+      This used to dirty Workspace.DM_FocusedDocument and ignore the SchLib
+      it was handed. When the focused document was anything else -- a sheet,
+      or another library -- the edited library was never flagged, so it was
+      skipped by app_save_all, by SaveAllDirty, and by Altium's own
+      File > Save, all of which correctly decline to write a clean document.
+
+      MEASURED 2026-09-21: a component copied into a .SchLib read back in
+      full through lib_get_component_details while the file on disk stayed
+      byte-identical, 662016 bytes, with zero occurrences of the new name,
+      across all three save routes. The edit was real and in memory; nothing
+      had asked for it to be written.
+
+      SchLib.DocumentName is the library's OWN path. Compare the helper
+      directly below, which exists to catch this same wrong-library
+      confusion when resolving one. }
+    FullPath := '';
+    Try FullPath := SchLib.DocumentName; Except End;
+    If FullPath <> '' Then
     Begin
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then
-        Begin
-            FullPath := '';
-            Try FullPath := Doc.DM_FullPath; Except End;
-            If FullPath <> '' Then
-            Begin
-                ServerDoc := Client.GetDocumentByPath(FullPath);
-                If ServerDoc <> Nil Then
-                    Try ServerDoc.SetModified(True); Except End;
-            End;
-        End;
-    End;
+        ServerDoc := Client.GetDocumentByPath(FullPath);
+        If ServerDoc <> Nil Then
+            Try ServerDoc.SetModified(True); Except End
+        Else
+            { NO SILENT FALLBACK TO THE FOCUSED DOCUMENT. Marking a
+              different document is what caused the defect above, and it
+              cannot be distinguished from success afterwards. Say so
+              instead. }
+            NoteNextStep('The edited library is not open as a document, so '
+                + 'it could not be flagged for saving and app_save_all will '
+                + 'skip it. Open it first, then repeat the edit.');
+    End
+    Else
+        NoteNextStep('The edited library did not report its own path, so it '
+            + 'could not be flagged for saving. Verify the file on disk '
+            + 'changed before relying on this edit.');
     { Force a SchLib editor redraw -- without this, primitives that were just }
     { committed (lines, rectangles, pins, polygons, arcs added by Lib_Add*)   }
     { are saved to memory + disk but the open lib editor window doesn't show  }
@@ -5492,6 +5510,29 @@ Begin
     { auto name and every later lookup of new_name missed it.              }
     NewComp.LibReference := NewName;
     SchServer.ProcessControl.PostProcess(DestLib, 'Edit');
+
+    { REGISTER THE NEW COMPONENT, or it does not reach disk. Lib_CreateSymbol
+      broadcasts this and persists; this path did not and did not, which is
+      the whole difference between the two. Without the broadcast the symbol
+      lives in the data model -- lib_get_component_details reads it back in
+      full, and the copy reports verified -- while the document is never told
+      anything was added, so every save route writes nothing.
+
+      MEASURED 2026-09-21: a copied component read back correctly while the
+      .SchLib stayed byte-identical at 662016 bytes across app_save_all,
+      WorkspaceManager:SaveObject and Altium's own File > Save, with zero
+      occurrences of the new name. Creating the same symbol from scratch
+      grew the file, because that path registers.
+
+      source=Nil, dest=Nil, broadcast: the new-component pattern from
+      Altium's own createcomp_in_lib.pas, not the per-primitive
+      SchRegisterObject(Container, Obj) which sends from the container. }
+    Try
+        SchServer.RobotManager.SendMessage(
+            Nil, Nil, SCHM_PrimitiveRegistration,
+            NewComp.I_ObjectAddress);
+    Except End;
+
     DestLib.CurrentSchComponent := NewComp;
     LastCreatedLibComponent := NewComp;
     LastCreatedLibComponentName := NewName;
@@ -8664,6 +8705,16 @@ Begin
         SchServer.ProcessControl.PreProcess(DestLib, '');
         If Existing <> Nil Then Try DestLib.RemoveSchComponent(Existing); Except End;
         DestLib.AddSchComponent(NewComp);
+        { REGISTER IT IN THE DESTINATION, or the move does not reach disk.
+          Same defect as the copy path: the component is added to a library
+          that is never told, so it reads back correctly and no save route
+          writes it. Broadcast as a new component, the pattern from Altium's
+          createcomp_in_lib.pas. }
+        Try
+            SchServer.RobotManager.SendMessage(
+                Nil, Nil, SCHM_PrimitiveRegistration,
+                NewComp.I_ObjectAddress);
+        Except End;
         SchServer.ProcessControl.PostProcess(DestLib, 'Move component');
 
         If DeleteFromSource Then
