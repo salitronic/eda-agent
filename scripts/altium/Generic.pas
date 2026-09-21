@@ -73,7 +73,20 @@ Begin
     Else If N = 'sheetentry'      Then Result := eSheetEntry
     Else If N = 'noerc'           Then Result := eNoERC
     Else If N = 'junction'        Then Result := eJunction
-    Else If N = 'image'           Then Result := eImage;
+    Else If N = 'image'           Then Result := eImage
+    { PLACEABLE BUT PREVIOUSLY UNRESOLVABLE. Every type below can be created
+      by a sch_place_* tool, and none of them could be queried or deleted:
+      the server could put an object on a sheet that it then could not find
+      or remove. Reported 2026-09-21 by a user trying to delete a text frame,
+      where obj_delete reported 0 processed and the type simply did not
+      resolve. A guard now checks this list against every SchObjectFactory
+      call, because six types had drifted out of it rather than one. }
+    Else If N = 'textframe'       Then Result := eTextFrame
+    Else If N = 'note'            Then Result := eNote
+    Else If N = 'probe'           Then Result := eProbe
+    Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    Else If N = 'crosssheetconnector' Then Result := eCrossSheetConnector
+    Else If N = 'compilemask'     Then Result := eCompileMask;
 End;
 
 { What the refusal should have said. }
@@ -82,7 +95,8 @@ Begin
     Result := 'eNetLabel, ePort, ePowerObject, eSchComponent, eWire, eBus, '
             + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
-            + 'eImage';
+            + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
+            + 'eCrossSheetConnector, eCompileMask';
 End;
 
 { The refusal itself, in one place.                                          }
