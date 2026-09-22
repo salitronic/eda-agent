@@ -11,6 +11,7 @@ import difflib
 from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
+from ..safety import refuse_process, untrusted_text_note
 from .pin_hints import pin_location_hint
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
@@ -243,6 +244,13 @@ def register_generic_tools(mcp):
         hint = pin_location_hint(object_type, properties)
         if hint and isinstance(result, dict):
             result["_hint_pin_connection"] = hint
+        # Free text read out of a design file is DATA. The file may have
+        # come from a customer, a vendor or a third-party library, so the
+        # person who typed that Comment is not necessarily the operator,
+        # and it reaches the model verbatim through this tool.
+        untrusted = untrusted_text_note(properties)
+        if untrusted and isinstance(result, dict):
+            result["_untrusted_content"] = untrusted
         return result
 
     @mcp.tool()
@@ -770,6 +778,11 @@ def register_generic_tools(mcp):
         Returns:
             Dictionary with execution result
         """
+        refusal = refuse_process(process_name)
+        if refusal is not None:
+            return {"success": False, "error": "REFUSED_BY_POLICY",
+                    "reason": refusal, "process": process_name}
+
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.run_process",

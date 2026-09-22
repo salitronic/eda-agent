@@ -50,6 +50,8 @@ from .recovery import (
     CORRUPT_RESPONSE,
 )
 
+from ..safety import refuse_command
+
 logger = logging.getLogger("eda_agent.bridge")
 
 # Wire protocol version. Must match scripts/altium/Main.pas:PROTOCOL_VERSION.
@@ -927,6 +929,10 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
+        refusal = refuse_command(command)
+        if refusal is not None:
+            return {"success": False, "error": {
+                "code": "REFUSED_BY_POLICY", "message": refusal}}
         if not self.is_altium_running():
             raise AltiumNotRunningError()
         if timeout is None:
@@ -940,6 +946,10 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
+        refusal = refuse_command(command)
+        if refusal is not None:
+            return {"success": False, "error": {
+                "code": "REFUSED_BY_POLICY", "message": refusal}}
         if not self.is_altium_running():
             raise AltiumNotRunningError()
         if timeout is None:
