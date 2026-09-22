@@ -536,7 +536,14 @@ Begin
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
         Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
         Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
-        Else If PropName = 'Electrical'  Then Result := IntToStr(Obj.Electrical)
+        { NAME, NOT ORDINAL, so reading and writing use one spelling.
+          This returned the raw enum while obj_modify takes a name and
+          lib_get_pin_list reports one, so a caller that read a pin and
+          wrote it back was handing '0' to a setter it had just been shown
+          as 'input'. ElectricalOrdinal accepts both, so no writer breaks;
+          only the reader changes, and it now agrees with lib_get_pin_list.
+          Reported GH #11, 2026-09-22. }
+        Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
         Else If PropName = 'Color'       Then Result := IntToStr(Obj.Color)
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
         Else If PropName = 'TextColor'   Then Result := IntToStr(Obj.TextColor)

@@ -758,6 +758,17 @@ Begin
     Begin
         If Not StepLibComponentPartTo(SchLib, Component, Target) Then
         Begin
+            { THE DISPLAY HAS MOVED EVEN THOUGH THE TARGET WAS NOT REACHED.
+              Stepping happens before the check, so a part that cannot be
+              reached still leaves the editor somewhere other than where it
+              started, and this build cannot read back where that is. Left
+              unsaid it compounds badly: the caller does not know which part
+              is showing, and scope @1 is the one suffix that cannot be
+              trusted to return to part 1. Reported GH #11, 2026-09-22. }
+            NoteNextStep('Part ' + IntToStr(Target) + ' was not reached, and '
+                + 'the displayed part has moved. Select a different '
+                + 'component and reselect this one to return to part 1; a '
+                + 'suffixed scope cannot reliably do it.');
             Result := Nil;
             Exit;
         End;

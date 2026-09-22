@@ -431,6 +431,66 @@ def _safe_filename(name: str, fallback: str = "part") -> str:
     return safe_filename(name, fallback)
 
 
+def _spill_pin_list(result, pins, comp, output_path):
+    """Write the full pin array to JSON and summarise what is left.
+
+    A pin list that overflows the conversation is not merely awkward: the
+    client decides what survives, so the answer becomes environment
+    dependent. Writing the whole thing and returning a summary makes the
+    outcome the same everywhere, and the file is the more useful artefact
+    for the job people actually do with it, which is a field-by-field
+    comparison against the datasheet pin table.
+
+    The summary carries the two distributions worth eyeballing: pins per
+    part, and electrical type. Both are the checks that catch a symbol
+    built from a mis-transcribed table.
+    """
+    import json
+    from collections import Counter
+    from pathlib import Path
+
+    per_part = Counter()
+    per_type = Counter()
+    for pin in pins:
+        if not isinstance(pin, dict):
+            continue
+        per_part[str(pin.get("owner_part_id", ""))] += 1
+        per_type[str(pin.get("electrical_type", ""))] += 1
+
+    if output_path:
+        target = Path(output_path)
+    else:
+        safe = "".join(c if c.isalnum() or c in "-_." else "_"
+                       for c in (comp or "symbol"))
+        target = Path(get_bridge().config.workspace_dir) / f"pins_{safe}.json"
+
+    written = ""
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(pins, indent=1), encoding="utf-8")
+        written = str(target)
+    except OSError as exc:
+        # Never lose the data because the file could not be written.
+        # Returning it inline is worse than a file and better than
+        # nothing, and the reason has to travel with it.
+        out = dict(result)
+        out["spill_error"] = f"could not write {target}: {exc}"
+        return out
+
+    out = {k: v for k, v in result.items() if k != "pins"}
+    out["pins_path"] = written
+    out["summary"] = {
+        "pins": len(pins),
+        "per_part": dict(sorted(per_part.items())),
+        "per_electrical_type": dict(sorted(per_type.items())),
+    }
+    out["note"] = (
+        f"{len(pins)} pins written to {written}. Read or diff that file "
+        f"directly; it is not summarised further here."
+    )
+    return out
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -2978,7 +3038,11 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
-    async def lib_get_pin_list(component_name: str = "") -> dict[str, Any]:
+    async def lib_get_pin_list(
+        component_name: str = "",
+        output_path: str = "",
+        inline_limit: int = 150,
+    ) -> dict[str, Any]:
         """Get all pins of a library component.
 
         NAME THE COMPONENT. Without ``component_name`` this reads
@@ -2996,15 +3060,33 @@ def register_library_tools(mcp):
         table. The response carries `_datasheet_guidance` +
         `_datasheet_parts`.
 
+        BIG SYMBOLS SPILL TO A FILE ON PURPOSE. A 699-pin module returns
+        more than a conversation can hold, and which half survives is
+        then decided by whichever client happens to be reading. Above
+        `inline_limit` pins the full array is written as JSON and the
+        reply carries `pins_path` and a summary instead. That is the
+        better artefact anyway: the file can be diffed against the
+        datasheet's pin table by script, field by field, without any of
+        it passing through the conversation.
+
         Args:
             component_name: library reference of the symbol to read.
                 Empty falls back to the editor's current component.
+            output_path: write the full pin array here as JSON and
+                return the summary. Forces the file path regardless of
+                size.
+            inline_limit: pin count above which the array is written to
+                a file instead of returned inline. 0 always returns
+                inline, which is what you want only for a small symbol.
 
         Returns:
             Dictionary with "count", "component" name, and "pins" array.
             Each pin has: designator, name, electrical_type, x, y,
             orientation, hidden. Plus `_datasheet_guidance` +
             `_datasheet_parts`.
+
+            When spilled: "pins_path" plus "summary" giving pins per
+            part and the electrical-type distribution, and no "pins".
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -3015,6 +3097,11 @@ def register_library_tools(mcp):
         )
         if isinstance(result, dict):
             comp = str(result.get("component") or "").strip()
+            pins = result.get("pins")
+            if isinstance(pins, list) and (
+                output_path or (inline_limit and len(pins) > inline_limit)
+            ):
+                result = _spill_pin_list(result, pins, comp, output_path)
             explicit = (
                 [{"manufacturer": "", "part_number": comp, "designators": ""}]
                 if comp
