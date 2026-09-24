@@ -379,20 +379,39 @@ Begin
     AddStringParameter('FileName', LibPath);
     RunProcess('WorkspaceManager:OpenObject');
 
-    Try Result := SchServer.GetCurrentSchDocument; Except End;
+    { THE LIBRARY THAT WAS REOPENED, OR NOTHING. This used to return        }
+    { whatever schematic document was current afterwards, and reopening a   }
+    { library does not always make it current. Live 2026-09-23: a lookup   }
+    { into a new, empty library searched the library focused before it,    }
+    { found the part there, and lib_move_components skipped it as already  }
+    { present. SchLibIsAtPath exists for exactly this.                     }
+    Try Result := SchServer.GetSchDocumentByPath(LibPath); Except Result := Nil; End;
+    If Result = Nil Then
+        Try Result := SchServer.GetCurrentSchDocument; Except End;
+    If Not SchLibIsAtPath(Result, LibPath) Then
+        Result := Nil;
 End;
 
-{ LookupLibComponent - the index, then the walk, then a reopen.               }
+{ FindLibComponentInMemory - the index, the walk, and the symbol created or   }
+{ renamed this session. NEVER REOPENS the library.                           }
 {                                                                             }
-{ Use this everywhere instead of calling GetState_SchComponentByLibRef.       }
-{ The third step is the one that actually finds a symbol created earlier in   }
-{ the same session, see RefreshSchLibFromDisk for what was measured.          }
-{ RefreshingLib guards against re-entering: the retry must not be able to     }
-{ trigger another reopen.                                                     }
-Function LookupLibComponent(SchLib : ISch_Lib; Name : String) : ISch_Component;
-Var
-    LibPath : String;
-    Fresh : ISch_Lib;
+{ Use it for "does this name already exist?" before an edit. The full        }
+{ LookupLibComponent reopens on a miss, and a miss is the NORMAL answer to   }
+{ that question: RefreshSchLibFromDisk saves the library, closes it and     }
+{ opens it again, and every reference the caller is holding -- the library,  }
+{ the component it is about to rename or copy -- then points into a closed  }
+{ document. The edit lands on nothing, and each later save writes the       }
+{ reopened library without it.                                              }
+{                                                                             }
+{ Live 2026-09-23 (AD 26.10.1.6, scratch library read back from disk after  }
+{ every save): lib_rename_component and lib_copy_component both answered    }
+{ verified:true while the file kept the old name and never gained the copy. }
+{ lib_batch_rename, which does the same remove, rename and add but never    }
+{ asks whether the new name exists, persisted.                              }
+{                                                                             }
+{ The cost is a name created this session and no longer the last one made: }
+{ it can miss here, where the reopen would have found it.                   }
+Function FindLibComponentInMemory(SchLib : ISch_Lib; Name : String) : ISch_Component;
 Begin
     Result := Nil;
     If (SchLib = Nil) Or (Name = '') Then Exit;
@@ -408,18 +427,36 @@ Begin
     { when it was made, and that outlives the command because the polling    }
     { loop does. This is the case that actually bites: author a symbol, then }
     { set a parameter or link a footprint on it in the very next call.       }
-    {                                                                         }
-    { Checked BEFORE the reopen because it costs nothing and does not disturb }
-    { the editor, where a reopen changes focus and the current component.     }
     { The name is compared against the one recorded at the time, NOT read }
     { back off the interface. See LastCreatedLibComponentName in Main for }
     { what a property read on a freed component does to the session.      }
     If (LastCreatedLibComponent <> Nil) And
        (LastCreatedLibComponentName = Name) Then
-    Begin
         Result := LastCreatedLibComponent;
-        Exit;
-    End;
+End;
+
+{ LookupLibComponent - the index, then the walk, then a reopen.               }
+{                                                                             }
+{ Use this everywhere instead of calling GetState_SchComponentByLibRef.       }
+{ The third step is the one that actually finds a symbol created earlier in   }
+{ the same session, see RefreshSchLibFromDisk for what was measured.          }
+{ RefreshingLib guards against re-entering: the retry must not be able to     }
+{ trigger another reopen.                                                     }
+{                                                                             }
+{ THE REOPEN INVALIDATES WHAT THE CALLER HOLDS. Fine for a read. Before an    }
+{ edit, ask FindLibComponentInMemory instead.                                 }
+Function LookupLibComponent(SchLib : ISch_Lib; Name : String) : ISch_Component;
+Var
+    LibPath : String;
+    Fresh : ISch_Lib;
+Begin
+    Result := Nil;
+    If (SchLib = Nil) Or (Name = '') Then Exit;
+
+    { Everything that costs nothing and does not disturb the editor, where a }
+    { reopen changes focus and the current component.                        }
+    Result := FindLibComponentInMemory(SchLib, Name);
+    If Result <> Nil Then Exit;
 
     { Last resort: the document has not caught up with its own contents. }
     If RefreshingLib Then Exit;
@@ -431,10 +468,7 @@ Begin
     Try
         Fresh := RefreshSchLibFromDisk(LibPath);
         If Fresh <> Nil Then
-        Begin
-            Try Result := Fresh.GetState_SchComponentByLibRef(Name); Except End;
-            If Result = Nil Then Result := ScanLibForComponent(Fresh, Name);
-        End;
+            Result := FindLibComponentInMemory(Fresh, Name);
     Finally
         RefreshingLib := False;
     End;
@@ -673,6 +707,201 @@ Begin
     Result := (Seen = Target);
 End;
 
+{ DisplayedPartByPins - which part the SchLib editor is showing, judged by    }
+{ the pins the iterator actually yields.                                       }
+{                                                                              }
+{ This is the SAME iterator a lib_component query answers from, so it tests   }
+{ exactly what the caller is about to receive rather than a proxy for it.    }
+{ Needed because the document's own part id is declared but returns -1 on    }
+{ AD 26.8.1.31, which is the build GH #11 reported from.                     }
+{                                                                              }
+{ Returns the single OwnerPartId seen on a part-specific pin, 0 when only    }
+{ shared (OwnerPartId 0) pins or no pins are visible, and -1 when pins from  }
+{ more than one part appear, which should not happen and is not trusted.     }
+Function DisplayedPartByPins(SchLib : ISch_Lib) : Integer;
+Var
+    Iter : ISch_Iterator;
+    Pin : ISch_Pin;
+    Owner, Seen : Integer;
+Begin
+    Result := 0;
+    Seen := 0;
+    Iter := SchLib.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := Iter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Owner := 0;
+            Try Owner := Pin.OwnerPartId; Except End;
+            If Owner > 0 Then
+            Begin
+                If Seen = 0 Then
+                Begin
+                    Seen := Owner;
+                End
+                Else If Seen <> Owner Then
+                Begin
+                    Seen := -1;
+                End;
+            End;
+            Pin := Iter.NextSchObject;
+        End;
+    Finally
+        SchLib.SchIterator_Destroy(Iter);
+    End;
+    Result := Seen;
+End;
+
+{ PartOneEvidence - 1 when the editor provably shows part 1, -1 when it       }
+{ provably shows some other part, 0 when nothing present can tell.            }
+{                                                                              }
+{ PINS ONLY. This used to ask the document's own part id first, and that is   }
+{ not evidence here: ReachLibPartOne assigns CurrentPartID := 1 just before   }
+{ asking. Live on AD 26.10.1.6 (2026-09-23), @1 was accepted while the editor }
+{ still showed part 3 and the pins this iterator yields were part 3's; the    }
+{ document's answer was the only thing that could have passed it.            }
+Function PartOneEvidence(SchLib : ISch_Lib) : Integer;
+Var
+    Seen : Integer;
+Begin
+    Seen := DisplayedPartByPins(SchLib);
+    If Seen = 1 Then
+    Begin
+        Result := 1;
+    End
+    Else If Seen = 0 Then
+    Begin
+        Result := 0;
+    End
+    Else
+    Begin
+        Result := -1;
+    End;
+End;
+
+{ OtherLibComponentName - the name of any component in this library other     }
+{ than Name, or '' when there is none.                                        }
+{                                                                              }
+{ CreateLibCompInfoReader, not SchIterator: an eSchComponent iterator returns }
+{ nothing at all on a SchLib, because each symbol is its own internal sheet   }
+{ rather than a component placed on the library's canvas.                    }
+Function OtherLibComponentName(SchLib : ISch_Lib; Name : String) : String;
+Var
+    Reader : ILibCompInfoReader;
+    Info : IComponentInfo;
+    I, N : Integer;
+Begin
+    Result := '';
+    Reader := Nil;
+    Try Reader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(SchLib.DocumentName)); Except End;
+    If Reader = Nil Then Exit;
+    Try
+        Try Reader.ReadAllComponentInfo; Except End;
+        N := 0;
+        Try N := Reader.NumComponentInfos; Except End;
+        For I := 0 To N - 1 Do
+        Begin
+            Info := Reader.ComponentInfos[I];
+            If Info <> Nil Then
+            Begin
+                If Info.CompName <> Name Then
+                Begin
+                    Result := Info.CompName;
+                    Break;
+                End;
+            End;
+        End;
+    Finally
+        Try SchServer.DestroyCompInfoReader(Reader); Except End;
+    End;
+End;
+
+{ ReachLibPartOne - make part 1 the displayed part, and prove it.              }
+{                                                                              }
+{ Part 1 cannot be reached by stepping: SCH:NextComponentPart moves to       }
+{ CurrentPartID + 1, CurrentPartID clamps at 1, so a step from it lands on 2, }
+{ and SCH:PrevComponentPart does not exist. What DOES reset the display to    }
+{ part 1 is selecting a DIFFERENT component and then reselecting this one;    }
+{ reassigning the same component leaves the display where it was. Measured   }
+{ 2026-09-19 on a purpose-built 4-part symbol, and confirmed independently    }
+{ in GH #11 on a 4-part part.                                                 }
+{                                                                              }
+{ The bounce is only done when part 1 is not already provably showing, so a  }
+{ lookup that is already right moves nothing.                                }
+{                                                                              }
+{ After the bounce, success means no pin from another part is visible. That  }
+{ is the property that matters: the #11 defect was answering about part 4    }
+{ when part 1 was asked for, and a query cannot do that while the iterator   }
+{ shows nothing from part 4. A part 1 carrying only shared pins reads as     }
+{ "nothing can tell", which after the measured reset is accepted.            }
+{                                                                              }
+{ A LIBRARY WITH ONE COMPONENT HAS NOTHING TO BOUNCE OFF. There is then no    }
+{ known way back to part 1 once the display has left it, and this says so    }
+{ rather than answering about whichever part is showing.                     }
+Function ReachLibPartOne(SchLib : ISch_Lib; Component : ISch_Component;
+    Name : String) : Boolean;
+Var
+    Count, Evidence : Integer;
+    OtherName : String;
+    Other : ISch_Component;
+Begin
+    Result := False;
+
+    Count := 1;
+    Try Count := Component.PartCount; Except End;
+    If Count <= 1 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+
+    If PartOneEvidence(SchLib) = 1 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+
+    OtherName := OtherLibComponentName(SchLib, Name);
+    If OtherName = '' Then
+    Begin
+        { "Saved" is deliberate: candidates are read from the file on disk,
+          so a component created this session and not yet saved is not one. }
+        NoteNextStep('Part 1 of ' + Name + ' cannot be reached: the display '
+            + 'is on another part, and the saved library holds no other '
+            + 'component to reselect from, which is the only known way back '
+            + 'to part 1. A component created this session counts once the '
+            + 'library is saved. Otherwise select part 1 by hand in the '
+            + 'library editor.');
+        Exit;
+    End;
+
+    Other := Nil;
+    { Through the wrapper, never the raw index: the index only knows   }
+    { what the library was LOADED with. The name came from the file on  }
+    { disk, so this resolves at the wrapper's first step and never     }
+    { reaches its close-and-reopen last resort.                         }
+    Other := LookupLibComponent(SchLib, OtherName);
+    If Other = Nil Then Exit;
+
+    { The editor acts on a selection when it processes its messages, not  }
+    { when the property is assigned. The measured reset was three separate }
+    { calls with the UI running between them; done back to back inside one }
+    { handler, the display stayed on part 3 (live, 2026-09-23).            }
+    Try SchLib.CurrentSchComponent := Other; Except End;
+    Try Application.ProcessMessages; Except End;
+    Try SchLib.CurrentSchComponent := Component; Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Component.CurrentPartID := 1; Except End;
+
+    Evidence := PartOneEvidence(SchLib);
+    Result := (Evidence >= 0);
+    If Not Result Then
+        NoteNextStep('Part 1 of ' + Name + ' was not reached: after '
+            + 'reselecting the component the editor still shows pins from '
+            + 'another part.');
+End;
+
 { SelectLibComponentPart - focus a library symbol and make PART PartId the    }
 { active one. A SchLib iterator only ever yields the CURRENT part's           }
 { primitives, so on a multi-part symbol every query, modify and delete sees   }
@@ -774,13 +1003,33 @@ Begin
         End;
     End;
 
+    { EXPLICIT PART 1, and only explicit. PartId 0 is the plain lookup with no
+      suffix, which every lib_ tool reaches through SelectLibComponent and
+      which must stay exactly as it was: when the step-and-verify once ran on
+      every lookup, lib_link_footprint and lib_batch_rename refused
+      components that demonstrably existed. PartId 1 now means "@1 was
+      written", and that is a request for part 1 that has to be honoured
+      rather than answered about whichever part happens to be displayed.
+      Reported GH #11, 2026-09-22: with the editor on part 3, @1 returned
+      part 3's pins. }
+    If PartId = 1 Then
+    Begin
+        If Not ReachLibPartOne(SchLib, Component, Name) Then
+        Begin
+            Result := Nil;
+            Exit;
+        End;
+    End;
+
     Try SchLib.GraphicallyInvalidate; Except End;
     Result := Component;
 End;
 
 Function SelectLibComponent(Name : String) : ISch_Component;
 Begin
-    Result := SelectLibComponentPart(Name, 1);
+    { 0, NOT 1. Zero is the plain lookup and takes the historical   }
+    { path unchanged; 1 now means an explicit @1 and is verified.  }
+    Result := SelectLibComponentPart(Name, 0);
 End;
 
 Function Lib_SetCurrentComponent(Params : String; RequestId : String) : String;
@@ -5495,7 +5744,10 @@ Begin
     End;
 
     Overwrote := False;
-    Existing := LookupLibComponent(DestLib, NewName);
+    { In memory only: a miss is the usual answer, and the reopening lookup   }
+    { would close DestLib under us and the copy would land on nothing. See   }
+    { FindLibComponentInMemory.                                             }
+    Existing := FindLibComponentInMemory(DestLib, NewName);
     If Existing <> Nil Then
     Begin
         If Not Overwrite Then
@@ -7712,7 +7964,10 @@ Begin
 
     { Refuse to collide with an existing part. If new_name already resolves }
     { and it is a different object, the rename would create a duplicate.    }
-    Existing := LookupLibComponent(SchLib, NewName);
+    { In memory only: the reopening lookup would close SchLib under us, and }
+    { the rename would land on a component in a closed document. See       }
+    { FindLibComponentInMemory.                                             }
+    Existing := FindLibComponentInMemory(SchLib, NewName);
     If (Existing <> Nil) And (Existing <> Component) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NAME_EXISTS',
@@ -8706,7 +8961,9 @@ Begin
         SourceComp := LookupLibComponent(SourceLib, Name);
         If SourceComp = Nil Then Begin Inc(Failed); Continue; End;
 
-        Existing := LookupLibComponent(DestLib, Name);
+        { In memory only, or a miss reopens DestLib under the loop. See }
+        { FindLibComponentInMemory.                                     }
+        Existing := FindLibComponentInMemory(DestLib, Name);
         If (Existing <> Nil) And (Not Overwrite) Then Begin Inc(Skipped); Continue; End;
 
         NewComp := SourceComp.Replicate;

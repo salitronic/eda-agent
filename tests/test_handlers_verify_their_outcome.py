@@ -299,13 +299,15 @@ def test_library_lookups_fall_back_to_walking_the_document():
     assert "Function ScanLibForComponent" in text
     assert "Function LookupLibComponent" in text
 
-    # Every caller goes through the wrapper; only the wrapper itself may
-    # touch the raw index lookup.
+    # Every caller goes through a wrapper; only the in-memory half may
+    # touch the raw index lookup, and LookupLibComponent is built on it.
     raw = [m for m in re.finditer(r"\w+\.GetState_SchComponentByLibRef\(", text)]
-    inside_helper = _body(text, "LookupLibComponent")
+    inside_helper = _body(text, "FindLibComponentInMemory")
     assert len(raw) == inside_helper.count(".GetState_SchComponentByLibRef("), (
-        "a by-name lookup bypasses LookupLibComponent, so it cannot see a "
+        "a by-name lookup bypasses the wrappers, so it cannot see a "
         "symbol created in this session")
+    assert "ScanLibForComponent" in inside_helper
+    assert "FindLibComponentInMemory(" in _body(text, "LookupLibComponent")
 
 
 def test_save_all_reports_what_reached_disk():

@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.09.22.1';
+    SCRIPT_VERSION = '2026.09.23.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -1426,6 +1426,51 @@ Begin
            Or (Pos('run_', Msg) > 0);
 End;
 
+{ What IS focused, for a refusal that only says what is not. "No schematic   }
+{ document is active" with a .SchLib in front of the editor sent a session   }
+{ hunting for the call that had stolen focus, when naming the .SchLib would  }
+{ have made the next move obvious.                                           }
+{ File name only: a full path carries the user's name into every log. DM     }
+{ calls only, which never load an editor server, so this cannot raise an     }
+{ uncatchable undeclared-identifier modal from inside an error path.         }
+Function FocusedDocumentNote(Dummy : Integer) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Name : String;
+Begin
+    Result := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then Exit;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc = Nil Then
+        Begin
+            Result := 'No document has editor focus.';
+            Exit;
+        End;
+        Name := ExtractFileName(Doc.DM_FullPath);
+        If Name <> '' Then
+            Result := 'The focused document is ' + Name + ' ('
+                    + Doc.DM_DocumentKind + ').';
+    Except
+        Result := '';
+    End;
+End;
+
+{ Handler messages rarely end in a full stop, so a note appended to one ran  }
+{ on, live: "No schematic document is active No document has editor focus."  }
+Function WithFullStop(S : String) : String;
+Var
+    Last : String;
+Begin
+    Result := S;
+    If S = '' Then Exit;
+    Last := Copy(S, Length(S), 1);
+    If (Last <> '.') And (Last <> '!') And (Last <> '?') Then
+        Result := S + '.';
+End;
+
 Function CrossDocumentHint(ErrorCode : String) : String;
 Begin
     Result := '';
@@ -1446,14 +1491,26 @@ End;
 Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;
                                     ErrorMsg : String; DetailsJson : String) : String;
 Var
-    EscMsg, Ch, HexDigits, Hint : String;
+    EscMsg, Ch, HexDigits, Hint, Focus : String;
     I, O : Integer;
+    Pointed : Boolean;
 Begin
-    { Only when the handler has not already pointed somewhere itself: a }
-    { specific pointer beats the generic one and must not be doubled.   }
+    { The generic hint goes on only when the handler has not already    }
+    { pointed somewhere itself: a specific pointer beats the generic one }
+    { and must not be doubled. Decided on the handler's own words,       }
+    { BEFORE the focus note is added, because a file name such as        }
+    { power_lib_parts.SchLib contains "lib_" and would read as a pointer.}
     Hint := CrossDocumentHint(ErrorCode);
-    If (Hint <> '') And (Not MessageNamesATool(ErrorMsg)) Then
-        ErrorMsg := ErrorMsg + ' ' + Hint;
+    Pointed := MessageNamesATool(ErrorMsg);
+    If Hint <> '' Then
+    Begin
+        { A fact, not a pointer, so it goes on every wrong-document refusal. }
+        Focus := FocusedDocumentNote(0);
+        If Focus <> '' Then
+            ErrorMsg := WithFullStop(ErrorMsg) + ' ' + Focus;
+        If Not Pointed Then
+            ErrorMsg := WithFullStop(ErrorMsg) + ' ' + Hint;
+    End;
 
     // Inline escape (EscapeJsonString is not yet declared in build order).
     // Must also \u00XX-escape control and non-ASCII bytes: one raw byte

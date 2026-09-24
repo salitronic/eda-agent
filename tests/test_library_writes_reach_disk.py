@@ -112,3 +112,54 @@ def test_mark_lib_dirty_flags_the_library_it_was_given():
         "MarkLibDirty must not consult the focused document. It is handed "
         "the library to flag; using the focused one instead flags the "
         "wrong file and leaves the edit unsaved with no way to tell.")
+
+
+#: Handlers that ask "does this name already exist?" and then edit the
+#: library they are holding.
+_CHECK_THEN_EDIT = ("Lib_CopyComponent", "Lib_RenameComponent",
+                    "Lib_MoveComponents")
+
+
+@pytest.mark.parametrize("handler", _CHECK_THEN_EDIT)
+def test_an_existence_check_before_an_edit_never_reopens(handler: str) -> None:
+    """A miss on the reopening lookup closes the library the caller holds.
+
+    Live 2026-09-23 (AD 26.10.1.6, scratch library, read back from disk
+    after every save): lib_rename_component and lib_copy_component both
+    answered verified:true while the file kept the old name and never
+    gained the copy. Each first asked LookupLibComponent whether the new
+    name existed. It did not, which is the normal answer, so the lookup
+    fell through to RefreshSchLibFromDisk: save, close, reopen. The
+    handler's library and component then pointed into a closed document,
+    the edit landed on nothing, and every later save wrote the reopened
+    library. lib_batch_rename never asks, and it persisted.
+    """
+    body = _functions()[handler]
+    add = body.index("AddSchComponent(")
+    before = body[:add]
+    assert "Existing := FindLibComponentInMemory(" in before, (
+        f"{handler} no longer checks for an existing component with the "
+        f"in-memory lookup before its add")
+    assert "Existing := LookupLibComponent(" not in before, (
+        f"{handler} asks the reopening lookup whether a name exists before "
+        f"editing. A miss closes the library it is holding, and the edit "
+        f"never reaches disk")
+
+
+def test_the_in_memory_lookup_cannot_reopen():
+    body = _functions()["FindLibComponentInMemory"]
+    for reopen in ("RefreshSchLibFromDisk", "CloseObject", "OpenObject",
+                   "LookupLibComponent"):
+        assert reopen not in body, (
+            f"FindLibComponentInMemory reaches {reopen}, so it can close the "
+            f"library its caller is about to edit")
+
+
+def test_a_reopen_hands_back_the_library_it_reopened():
+    """Or nothing. Live: a lookup into a new, empty library searched the
+    one focused before it and reported the part as already there."""
+    body = _functions()["RefreshSchLibFromDisk"]
+    tail = body[body.rindex("OpenObject"):]
+    assert "SchLibIsAtPath(Result, LibPath)" in tail, (
+        "RefreshSchLibFromDisk returns whatever is current after the reopen "
+        "without checking it is the library it reopened")

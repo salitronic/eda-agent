@@ -1,4 +1,4 @@
-# Release verification: 2026.09.22.1
+# Release verification: 2026.09.23.4
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -102,13 +102,14 @@ fails silently rather than loudly:
 | Library parameter delete | Matches zero and reports success | Delete a named parameter from a library symbol, then read the symbol's parameters |
 | Multi-part scope suffix | Returns part one's pins under another part's name | `lib_get_pin_list` on a multi-part symbol with `@2` and `@3`, and compare the counts |
 | Cross-document hints | The hint is appended to an error it does not apply to, or doubles up on a message that already names a tool | Focus a SchDoc and run `pcb_delete_object`. The refusal must name the PCB tool once, and read as one sentence |
+| Refusals name the focused document | A wrong-document refusal says what is missing and not what is there, so the caller goes looking for whatever took the focus | Focus a SchLib and run `sch_place_components`. The refusal must name the .SchLib by file name only, no folder, and still carry the `lib_` hint once. Name the library something containing `lib_` and repeat: the hint must still appear |
 
 None of these can halt the polling loop the way an undeclared
 identifier does, so they are safe to run in any order and safe to run
 last. The cost of getting one wrong is a wrong answer, not a dead
 bridge.
 
-### Carried into 2026.09.22.1: five fixes whose symptom was silence
+### Carried into 2026.09.23.4: five fixes whose symptom was silence
 
 These came out of one live session and a bug report, and they share a
 shape: the tool reported success, the board or sheet did not agree, and
@@ -207,7 +208,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.09.22.1`, `version_match` =
+Expect `altium_script_version` = `2026.09.23.4`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -611,6 +612,22 @@ The loop is bounded by `PartCount` because the command wraps at the
 last part. A target that can never be reached leaves the editor moved
 but not where asked, so check the spinner afterwards.
 
+**Part 1 goes a different way, new in 2026.09.23.4.** The command only
+steps forward and stops at the last part, so from part 3 there is no
+step back to part 1, and `@1` read whichever part was on screen.
+`@1` now selects some other component in the library and then this
+one again, which reopens it on part 1, and checks the pins it can see
+afterwards. None of that has run in Altium. Three checks:
+
+* Spinner on part 3 by hand, query `@1`. Part 1's pins, and the
+  spinner on part 1 afterwards.
+* The same in a library holding only that one component. It must
+  refuse and say in `next_step` that there is no other component to
+  reselect from, not answer with part 3's pins.
+* A scope with no suffix at all, `lib_component:<NAME>`, with the
+  spinner on part 2. It now reads part 2, the part on screen, and
+  leaves the spinner where it was. It used to be treated as `@1`.
+
 ---
 
 ## 10. UNC paths survive the trip (task #44)
@@ -653,18 +670,34 @@ On a scratch library, with a symbol that is not the first added this
 session:
 
     lib_copy_component    source_name <existing>  new_name COPY_PROBE
+    app_save_all
     lib_get_components    library_path <the same library>
 
 `COPY_PROBE` must appear, and the count must be one higher. Then:
 
     lib_rename_component  component_name COPY_PROBE  new_name RENAME_PROBE
+    app_save_all
     lib_get_components    library_path <the same library>
 
 `RENAME_PROBE` must appear, `COPY_PROBE` must be gone, and the count
-must be unchanged. Both replies now carry `verified:true`; a reply with
-`success:false` and a `reason` is the handler reporting that the
-read-back missed, which is the state that used to be reported as
-success.
+must be unchanged.
+
+**Save before reading.** `lib_get_components` reads the FILE, so without
+the save these steps can only fail. And `verified:true` is not evidence
+of anything on disk: the handlers verify through `LookupLibComponent`,
+which returns the component this session last created or renamed by
+name, whether or not the library holds it.
+
+**What the previous builds did, live.** Copy and rename both answered
+`verified:true`, the library was saved, and the file kept the old name
+and never gained the copy. Each first asked whether the new name already
+existed, through the lookup that reopens the library on a miss, and a
+miss is the normal answer. The reopen saved, closed and reopened the
+library, so the handler went on to edit a component in a closed
+document, and every later save wrote the reopened library without the
+edit. `lib_batch_rename`, which never asks, persisted on the same
+scratch library. The existence checks now use a lookup that cannot
+reopen. That is the change these steps test.
 
 Note that `part_count` from `lib_get_components` is not evidence of
 anything here. It comes from the CompInfoReader, which has been measured

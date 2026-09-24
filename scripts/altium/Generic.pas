@@ -1788,7 +1788,11 @@ Begin
     { reach part 1 and correcting parts 2..N meant a full rebuild.          }
     { Scan from the RIGHT: a lib-ref may legitimately contain '@'.          }
     CompName := ScopePath;
-    PartId := 1;
+    { 0 = NO SUFFIX, which keeps the plain lookup exactly as it was. A
+      written @1 used to arrive here as the same 1, so the two could not be
+      told apart and @1 was never honoured. A parsed suffix below still
+      clamps to 1, so @0 and @-1 are read as an explicit part 1. }
+    PartId := 0;
     AtPos := 0;
     For I := Length(ScopePath) DownTo 1 Do
         If ScopePath[I] = '@' Then
