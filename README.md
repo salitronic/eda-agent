@@ -72,10 +72,12 @@ The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), s
 ```bash
 git clone https://github.com/salitronic/eda-agent
 cd eda-agent
-pip install -e .
+python -m pip install -e .
 ```
 
-Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server.
+Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
+
+Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. Everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`.
 
 ### Claude Code
 
@@ -89,11 +91,19 @@ Adds `eda-agent` as an MCP server named `altium` to your Claude Code project con
 claude mcp add -s user altium eda-agent
 ```
 
-If `eda-agent` isn't on your `PATH`, give the full path instead (pip reports it after install, typically `%USERPROFILE%\AppData\Roaming\Python\Python312\Scripts\eda-agent.exe` on Windows). To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
+If `eda-agent` isn't on your `PATH` ("'eda-agent' is not recognized"), register it through Python instead. This needs no path at all:
+
+```bash
+claude mcp add -s user altium -- python -m eda_agent
+```
+
+The `--` matters: it tells `claude mcp add` that everything after it is the command to run, rather than options for `claude` itself.
+
+To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
 
 ### Other MCP clients
 
-The server speaks standard MCP over stdio; any client that accepts a local stdio command will work. Invoke `eda-agent` (or `eda-agent serve`) as the subprocess.
+The server speaks standard MCP over stdio; any client that accepts a local stdio command will work. Invoke `eda-agent` (or `eda-agent serve`) as the subprocess, or `python -m eda_agent` if it is not on your `PATH`.
 
 ### Altium-side scripts
 
@@ -101,6 +111,12 @@ Drop the Altium script project somewhere you can find it:
 
 ```bash
 eda-agent install-scripts
+```
+
+or, if `eda-agent` is not recognised:
+
+```bash
+python -m eda_agent install-scripts
 ```
 
 Default destination: `%USERPROFILE%\EDA Agent\scripts\`. Use `--dest PATH` to put it elsewhere.
