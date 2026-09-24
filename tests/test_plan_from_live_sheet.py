@@ -10,8 +10,6 @@ schematic does not record.
 """
 from __future__ import annotations
 
-import pytest
-
 from eda_agent.design.orchestrator import plan_from_live_sheet
 
 
@@ -292,11 +290,21 @@ def test_unreadable_power_glyphs_cost_the_rails_not_the_plan():
     assert any("power port" in n for n in out["notes"])
 
 
-def test_no_bridge_is_a_refusal_not_a_crash():
+def test_no_bridge_is_a_refusal_not_a_crash(monkeypatch):
+    """No bridge is simulated, never looked for.
+
+    This used to pass bridge=None and let the orchestrator resolve the
+    global bridge, skipping "if a live bridge answered". On a machine with
+    Altium running that is a real request to the user's session: on
+    2026-09-23 it sent four queries to one, mid-work.
+    """
+    from eda_agent.design import orchestrator
+
+    monkeypatch.setattr(orchestrator, "_resolve_bridge", lambda: None)
     out = plan_from_live_sheet("p.PrjPcb", bridge=None)
-    if out["ok"]:                       # a live bridge answered; skip
-        pytest.skip("a bridge is attached in this environment")
+    assert out["ok"] is False
     assert out["plan"] is None
+    assert any("no Altium bridge" in n for n in out["notes"])
 
 
 def test_a_plan_survives_the_round_trip_it_is_for():

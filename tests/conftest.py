@@ -7,14 +7,44 @@ by reimplementing them in Python and testing against identical inputs/outputs.
 Any divergence between the Python reimplementation and expected behavior IS a bug.
 """
 
+import atexit
 import inspect
 import os
 import json
 import pytest
 import re
+import shutil
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
+
+
+# THE WHOLE SESSION GETS A SCRATCH IPC WORKSPACE, AND IT IS SET HERE, BEFORE
+# ANYTHING IMPORTS eda_agent. ``eda_agent.config`` builds its global config
+# at import time, so a fixture would run too late. The real workspace is
+# the directory a running Altium polls, and any code that reaches the
+# global bridge writes its requests there.
+#
+# That happened. On 2026-09-23 a parallel run sent four read-only queries
+# to a live session, from a test that passes bridge=None, in a worker
+# where no earlier test had happened to swap the global config for a temp
+# one. In a single-process run test_bridge.py does that swap first and
+# leaks it forward, which is the only reason it had never shown.
+#
+# Only the integration tests may reach the real workspace, and only when
+# opted in. A nested pytest keeps the workspace its parent test chose:
+# test_integration_tests_are_opt_in points one at an empty directory and
+# asserts it stays empty, which a fresh override would make vacuous. A
+# workspace inherited WITHOUT the marker is not trusted, because that is a
+# user's own EDA_AGENT_WORKSPACE, which is their real one.
+_NESTED_MARKER = "EDA_AGENT_TEST_WORKSPACE_ISOLATED"
+if os.environ.get("EDA_AGENT_INTEGRATION") != "1":
+    if os.environ.get(_NESTED_MARKER) != "1":
+        _scratch_ws = tempfile.mkdtemp(prefix="eda-agent-test-ws-")
+        os.environ["EDA_AGENT_WORKSPACE"] = _scratch_ws
+        os.environ[_NESTED_MARKER] = "1"
+        atexit.register(shutil.rmtree, _scratch_ws, True)
 
 from tests.altium_simulator import AltiumSimulator, SIM_PROTOCOL_VERSION
 
@@ -378,6 +408,36 @@ def _isolate_workspace_pointer(tmp_path_factory):
     os.environ["EDA_AGENT_POINTER_FILE"] = str(scratch)
     yield
     os.environ.pop("EDA_AGENT_POINTER_FILE", None)
+
+
+#: The name AltiumBridge gives its keep-alive thread.
+KEEPALIVE_THREAD_NAME = "altium-keepalive"
+
+
+def _keepalive_threads() -> set[int]:
+    return {t.ident for t in threading.enumerate()
+            if t.name == KEEPALIVE_THREAD_NAME and t.is_alive()}
+
+
+@pytest.fixture(autouse=True)
+def _no_bridge_left_pinging():
+    """A test that starts a bridge's keep-alive must stop it.
+
+    Any ``send_command`` starts one, and it pings every 30 seconds for as
+    long as the process lives, against whichever workspace that bridge was
+    built with. Ten tests left one running. Nine pinged temp directories
+    that no longer existed; the tenth was a bridge resolved from the
+    global config, and its presence is how the live contact recorded
+    above was found. Autouse, so it tears down after every fixture the
+    test asked for, including the ones that detach.
+    """
+    before = _keepalive_threads()
+    yield
+    leaked = _keepalive_threads() - before
+    assert not leaked, (
+        f"this test left {len(leaked)} bridge keep-alive thread(s) running. "
+        f"Call bridge.detach() in teardown, or pass the code under test a "
+        f"fake instead of letting it resolve the global bridge")
 
 
 def pytest_configure(config):

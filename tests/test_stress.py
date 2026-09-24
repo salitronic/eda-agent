@@ -70,7 +70,21 @@ def _build_bridge(workspace, poll_interval: float, timeout: float) -> AltiumBrid
 
     bridge.process_manager = FakeProcessManager()
     bridge._attached = True
+    _BUILT.append(bridge)
     return bridge
+
+
+#: Every bridge built during the current test, so teardown can stop its
+#: keep-alive. The helpers are called from test bodies, not fixtures, so
+#: nothing else would.
+_BUILT: list[AltiumBridge] = []
+
+
+@pytest.fixture(autouse=True)
+def _detach_built_bridges():
+    yield
+    while _BUILT:
+        _BUILT.pop().detach()
 
 
 def make_bridge(sim: AltiumSimulator, timeout: float = 5.0) -> AltiumBridge:

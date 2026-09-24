@@ -46,7 +46,10 @@ class TestAltiumBridge:
         """Create a bridge with a temporary workspace."""
         from eda_agent.config import configure
         configure(workspace_dir=temp_workspace)
-        return AltiumBridge()
+        bridge = AltiumBridge()
+        yield bridge
+        # attach() starts a keep-alive that outlives the test otherwise.
+        bridge.detach()
 
     def test_get_altium_status_not_running(self, bridge):
         """Test get_altium_status when Altium is not running."""

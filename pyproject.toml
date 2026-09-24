@@ -64,6 +64,9 @@ kicad = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    # Lets `pytest -n auto` spread the suite across cores. Nothing
+    # requires it: a plain `pytest` runs everything in one process.
+    "pytest-xdist>=3.0",
     # The illustrate render tests exercise the matplotlib path, so dev
     # pulls the render extra (CI installs .[dev] only).
     "matplotlib>=3.5,<4",
