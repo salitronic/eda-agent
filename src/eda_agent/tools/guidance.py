@@ -115,18 +115,130 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "the delete reach it."),
     },
     {
-        "task": "Reach one part of a multi-part symbol",
+        "task": "Read or change one part of a multi-part symbol",
         "keywords": ("multi-part", "multipart", "part", "gate", "section",
-                     "symbol", "pins"),
+                     "symbol", "pins", "electrical"),
+        # gate and section were keywords before; these make them trigger
+        # the recipe on their own again, as the table always intended.
+        "when": (("gate",), ("section",), ("multi", "part"), ("multipart",)),
         "document_kind": "library",
         "backends": ("altium",),
-        "use": ["lib_get_pin_list", "obj_query", "sch_set_component_part_id"],
+        "use": ["obj_query", "obj_modify", "lib_get_pin_list",
+                "sch_set_component_part_id"],
         "avoid": [],
         "note": (
-            "Suffix the scope with @N, as lib_component:NAME@2. A SchLib "
-            "iterator only ever yields the CURRENT part's primitives, so "
-            "without the suffix every read returns part 1 no matter which "
-            "part you meant."),
+            "Suffix the scope with @N, as lib_component:NAME@2, for both "
+            "obj_query and obj_modify. A SchLib iterator only ever yields "
+            "the part the editor is DISPLAYING, so without the suffix a read "
+            "or a write reaches whichever part happens to be showing, not "
+            "part 1. lib_get_pin_list reads every part at once and is the "
+            "check to run afterwards. Changing a pin's electrical type on a "
+            "part the editor is not showing is obj_modify with the @N scope "
+            "and a filter on the pin's Designator; it does not need a "
+            "rebuild."),
+    },
+    {
+        "task": "Place a part from a library onto a schematic",
+        "keywords": ("place", "part", "component", "symbol", "library",
+                     "intlib", "schlib", "sheet", "schematic"),
+        "when": (("place", "library"), ("place", "intlib"),
+                 ("place", "schlib"), ("place", "part")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["sch_place_components", "design_execute_plan",
+                "lib_get_components"],
+        "avoid": [
+            ("app_run_ui_command", "driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
+            ("app_click_menu", "driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
+        ],
+        "note": (
+            "Each placement is a dict with library_path, lib_reference, x, "
+            "y and optionally designator, rotation, footprint. The key is "
+            "library_path: source_library and lib_ref are not read, and "
+            "the call now refuses them by name rather than failing with "
+            "LOAD_FAILED. library_path may be the .SchLib or the .IntLib; "
+            "an .IntLib is resolved to its source .SchLib, including the "
+            "library-package layout where it compiles into a Project "
+            "Outputs folder. Adding parts to a sheet that exists is this "
+            "tool; drawing a whole sheet is design_execute_plan, which "
+            "places and routes to measured conventions."),
+    },
+    {
+        "task": "Delete an object placed on a schematic",
+        "keywords": ("delete", "text", "frame", "textframe", "note",
+                     "label", "wire", "junction", "rectangle", "image",
+                     "probe", "object"),
+        "when": (("delete", "text"), ("delete", "frame"),
+                 ("delete", "note"), ("delete", "label"),
+                 ("delete", "wire"), ("delete", "object")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_delete", "obj_query"],
+        "avoid": [
+            ("sch_place_text_frame", "CREATES a text frame; obj_delete "
+                                     "with object_type eTextFrame removes one"),
+            ("sch_place_note", "CREATES a note; obj_delete with "
+                               "object_type eNote removes one"),
+            ("app_canvas", "driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
+        ],
+        "note": (
+            "obj_delete with object_type and a filter, e.g. eTextFrame, "
+            "eNote, eNetLabel, eWire, eJunction, eImage, eProbe. Every "
+            "type a sch_place_ tool can create is also addressable here. "
+            "Query first with obj_query to see what the filter will match, "
+            "because a delete reports how many it removed, not which."),
+    },
+    {
+        "task": "Fix Not Found parts, or set Design Item ID across a library",
+        "keywords": ("design", "item", "id", "designitemid", "found",
+                     "relink", "provenance", "source", "stale", "sync"),
+        "when": (("item", "id"), ("not", "found"), ("found", "library"),
+                 ("relink",)),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["lib_clear_source_library", "sch_clear_source_library",
+                "lib_normalize_implementations"],
+        "avoid": [
+            ("lib_rename_component", "changes LibReference, which placed "
+                                     "designs link through, and recreates "
+                                     "the Not Found state it was meant to fix"),
+            ("lib_batch_rename", "changes LibReference; same trap as "
+                                 "lib_rename_component"),
+            ("app_set_dialog_control", "the Properties panel's Design Item ID "
+                                       "field is one symbol at a time and may "
+                                       "rename the component; driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
+        ],
+        "note": (
+            "DesignItemId is the library item a placed part re-matches "
+            "against, and a stale one after a re-link is what shows as Not "
+            "Found. lib_clear_source_library sets DesignItemId to the "
+            "LibReference on every symbol in a library in one call, and "
+            "leaves LibReference untouched, so placed designs keep "
+            "linking. sch_clear_source_library does the same on placed "
+            "parts, sheet by sheet. Both always clear SourceLibraryName. "
+            "Run it on a copy of the library first, and check total in the "
+            "reply before trusting the synced count."),
+    },
+    {
+        "task": "Mirror or flip a placed schematic component",
+        "keywords": ("mirror", "mirrored", "ismirrored", "flip",
+                     "horizontal", "horizontally"),
+        "when": (("mirror",),),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["sch_mirror_component"],
+        "avoid": [
+            ("obj_modify", "setting IsMirrored alone moves nothing: the "
+                           "canvas draws from the primitives' coordinates, "
+                           "and the flag reads back as set while the part "
+                           "stays unmirrored"),
+        ],
+        "note": (
+            "sch_mirror_component reflects the primitives about the "
+            "component anchor, flips pin orientation, moves the designator "
+            "and comment, and sets the flag, which is what the editor's own "
+            "mirror does. Calling it twice returns the part to where it "
+            "started. Arcs are reported in skipped_kinds, not moved."),
     },
     {
         "task": "Run DRC or ERC",
@@ -149,8 +261,12 @@ _RECIPES: tuple[dict[str, Any], ...] = (
     },
     {
         "task": "Suppress or restore stencil paste on Not-Fitted parts",
+        # Not "variant": one keyword is enough to offer a recipe, so this
+        # one led the answer to every variant question, including "delete
+        # a project variant". A real stencil question says paste, stencil,
+        # DNP or fitted.
         "keywords": ("paste", "stencil", "dnp", "not-fitted", "notfitted",
-                     "aperture", "variant", "restore"),
+                     "aperture", "restore"),
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["audit_variant_not_fitted", "pcb_apply_dnp_paste_exclusion"],
@@ -303,7 +419,108 @@ _STOPWORDS = frozenset((
     "the", "and", "for", "with", "from", "into", "onto", "that", "this",
     "how", "can", "you", "was", "are", "does", "did", "any", "all",
     "get", "set", "use", "using", "make", "want", "need", "should",
+    "many", "every", "each", "some", "without", "after", "before", "new",
+    "one", "its", "their", "have", "has", "not",
+    # Two-letter function words. "id" and "3d" are deliberately absent:
+    # both are real subjects ("design item id", "3d body").
+    "to", "of", "on", "in", "is", "it", "by", "at", "or", "an", "as",
+    "be", "if", "my", "me", "do", "so", "up", "we", "us",
 ))
+
+
+#: Words that name the WORLD rather than the task. Every question about a
+#: library mentions "library"; every question about a board mentions
+#: "board". Letting one of these alone qualify a curated recipe is what
+#: made "place a 3d step model on the board" answer with the board
+#: mechanical-layers recipe, and "set the design item id on many library
+#: components" answer with the library one. They still count as a
+#: tie-break, never as the reason a recipe is offered.
+_GENERIC = frozenset((
+    "board", "library", "schlib", "pcblib", "intlib", "symbol", "part",
+    "component", "sheet", "schematic", "document", "project", "design",
+    "place", "delete", "remove", "add", "create", "change", "edit",
+    "update", "name", "rename", "kind", "type", "pin", "property",
+    "object", "tool", "file", "value",
+))
+
+
+#: Words a caller uses for something the tools call differently. Every
+#: entry is justified by a question that missed. Adding a word to pass a
+#: held-out paraphrase is how a guide learns its test instead of its job,
+#: so when put, reflect and duplicate were added for three held-out
+#: misses, those questions moved into the tuned set and a NEW held-out
+#: set was written first, and scored, before the change.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "put": ("place",),
+    "reflect": ("mirror",),
+    "duplicate": ("copy",),
+    "flip": ("mirror",),
+    "erase": ("delete",),
+    "remove": ("delete",),
+    "note": ("text", "frame"),
+    "textbox": ("text", "frame"),
+    "notfound": ("not", "found"),
+    "relink": ("link", "library"),
+    # "bulk change a property on every symbol" missed every batch_ tool,
+    # because the tools say batch and the caller said bulk.
+    "bulk": ("batch",),
+}
+
+
+def _stem(word: str) -> str:
+    """Fold the plurals that decide matches: parts, symbols, libraries."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _tokens(text: str) -> set[str]:
+    """Whole words, camelCase and snake_case split, plurals folded.
+
+    WHOLE WORDS, because substring matching found "name" inside "rename"
+    and offered the mechanical-layers recipe for copying a symbol under a
+    new name. CAMELCASE SPLIT, because docstrings say ``DesignItemId``
+    and a caller types "design item id", and the two never met.
+    """
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text or "")
+    out: set[str] = set()
+    for raw in re.split(r"[^A-Za-z0-9]+", text.lower()):
+        if len(raw) < 2 or raw in _STOPWORDS:
+            continue
+        out.add(_stem(raw))
+    return out
+
+
+def _query_tokens(task: str) -> set[str]:
+    """The caller's words, plus the words the tools use for the same thing."""
+    words = _tokens(task)
+    joined = re.sub(r"[^a-z0-9]+", "", (task or "").lower())
+    for key, extra in _SYNONYMS.items():
+        if key in words or (len(key) > 6 and key in joined):
+            words.update(extra)
+    return words
+
+
+_DELETE_VERBS = frozenset(("delete", "remove", "erase", "clear"))
+_CREATE_VERBS = frozenset(("place", "add", "create", "put", "insert"))
+
+
+def _direction_penalty(query: set[str], tool_words: set[str]) -> int:
+    """A question about removing something is not answered by a creator.
+
+    Asked to delete a text frame, the docstring search ranked
+    sch_place_text_frame first: it matched "text" and "frame" better than
+    anything that deletes. The verb decides which way the answer faces.
+    """
+    wants_delete = bool(query & _DELETE_VERBS)
+    wants_create = bool(query & _CREATE_VERBS)
+    if wants_delete and not wants_create and tool_words & _CREATE_VERBS:
+        return 1
+    if wants_create and not wants_delete and tool_words & _DELETE_VERBS:
+        return 1
+    return 0
 
 
 def _score(recipe: dict, task: str, document_kind: str) -> int:
@@ -320,21 +537,50 @@ def _score(recipe: dict, task: str, document_kind: str) -> int:
         return 0
     if not task:
         return 1
-    words = {w for w in task.lower().replace("-", " ").split()
-             if len(w) > 2 and w not in _STOPWORDS}
+    words = _query_tokens(task)
     if not words:
         return 1
-    keywords = " ".join(recipe["keywords"]).lower()
-    title = recipe["task"].lower()
-    tools = " ".join(recipe["use"]).lower()
-    score = 0
-    for w in words:
-        if w in title:
-            score += 3
-        if w in keywords:
-            score += 3
-        elif w in tools:
-            score += 1
+
+    # A DEAD END is matched on its title, generic words included: it has
+    # no keyword list, and "Delete a whole project" is made of nothing
+    # but world words. It needs two title words AND at least half the
+    # title, because a spurious dead end is the most damaging answer this
+    # guide can give: it tells the caller that something possible is not.
+    if recipe.get("dead_end"):
+        title = _tokens(recipe["task"])
+        overlap = words & title
+        if len(overlap) >= 2 and len(overlap) * 2 >= len(title):
+            return 3 * len(overlap)
+        return 0
+
+    keywords: set[str] = set()
+    for k in recipe["keywords"]:
+        keywords |= _tokens(k)
+    title = _tokens(recipe["task"])
+
+    # A recipe is OFFERED only on a word that is specific to it. A
+    # generic word ("library", "board", "place") shared with the question
+    # used to be enough, and produced confident wrong answers: the
+    # mechanical-layers recipe for placing a part, for copying a symbol,
+    # and for setting a Design Item ID.
+    specific = {w for w in words if w not in _GENERIC}
+    specific_hits = specific & (keywords | title)
+
+    # ``when`` patterns are for tasks that are made ENTIRELY of world
+    # words. "Place a part from a library" contains nothing specific, so
+    # the rule above could never offer it; a pattern names the
+    # combination that does mean it, which one generic word never does.
+    by_pattern = any({_stem(w) for w in pattern} <= words
+                     for pattern in recipe.get("when", ()))
+
+    if not by_pattern and not specific_hits:
+        return 0
+
+    score = 3 * len(specific_hits & title) + 3 * len(specific_hits & keywords)
+    # Generic words break ties between recipes that both qualified.
+    score += len((words - specific) & (keywords | title))
+    if by_pattern:
+        score += 6
     return score
 
 
@@ -398,20 +644,36 @@ def derived_recipes(task: str, docs: dict[str, str],
     answers than a curated recipe, and it finds them for every tool
     rather than for ten.
     """
-    words = [w for w in re.split(r"[^a-z0-9]+", task.lower()) if len(w) > 2]
+    words = _query_tokens(task)
     if not words or not docs:
         return []
+    specific = {w for w in words if w not in _GENERIC}
 
     out: list[tuple[int, str, dict[str, Any]]] = []
     for name, doc in docs.items():
         if not doc:
             continue
-        low = doc.lower()
-        # Score on the caller's words, in the name and in the text. The
-        # name is weighted higher: a tool called pcb_place_3d_body is a
-        # better answer to "place a 3d body" than one that mentions it.
-        score = sum(3 for w in words if w in name.lower())
-        score += sum(1 for w in words if w in low)
+        name_words = _tokens(name)
+        summary = _tokens((doc.strip().splitlines() or [""])[0])
+        body = _tokens(doc)
+        # The name counts most, the first line next, the body least: a
+        # tool called pcb_place_3d_body answers "place a 3d body" better
+        # than one whose tenth paragraph mentions it. Specific words
+        # count double, so "library" cannot outvote "mirror".
+        score = 0
+        for w in words:
+            weight = 2 if w in specific else 1
+            if w in name_words:
+                score += 4 * weight
+            elif w in summary:
+                score += 2 * weight
+            elif w in body:
+                score += 1 * weight
+        # Divided, not subtracted. A fixed deduction lost to a strong name
+        # match: sch_place_text_frame kept first place for "delete a text
+        # frame" because "text" and "frame" outweighed any constant.
+        if _direction_penalty(words, name_words):
+            score //= 3
         if score <= 0:
             continue
 
@@ -464,18 +726,27 @@ def guidance_for(task: str = "", document_kind: str = "",
         if not on_backend(d):
             continue
         shim = {"task": d["capability"], "keywords": (),
-                "use": d["do_instead"], "document_kind": "any"}
+                "use": d["do_instead"], "document_kind": "any",
+                "dead_end": True}
         score = _score(shim, task, "")
         if score > 0:
             scored_dead.append((score, i, d))
     scored_dead.sort(key=lambda t: (-t[0], t[1]))
     dead_ends = [d for _s, _i, d in scored_dead]
 
-    # Only when the curated table missed. A hand-written recipe is a
-    # better answer when there is one, and mixing the two would bury it.
+    # ALWAYS, not only when the curated table missed. The old rule was
+    # sound in principle and wrong in practice: a curated recipe sharing
+    # one common word counted as a hit, so the docstring search almost
+    # never ran, and the tool that actually answered the question was
+    # never shown. Curated recipes still come first in the reply, which
+    # is what "a hand-written recipe is the better answer" requires; they
+    # just no longer hide everything else. Tools already named by a
+    # curated recipe are not repeated.
     derived: list[dict[str, Any]] = []
-    if not recipes and not dead_ends and task and docs:
-        derived = derived_recipes(task, docs)
+    if task and docs:
+        named = {t for r in recipes for t in r.get("use", [])}
+        derived = [d for d in derived_recipes(task, docs)
+                   if not set(d.get("use", [])) <= named]
 
     return {
         "ok": True,

@@ -94,14 +94,33 @@ def test_a_miss_still_says_what_to_do_next(docs):
 
 
 def test_a_curated_recipe_still_wins_over_a_derived_one(docs):
-    """Derivation is the fallback, not the answer.
+    """A relevant hand-written recipe comes first. It no longer hides the rest.
 
-    A hand-written recipe carries the prerequisites and the thing to
-    avoid; a derived one is a docstring match. Mixing them would bury
-    the better answer.
+    A curated recipe carries the prerequisites and the thing to avoid, so
+    when one genuinely answers the question it must lead the reply.
+
+    This used to assert that derivation did not run at all whenever a
+    curated recipe matched. That enforced the defect: a recipe sharing a
+    single common word counted as a match, so the docstring search almost
+    never ran, and the tool that answered the question was never shown.
+    Measured 2026-09-23, through the real entry point: 2 of 11 questions
+    that cost sessions that week were answered, and several were answered
+    with the mechanical-layers recipe. Ordering is what protects the
+    curated answer; suppression only protected wrong ones.
     """
     out = guidance_for("delete primitives inside a footprint", docs=docs)
     assert out["matched"] > 0, "the curated table stopped matching its own entry"
-    assert not out["derived"], (
-        "derivation ran even though a curated recipe matched, so the "
-        "curated answer is competing with a weaker one")
+    assert out["recipes"][0]["use"] == ["lib_delete_footprint_primitives"], (
+        "the curated recipe that answers this is not first in the reply")
+    # The root cause, asserted directly rather than through whichever
+    # question happens to depend on it. It was caught only by "delete a
+    # project variant" matching the stencil recipe, and once that match
+    # was fixed nothing noticed the search being switched off.
+    assert out["derived"], (
+        "a curated match suppressed the docstring search again, so any "
+        "question a recipe half-matches never sees the tool that answers it")
+    curated = {t for r in out["recipes"] for t in r["use"]}
+    repeated = [d["use"] for d in out["derived"] if set(d["use"]) <= curated]
+    assert not repeated, (
+        f"derived results repeat tools the curated recipe already named: "
+        f"{repeated}")

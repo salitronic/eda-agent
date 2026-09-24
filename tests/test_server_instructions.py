@@ -57,8 +57,11 @@ _SURFACES = {b: _surface(b) for b in _BACKENDS}
 #: Every namespace the preamble is allowed to name a tool from. The
 #: pattern demands a suffix, so the bare "sch_" and "obj_" the preamble
 #: uses to teach the namespace split are not read as tool names.
+# app is in the list because the preamble now names the interface-driving
+# tools. Without it those names were never checked against the surface,
+# so a renamed app_ tool would have gone on being named to every client.
 _TOOL_NAME = re.compile(
-    r"\b(?:tool|design|sch|obj|pcb|lib|proj|audit|part|easyeda|kicad)"
+    r"\b(?:tool|design|sch|obj|pcb|lib|proj|audit|part|easyeda|kicad|app)"
     r"_[a-z][a-z_]+\b")
 
 
@@ -188,3 +191,34 @@ def _tool_descriptions(backend: str):
         return [t.description for t in asyncio.run(registry.list_tools())]
     finally:
         set_active_backend(previous or "")
+
+
+# --------------------------------------------------------------------------
+# UI automation is a last resort, and only Altium has it
+# --------------------------------------------------------------------------
+
+def test_altium_is_told_ui_automation_is_a_last_resort():
+    """Three sessions in one week fell back to driving dialogs.
+
+    Placement ended in the Place Part dialog and a crashed Altium. The
+    preamble is the one place every agent reads before choosing a tool.
+    """
+    text = build_server_instructions("full", "altium")
+    assert "last resort" in text
+    assert "app_click_menu" in text, (
+        "name the tools, or an agent does not recognise the ones meant")
+
+
+@pytest.mark.parametrize("backend", ["kicad", "easyeda"])
+def test_backends_without_ui_tools_are_not_told_about_them(backend):
+    """KiCad and EasyEDA register no app_ interface tools."""
+    text = build_server_instructions("full", backend)
+    assert "app_click_menu" not in text
+    assert "last resort" not in text
+
+
+def test_the_ui_paragraph_reaches_tool_guide_the_same_way_minimal_can():
+    """Under minimal, 'call tool_guide' names a tool the client cannot see."""
+    text = build_server_instructions("minimal", "altium")
+    assert "last resort" in text
+    assert "call tool_guide" not in text

@@ -177,6 +177,35 @@ _ENGINE_PARAGRAPHS = {
 }
 
 
+# Altium only: it is the backend with tools that drive the interface. The
+# week of 2026-09-19 produced three separate sessions that fell back to
+# them after an API tool seemed to fail or be missing. Placement ended in
+# the Place Part dialog and a crashed Altium, a text-frame delete in an
+# interactive process waiting for a mouse drag, and a Design Item ID change
+# in a plan to edit 1,499 symbols through the Properties panel. The API
+# route existed for two of the three; the third was a real gap, now fixed.
+# "Usually" is the accurate word, and a genuine gap is worth reporting.
+_UI_AUTOMATION_ALTIUM = (
+    "The app_ tools that press buttons, pick menus and type into Altium's\n"
+    "dialogs (app_click_menu, app_run_ui_command, app_set_dialog_control,\n"
+    "app_canvas and the rest) are a last resort, not a second route. When\n"
+    "an API tool seems to fail or be missing, the cause has usually been a\n"
+    "wrong argument or a tool that was not found, and driving a dialog\n"
+    "instead has ended with Altium crashed. Before reaching for one,\n"
+    "{reach} with what you are trying to do. If it still finds nothing,\n"
+    "say so and ask the user before driving the interface: a genuine gap\n"
+    "is worth reporting, because it gets fixed.\n"
+    "\n"
+)
+
+_UI_AUTOMATION_PARAGRAPHS = {
+    "altium": _UI_AUTOMATION_ALTIUM,
+    "both": _UI_AUTOMATION_ALTIUM,
+    "easyeda": "",
+    "kicad": "",
+}
+
+
 def build_server_instructions(
     toolset: str = DEFAULT_TOOLSET, backend: str = DEFAULT_BACKEND
 ) -> str:
@@ -199,6 +228,9 @@ def build_server_instructions(
         reach = "call tool_guide"
     engine = _ENGINE_PARAGRAPHS.get(
         (backend or DEFAULT_BACKEND).strip().lower(), _ENGINE_ALTIUM)
+    ui = _UI_AUTOMATION_PARAGRAPHS.get(
+        (backend or DEFAULT_BACKEND).strip().lower(), _UI_AUTOMATION_ALTIUM)
+    ui = ui.replace("{reach}", reach)
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -214,6 +246,7 @@ def build_server_instructions(
         "reason. Use tool_catalog to search the surface by name or\n"
         "category.\n"
         "\n"
+        + ui
         + engine +
         "Coordinates are in mils throughout, on every backend.\n"
     )
