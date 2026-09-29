@@ -1,7 +1,7 @@
 # Release verification: 2026.09.23.4
 
-Everything below is Pascal that FPC and the linter have checked and that
-**Altium's DelphiScript engine has never executed**. The two are not the
+Unless a section records live verification explicitly, the Pascal below has
+been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
 same: each accepts identifiers the other rejects, and an undeclared one
 faults at runtime where `Try/Except` cannot catch it, halting the
 polling loop.
@@ -1036,7 +1036,7 @@ it. A library edit is real in memory and absent from disk until then.
   needs a live measurement.
 
 
-## Generic property rejection on Altium 21 (pending live verification)
+## Generic property rejection on Altium 21 (live verified)
 
 Recorded on Altium 21.4.1.30: `IsHidden` on `eNetLabel` and `Text` on
 `eParameterSet` opened an undeclared-identifier dialog and stopped polling.
@@ -1057,7 +1057,29 @@ Use visible net labels with `Text`; do not hide them with `IsHidden`. Query a
 parameter-set directive's coordinates without `Text`. The bridge does not
 substitute a different field for the rejected property.
 
-Supervised acceptance, on a disposable schematic only:
+Live verification of commit `89c017f` on Altium 21.4.1.30 passed on
+2026-09-29 after a full Altium restart. The deployed Generic.pas SHA-256 was
+`36f9c0dde95de366a1b0ea60bc653793ed6f915c1c7714d08ee20bb791aef57e`.
+
+- Unsupported reads returned empty fields plus unreadable diagnostics, while
+  coordinates and the directive Name remained readable.
+- Single writes returned success=false with unknown-property diagnostics;
+  batch writes reported both rejected properties in their diagnostic list.
+- Both single creates failed without changing object counts. The mixed batch
+  returned created=2, failed=2, total=4, with failures at indexes 0 and 2 and
+  the expected property/type. Queries confirmed only the valid objects existed.
+- Ordinary parameter IsHidden read back false, true, then false after restore.
+- Pings and valid queries succeeded after every rejecting call. No error modal
+  or polling restart was needed. The recorded response assertions passed.
+- Free Pascal execution remains separately pending: local FPC is absent and
+  the upstream GitHub run is action_required with no jobs executed.
+
+For future acceptance runs, close unrelated design documents first or retain
+byte-for-byte backups. The bridge's save-all operation rewrites open clean
+schematics too; it must not be treated as a no-op just because app_context
+reports no unsaved documents.
+
+Repeatable acceptance, on a disposable schematic only:
 
 1. Save normal work, install the candidate scripts, restart Altium (scripts
    are cached), start the bridge, and confirm `app_ping` succeeds.
