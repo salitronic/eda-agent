@@ -1034,3 +1034,49 @@ it. A library edit is real in memory and absent from disk until then.
   Altium's font size is not in mils and the conversion is undocumented,
   so the source range is reported rather than guessed. Calibrating it
   needs a live measurement.
+
+
+## Generic property rejection on Altium 21 (pending live verification)
+
+Recorded on Altium 21.4.1.30: `IsHidden` on `eNetLabel` and `Text` on
+`eParameterSet` opened an undeclared-identifier dialog and stopped polling.
+The fix guards reads and writes before accessing those members. It does not
+claim a complete property capability table for every Altium version.
+
+Unsupported query fields remain empty and are listed in
+`properties.unreadable`; other requested fields remain available. Unsupported
+writes are listed in `properties.unknown` and are not reported as applied.
+Single creation returns `UNSUPPORTED_PROPERTY` with the property and object
+type in the error message. Batch creation rejects only that item, without
+registering it, and includes `reason: "UNSUPPORTED_PROPERTY"`, `property`,
+`object_type`, and the zero-based `index` in `failures`. Valid items continue.
+This preflight covers the guarded Text and IsHidden combinations, not every
+unknown property. Existing inputs and successful response fields are unchanged.
+
+Use visible net labels with `Text`; do not hide them with `IsHidden`. Query a
+parameter-set directive's coordinates without `Text`. The bridge does not
+substitute a different field for the rejected property.
+
+Supervised acceptance, on a disposable schematic only:
+
+1. Save normal work, install the candidate scripts, restart Altium (scripts
+   are cached), start the bridge, and confirm `app_ping` succeeds.
+2. Create an ordinary visible net label and parameter-set directive. Record
+   their count and positions. Query valid label Text and directive coordinates.
+3. Query `IsHidden` on the label and `Text` on the directive, each alongside
+   coordinates. Expect empty unsupported fields, unreadable diagnostics, and
+   unchanged valid coordinates. Neither call may open a modal or stop polling.
+4. Attempt those writes with `obj_modify` and `obj_batch_modify`. Expect
+   failure diagnostics, unchanged objects, and no modal. These operations
+   retain existing partial-write semantics for other valid assignments.
+5. Attempt each unsupported pair through `obj_create` and `obj_batch_create`.
+   Verify failed objects are absent. In a batch containing invalid, valid,
+   invalid, and valid items, expect two creations, two indexed failures and
+   no property diagnostic leaking from one item into another.
+6. Exercise IsHidden on an ordinary parameter supporting visibility and
+   confirm read/write behaviour is unchanged. Restore its original value.
+7. After each rejection, run `app_ping` and a valid query. Both must complete
+   without dismissing an error or restarting the polling loop.
+
+Record exact Altium and bridge versions, responses, and object counts. Offline
+source guards and Free Pascal tests do not establish live Altium acceptance.

@@ -161,9 +161,55 @@ Function SchObjectHasText(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := True;
     If Obj = Nil Then Exit;
-    { Both of these name themselves with Name, not Text. }
-    If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry) Then
+    { Ports, sheet entries and parameter-set directives do not expose Text. }
+    If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eParameterSet) Then
         Result := False;
+End;
+
+{ AD21 net labels do not expose IsHidden. Test before member access: an
+  undeclared identifier opens a modal that Try/Except cannot contain. }
+Function SchObjectHasIsHidden(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := Obj.ObjectId <> eNetLabel;
+End;
+
+{ Preflight only the known unsupported property/type pairs. Preserve the
+  existing treatment of other names; do not guess a complete capability map. }
+Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
+Var
+    Remaining, Assignment, PropName : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := '';
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Assignment);
+        If EqPos > 0 Then
+        Begin
+            PropName := Copy(Assignment, 1, EqPos - 1);
+            If ((PropName = 'Text') And (Not SchObjectHasText(Obj)))
+                Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj))) Then
+            Begin
+                Result := PropName;
+                Exit;
+            End;
+        End;
+    End;
 End;
 
 Function SchObjectHasOrientation(Obj : ISch_GraphicalObject) : Boolean;
@@ -642,7 +688,13 @@ Begin
             Result := GetSchVertexProperty(Obj, PropName)
 
         // Boolean properties
-        Else If PropName = 'IsHidden'    Then Result := BoolToJsonStr(Obj.IsHidden)
+        Else If PropName = 'IsHidden' Then
+        Begin
+            If SchObjectHasIsHidden(Obj) Then
+                Result := BoolToJsonStr(Obj.IsHidden)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'IsSolid'     Then Result := BoolToJsonStr(Obj.IsSolid)
         Else If PropName = 'IsMirrored'  Then Result := BoolToJsonStr(Obj.IsMirrored);
     Except
@@ -759,7 +811,7 @@ Begin
             If SchObjectHasText(Obj) Then
                 Obj.Text := Value
             Else
-                NotePropertyDiag('unknown', PropName);
+                Matched := False;
         End
         Else If PropName = 'Name'        Then Obj.Name := Value
         Else If PropName = 'LibReference'       Then Obj.LibReference := Value
@@ -860,7 +912,13 @@ Begin
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoord(StrToIntDef(Value, 0))
 
         // Boolean properties
-        Else If PropName = 'IsHidden'    Then Obj.IsHidden := StrToBool(Value)
+        Else If PropName = 'IsHidden' Then
+        Begin
+            If SchObjectHasIsHidden(Obj) Then
+                Obj.IsHidden := StrToBool(Value)
+            Else
+                Matched := False;
+        End
         Else If PropName = 'IsSolid'     Then Obj.IsSolid := StrToBool(Value)
         { MIRROR IS NOT A PLAIN PROPERTY WRITE.                              }
         {                                                                    }
@@ -1974,13 +2032,15 @@ End;
 
 Function Gen_CreateObject(Params : String; RequestId : String) : String;
 Var
-    ObjTypeStr, PropsStr, Container : String;
+    ObjTypeStr, PropsStr, Container, UnsupportedProp : String;
     ObjTypeInt : Integer;
     SchDoc : ISch_Document;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     NewObj : ISch_GraphicalObject;
 Begin
+    ResetPropertyDiag(0);
+    SchDoc := Nil;
     ObjTypeStr := ExtractJsonValue(Params, 'object_type');
     PropsStr := ExtractJsonValue(Params, 'properties');
     Container := ExtractJsonValue(Params, 'container');
@@ -1998,6 +2058,15 @@ Begin
     If NewObj = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create object of type: ' + ObjTypeStr);
+        Exit;
+    End;
+
+    UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
+    If UnsupportedProp <> '' Then
+    Begin
+        SchServer.DestroySchObject(NewObj);
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_PROPERTY',
+            'Property ' + UnsupportedProp + ' is not supported on ' + ObjTypeStr);
         Exit;
     End;
 
@@ -7722,9 +7791,11 @@ Var
     NewObj : ISch_GraphicalObject;
     ActiveDoc : ISch_Document;
     ContainerStr : String;
-    FailuresJson, ItemReason : String;
+    FailuresJson, ItemReason, UnsupportedProp : String;
     FirstFailure : Boolean;
 Begin
+    ResetPropertyDiag(0);
+    SchDoc := Nil;
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
     Begin
@@ -7749,6 +7820,8 @@ Begin
             If Op = '' Then Break;
             OpCount := OpCount + 1;
             ItemReason := '';
+            UnsupportedProp := '';
+            ResetPropertyDiag(0);
             Scope := GetBatchField(Op, 'scope');
             If Scope = '' Then Scope := 'active_doc';
             ObjTypeStr := GetBatchField(Op, 'object_type');
@@ -7772,48 +7845,58 @@ Begin
                 End
                 Else
                 Begin
-                    ApplySetProperties(NewObj, PropsStr);
-
-                    If ContainerStr = 'component' Then
+                    UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
+                    If UnsupportedProp <> '' Then
                     Begin
-                        SchLib := SchServer.GetCurrentSchDocument;
-                        If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
+                        SchServer.DestroySchObject(NewObj);
+                        Inc(Failed);
+                        ItemReason := 'UNSUPPORTED_PROPERTY';
+                    End
+                    Else
+                    Begin
+                        ApplySetProperties(NewObj, PropsStr);
+
+                        If ContainerStr = 'component' Then
                         Begin
-                            Component := SchLib.CurrentSchComponent;
-                            If Component <> Nil Then
+                            SchLib := SchServer.GetCurrentSchDocument;
+                            If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
                             Begin
-                                Component.AddSchObject(NewObj);
-                                SchRegisterObject(Component, NewObj);
-                                Inc(Created);
+                                Component := SchLib.CurrentSchComponent;
+                                If Component <> Nil Then
+                                Begin
+                                    Component.AddSchObject(NewObj);
+                                    SchRegisterObject(Component, NewObj);
+                                    Inc(Created);
+                                End
+                                Else
+                                Begin
+                                    SchServer.DestroySchObject(NewObj);
+                                    Inc(Failed);
+                                    ItemReason := 'NO_COMPONENT';
+                                End;
                             End
                             Else
                             Begin
                                 SchServer.DestroySchObject(NewObj);
                                 Inc(Failed);
-                                ItemReason := 'NO_COMPONENT';
+                                ItemReason := 'NO_SCHLIB';
                             End;
                         End
                         Else
                         Begin
-                            SchServer.DestroySchObject(NewObj);
-                            Inc(Failed);
-                            ItemReason := 'NO_SCHLIB';
-                        End;
-                    End
-                    Else
-                    Begin
-                        SchDoc := ActiveDoc;
-                        If SchDoc = Nil Then
-                        Begin
-                            SchServer.DestroySchObject(NewObj);
-                            Inc(Failed);
-                            ItemReason := 'NO_SCHEMATIC';
-                        End
-                        Else
-                        Begin
-                            SchDoc.RegisterSchObjectInContainer(NewObj);
-                            SchRegisterObject(SchDoc, NewObj);
-                            Inc(Created);
+                            SchDoc := ActiveDoc;
+                            If SchDoc = Nil Then
+                            Begin
+                                SchServer.DestroySchObject(NewObj);
+                                Inc(Failed);
+                                ItemReason := 'NO_SCHEMATIC';
+                            End
+                            Else
+                            Begin
+                                SchDoc.RegisterSchObjectInContainer(NewObj);
+                                SchRegisterObject(SchDoc, NewObj);
+                                Inc(Created);
+                            End;
                         End;
                     End;
                 End;
@@ -7826,7 +7909,11 @@ Begin
                 FailuresJson := FailuresJson +
                     '{"index":' + IntToStr(OpCount - 1) +
                     ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
-                    '","reason":"' + ItemReason + '"}';
+                    '","reason":"' + ItemReason + '"';
+                If UnsupportedProp <> '' Then
+                    FailuresJson := FailuresJson + ',"property":"' +
+                        EscapeJsonString(UnsupportedProp) + '"';
+                FailuresJson := FailuresJson + '}';
             End;
         End;
     Finally

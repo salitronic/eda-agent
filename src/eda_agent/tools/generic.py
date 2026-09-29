@@ -2424,7 +2424,11 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with created, failed, total counts.
+            Dict with created, failed, total counts and indexed failures.
+            Known unsupported properties (for example IsHidden on eNetLabel
+            or Text on eParameterSet) reject that item before registration.
+            Its failure includes reason UNSUPPORTED_PROPERTY, property and
+            object_type. Other valid items still run.
         """
         op_strs: list[str] = []
         for op in operations:

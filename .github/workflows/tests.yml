@@ -116,7 +116,7 @@ jobs:
       # unrun for exactly the reason this job exists.
       - name: Pascal and Python helpers agree
         run: |
-          python -m pytest tests/test_cross_validate.py tests/test_pascal_runner.py -q -rs --durations=10 | Tee-Object -Variable captured
+          python -m pytest tests/test_cross_validate.py tests/test_pascal_runner.py tests/test_sch_properties_match_their_interface.py -q -rs --durations=10 | Tee-Object -Variable captured
           # Read the exit code BEFORE anything else runs. Piping a native
           # command into Tee-Object means the step's own success is the
           # pipeline's, not pytest's, so without this a failing
