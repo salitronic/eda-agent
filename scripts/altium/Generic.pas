@@ -190,6 +190,18 @@ Begin
         Or (Obj.ObjectId = eSheetFileName);
 End;
 
+{ TextColor belongs to ports, sheet entries and harness entries, not to
+  ISch_GraphicalObject or ISch_Label. Reading it on a power object raises
+  an undeclared-identifier modal BEFORE Try/Except can recover (AD 21.4).
+  https://www.altium.com/documentation/altium-dxp-developer/schematic-api-design-objects-interfaces-reference }
+Function SchObjectHasTextColor(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eHarnessEntry);
+End;
+
 { Preflight only the known unsupported property/type pairs. Preserve the
   existing treatment of other names; do not guess a complete capability map. }
 Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
@@ -217,7 +229,8 @@ Begin
         Begin
             PropName := Copy(Assignment, 1, EqPos - 1);
             If ((PropName = 'Text') And (Not SchObjectHasText(Obj)))
-                Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj))) Then
+                Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj)))
+                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj))) Then
             Begin
                 Result := PropName;
                 Exit;
@@ -477,6 +490,9 @@ Var
     R : ISch_Rectangle;
     L : ISch_Line;
     Comp : ISch_Component;
+    PortObj : ISch_Port;
+    EntryObj : ISch_SheetEntry;
+    HarnessEntryObj : ISch_HarnessEntry;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -606,7 +622,29 @@ Begin
         Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
         Else If PropName = 'Color'       Then Result := IntToStr(Obj.Color)
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
-        Else If PropName = 'TextColor'   Then Result := IntToStr(Obj.TextColor)
+        Else If PropName = 'TextColor' Then
+        Begin
+            If SchObjectHasTextColor(Obj) Then
+            Begin
+                If Obj.ObjectId = ePort Then
+                Begin
+                    PortObj := Obj;
+                    Result := IntToStr(PortObj.TextColor);
+                End
+                Else If Obj.ObjectId = eSheetEntry Then
+                Begin
+                    EntryObj := Obj;
+                    Result := IntToStr(EntryObj.TextColor);
+                End
+                Else
+                Begin
+                    HarnessEntryObj := Obj;
+                    Result := IntToStr(HarnessEntryObj.TextColor);
+                End;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'Justification' Then Result := IntToStr(Obj.Justification)
         { A SHEET ENTRY'S POSITION ON THE SYMBOL. Both read empty before,
           because neither had a case here, so a caller checking whether a
@@ -733,6 +771,9 @@ Var
     R : ISch_Rectangle;
     L : ISch_Line;
     Comp : ISch_Component;
+    PortObj : ISch_Port;
+    EntryObj : ISch_SheetEntry;
+    HarnessEntryObj : ISch_HarnessEntry;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -916,7 +957,29 @@ Begin
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
         Else If PropName = 'Color'       Then Obj.Color := StrToIntDef(Value, 0)
         Else If PropName = 'AreaColor'   Then Obj.AreaColor := StrToIntDef(Value, 0)
-        Else If PropName = 'TextColor'   Then Obj.TextColor := StrToIntDef(Value, 0)
+        Else If PropName = 'TextColor' Then
+        Begin
+            If SchObjectHasTextColor(Obj) Then
+            Begin
+                If Obj.ObjectId = ePort Then
+                Begin
+                    PortObj := Obj;
+                    PortObj.TextColor := StrToIntDef(Value, 0);
+                End
+                Else If Obj.ObjectId = eSheetEntry Then
+                Begin
+                    EntryObj := Obj;
+                    EntryObj.TextColor := StrToIntDef(Value, 0);
+                End
+                Else
+                Begin
+                    HarnessEntryObj := Obj;
+                    HarnessEntryObj.TextColor := StrToIntDef(Value, 0);
+                End;
+            End
+            Else
+                Matched := False;
+        End
         Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
 
         // Coord properties (expected in mils)
@@ -1071,6 +1134,15 @@ Begin
         PropName := Copy(Condition, 1, EqPos - 1);
         Expected := Copy(Condition, EqPos + 1, Length(Condition));
 
+        { An unreadable property is not an empty value. In particular,
+          TextColor= must never match power objects in a delete/filter. }
+        If UnsupportedSchProperty(Obj, Condition) <> '' Then
+        Begin
+            NotePropertyDiag('unreadable', PropName);
+            Result := False;
+            Exit;
+        End;
+
         // Compare
         Actual := GetSchProperty(Obj, PropName);
         If Actual <> Expected Then
@@ -1139,13 +1211,22 @@ Procedure ApplySetProperties(Obj : ISch_GraphicalObject; SetStr : String);
 { (a net label in particular must NOT go through MoveToXY -- it has no        }
 { MoveToXY and is not a component).                                           }
 Var
-    Remaining, Assignment, PropName, PropValue : String;
+    Remaining, Assignment, PropName, PropValue, UnsupportedProp : String;
     PipePos, EqPos : Integer;
     Loc : TLocation;
     Comp : ISch_Component;
     HasX, HasY : Boolean;
     NewX, NewY : Integer;
 Begin
+    { Reject the whole assignment list before even the coalesced move.
+      Otherwise Location/Color can change before a later TextColor fails. }
+    UnsupportedProp := UnsupportedSchProperty(Obj, SetStr);
+    If UnsupportedProp <> '' Then
+    Begin
+        NotePropertyDiag('unknown', UnsupportedProp);
+        Exit;
+    End;
+
     { Pass 1: collect the positional assignments without applying anything. }
     HasX := False;
     HasY := False;
@@ -1660,7 +1741,8 @@ Begin
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,
             '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) +
-            ',"sheets_processed":' + IntToStr(SheetsProcessed) + '}')
+            ',"sheets_processed":' + IntToStr(SheetsProcessed)
+            + ',"properties":' + RenderPropertyDiagJson(0) + '}')
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) +
