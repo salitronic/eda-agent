@@ -259,15 +259,21 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
     source = _source()
     routines = "\n".join(_routine(source, name) for name in
-                         ("SchObjectHasText", "SchObjectHasIsHidden",
+                         ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                           "UnsupportedSchProperty"))
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
-                   {"eNetLabel", "eParameterSet", "eParameter", "ePort", "eSheetEntry",
+                   {"eNetLabel", "eParameterSet", "eParameter", "ePowerObject", "ePort", "eSheetEntry",
                     "eWire", "ePin", "eLabel"})
     constants = "\n".join(f"  {name} = {i};" for i, name in enumerate(types))
     checks = [
+        ("ePowerObject", "TextColor=128", "TextColor"),
+        ("ePowerObject", "Location.X=10|Color=128|TextColor=0", "TextColor"),
+        ("ePowerObject", "Color=128", ""),
+        ("ePort", "TextColor=128", ""),
+        ("eSheetEntry", "TextColor=128", ""),
+        ("eHarnessEntry", "TextColor=128", ""),
         ("eParameterSet", "Text=bad", "Text"),
         ("eParameterSet", "Location.X=10|Text=bad|Location.Y=20", "Text"),
         ("eParameterSet", "Location.X=10|Location.Y=20", ""),
@@ -318,7 +324,7 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     source = _source()
     main = MAIN.read_text(encoding="utf-8")
     guards = "\n".join(_routine(source, name) for name in
-                       ("SchObjectHasText", "SchObjectHasIsHidden", "UnsupportedSchProperty"))
+                       ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor", "UnsupportedSchProperty"))
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))
@@ -396,6 +402,7 @@ begin
   if S='eParameterSet' then Result:=eParameterSet;
   if S='eNetLabel' then Result:=eNetLabel;
   if S='eParameter' then Result:=eParameter;
+  if S='ePowerObject' then Result:=ePowerObject;
 end;
 function UnknownObjectTypeMessage(S: String): String;
 begin Result := S; end;
@@ -408,7 +415,7 @@ begin Result := Payload; end;
 '''
     # Every type the guards name, so a longer list still compiles.
     kinds = sorted(set(re.findall(r"\be[A-Z]\w*", guards)) |
-                   {"ePort", "eSheetEntry", "eParameterSet", "eNetLabel", "eParameter", "eSchLib"})
+                   {"ePort", "eSheetEntry", "eParameterSet", "eNetLabel", "eParameter", "ePowerObject", "eSchLib"})
     stubs = stubs.replace("@@TYPES@@", " ".join(f"{k}={n};" for n, k in enumerate(kinds, 1)))
     transport = r'''
 function ExtractJsonValue(Params, Key: String): String;
@@ -452,6 +459,16 @@ begin
   PrintCounts;
   WriteLn(Gen_CreateObject('object_type=eParameter;properties=IsHidden=true', '5'));
   PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  WriteLn(Gen_CreateObject('object_type=ePowerObject;properties=Color=123|TextColor=128', '6'));
+  PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  WriteLn(Gen_BatchCreate(
+    'object_type=ePowerObject;properties=TextColor=128~~' +
+    'object_type=ePowerObject;properties=Text=GOOD|Color=123~~' +
+    'object_type=ePowerObject;properties=Location.X=10|TextColor=128~~' +
+    'object_type=eNetLabel;properties=Text=GOOD', '7'));
+  PrintCounts;
 end.
 '''
     path = tmp_path / "creation_regression.pas"
@@ -479,3 +496,13 @@ end.
     assert lines[7] == "2,2,2,5"
     assert json.loads(lines[8]) == {"created": True, "object_type": "eParameter"}
     assert lines[9] == "3,2,3,6"
+    assert json.loads(lines[10]) == {"code": "UNSUPPORTED_PROPERTY", "message": "Property TextColor is not supported on ePowerObject"}
+    assert lines[11] == "0,1,0,1"
+    assert json.loads(lines[12]) == {
+        "created": 2, "failed": 2, "total": 4,
+        "failures": [
+            {"index": 0, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
+            {"index": 2, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
+        ],
+    }
+    assert lines[13] == "2,2,2,5"

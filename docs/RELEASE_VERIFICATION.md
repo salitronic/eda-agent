@@ -1,4 +1,4 @@
-# Release verification: 2026.10.01.1
+# Release verification: 2026.10.03.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -210,7 +210,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.01.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.03.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1242,7 +1242,7 @@ names and sheet file names, the types whose interface declares it; `Text` is
 refused on the types whose interface has none, wires among them. Repeat
 steps 3 to 7 on AD 26 with the wire included.
 
-Verified on AD 26.10.1.6 with script 2026.10.01.1: the three reads return
+Verified on AD 26.10.1.6 with script 2026-10-01 revision 1: the three reads return
 empty fields listed under `properties.unreadable`, `IsHidden=true` on a wire
 is refused under `properties.unknown`, `IsHidden` reads and writes on
 parameters, and the bridge answered `app_ping` after each call.
@@ -1259,7 +1259,7 @@ Single creation returns `UNSUPPORTED_PROPERTY` with the property and object
 type in the error message. Batch creation rejects only that item, without
 registering it, and includes `reason: "UNSUPPORTED_PROPERTY"`, `property`,
 `object_type`, and the zero-based `index` in `failures`. Valid items continue.
-This preflight covers the guarded Text and IsHidden combinations, not every
+This preflight covers the guarded Text, IsHidden and TextColor combinations, not every
 unknown property. Existing inputs and successful response fields are unchanged.
 
 Use visible net labels with `Text`; do not hide them with `IsHidden`. Query a
@@ -1300,7 +1300,9 @@ Repeatable acceptance, on a disposable schematic only:
    Do the same for `IsHidden` and `Text` on a wire.
 4. Attempt those writes with `obj_modify` and `obj_batch_modify`. Expect
    failure diagnostics, unchanged objects, and no modal. These operations
-   retain existing partial-write semantics for other valid assignments.
+   preflight the complete assignment list for known unsupported Text,
+   IsHidden and TextColor pairs before writing any other field. Unknown
+   names outside that preflight retain the existing partial-write semantics.
 5. Attempt each unsupported pair through `obj_create` and `obj_batch_create`.
    Verify failed objects are absent. In a batch containing invalid, valid,
    invalid, and valid items, expect two creations, two indexed failures and
@@ -1312,3 +1314,48 @@ Repeatable acceptance, on a disposable schematic only:
 
 Record exact Altium and bridge versions, responses, and object counts. Offline
 source guards and Free Pascal tests do not establish live Altium acceptance.
+
+## TextColor property rejection
+
+Recorded on AD 21.4.1.30 with script 2026-10-01 revision 1 on 2026-10-03:
+`obj_query` on an existing `ePowerObject` with `Text,Color,TextColor` raised
+`Undeclared identifier: TextColor` at the generic getter and stopped polling.
+The setter had the same unguarded access. See issue #37.
+
+The candidate script 2026.10.03.1 allows TextColor only on ports, sheet entries
+and harness entries and uses their typed interfaces. Altium's [schematic API
+reference](https://www.altium.com/documentation/altium-dxp-developer/schematic-api-design-objects-interfaces-reference)
+documents those owners; power objects use Color. The bridge never substitutes
+Color for a rejected TextColor request.
+
+Queries retain other fields and report unsupported TextColor under
+`properties.unreadable`, including project scope. Filters using a known
+unsupported property return no match before reading it; an empty expected
+value must not turn an unreadable property into a match. Modifications reject
+the complete assignment list before applying a positional or other write.
+Creation retains the existing single error and indexed batch-failure formats.
+
+Repeatable live acceptance on disposable documents:
+
+1. Reload the script project and verify ping reports 2026.10.03.1. Create a
+   power object, a net label, a port, and a sheet symbol with a sheet entry.
+2. Query TextColor alongside valid fields on the power object and net label.
+   Expect empty TextColor fields with unreadable diagnostics. Repeat with
+   document and disposable-project scopes.
+3. Filter the power object with `TextColor=` and `TextColor=128`. Expect no
+   matches, including a delete using that filter; verify the object remains.
+4. Attempt `Color=123|Location.X=100|TextColor=128` through single and batch
+   modification. Expect rejection diagnostics and unchanged Color/position.
+   Include a valid independent batch item and verify it completes.
+5. Attempt single creation and a mixed batch containing two unsupported
+   power-object items and two valid items. Expect no invalid objects, two
+   indexed failures, and exactly two valid creations.
+6. Read/write/read TextColor on a port and sheet entry. Save ONLY the scratch
+   document, close/reopen it, and verify persistence. Harness-entry support
+   must be checked on a fixture that actually contains one; it is not exposed
+   by the current generic object-type mapping.
+7. Ping and perform a valid query after each rejection. No error dialog,
+   debugger stop, or polling restart may be needed. Restore editor focus and
+   close the disposable documents at the end.
+
+Live results for this candidate are recorded below once performed.
