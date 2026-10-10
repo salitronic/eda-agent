@@ -47,6 +47,7 @@ See docs/ui-automation.md.
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import os
 import re
 import time
