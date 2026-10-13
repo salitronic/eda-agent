@@ -498,6 +498,43 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return "~~".join(ops), problems
 
 
+def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """The ``fills`` batch payload for library.add_footprint_fills.
+
+    Each fill is ``{"layer": ..., "x1": .., "y1": .., "x2": .., "y2": ..}``
+    with an optional ``rotation`` in degrees, corners unrounded. Returns
+    ``(payload, problems)``: a fill with no layer, a corner that is not a
+    number, or no area is named in ``problems`` and left out, never sent
+    with a guessed layer or a corner read as zero.
+    """
+    ops: list[str] = []
+    problems: list[str] = []
+    for i, fill in enumerate(fills or []):
+        if not isinstance(fill, dict):
+            problems.append(f"fill {i} is not an object")
+            continue
+        layer = str(fill.get("layer") or "").strip()
+        if not layer:
+            problems.append(f"fill {i} has no layer")
+            continue
+        try:
+            x1, y1, x2, y2 = (float(fill[k]) for k in ("x1", "y1", "x2", "y2"))
+            rotation = float(fill.get("rotation") or 0)
+        except (TypeError, ValueError, KeyError):
+            problems.append(f"fill {i} needs numeric x1, y1, x2, y2")
+            continue
+        if x1 == x2 or y1 == y2:
+            problems.append(f"fill {i} has no area")
+            continue
+        op = (f"layer={_payload_safe(layer)};x1={format_length(x1)};"
+              f"y1={format_length(y1)};x2={format_length(x2)};"
+              f"y2={format_length(y2)}")
+        if rotation:
+            op += f";rotation={format_length(rotation)}"
+        ops.append(op)
+    return "~~".join(ops), problems
+
+
 def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
     """Build the ``pins`` batch payload, and count what was dropped.
 
@@ -2093,6 +2130,53 @@ def register_library_tools(mcp):
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
             "library.add_footprint_regions", _with_units(params, units))
+        if isinstance(result, dict) and problems:
+            result["refused"] = problems
+        return result
+
+    @mcp.tool()
+    async def lib_add_footprint_fills(
+        fills: list[dict[str, Any]],
+        footprint_name: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Add rectangular fills to a PcbLib footprint in ONE call.
+
+        A fill stays an Altium fill, not a four-point region, so it reads
+        back and edits as one. Use it for a grid of paste windows over an
+        exposed pad, or a solid block on a mechanical or overlay layer.
+        For any other outline use lib_add_footprint_regions.
+
+        Args:
+            fills: list of ``{"layer": ..., "x1": .., "y1": .., "x2": ..,
+                "y2": ..}``, opposite corners relative to the footprint
+                origin, with an optional ``"rotation"`` in degrees about
+                the fill's centre. The layer is REQUIRED: there is no
+                default, because a solid shape defaulted onto copper is a
+                short. A fill with no area is refused.
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot.
+            units: "mil" (default) or "mm", for every corner, kept exact.
+
+        Returns:
+            Dict with added, failed, bad_extent, unknown_layers, total. A
+            fill refused here before sending is listed in ``refused`` with
+            the reason.
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        payload, problems = _fills_payload(fills)
+        if not payload:
+            return {"error": "No valid fills", "added": 0,
+                    "total": len(fills or []), "refused": problems}
+        bridge = get_bridge()
+        params: dict[str, Any] = {"fills": payload}
+        if footprint_name:
+            params["footprint_name"] = footprint_name
+        result = await bridge.send_command_async(
+            "library.add_footprint_fills", _with_units(params, units))
         if isinstance(result, dict) and problems:
             result["refused"] = problems
         return result

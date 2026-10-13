@@ -112,6 +112,7 @@ CALLS = [
     ("lib_add_footprint_tracks", {"tracks": [{"x1": 0, "y1": 0, "x2": 1.625, "y2": 0}]}),
     ("lib_add_footprint_arc", {"x_center": 0, "y_center": 0, "radius": 1.625}),
     ("lib_add_footprint_text", {"text": "1", "x": 1.625, "y": 0}),
+    ("lib_add_footprint_fills", {"fills": [{"layer": "TopPaste", "x1": 0, "y1": 0, "x2": 1.625, "y2": 1}]}),
 ]
 
 

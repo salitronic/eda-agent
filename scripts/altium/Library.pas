@@ -2105,6 +2105,145 @@ Begin
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
+{ Lib_AddFootprintFills - rectangular fills in a PcbLib footprint, in one     }
+{ call: a grid of paste windows over an exposed pad, a keep-clear block on a  }
+{ mechanical layer, anything that is a plain rectangle.                       }
+{                                                                              }
+{ Params: units (mil default, or mm), footprint_name (optional), fills:       }
+{   '~~' separated ops, ';' separated fields:                                 }
+{     layer=TopPaste;x1=..;y1=..;x2=..;y2=..[;rotation=deg]                   }
+{ Corners are relative to the footprint origin; rotation is about the fill's  }
+{ own centre and defaults to 0.                                               }
+{                                                                              }
+{ A fill is not a region with four points. It stays an IPCB_Fill, which is    }
+{ what a fill drawn by hand in the editor is, so it reads back as one, edits  }
+{ in the fill properties panel and is matched by eFillObject filters.         }
+{                                                                              }
+{ The layer is REQUIRED, for the reason Lib_AddFootprintRegions gives: a      }
+{ solid shape defaulted onto copper is a short. A fill with no area is        }
+{ refused and counted in bad_extent rather than added, because it would be    }
+{ invisible in the editor and still counted as drawn.                         }
+{                                                                              }
+{ Registered with the footprint AND the library board, like every other       }
+{ authoring call here, or the save discards it; settled by the dispatcher.    }
+Function Lib_AddFootprintFills(Params : String; RequestId : String) : String;
+Var
+    FillsStr, Op, Remaining, LayerStr, BadLayers : String;
+    OpCount, Added, Failed, BadExtent : Integer;
+    UnitsStr : String;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    TargetProblem : String;
+    Fill : IPCB_Fill;
+    Layer : TLayer;
+    OrgX, OrgY : TCoord;
+    { Double, not Integer: an Integer local would put every corner back on }
+    { the whole-mil grid that units=mm exists to get off.                  }
+    X1, Y1, X2, Y2, Rotation : Double;
+Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    FillsStr := ExtractJsonValue(Params, 'fills');
+    If FillsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'fills is required');
+        Exit;
+    End;
+
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
+        Exit;
+    End;
+    OrgX := FootprintOriginX(Footprint);
+    OrgY := FootprintOriginY(Footprint);
+
+    Added := 0;
+    Failed := 0;
+    BadExtent := 0;
+    OpCount := 0;
+    BadLayers := '';
+    Remaining := FillsStr;
+
+    PCBServer.PreProcess;
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
+
+            LayerStr := GetBatchField(Op, 'layer');
+            If LayerStr = '' Then Layer := eNoLayer
+            Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+            If Layer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If LayerStr = '' Then LayerStr := '(none given)';
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
+            X1 := StrToFloatDef(GetBatchField(Op, 'x1'), 0);
+            Y1 := StrToFloatDef(GetBatchField(Op, 'y1'), 0);
+            X2 := StrToFloatDef(GetBatchField(Op, 'x2'), 0);
+            Y2 := StrToFloatDef(GetBatchField(Op, 'y2'), 0);
+            Rotation := StrToFloatDef(GetBatchField(Op, 'rotation'), 0);
+            If (X1 = X2) Or (Y1 = Y2) Then
+            Begin
+                Inc(BadExtent);
+                Inc(Failed);
+                Continue;
+            End;
+
+            Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
+            If Fill = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Fill.X1Location := OrgX + CoordFromUnits(X1, UnitsStr);
+            Fill.Y1Location := OrgY + CoordFromUnits(Y1, UnitsStr);
+            Fill.X2Location := OrgX + CoordFromUnits(X2, UnitsStr);
+            Fill.Y2Location := OrgY + CoordFromUnits(Y2, UnitsStr);
+            Fill.Rotation := Rotation;
+            Fill.Layer := Layer;
+
+            Footprint.AddPCBObject(Fill);
+            PcbLib.Board.AddPCBObject(Fill);
+            PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Fill.I_ObjectAddress);
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Fill.I_ObjectAddress);
+            Inc(Added);
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"bad_extent":' + IntToStr(BadExtent)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
 { Lib_GetMechLayers - the enabled mechanical layers of the CURRENT PcbLib,    }
 { each with its name and kind. Read-only.                                     }
 {                                                                              }
@@ -15548,6 +15687,7 @@ Begin
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')
            Or (Action = 'add_footprint_regions')
+           Or (Action = 'add_footprint_fills')
            Or (Action = 'add_footprint_arc')
            Or (Action = 'add_footprint_text')
            Or (Action = 'set_designator')
@@ -15728,6 +15868,7 @@ Begin
         'add_footprint_track':  Result := Lib_AddFootprintTrack(Params, RequestId);
         'add_footprint_tracks': Result := Lib_AddFootprintTracks(Params, RequestId);
         'add_footprint_regions': Result := Lib_AddFootprintRegions(Params, RequestId);
+        'add_footprint_fills':  Result := Lib_AddFootprintFills(Params, RequestId);
         'get_mech_layers':      Result := Lib_GetMechLayers(Params, RequestId);
         'add_footprint_arc':    Result := Lib_AddFootprintArc(Params, RequestId);
         'add_footprint_text':   Result := Lib_AddFootprintText(Params, RequestId);
