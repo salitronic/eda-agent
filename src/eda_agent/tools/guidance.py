@@ -404,12 +404,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                      "standoff", "opacity", "library"),
         "document_kind": "library",
         "backends": ("altium",),
-        "use": ["lib_link_3d_model", "lib_create_3d_model",
+        "use": ["lib_link_3d_model", "lib_set_3d_body", "lib_create_3d_model",
                 "lib_auto_link_3d_models",
                 "lib_update_footprint_heights_from_3d"],
         "avoid": [
             ("pcb_place_3d_body", "places a free body on a BOARD, not "
                                   "inside the footprint in front"),
+            ("obj_modify", "its StandoffHeight and BodyOpacity3D writes "
+                           "act on a BOARD, not the library in front"),
             ("obj_run_process", "an Altium process this build does not "
                                 "know does nothing and reports no error, "
                                 "so a guessed 3D command looks like it ran"),
@@ -419,6 +421,10 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "offsets and rotations; lib_create_3d_model builds one from "
             "solids read off the datasheet drawing, for a part no package "
             "family covers (connector, LED with a lens, header); "
+            "lib_set_3d_body reads or changes an "
+            "existing body's standoff, overall height, opacity and layer "
+            "in place (on a STEP body the standoff is the model's Z offset, "
+            "and its saved_bodies give the saved rotations and Z offset); "
             "lib_auto_link_3d_models matches models "
             "to footprints by name across a library; and "
             "lib_update_footprint_heights_from_3d sets each footprint's "

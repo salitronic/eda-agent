@@ -1,4 +1,4 @@
-# Release verification: 2026.10.25.4
+# Release verification: 2026.10.25.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -113,6 +113,12 @@ works elsewhere cannot be an undeclared identifier:
 | 39, pin map | `MapAsString` on a footprint model | no, nowhere | low, written, read back and restored live |
 | 39, footprint choice | `IsCurrent` on a placed part's footprint model | yes, `Library.pas` | medium, not yet run on a part with several models |
 | 38, stack-up apply | `CopperThickness`, `DielectricHeight`, `DielectricConstant`, `DielectricType` on a board layer | yes, `PCB_ModifyLayer` | low, the same writes pcb_modify_layer makes, each read back |
+| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `Lib_Link3DModel` and `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
+| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | no, nowhere | low, signature measured live from the saved record; the rotations passed are the saved file's |
+| 40, model reassigned | `Model` assigned back to a STEP body after SetState | yes, `Lib_Link3DModel`, on a body just created | low, it is what makes the Z offset save, measured live |
+| 40, body height | `OverallHeight` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
+| 40, body opacity | `BodyOpacity3D` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
+| 40, body layer | `Layer` written on a library 3D body | yes, `Lib_MoveBodiesToLayer` | low |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -288,7 +294,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.25.4`, `version_match` =
+Expect `altium_script_version` = `2026.10.25.7`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2327,7 +2333,7 @@ included unsaved boards that were not ours to risk.
 
 ## 39. Property layer, decimal mils, fonts and footprint models
 
-Run live on AD 26.11 with 2026.10.25.4 on a scratch copy of a two-layer
+Run live on AD 26.11 with the script build before step 40 on a scratch copy of a two-layer
 round board project, pinging after every step. All passed.
 
 1. **Polygon pour settings (#125).** `obj_query` on `polygon` reads Grid
@@ -2368,6 +2374,72 @@ round board project, pinging after every step. All passed.
 Not run live: a part with several PCB models (the scratch library's parts
 carry one each), so the clear-then-set order and the restore after a
 failed choice are covered only by the source checks.
+
+---
+
+## 40. Editing a 3D body already in a footprint
+
+New: `lib_set_3d_body`. `lib_link_3d_model` writes a body's standoff only
+while it creates the body, so correcting one meant deleting the body and
+linking the model again. This reads, and optionally changes, the standoff,
+OverallHeight, BodyOpacity3D and Layer of the bodies in one footprint, in
+place, inside a modify bracket.
+
+Field report behind it, AD 26.10.1.5: a STEP model whose origin is at its
+mid-height was linked with `offset_z=25.59` (0.65 mm). `applied` reported
+`standoff_height` true, yet the model was seen sitting with its middle on
+the board.
+
+**What the live run found, and changed.** A STEP body ignores its own
+`StandoffHeight`. Written by script and saved, it read back 25.5906 mil
+from Altium and from the file, and the Properties panel still showed
+Standoff Height 0 mm. The panel's value is the model's `MODEL.3D.DZ` in
+the saved record, which nothing had written. That explains the field
+report. `IPCB_Model.SetState` was then measured on a scratch copy: writing
+`(10, 20, 30, 12 mil)` and saving put `ROTX=10`, `ROTY=20`, `ROTZ=30`,
+`DZ=12mil` in the record, so the signature is `SetState(RotX, RotY, RotZ :
+Double; Dz : TCoord)`, and only `Body.Model := Model` after it makes it
+save. `IPCB_Model.Rotation` reads the 2D rotation (0 with 10/20/30 set),
+and no getter for the 3D ones is known. So on a STEP body (`ModelType` 1)
+`standoff_height` now writes the model's Z offset with the rotations the
+SAVED file holds, read by `pcblib_models.saved_body_models`. In the test
+library most STEP models sit at a non-zero rotation (90/0/90, -90/180/0),
+so writing zeros there would have tipped them over. A body whose saved
+record is missing, or names another model file, or a footprint whose
+saved body count differs, is listed in `skipped` and left alone. A
+library path that is not a file is refused before Altium sees it: asked
+to open one, Altium opens a new, empty library under that name.
+
+1. **Read.** `lib_set_3d_body footprint_name=<fp> library_path=<lib>` on a
+   footprint with one body: `changed` 0, `before` equals `after`, and
+   `saved_bodies` gives the model's Z offset and rotations as saved.
+2. **STEP standoff.** `standoff_height=0.5 units=mm` on a STEP body with a
+   rotation: `model_z_offset_written` [1]. Save, read again:
+   `saved_bodies` reads the new Z offset and the same rotations, and the
+   panel's Standoff Height shows 0.5 mm.
+3. **Other standoff.** On an extruded body: the body's own
+   `standoff_height_mils` changes and nothing is written to a model.
+4. **Opacity and layer.** `opacity=0.5 layer=Mechanical15`: the panel
+   shows 50% and the body is on Mechanical15. `opacity=50` and
+   `layer=TopLayer` are refused.
+5. **Unsaved footprint.** On a STEP body of a footprint copied and not
+   saved: `skipped` names it, `changed` 0; with `opacity` as well,
+   `changed` 1 and the standoff still skipped.
+6. **Missing library.** A `library_path` that is not a file: refused, and
+   no document opens.
+7. **Index.** `body_index=2` on a one-body footprint is refused with
+   `NO_BODY`.
+
+Run live on AD 26.11.1.5 with 2026.10.25.7 on a scratch copy of a working
+PcbLib, pinging after every step. All passed: 1 on SOT-23-3, 8-SOIC and
+C0603; 2 on 6-TSOP (Z offset 41.3386 to 19.685 mil, rotations 90/0/90
+kept), and on SOT-23-3 the panel and the 3D view were checked by eye;
+3 on QFN16_8TR8210 (0 to 7.874 mil); 4 on SOT-23-3, kept after save,
+close and reopen; 5 on a copy of 6-TSOP; 7 on SOT-23-3. Item 6 was run
+before the guard and opened an empty library; the guard is unit-tested.
+Not run: a footprint with several STEP bodies, which the test library
+lacks, so that the saved records list in the editor's order is assumed
+and only checked by model file name and body count.
 
 ---
 

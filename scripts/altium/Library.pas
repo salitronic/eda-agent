@@ -15846,6 +15846,359 @@ Begin
         + JsonRaw('items', '[' + Items + ']')));
 End;
 
+{ The model behind a body when it is a STEP model (T3DModelType 1, measured }
+{ on AD 26.11), Nil otherwise.                                               }
+Function StepModelOf(Body : IPCB_ComponentBody) : IPCB_Model;
+Var
+    Model : IPCB_Model;
+    Kind : Integer;
+Begin
+    Result := Nil;
+    Model := Nil;
+    Try Model := Body.Model; Except Model := Nil; End;
+    If Model = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Model.ModelType; Except End;
+    If Kind = 1 Then Result := Model;
+End;
+
+{ Field N (0-based) of a '|' separated list; '' past the end. A model file   }
+{ name cannot hold '|', so it separates the saved_models fields safely.      }
+Function PipeField(S : String; N : Integer) : String;
+Var
+    I, At : Integer;
+Begin
+    Result := '';
+    For I := 0 To N - 1 Do
+    Begin
+        At := Pos('|', S);
+        If At = 0 Then Exit;
+        S := Copy(S, At + 1, Length(S));
+    End;
+    At := Pos('|', S);
+    If At = 0 Then Result := S Else Result := Copy(S, 1, At - 1);
+End;
+
+{ One body's properties as a JSON object, in mils, for Lib_Set3DBody.        }
+{ For a STEP body standoff_height_mils is the body's own StandoffHeight,     }
+{ which Altium does not use: the panel's Standoff Height is the model's Z    }
+{ offset, which no getter reaches. Python reports that from the saved file.  }
+Function BodyStateJson(Body : IPCB_ComponentBody; Nth : Integer) : String;
+Var
+    LayerName : String;
+    Standoff, Overall : TCoord;
+    Opacity : Double;
+Begin
+    LayerName := '';
+    Standoff := 0;
+    Overall := 0;
+    Opacity := 1;
+    Try LayerName := GetLayerString(Body.Layer); Except End;
+    Try Standoff := Body.StandoffHeight; Except End;
+    Try Overall := Body.OverallHeight; Except End;
+    Try Opacity := Body.BodyOpacity3D; Except End;
+    Result := JsonObj(
+        JsonInt('index', Nth) + ','
+        + JsonStr('layer', LayerName) + ','
+        + JsonBool('step', StepModelOf(Body) <> Nil) + ','
+        + JsonFloat('standoff_height_mils', CoordToMilsF(Standoff)) + ','
+        + JsonFloat('overall_height_mils', CoordToMilsF(Overall)) + ','
+        + JsonFloat('opacity', Opacity));
+End;
+
+{ Lib_Set3DBody - read or change the 3D bodies already in one footprint.     }
+{                                                                            }
+{ lib_link_3d_model writes these only when it creates a body, so a standoff  }
+{ that came out wrong meant deleting the body and linking it again. This    }
+{ edits the body in place, like lib_move_bodies_to_layer: nothing is added  }
+{ or removed, so the footprint on screen and the library board stay in      }
+{ step.                                                                      }
+{                                                                            }
+{ OverallHeight, BodyOpacity3D (PCBGeneric's board writer) and Layer        }
+{ (Lib_MoveBodiesToLayer) are written on the body.                           }
+{                                                                            }
+{ A STEP BODY IGNORES ITS OWN StandoffHeight. Measured on AD 26.11.1.5: the  }
+{ body field was written and saved, and the Properties panel still read 0;  }
+{ the panel's Standoff Height is the model's MODEL.3D.DZ. So on a STEP body  }
+{ standoff_height goes to IPCB_Model.SetState(RotX, RotY, RotZ, Dz), then   }
+{ Body.Model := Model, which saves. Order and units were measured by        }
+{ writing (10, 20, 30, 12 mil) and reading the saved record back.           }
+{ SetState writes all four and no getter for the 3D rotations is known     }
+{ (Model.Rotation is the 2D one), so Python reads each body's rotations    }
+{ from the saved file and passes them in saved_models; a body whose saved  }
+{ record is missing or names another model file is skipped, not guessed.   }
+{                                                                            }
+{ Params: library_path, footprint_name (required), body_index (1-based,      }
+{ empty = every body), standoff_height, overall_height (mils), opacity       }
+{ (0..1), layer (mechanical), saved_models (five fields per body in file    }
+{ order: file, type, rotx, roty, rotz) and saved_count. With none of the    }
+{ four values, it only reads.                                                }
+Function Lib_Set3DBody(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, FpWanted, LayerStr, Addr, Seen : String;
+    StandoffStr, OverallStr, OpacityStr, IndexStr, Before, After : String;
+    SavedStr, SavedFile, ModelFile, Skipped, ZWritten : String;
+    Model : IPCB_Model;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    GrpIter : IPCB_GroupIterator;
+    Body : IPCB_ComponentBody;
+    Want : TLayer;
+    WantIndex, Nth, Changed, Total, SavedCount : Integer;
+    Opacity : Double;
+    Writing, Wrote : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpWanted := ExtractJsonValue(Params, 'footprint_name');
+    IndexStr := ExtractJsonValue(Params, 'body_index');
+    StandoffStr := ExtractJsonValue(Params, 'standoff_height');
+    OverallStr := ExtractJsonValue(Params, 'overall_height');
+    OpacityStr := ExtractJsonValue(Params, 'opacity');
+    LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
+    SavedStr := ExtractJsonValue(Params, 'saved_models');
+    SavedCount := StrToIntDef(ExtractJsonValue(Params, 'saved_count'), -1);
+
+    If FpWanted = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'footprint_name is required');
+        Exit;
+    End;
+    If ((StandoffStr <> '') And Not IsFloatStr(StandoffStr))
+        Or ((OverallStr <> '') And Not IsFloatStr(OverallStr))
+        Or ((OpacityStr <> '') And Not IsFloatStr(OpacityStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'standoff_height, overall_height and opacity must be numbers');
+        Exit;
+    End;
+    Opacity := 1;
+    If OpacityStr <> '' Then
+    Begin
+        Opacity := StrToFloatDef(OpacityStr, -1);
+        If (Opacity < 0) Or (Opacity > 1) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+                'opacity is 0 (clear) to 1 (solid), not a percentage');
+            Exit;
+        End;
+    End;
+    WantIndex := StrToIntDef(IndexStr, 0);
+    Writing := (StandoffStr <> '') Or (OverallStr <> '') Or (OpacityStr <> '')
+        Or (LayerStr <> '');
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If LibPath = '' Then LibPath := FocusedPath;
+    If LibPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY',
+            'No library is active and library_path was not supplied');
+        Exit;
+    End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    { Verified after the open: an edit aimed at a library that never came }
+    { to the front would land in whichever one did.                        }
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Asked for ' + LibPath + ' but the focused document is "'
+            + FocusedPath + '". Nothing was changed.');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            LibPath + ' is not a PCB library. On a board, use obj_modify on '
+            + 'the bodies.');
+        Exit;
+    End;
+
+    Want := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        Try Want := ResolveLayerId(PcbLib.Board, LayerStr); Except Want := eNoLayer; End;
+        If Want = eNoLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+                'Unknown layer name: ' + LayerStr + '. '
+                + BoardLayerNamesHint(PcbLib.Board));
+            Exit;
+        End;
+        If Not LayerUtils.IsMechanicalLayer(Want) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_MECHANICAL',
+                LayerStr + ' is not a mechanical layer.');
+            Exit;
+        End;
+    End;
+
+    Footprint := FootprintByName(PcbLib, FpWanted);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT',
+            'Footprint not found in ' + LibPath + ': ' + FpWanted);
+        Exit;
+    End;
+
+    { The saved records line up with the bodies only if there are as many.   }
+    Total := 0;
+    Seen := #9;
+    GrpIter := Footprint.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Body := GrpIter.FirstPCBObject;
+        While Body <> Nil Do
+        Begin
+            Addr := IntToStr(Body.I_ObjectAddress);
+            If Pos(#9 + Addr + #9, Seen) = 0 Then
+            Begin
+                Seen := Seen + Addr + #9;
+                Total := Total + 1;
+            End;
+            Body := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GrpIter);
+    End;
+    If SavedCount <> Total Then SavedStr := '';
+
+    Before := '';
+    After := '';
+    Skipped := '';
+    ZWritten := '';
+    Nth := 0;
+    Changed := 0;
+    Seen := #9;
+    PCBServer.PreProcess;
+    Try
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+            Body := GrpIter.FirstPCBObject;
+            While Body <> Nil Do
+            Begin
+                { The footprint on screen can list a body twice. }
+                Addr := IntToStr(Body.I_ObjectAddress);
+                If Pos(#9 + Addr + #9, Seen) = 0 Then
+                Begin
+                    Seen := Seen + Addr + #9;
+                    Nth := Nth + 1;
+                    If (WantIndex = 0) Or (WantIndex = Nth) Then
+                    Begin
+                        If Before <> '' Then Before := Before + ',';
+                        Before := Before + BodyStateJson(Body, Nth);
+                        If Writing Then
+                        Begin
+                            PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                                c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                            Model := StepModelOf(Body);
+                            { A skipped STEP standoff alone changes nothing. }
+                            Wrote := (OverallStr <> '') Or (OpacityStr <> '')
+                                Or (Want <> eNoLayer)
+                                Or ((StandoffStr <> '') And (Model = Nil));
+                            If (StandoffStr <> '') And (Model = Nil) Then
+                                Body.StandoffHeight := MilsToCoordF(StrToFloatDef(StandoffStr, 0));
+                            If (StandoffStr <> '') And (Model <> Nil) Then
+                            Begin
+                                ModelFile := '';
+                                Try ModelFile := Model.FileName; Except End;
+                                SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
+                                If SavedStr = '' Then
+                                Begin
+                                    If Skipped <> '' Then Skipped := Skipped + ',';
+                                    Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
+                                        + JsonStr('reason', 'no saved record lines up with '
+                                        + 'this body: save the library, then retry'));
+                                End
+                                Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
+                                    Or (UpperCase(SavedFile) <> UpperCase(ModelFile)) Then
+                                Begin
+                                    If Skipped <> '' Then Skipped := Skipped + ',';
+                                    Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
+                                        + JsonStr('reason', 'the saved record names '
+                                        + SavedFile + ', the body has ' + ModelFile));
+                                End
+                                Else
+                                Begin
+                                    Model.SetState(
+                                        StrToFloatDef(PipeField(SavedStr, (Nth - 1) * 5 + 2), 0),
+                                        StrToFloatDef(PipeField(SavedStr, (Nth - 1) * 5 + 3), 0),
+                                        StrToFloatDef(PipeField(SavedStr, (Nth - 1) * 5 + 4), 0),
+                                        MilsToCoordF(StrToFloatDef(StandoffStr, 0)));
+                                    Body.Model := Model;
+                                    Wrote := True;
+                                    If ZWritten <> '' Then ZWritten := ZWritten + ',';
+                                    ZWritten := ZWritten + IntToStr(Nth);
+                                End;
+                            End;
+                            If OverallStr <> '' Then
+                                Body.OverallHeight := MilsToCoordF(StrToFloatDef(OverallStr, 0));
+                            If OpacityStr <> '' Then
+                                Body.BodyOpacity3D := Opacity;
+                            If Want <> eNoLayer Then
+                                Body.Layer := Want;
+                            PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                                c_Broadcast, PCBM_EndModify, c_NoEventData);
+                            If Wrote Then Changed := Changed + 1;
+                        End;
+                        If After <> '' Then After := After + ',';
+                        After := After + BodyStateJson(Body, Nth);
+                    End;
+                End;
+                Body := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    If (WantIndex > 0) And (WantIndex > Nth) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BODY',
+            FpWanted + ' has ' + IntToStr(Nth) + ' 3D bodies; there is no body '
+            + IntToStr(WantIndex) + '. Nothing was changed.');
+        Exit;
+    End;
+
+    If Changed > 0 Then
+    Begin
+        Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(LibPath);
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('footprint', FpWanted) + ','
+        + JsonInt('bodies', Nth) + ','
+        + JsonInt('changed', Changed) + ','
+        + JsonRaw('model_z_offset_written', '[' + ZWritten + ']') + ','
+        + JsonRaw('skipped', '[' + Skipped + ']') + ','
+        + JsonRaw('before', '[' + Before + ']') + ','
+        + JsonRaw('after', '[' + After + ']')));
+End;
+
 { Grow the box L..R, B..T to take in RL..RR, RB..RT. An empty box has R < L. }
 Procedure GrowBox(Var L, B, R, T : TCoord; RL, RB, RR, RT : TCoord);
 Begin
@@ -18831,6 +19184,7 @@ Begin
         'delete_footprint_primitives':
                                 Result := Lib_DeleteFootprintPrimitives(Params, RequestId);
         'move_bodies_to_layer': Result := Lib_MoveBodiesToLayer(Params, RequestId);
+        'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);
         'rename_footprint':     Result := Lib_RenameFootprint(Params, RequestId);

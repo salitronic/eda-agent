@@ -5803,6 +5803,133 @@ def register_library_tools(mcp):
             "library.move_bodies_to_layer", params, timeout=60.0)
 
     @mcp.tool()
+    async def lib_set_3d_body(
+        footprint_name: str,
+        library_path: str = "",
+        standoff_height: Optional[float] = None,
+        overall_height: Optional[float] = None,
+        opacity: Optional[float] = None,
+        layer: str = "",
+        body_index: Optional[int] = None,
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Read or change the 3D bodies already in a PcbLib footprint.
+
+        ``lib_link_3d_model`` sets a body's standoff only when it creates
+        it; this edits the body in place, so a wrong standoff no longer
+        means deleting the body and linking it again. Call it with only
+        ``footprint_name`` to read every body's current values.
+
+        Writes the body's OverallHeight, BodyOpacity3D and Layer, and its
+        standoff: what the Properties panel calls Standoff Height.
+
+        ON A STEP BODY THAT IS THE MODEL'S Z OFFSET, not the body's own
+        StandoffHeight, which Altium ignores there (measured on AD 26.11:
+        the body field saved and the panel still read 0). It is written
+        with IPCB_Model.SetState, which also writes the model's three
+        rotations. No getter reaches those, so they are read from the
+        SAVED library file and passed back unchanged: a rotation changed
+        in the editor and not saved yet is reverted to the saved one. A
+        STEP body with no saved record to match (an unsaved footprint, or
+        the saved one names another model file) is listed in ``skipped``
+        and left alone.
+
+        Args:
+            footprint_name: The footprint whose bodies to edit. Required.
+            library_path: The .PcbLib. Defaults to the focused document;
+                the edit is refused if that library cannot be focused,
+                and a path that is not a file is refused before Altium
+                sees it, since Altium opens a new, empty library there.
+            standoff_height: Height of the body's base above the board.
+            overall_height: Height of the body's top above the board.
+            opacity: 0 (clear) to 1 (solid), not a percentage.
+            layer: Move the body to this mechanical layer, by number
+                ("Mechanical5") or the name the library's stack gives it.
+            body_index: 1-based, in the order ``before`` lists them.
+                Empty edits every body of the footprint.
+            units: "mil" (default) or "mm" for the two heights.
+
+        Does NOT save the library.
+
+        Returns:
+            Dict with ``library``, ``footprint``, ``bodies``, ``changed``,
+            and ``before`` / ``after``: one ``{index, layer, step,
+            standoff_height_mils, overall_height_mils, opacity}`` per body
+            touched, read back from Altium (for a STEP body
+            ``standoff_height_mils`` is the unused body field).
+            ``saved_bodies`` is each body as the saved file has it, with
+            ``model_z_offset_mils`` and ``rotation_deg``.
+            ``model_z_offset_written`` lists the STEP bodies whose Z
+            offset was written; save the library, then read again, to see
+            it in ``saved_bodies``. ``skipped``: bodies left alone, why.
+        """
+        if not footprint_name.strip():
+            return {"ok": False, "reason": "footprint_name is required"}
+        unit = units.strip().lower()
+        if unit not in ("mil", "mm"):
+            return {"ok": False, "reason": f"units is 'mil' or 'mm', got {units!r}"}
+        scale = 1000.0 / 25.4 if unit == "mm" else 1.0
+        params: dict[str, Any] = {"footprint_name": footprint_name.strip()}
+        for name, value in (("standoff_height", standoff_height),
+                            ("overall_height", overall_height)):
+            if value is None:
+                continue
+            if value != value:                  # NaN
+                return {"ok": False, "reason": f"{name} must be a number"}
+            params[name] = str(round(value * scale, 4))
+        if opacity is not None:
+            if not 0 <= opacity <= 1:
+                return {"ok": False,
+                        "reason": "opacity is 0 (clear) to 1 (solid), "
+                                  "not a percentage"}
+            params["opacity"] = str(opacity)
+        if body_index is not None:
+            if body_index < 1:
+                return {"ok": False, "reason": "body_index starts at 1"}
+            params["body_index"] = str(body_index)
+        if layer.strip():
+            params["layer"] = layer.strip()
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False,
+                        "reason": f"{path} is not a file. Altium would open a "
+                                  "new, empty library under that name."}
+            params["library_path"] = path
+        bridge = get_bridge()
+
+        def saved_bodies(lib: str) -> Optional[list[dict[str, Any]]]:
+            if not lib or not Path(lib).is_file():
+                return None
+            try:
+                return pcblib_models.saved_body_models(lib, params["footprint_name"])
+            except (OSError, ValueError):
+                return None
+
+        saved = None
+        if "standoff_height" in params:
+            if not path:
+                # The rotations come from the saved file: find which is in front.
+                read = await bridge.send_command_async(
+                    "library.set_3d_body", {"footprint_name": params["footprint_name"]},
+                    timeout=60.0)
+                path = read.get("library", "") if isinstance(read, dict) else ""
+            saved = saved_bodies(path)
+            if saved is not None:
+                params["saved_count"] = str(len(saved))
+                params["saved_models"] = "|".join(
+                    f"{b['model_file']}|{b['model_type']}|{b['rotation_deg'][0]}"
+                    f"|{b['rotation_deg'][1]}|{b['rotation_deg'][2]}" for b in saved)
+        reply = await bridge.send_command_async(
+            "library.set_3d_body", params, timeout=60.0)
+        if isinstance(reply, dict):
+            if saved is None and "standoff_height" not in params:
+                saved = saved_bodies(path or reply.get("library", ""))
+            if saved is not None:
+                reply["saved_bodies"] = [dict(b, index=i) for i, b in enumerate(saved, 1)]
+        return reply
+
+    @mcp.tool()
     async def lib_redraw_assembly(
         layer: str,
         footprint_names: Optional[list[str]] = None,

@@ -7,7 +7,9 @@ Altium (George, 2026-10-22): no Altium API saves an embedded model
 (IPCB_Model has no save, and PCB:ExportSTEP3D in a PcbLib writes
 nothing), and a board STEP export is Altium's re-encoding, not the
 vendor's file. The library is read into memory and never opened for
-writing, and nothing else in it is parsed.
+writing. The one other thing parsed is each 3D body's model placement
+(``saved_body_models``): a STEP model's Z offset and 3D rotations have
+no script getter, and ``lib_set_3d_body`` needs them.
 
 A PcbLib keeps its embedded models in ``Library/Models``: ``Data`` is
 one record per model (a 4-byte length, then ``KEY=VALUE|`` text naming
@@ -33,6 +35,8 @@ import struct
 import zlib
 from pathlib import Path
 from typing import Any, Optional
+
+from ..units import MM_PER_MIL
 
 _DATA = "Library/Models/Data"
 
@@ -155,4 +159,68 @@ def extract_embedded_models(library_path: str | Path, out_dir: str | Path, *,
                     "not saved yet is not in it"}
 
 
-__all__ = ["model_checksum", "list_embedded_models", "extract_embedded_models"]
+#: The text of a body record: the model's placement, as Altium saved it.
+_BODY_TEXT = re.compile(rb"\|[^\x00]*?MODEL\.3D\.DZ=[^\x00]*")
+
+
+def _footprint_name(data: bytes) -> str:
+    """The name a footprint's ``Data`` stream opens with (a 4-byte length,
+    a 1-byte string length, the name). It stays whole when the storage
+    name is cut to OLE's 31 characters."""
+    if len(data) < 5:
+        return ""
+    return data[5:5 + data[4]].decode("latin-1")
+
+
+def _mils(text: str) -> Optional[float]:
+    m = re.fullmatch(r"\s*(-?[\d.]+(?:E[-+]?\d+)?)\s*(mil|mm)?\s*", text or "", re.I)
+    if not m:
+        return None
+    value = float(m.group(1))
+    return value / MM_PER_MIL if (m.group(2) or "").lower() == "mm" else value
+
+
+def saved_body_models(library_path: str | Path,
+                      footprint_name: str) -> Optional[list[dict[str, Any]]]:
+    """Each 3D body of one footprint as the SAVED file has it, in file order.
+
+    For a STEP body the Properties panel's Standoff Height is the model's
+    ``MODEL.3D.DZ``, and no script getter reaches it or the model's 3D
+    rotations (``IPCB_Model.Rotation`` is the 2D one), so this is where
+    they are read. None when the footprint is not in the saved file: new,
+    renamed, or not saved yet.
+    """
+    ole = _open(Path(library_path))
+    try:
+        for entry in ole.listdir():
+            if len(entry) != 2 or entry[1] != "Data":
+                continue
+            data = ole.openstream(entry).read()
+            if _footprint_name(data) != footprint_name:
+                continue
+            bodies = []
+            for m in _BODY_TEXT.finditer(data):
+                rec = {k.strip().upper(): v.strip() for k, v in
+                       (part.split("=", 1) for part in
+                        m.group(0).decode("latin-1").split("|") if "=" in part)}
+
+                def num(key: str) -> float:
+                    try:
+                        return float(rec.get(key, "0"))
+                    except ValueError:
+                        return 0.0
+                bodies.append({
+                    "model_file": rec.get("MODEL.NAME", ""),
+                    "model_type": int(num("MODEL.MODELTYPE")),
+                    "rotation_deg": [num("MODEL.3D.ROTX"), num("MODEL.3D.ROTY"),
+                                     num("MODEL.3D.ROTZ")],
+                    "model_z_offset_mils": _mils(rec.get("MODEL.3D.DZ", "")),
+                })
+            return bodies
+        return None
+    finally:
+        ole.close()
+
+
+__all__ = ["model_checksum", "list_embedded_models", "extract_embedded_models",
+           "saved_body_models"]
