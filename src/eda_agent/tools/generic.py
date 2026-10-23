@@ -456,6 +456,10 @@ def register_generic_tools(mcp):
         Example - edit a pin on any part of a multi-part SchLib symbol:
             obj_modify(object_type="ePin", scope="lib_component:R_0402",
                        filter="Designator=1", set="Name=A")
+        Example - put board copper on a net, or take it off (track, arc,
+        via, pad, fill, region, polygon; the net must exist, "" = no net):
+            obj_modify(object_type="eRegionObject",
+                       filter="Layer=TopLayer|Net=GND", set="Net=")
         """
         bad = filter_problem(filter)
         if bad:
