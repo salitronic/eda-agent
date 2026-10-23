@@ -5470,10 +5470,13 @@ def register_library_tools(mcp):
              name, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
              shape, corner_pct, rotation, hole_rotation, hole_mm,
              hole_w_mm, hole_type, slot_aligned (slots only), plated,
-             layer, paste_expansion_mm, paste_expansion_source,
-             paste_expansion_state, mask_expansion_mm,
-             mask_bottom_expansion_mm, mask_separate,
+             layer, selected, mode, paste_expansion_mm,
+             paste_expansion_source, paste_expansion_state,
+             mask_expansion_mm, mask_bottom_expansion_mm, mask_separate,
              mask_expansion_source, mask_expansion_state}]}.
+            selected is whether the pad is selected in the editor (what
+            lib_set_pad_properties selected=True acts on); mode is the
+            stack mode, 0 simple, 1 top-middle-bottom, 2 full stack.
             x/y is the pad origin, copper_x/y the copper centre (differs
             on a custom pad). hole_rotation is relative to the pad.
             mask_expansion_mm is the top side when mask_separate, else
@@ -5490,13 +5493,15 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_set_pad_properties(
         footprint_name: str,
-        pad_name: str,
+        pad_name: str = "",
+        selected: bool = False,
         library_path: str = "",
         units: str = "mil",
         x_size: Optional[float] = None,
         y_size: Optional[float] = None,
         shape: Optional[str] = None,
         rotation: Optional[float] = None,
+        hole_type: Optional[str] = None,
         hole_size: Optional[float] = None,
         hole_width: Optional[float] = None,
         hole_rotation: Optional[float] = None,
@@ -5508,21 +5513,29 @@ def register_library_tools(mcp):
         paste_top_enabled: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint: every pad named
-        ``pad_name``, only the fields given, each read back. Expansions are
+        ``pad_name``, or with ``selected=True`` every pad selected in the
+        editor, only the fields given, each read back. Expansions are
         written as manual (a library has no rules). On a per-layer pad
         stack only the top size is written (``note``).
 
         Args:
             footprint_name: The footprint holding the pad.
-            pad_name: The pad's designator.
+            pad_name: The pad's designator. Names need not be unique (an
+                SMD pad "1" beside a thru-hole "1"): use ``selected``
+                to say which.
+            selected: Change the pads selected in the editor instead of
+                those named ``pad_name``.
             library_path: Optional .PcbLib path; defaults to the focused
                 library.
             units: "mil" (default) or "mm", for every length here.
             x_size, y_size: Copper size.
             shape: "round", "rectangular" or "octagonal".
             rotation: Pad rotation in degrees.
+            hole_type: "round", "square" or "slot", written before the
+                hole sizes, so a slot can be made round again.
             hole_size: Hole diameter, 0 for a surface-mount pad.
-            hole_width: Slot length; makes the hole a slot.
+            hole_width: Slot length; makes the hole a slot (so it is
+                refused beside ``hole_type`` round or square).
             hole_rotation: Slot rotation relative to the pad, degrees.
             plated: Whether the hole is plated.
             paste_expansion: Paste expansion.
@@ -5546,9 +5559,25 @@ def register_library_tools(mcp):
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        if not pad_name and not selected:
+            return {"success": False,
+                    "error": "give pad_name, or selected=True for the "
+                             "pads selected in the editor"}
+        if hole_type is not None and hole_type not in ("round", "square", "slot"):
+            return {"success": False,
+                    "error": "hole_type must be round, square or slot"}
+        if hole_type in ("round", "square") and hole_width is not None:
+            return {"success": False,
+                    "error": "hole_width makes a slot; leave it out for a "
+                             "round or square hole"}
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "pad_name": pad_name,
                                   "library_path": library_path}
+        if selected:
+            params["selected"] = "true"
+        base = len(params)
+        if hole_type is not None:
+            params["hole_type"] = hole_type
         for key, value in (("x_size", x_size), ("y_size", y_size),
                            ("hole_size", hole_size), ("hole_width", hole_width),
                            ("paste_expansion", paste_expansion),
@@ -5569,7 +5598,7 @@ def register_library_tools(mcp):
         if paste_top_enabled is not None:
             # The top paste opening itself, not its expansion (issue #80).
             params["paste_top_enabled"] = "true" if paste_top_enabled else "false"
-        if len(params) == 3:
+        if len(params) == base:
             return {"success": False,
                     "error": "give at least one property to change"}
         bridge = get_bridge()

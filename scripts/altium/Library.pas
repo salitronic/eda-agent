@@ -11689,6 +11689,14 @@ Begin
                 PadsJson := PadsJson + ',"plated":true';
             End;
             PadsJson := PadsJson + ',"layer":"' + LayerStr + '"';
+            { Whether the pad is selected in the editor, so a caller can act on }
+            { the pads the user picked; and the stack mode (0 simple, 1 top-    }
+            { middle-bottom, 2 full stack), since only a simple pad is wholly  }
+            { described by its top size.                                       }
+            Try PadsJson := PadsJson + ',"selected":' + BoolToJsonStr(Pad.Selected);
+            Except PadsJson := PadsJson + ',"selected":null'; End;
+            Try PadsJson := PadsJson + ',"mode":' + IntToStr(Pad.Mode);
+            Except PadsJson := PadsJson + ',"mode":null'; End;
 
             { Paste expansion: value + manual-vs-rule source. }
             ExpVal := 0;
@@ -11757,6 +11765,16 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
+{ A pad's drill type as the reply names it: round, square or slot. }
+Function PadHoleKind(Pad : IPCB_Pad) : String;
+Begin
+    Result := 'round';
+    Try
+        If Pad.HoleType = eSlotHole Then Result := 'slot'
+        Else If Pad.HoleType = eSquareHole Then Result := 'square';
+    Except End;
+End;
+
 {..............................................................................}
 { Lib_SetPadProperties - change pads that already exist in a PcbLib footprint. }
 {                                                                              }
@@ -11770,14 +11788,21 @@ End;
 { shipped code and written nowhere else, so its read-back is what proves it.  }
 { A pad with a per-layer stack has only its top size written, and the reply  }
 { says so rather than resetting the stack.                                    }
-{ Params: footprint_name, pad_name (required); library_path, units, x_size,  }
-{ y_size, shape, rotation, hole_size, hole_width, hole_rotation, plated,     }
-{ paste_expansion, mask_expansion (all optional).                             }
+{ selected=true changes the pads SELECTED in the editor instead of those     }
+{ named pad_name: pad names need not be unique (an SMD pad "1" and a        }
+{ thru-hole "1" in one footprint), and the selection is what the user means. }
+{ hole_type (round, square or slot) is written before the hole sizes, so a   }
+{ slot can be made round again; hole_width still makes a slot, so it is      }
+{ refused beside hole_type round or square.                                   }
+{ Params: footprint_name, pad_name or selected=true (required); library_path, }
+{ units, x_size, y_size, shape, rotation, hole_type, hole_size, hole_width,   }
+{ hole_rotation, plated, paste_expansion, mask_expansion (all optional).      }
 {..............................................................................}
 Function Lib_SetPadProperties(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpWanted, FpName, PadWanted, UnitsStr, Shape : String;
-    Str, PadsJson, Notes, PlatedStr : String;
+    Str, PadsJson, Notes, PlatedStr, HoleTypeStr : String;
+    BySelection : Boolean;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -11795,10 +11820,27 @@ Begin
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     PadWanted := ExtractJsonValue(Params, 'pad_name');
     UnitsStr := ExtractJsonValue(Params, 'units');
-    If (FpWanted = '') Or (PadWanted = '') Then
+    Str := LowerCase(ExtractJsonValue(Params, 'selected'));
+    BySelection := (Str = 'true') Or (Str = '1');
+    If (FpWanted = '') Or ((PadWanted = '') And (Not BySelection)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
-            'footprint_name and pad_name are required');
+            'footprint_name and pad_name (or selected=true) are required');
+        Exit;
+    End;
+    HoleTypeStr := LowerCase(ExtractJsonValue(Params, 'hole_type'));
+    If (HoleTypeStr <> '') And (HoleTypeStr <> 'round')
+        And (HoleTypeStr <> 'square') And (HoleTypeStr <> 'slot') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_HOLE_TYPE',
+            'hole_type must be round, square or slot');
+        Exit;
+    End;
+    If ((HoleTypeStr = 'round') Or (HoleTypeStr = 'square'))
+        And (ExtractJsonValue(Params, 'hole_width') <> '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_HOLE_TYPE',
+            'hole_width makes a slot; leave it out for a round or square hole');
         Exit;
     End;
     Shape := LowerCase(ExtractJsonValue(Params, 'shape'));
@@ -11881,7 +11923,9 @@ Begin
                 PadAddr := '';
                 Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
                 If ((PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0))
-                    And (UpperCase(Pad.Name) = UpperCase(PadWanted)) Then
+                    And ((BySelection And Pad.Selected)
+                         Or ((Not BySelection)
+                             And (UpperCase(Pad.Name) = UpperCase(PadWanted)))) Then
                 Begin
                     If PadAddr <> '' Then SeenPads.Add(PadAddr);
                     Ok := True;
@@ -11913,6 +11957,14 @@ Begin
                     Str := ExtractJsonValue(Params, 'rotation');
                     If Str <> '' Then
                         Try Pad.Rotation := StrToFloatDef(Str, 0); Except Ok := False; End;
+                    If HoleTypeStr <> '' Then
+                    Begin
+                        Try
+                            If HoleTypeStr = 'slot' Then Pad.HoleType := eSlotHole
+                            Else If HoleTypeStr = 'square' Then Pad.HoleType := eSquareHole
+                            Else Pad.HoleType := eRoundHole;
+                        Except Ok := False; End;
+                    End;
                     Str := ExtractJsonValue(Params, 'hole_size');
                     If Str <> '' Then
                     Begin
@@ -12038,6 +12090,7 @@ Begin
                         + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
                         + ',"hole_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleSize))
                         + ',"hole_w_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleWidth))
+                        + ',"hole_type":"' + PadHoleKind(Pad) + '"'
                         + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
                         + ',"plated":' + BoolToJsonStr(Pad.Plated)
                         + ',"paste_expansion_state":"' + CacheStateName(Pad, False) + '"'
