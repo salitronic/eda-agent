@@ -301,6 +301,49 @@ Begin
     Result := 1;
 End;
 
+{ ---- A PRIMITIVE'S NET, WRITTEN (issue #126) ------------------------------ }
+{ '' leaves the primitive on no net; a name joins that net, which must       }
+{ already exist. False = no such net, so the caller refuses instead of       }
+{ silently leaving the old net in place. Membership is kept BOTH ways, as   }
+{ BindPrimitiveToNet in PCB.pas does it: Prim.Net alone sets a reference    }
+{ while the net's own collection, which connectivity and pours walk, still  }
+{ holds (or lacks) the object. PCB.pas builds after this unit, so its net   }
+{ helpers cannot be called from here; this is the small copy.               }
+Function PCBSetNet(Obj : IPCB_Primitive; Value : String) : Boolean;
+Var
+    Board  : IPCB_Board;
+    Iter   : IPCB_BoardIterator;
+    NetObj : IPCB_Net;
+    OldNet : IPCB_Net;
+Begin
+    Result := False;
+    NetObj := Nil;
+    If Value <> '' Then
+    Begin
+        Board := GetPCBBoardAnywhere(0);
+        If Board = Nil Then Exit;
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eNetObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        NetObj := Iter.FirstPCBObject;
+        While NetObj <> Nil Do
+        Begin
+            If NetObj.Name = Value Then Break;
+            NetObj := Iter.NextPCBObject;
+        End;
+        Board.BoardIterator_Destroy(Iter);
+        If NetObj = Nil Then Exit;
+    End;
+    OldNet := Obj.Net;
+    If OldNet <> Nil Then
+        Try OldNet.RemovePCBObject(Obj); Except End;
+    Obj.Net := NetObj;
+    If NetObj <> Nil Then
+        Try NetObj.AddPCBObject(Obj); Except End;
+    Result := True;
+End;
+
 { ---- A PRIMITIVE'S BOX, A BODY'S IDENTIFIER, AND UNIONS ------------------- }
 { What a board-side 3D envelope needs: the extent of a component's bodies,  }
 { courtyard and pads, the Identifier a generated body carries, and the      }
@@ -1210,6 +1253,21 @@ Begin
                 Pad := Obj;
                 Pad.Name := Value;
             End;
+        End
+        { A primitive's net (issue #126): '' leaves it on no net, a name     }
+        { joins that existing net, an unknown name is refused, never         }
+        { ignored. Exploding a polygon leaves its net on every region it     }
+        { made; this is how a caller takes it off again. Only copper that    }
+        { carries a net takes it; every other type is not matched.           }
+        Else If (PropName = 'Net') Or (PropName = 'Net.Name') Then
+        Begin
+            If (Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eViaObject) Or
+               (Oid = ePadObject) Or (Oid = eFillObject) Or (Oid = eRegionObject) Or
+               (Oid = ePolyObject) Then
+            Begin
+                If Not PCBSetNet(Obj, Value) Then Refused := True;
+            End
+            Else Matched := False;
         End
         { A text's height and stroke width: silkscreen designator size is a }
         { fabrication requirement, and only the create path could set it.   }
