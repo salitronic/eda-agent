@@ -4490,10 +4490,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_board_shape(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Define the physical PCB board outline as a rectangle.
 
@@ -4514,16 +4514,16 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.set_board_shape",
-            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+            {"x1": _mils(x1), "y1": _mils(y1), "x2": _mils(x2), "y2": _mils(y2)},
         )
         return result
 
     @mcp.tool()
     async def pcb_place_polygon_rect(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         net: str = "",
         layer: str = "TopLayer",
         pour_over: bool = True,
@@ -4551,10 +4551,10 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async(
             "pcb.place_polygon_rect",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
                 "net": net,
                 "layer": layer,
                 "pour_over": "true" if pour_over else "false",

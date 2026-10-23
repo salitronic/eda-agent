@@ -9217,7 +9217,7 @@ End;
 Function PCB_SetBoardShape(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpF : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     Seg : TPolySegment;
 Begin
@@ -9228,16 +9228,18 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    { Decimal mils (issue #124): StrToIntDef read "960.6299" as 0, so a  }
+    { corner given in millimetres came out at the origin.                }
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
 
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
 
-    Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
-    Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
+    Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
+    Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
     PCBServer.PreProcess;
     Try
@@ -9269,8 +9271,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,'
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
 End;
 
 {..............................................................................}
@@ -9282,7 +9284,7 @@ Function PCB_PlacePolygonRect(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Polygon : IPCB_Polygon;
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpF : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     NetStr, LayerStr, PourOverStr : String;
     FoundNet : IPCB_Net;
@@ -9296,18 +9298,19 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    { Decimal mils, as in PCB_SetBoardShape (issue #124). }
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
     PourOverStr := ExtractJsonValue(Params, 'pour_over');
 
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
-    Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
-    Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
+    Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
+    Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
     { The layer is resolved BEFORE anything is created. "Internal Plane 1"    }
     { used to reach GetLayerFromString, miss the canonical table, and come     }
@@ -9378,8 +9381,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
