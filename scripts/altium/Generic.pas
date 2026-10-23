@@ -3685,16 +3685,23 @@ End;
 
 {..............................................................................}
 { Zoom to specific X,Y coordinates (in mils for SCH, mils for PCB)          }
+{ PCB: the view is fitted to a square of +-radius mils (default 200) round   }
+{ x,y through GraphicalView_ZoomOnRect (Altium's ConvertPicture.PAS does    }
+{ the same). PCB:Jump JumpToLocation10 jumped to location MARKER 10 and,    }
+{ with none set, raised a modal "Location Marker 10 has not been set" that  }
+{ stopped the polling loop; X and Y were never its parameters.              }
 {..............................................................................}
 
 Function Gen_ZoomToXY(Params : String; RequestId : String) : String;
 Var
-    XStr, YStr : String;
+    XStr, YStr, RadStr : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Cx, Cy, Rad : TCoord;
 Begin
     XStr := ExtractJsonValue(Params, 'x');
     YStr := ExtractJsonValue(Params, 'y');
+    RadStr := ExtractJsonValue(Params, 'radius');
 
     If (XStr = '') Or (YStr = '') Then
     Begin
@@ -3707,11 +3714,11 @@ Begin
 
     If Board <> Nil Then
     Begin
-        ResetParameters;
-        AddStringParameter('Object', 'JumpToLocation10');
-        AddStringParameter('X', XStr);
-        AddStringParameter('Y', YStr);
-        RunProcess('PCB:Jump');
+        Cx := MilsToCoordF(StrToFloatDef(XStr, 0));
+        Cy := MilsToCoordF(StrToFloatDef(YStr, 0));
+        Rad := MilsToCoordF(StrToFloatDef(RadStr, 200));
+        If Rad <= 0 Then Rad := MilsToCoordF(200);
+        Board.GraphicalView_ZoomOnRect(Cx - Rad, Cy - Rad, Cx + Rad, Cy + Rad);
 
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"x":' + XStr + ',"y":' + YStr + ',"context":"pcb"}');
