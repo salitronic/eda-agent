@@ -9061,6 +9061,10 @@ End;
 { Params: x1,y1,x2,y2 in mils, layer=<layer>, net=<optional>                  }
 { Regions are solid primitives without a net; they don't participate in the   }
 { connectivity engine. Use place_polygon_rect for a net-associated pour.      }
+{ Optional points=x1,y1/x2,y2/x3,y3[/...] in mils (decimals kept): a polygon  }
+{ of three or more vertices instead of the rectangle; x1..y2 are then not     }
+{ needed. A malformed list is refused rather than drawn as a spike to 0,0.    }
+{ The reply then carries the vertex count and the outline read back.          }
 {..............................................................................}
 
 Function PCB_PlaceRegion(Params : String; RequestId : String) : String;
@@ -9068,11 +9072,13 @@ Var
     Board : IPCB_Board;
     Region : IPCB_Region;
     Contour : IPCB_Contour;
+    ReadBack : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, PointsStr, PtsJson : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
+    NPts, I, NBack : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -9087,6 +9093,19 @@ Begin
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    PointsStr := Trim(ExtractJsonValue(Params, 'points'));
+    NPts := 0;
+    If PointsStr <> '' Then
+    Begin
+        NPts := RegionPointCount(PointsStr);
+        If NPts < 3 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_POINTS',
+                'points must be three or more x,y pairs in mils joined by "/", '
+                + 'e.g. 0,0/100,0/50,80');
+            Exit;
+        End;
+    End;
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
@@ -9117,11 +9136,25 @@ Begin
           Segments API). Note that the contour X[I]/Y[I] arrays are
           1-based (not 0-based). }
         Contour := Region.MainContour.Replicate;
-        Contour.Count := 4;
-        Contour.X[1] := Cx1;  Contour.Y[1] := Cy1;
-        Contour.X[2] := Cx2;  Contour.Y[2] := Cy1;
-        Contour.X[3] := Cx2;  Contour.Y[3] := Cy2;
-        Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
+        If NPts >= 3 Then
+        Begin
+            Contour.Count := NPts;
+            For I := 1 To NPts Do
+            Begin
+                Contour.X[I] := MilsToCoordF(
+                    StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0));
+                Contour.Y[I] := MilsToCoordF(
+                    StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0));
+            End;
+        End
+        Else
+        Begin
+            Contour.Count := 4;
+            Contour.X[1] := Cx1;  Contour.Y[1] := Cy1;
+            Contour.X[2] := Cx2;  Contour.Y[2] := Cy1;
+            Contour.X[3] := Cx2;  Contour.Y[3] := Cy2;
+            Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
+        End;
         Region.SetOutlineContour(Contour);
 
         If NetStr <> '' Then
@@ -9138,6 +9171,31 @@ Begin
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+
+    If NPts >= 3 Then
+    Begin
+        { The outline as the region holds it, in mils: the caller's proof. }
+        PtsJson := '';
+        NBack := 0;
+        ReadBack := Nil;
+        Try ReadBack := Region.MainContour; Except ReadBack := Nil; End;
+        If ReadBack <> Nil Then
+        Begin
+            Try NBack := ReadBack.Count; Except NBack := 0; End;
+            For I := 1 To NBack Do
+            Begin
+                If PtsJson <> '' Then PtsJson := PtsJson + ',';
+                PtsJson := PtsJson + '[' + FloatToJsonStr(CoordToMilsF(ReadBack.X[I]))
+                    + ',' + FloatToJsonStr(CoordToMilsF(ReadBack.Y[I])) + ']';
+            End;
+        End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"placed":true,"vertices":' + IntToStr(NPts) + ','
+            + '"points":[' + PtsJson + '],'
+            + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+            + '"net":"' + EscapeJsonString(NetStr) + '"}');
+        Exit;
+    End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'

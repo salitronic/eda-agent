@@ -5585,14 +5585,15 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_region(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: int = 0,
+        y1: int = 0,
+        x2: int = 0,
+        y2: int = 0,
         layer: str = "TopLayer",
         net: str = "",
+        points: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
-        """Place a solid copper region on a rectangular area.
+        """Place a solid copper region on a rectangle or a polygon outline.
 
         Regions are solid primitives; unlike polygons, they don't participate
         in the connectivity engine unless you assign a net. Use for
@@ -5601,26 +5602,40 @@ def register_pcb_tools(mcp):
         pcb_place_polygon_rect.
 
         Args:
-            x1, y1, x2, y2: Opposite corners in mils (any order)
+            x1, y1, x2, y2: Opposite corners in mils (any order); not used
+                when points is given
             layer: Copper or mech layer (default "TopLayer")
             net: Optional net assignment
+            points: Optional outline, ``[{x, y}]`` (or ``[[x, y]]``) in
+                mils, three or more vertices in order, decimals kept; the
+                outline closes by itself
 
         Returns:
-            Dictionary confirming the region placement
+            Dictionary confirming the region placement; with points, also
+            ``vertices`` and ``points``, the outline read back from the
+            placed region in mils
         """
+        params: dict[str, Any] = {
+            "x1": str(x1),
+            "y1": str(y1),
+            "x2": str(x2),
+            "y2": str(y2),
+            "layer": layer,
+            "net": net,
+        }
+        if points:
+            try:
+                pairs = [(float(p["x"]), float(p["y"])) if isinstance(p, dict)
+                         else (float(p[0]), float(p[1])) for p in points]
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {"ok": False,
+                        "reason": "each point is {x, y} or [x, y] in mils"}
+            if len(pairs) < 3:
+                return {"ok": False,
+                        "reason": "an outline needs three or more points"}
+            params["points"] = "/".join(f"{x},{y}" for x, y in pairs)
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_region",
-            {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "layer": layer,
-                "net": net,
-            },
-        )
-        return result
+        return await bridge.send_command_async("pcb.place_region", params)
 
     @mcp.tool()
     async def pcb_place_dimension(
