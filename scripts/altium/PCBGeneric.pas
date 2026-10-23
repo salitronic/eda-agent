@@ -301,6 +301,89 @@ Begin
     Result := 1;
 End;
 
+{ ---- A POLYGON'S POUR SETTINGS (issue #125) ------------------------------ }
+{ The Polygon Pour dialog's fields, under the names Altium's own demo       }
+{ IteratePolygons.pas reads: Grid, TrackSize (hatched), MinTrack,           }
+{ ArcApproximation and NeckWidthThreshold are lengths, decimal mils;        }
+{ IslandAreaThreshold is an area, square mils (the API holds coordinates    }
+{ squared, and one mil is 10000 coordinates, so 1e8 per square mil);        }
+{ PolyHatchStyle and PourOver are the raw ordinals (1 = 45 degrees,         }
+{ 5 = solid; 2 = pour over same-net polygons only), so a copy from one      }
+{ polygon to another is exact whatever the enum's names; UseOctagons is a   }
+{ flag; PourIndex and Poured are read only. The caller has checked it is   }
+{ a polygon (an ePolyObject test here would read as a position resolver).  }
+Function PCBGetPoly(Obj : IPCB_Primitive; PropName : String) : String;
+Var
+    Poly : IPCB_Polygon;
+    Area : Double;
+Begin
+    Result := '';
+    Poly := Obj;
+    If PropName = 'Grid' Then Result := FloatToJsonStr(CoordToMilsF(Poly.Grid))
+    Else If PropName = 'TrackSize' Then Result := FloatToJsonStr(CoordToMilsF(Poly.TrackSize))
+    Else If PropName = 'MinTrack' Then Result := FloatToJsonStr(CoordToMilsF(Poly.MinTrack))
+    Else If PropName = 'ArcApproximation' Then Result := FloatToJsonStr(CoordToMilsF(Poly.ArcApproximation))
+    Else If PropName = 'NeckWidthThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Poly.NeckWidthThreshold))
+    Else If PropName = 'IslandAreaThreshold' Then
+    Begin
+        Area := Poly.IslandAreaThreshold;
+        Result := FloatToJsonStr(Area / 100000000.0);
+    End
+    Else If PropName = 'PolyHatchStyle' Then Result := IntToStr(Poly.PolyHatchStyle)
+    Else If PropName = 'PourOver' Then Result := IntToStr(Poly.PourOver)
+    Else If PropName = 'UseOctagons' Then Result := BoolToJsonStr(Poly.UseOctagons)
+    Else If PropName = 'PourIndex' Then Result := IntToStr(Poly.PourIndex)
+    Else If PropName = 'Poured' Then Result := BoolToJsonStr(Poly.Poured);
+End;
+
+{ True when written. A negative number, a non-number, a fractional or       }
+{ out-of-range ordinal, anything but true / false for UseOctagons and an    }
+{ empty Name are refused and nothing is written. The caller has checked it is a polygon.   }
+{ Nothing here repours: the settings decide what the NEXT pour does, as     }
+{ with RemoveDead and pcb_modify_polygon.                                   }
+Function PCBSetPoly(Obj : IPCB_Primitive; PropName : String; Value : String) : Boolean;
+Var
+    Poly : IPCB_Polygon;
+    F    : Double;
+Begin
+    Result := False;
+    Poly := Obj;
+    If PropName = 'Name' Then
+    Begin
+        If Trim(Value) = '' Then Exit;
+        Poly.Name := Value;
+        Result := True;
+        Exit;
+    End;
+    If PropName = 'UseOctagons' Then
+    Begin
+        If LowerCase(Value) = 'true' Then Poly.UseOctagons := True
+        Else If LowerCase(Value) = 'false' Then Poly.UseOctagons := False
+        Else Exit;
+        Result := True;
+        Exit;
+    End;
+    If Not IsFloatStr(Value) Then Exit;
+    F := StrToFloatDef(Value, -1);
+    If F < 0 Then Exit;
+    If (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Then
+    Begin
+        If Round(F) <> F Then Exit;
+        If (PropName = 'PolyHatchStyle') And (Round(F) > 5) Then Exit;
+        If (PropName = 'PourOver') And (Round(F) > 2) Then Exit;
+    End;
+    If PropName = 'Grid' Then Poly.Grid := MilsToCoordF(F)
+    Else If PropName = 'TrackSize' Then Poly.TrackSize := MilsToCoordF(F)
+    Else If PropName = 'MinTrack' Then Poly.MinTrack := MilsToCoordF(F)
+    Else If PropName = 'ArcApproximation' Then Poly.ArcApproximation := MilsToCoordF(F)
+    Else If PropName = 'NeckWidthThreshold' Then Poly.NeckWidthThreshold := MilsToCoordF(F)
+    Else If PropName = 'IslandAreaThreshold' Then Poly.IslandAreaThreshold := F * 100000000.0
+    Else If PropName = 'PolyHatchStyle' Then Poly.PolyHatchStyle := Round(F)
+    Else If PropName = 'PourOver' Then Poly.PourOver := Round(F)
+    Else Exit;
+    Result := True;
+End;
+
 { ---- A PRIMITIVE'S BOX, A BODY'S IDENTIFIER, AND UNIONS ------------------- }
 { What a board-side 3D envelope needs: the extent of a component's bodies,  }
 { courtyard and pads, the Identifier a generated body carries, and the      }
@@ -670,6 +753,8 @@ Begin
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
             { A region's Name: a plain string (IterateRegions.pas reads it). }
             If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
+            { A polygon's Name, as the Polygon Pour dialog shows it (#125). }
+            If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -732,6 +817,17 @@ Begin
         Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveIslandsByArea); End;
+        End
+        { The rest of the Polygon Pour dialog (issue #125), see PCBGetPoly. }
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or
+                (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+                (PropName = 'Poured') Then
+        Begin
+            If Oid = ePolyObject Then Result := PCBGetPoly(Obj, PropName);
         End
         Else If PropName = 'StandoffHeight' Then
         Begin
@@ -842,7 +938,10 @@ Begin
         (PropName = 'SizeBottom') Or (PropName = 'SolderMaskExpansion') Or
         (PropName = 'SolderMaskBottomExpansion') Or
         (PropName = 'BoundsLeft') Or (PropName = 'BoundsBottom') Or
-        (PropName = 'BoundsRight') Or (PropName = 'BoundsTop');
+        (PropName = 'BoundsRight') Or (PropName = 'BoundsTop') Or
+        (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+        (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+        (PropName = 'NeckWidthThreshold');
 End;
 
 { A text's height or stroke width, inside the modify bracket Altium wants: }
@@ -1188,6 +1287,13 @@ Begin
                 SetTextMirrorInPlace(Txt, LowerCase(Value) = 'true');
             End;
         End
+        { A polygon's Name, as the Polygon Pour dialog shows it (issue     }
+        { #125). An empty one is refused.                                   }
+        Else If (PropName = 'Name') And (Oid = ePolyObject) Then
+        Begin
+            If Trim(Value) = '' Then Refused := True
+            Else If Not PCBSetPoly(Obj, PropName, Value) Then Matched := False;
+        End
         { A pad's Name is its designator, written the way the footprint    }
         { tools write it. An empty name would leave a pad no pin can match }
         { and is refused. A component's designator is not settable from a  }
@@ -1309,6 +1415,18 @@ Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Poly.RemoveIslandsByArea := StrToBool(Value); End
             Else Matched := False;
+        End
+        { The rest of the Polygon Pour dialog (issue #125), see PCBSetPoly. }
+        { PourIndex and Poured are read only and deliberately absent.       }
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or
+                (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Then
+        Begin
+            If Oid <> ePolyObject Then Matched := False
+            Else If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
         End
         Else Matched := False;
 
@@ -1464,7 +1582,14 @@ Begin
         (PropName = 'IsAssyTestpoint_Bottom') Or
         (PropName = 'BoundsLeft') Or (PropName = 'BoundsBottom') Or
         (PropName = 'BoundsRight') Or (PropName = 'BoundsTop') Or
-        (PropName = 'UnionIndex') Or (PropName = 'Identifier');
+        (PropName = 'UnionIndex') Or (PropName = 'Identifier') Or
+        (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+        (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+        (PropName = 'NeckWidthThreshold') Or
+        (PropName = 'IslandAreaThreshold') Or
+        (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+        (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+        (PropName = 'Poured');
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -1523,7 +1648,9 @@ Begin
         + 'SolderMaskFromHoleEdge, IsTenting_Top, IsTenting_Bottom, '
         + 'IsTestpoint_Top, IsTestpoint_Bottom, IsAssyTestpoint_Top, '
         + 'IsAssyTestpoint_Bottom, BoundsLeft, BoundsBottom, BoundsRight, '
-        + 'BoundsTop, UnionIndex, Identifier';
+        + 'BoundsTop, UnionIndex, Identifier, Grid, TrackSize, MinTrack, '
+        + 'ArcApproximation, NeckWidthThreshold, IslandAreaThreshold, '
+        + 'PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

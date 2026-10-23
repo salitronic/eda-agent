@@ -295,7 +295,13 @@ def register_generic_tools(mcp):
                 "Designator,Comment,Pattern,Rotation,X,Y" for
                 components; "Text,Height,StrokeWidth,IsDesignator" for
                 texts, and "MirrorFlag" (settable with obj_modify; the text
-                is kept where it is). An unknown PCB property is refused with the valid
+                is kept where it is). Polygons ("polygon") read and, with
+                obj_modify, set their pour settings: "Name,Grid,TrackSize,
+                MinTrack,ArcApproximation,NeckWidthThreshold" (decimal
+                mils), "IslandAreaThreshold" (square mils),
+                "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
+                and the read-only "PourIndex,Poured"; nothing repours.
+                An unknown PCB property is refused with the valid
                 list. Lengths are decimal mils.
 
                 A board type returns EVERY primitive of that type;
