@@ -303,6 +303,8 @@ Begin
             { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
+            { A region's Name: a plain string (IterateRegions.pas reads it). }
+            If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -706,9 +708,16 @@ Begin
         { tools write it. An empty name would leave a pad no pin can match }
         { and is refused. A component's designator is not settable from a  }
         { script, so Name and Designator stay unknown for components.      }
+        { A region's Name is a tag a tool finds its own regions by again   }
+        { (GenerateSamples.pas writes it); empty is allowed and clears it.  }
         Else If (PropName = 'Name') Or (PropName = 'Designator') Then
         Begin
-            If Oid <> ePadObject Then
+            If (Oid = eRegionObject) And (PropName = 'Name') Then
+            Begin
+                Rgn := Obj;
+                Rgn.Name := Value;
+            End
+            Else If Oid <> ePadObject Then
                 Matched := False
             Else If Trim(Value) = '' Then
                 Refused := True

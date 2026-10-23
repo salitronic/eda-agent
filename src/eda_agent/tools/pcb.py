@@ -5591,6 +5591,7 @@ def register_pcb_tools(mcp):
         y2: int,
         layer: str = "TopLayer",
         net: str = "",
+        name: str = "",
     ) -> dict[str, Any]:
         """Place a solid copper region on a rectangular area.
 
@@ -5604,22 +5605,26 @@ def register_pcb_tools(mcp):
             x1, y1, x2, y2: Opposite corners in mils (any order)
             layer: Copper or mech layer (default "TopLayer")
             net: Optional net assignment
+            name: Optional region Name, a tag to find the region again by
+                (``obj_query`` filter ``Name=...``); avoid ``=`` and ``|``,
+                which split a filter
 
         Returns:
-            Dictionary confirming the region placement
+            Dictionary confirming the region placement, with the ``name``
+            read back from the region
         """
+        params = {
+            "x1": str(x1),
+            "y1": str(y1),
+            "x2": str(x2),
+            "y2": str(y2),
+            "layer": layer,
+            "net": net,
+        }
+        if name:
+            params["name"] = name
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_region",
-            {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "layer": layer,
-                "net": net,
-            },
-        )
+        result = await bridge.send_command_async("pcb.place_region", params)
         return result
 
     @mcp.tool()

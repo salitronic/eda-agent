@@ -9058,7 +9058,8 @@ End;
 
 {..............................................................................}
 { PCB_PlaceRegion - Drop a solid copper region (no net) on a rectangle        }
-{ Params: x1,y1,x2,y2 in mils, layer=<layer>, net=<optional>                  }
+{ Params: x1,y1,x2,y2 in mils, layer=<layer>, net=<optional>,                 }
+{         name=<optional>: the region's Name, a tag to find it again by       }
 { Regions are solid primitives without a net; they don't participate in the   }
 { connectivity engine. Use place_polygon_rect for a net-associated pour.      }
 {..............................................................................}
@@ -9070,7 +9071,7 @@ Var
     Contour : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, NameStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
 Begin
@@ -9087,6 +9088,7 @@ Begin
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    NameStr := ExtractJsonValue(Params, 'name');
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
@@ -9123,6 +9125,7 @@ Begin
         Contour.X[3] := Cx2;  Contour.Y[3] := Cy2;
         Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
 
         If NetStr <> '' Then
         Begin
@@ -9144,7 +9147,8 @@ Begin
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
-        + '"net":"' + EscapeJsonString(NetStr) + '"}');
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}
