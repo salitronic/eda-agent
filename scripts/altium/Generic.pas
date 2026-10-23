@@ -11749,7 +11749,9 @@ Begin
                     If Pad.TopShape = eRounded Then ShapeStr := 'Round'
                     Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
                     Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
-                    Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect';
+                    Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
+                    { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+                    Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom';
                 Except End;
                 { Drill shape: round / square / slot. Slot pads expose a   }
                 { separate hole_width and a hole_rotation; round + square }

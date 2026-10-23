@@ -3577,6 +3577,8 @@ Begin
                   had just written with
                   SetState_StackShapeOnLayer(..., eRoundedRectangular). }
                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
+                { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
                 Else ShapeStr := 'round';
             Except End;
 
@@ -3809,6 +3811,8 @@ Begin
                                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
                                 Else If Pad.TopShape = eOctagonal Then ShapeStr := 'octagonal'
                                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
+                                { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+                                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
                                 Else ShapeStr := 'round';
                             Except End;
                             LayerStr := 'top';
@@ -11605,6 +11609,8 @@ Begin
                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
                 Else If Pad.TopShape = eOctagonal Then ShapeStr := 'octagonal'
                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
+                { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
                 Else ShapeStr := 'round';
             Except End;
 

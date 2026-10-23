@@ -7699,6 +7699,8 @@ Begin
             Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
             Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
             Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
+            { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+            Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom'
             Else ShapeStr := 'Other';
         Except ShapeStr := 'Unknown'; End;
 
@@ -15339,6 +15341,8 @@ Begin
     If S = eRectangular Then Name := 'rect';
     If S = eOctagonal Then Name := 'octagon';
     If S = eRoundedRectangular Then Name := 'roundrect';
+    { A pad made from a region (PCB:CustomPadShape) is eCustomShape (#118). }
+    If S = eCustomShape Then Name := 'custom';
     Result := Name;
 End;
 
