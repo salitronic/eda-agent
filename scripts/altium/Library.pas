@@ -1112,7 +1112,8 @@ End;
 Function Lib_AddPin(Params : String; RequestId : String) : String;
 Var
     Designator, Name, ElecType : String;
-    X, Y, Length, Rotation : Integer;
+    Rotation : Integer;
+    X, Y, Length : Double;
     Hidden, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
@@ -1120,9 +1121,9 @@ Var
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     Name := ExtractJsonValue(Params, 'name');
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    Length := StrToIntDef(ExtractJsonValue(Params, 'length'), 200);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    Length := StrToFloatDef(ExtractJsonValue(Params, 'length'), 200);
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
     ElecType := ExtractJsonValue(Params, 'electrical_type');
     Hidden := ExtractJsonValue(Params, 'hidden') = 'true';
@@ -1146,9 +1147,9 @@ Begin
     Begin
         Pin.Designator := Designator;
         Pin.Name := Name;
-        Pin.Location.X := MilsToCoord(X);
-        Pin.Location.Y := MilsToCoord(Y);
-        Pin.PinLength := MilsToCoord(Length);
+        Pin.Location.X := MilsToCoordF(X);
+        Pin.Location.Y := MilsToCoordF(Y);
+        Pin.PinLength := MilsToCoordF(Length);
         Pin.Orientation := Rotation Div 90;
         Pin.IsHidden := Hidden;
 
@@ -1206,7 +1207,8 @@ End;
 
 Function Lib_AddSymbolRectangle(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, LineW : Integer;
+    LineW : Integer;
+    X1, Y1, X2, Y2 : Double;
     FillColorStr, BorderColorStr, SolidStr : String;
     SchLib : ISch_Lib;
     Component : ISch_Component;
@@ -1214,10 +1216,10 @@ Var
     Loc : TLocation;
     ViaLib : Boolean;
 Begin
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     FillColorStr := ExtractJsonValue(Params, 'fill_color');
     BorderColorStr := ExtractJsonValue(Params, 'border_color');
     If BorderColorStr = '' Then BorderColorStr := ExtractJsonValue(Params, 'color');
@@ -1252,12 +1254,12 @@ Begin
         { discarded (the rect retains its default 0,0 / 500,500 from the      }
         { factory). Same fix is applied in Lib_AddSymbolLine and Generic.pas. }
         Loc := Rect.Location;
-        Loc.X := MilsToCoord(X1);
-        Loc.Y := MilsToCoord(Y1);
+        Loc.X := MilsToCoordF(X1);
+        Loc.Y := MilsToCoordF(Y1);
         Rect.Location := Loc;
         Loc := Rect.Corner;
-        Loc.X := MilsToCoord(X2);
-        Loc.Y := MilsToCoord(Y2);
+        Loc.X := MilsToCoordF(X2);
+        Loc.Y := MilsToCoordF(Y2);
         Rect.Corner := Loc;
 
         { Colours are OPTIONAL and only touched when supplied, so a caller }
@@ -1304,7 +1306,8 @@ End;
 
 Function Lib_AddSymbolLine(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, Width : Integer;
+    Width : Integer;
+    X1, Y1, X2, Y2 : Double;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Line : ISch_Line;
@@ -1313,10 +1316,10 @@ Var
     ColorStr : String;
 Begin
     ColorStr := ExtractJsonValue(Params, 'color');
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 1);
     If Width < 0 Then Width := 0;
     If Width > 3 Then Width := 3;
@@ -1344,12 +1347,12 @@ Begin
         { component). Confirmed broken when 12 lib_add_symbol_line           }
         { calls all reported success but no eLine objects were on the symbol. }
         Loc := Line.Location;
-        Loc.X := MilsToCoord(X1);
-        Loc.Y := MilsToCoord(Y1);
+        Loc.X := MilsToCoordF(X1);
+        Loc.Y := MilsToCoordF(Y1);
         Line.Location := Loc;
         Loc := Line.Corner;
-        Loc.X := MilsToCoord(X2);
-        Loc.Y := MilsToCoord(Y2);
+        Loc.X := MilsToCoordF(X2);
+        Loc.Y := MilsToCoordF(Y2);
         Line.Corner := Loc;
         Line.LineWidth := Width;
         If ColorStr <> '' Then
@@ -2204,8 +2207,8 @@ Begin
         Exit;
     End;
     Result := BuildSuccessResponse(RequestId,
-        '{"origin_x_mil":' + IntToStr(CoordToMils(PcbLib.Board.XOrigin)) +
-        ',"origin_y_mil":' + IntToStr(CoordToMils(PcbLib.Board.YOrigin)) +
+        '{"origin_x_mil":' + FloatToJsonStr(CoordToMilsF(PcbLib.Board.XOrigin)) +
+        ',"origin_y_mil":' + FloatToJsonStr(CoordToMilsF(PcbLib.Board.YOrigin)) +
         ',"library_path":"' + EscapeJsonString(PcbLib.Board.FileName) + '"}');
 End;
 
@@ -4127,13 +4130,13 @@ Begin
             If Count > 0 Then PadsJson := PadsJson + ',';
             PadsJson := PadsJson +
                 '{"name":"' + EscapeJsonString(Pad.Name) + '"' +
-                ',"x":' + IntToStr(CoordToMils(Pad.X - XOrg)) +
-                ',"y":' + IntToStr(CoordToMils(Pad.Y - YOrg)) +
-                ',"size_x":' + IntToStr(CoordToMils(Pad.TopXSize)) +
-                ',"size_y":' + IntToStr(CoordToMils(Pad.TopYSize)) +
+                ',"x":' + FloatToJsonStr(CoordToMilsF(Pad.X - XOrg)) +
+                ',"y":' + FloatToJsonStr(CoordToMilsF(Pad.Y - YOrg)) +
+                ',"size_x":' + FloatToJsonStr(CoordToMilsF(Pad.TopXSize)) +
+                ',"size_y":' + FloatToJsonStr(CoordToMilsF(Pad.TopYSize)) +
                 ',"shape":"' + ShapeStr + '"' +
                 ',"layer":"' + LayerStr + '"' +
-                ',"hole":' + IntToStr(CoordToMils(Pad.HoleSize)) +
+                ',"hole":' + FloatToJsonStr(CoordToMilsF(Pad.HoleSize)) +
                 ',"rotation":' + FloatToJsonStr(Pad.Rotation) + '}';
             Inc(Count);
             Pad := GrpIter.NextPCBObject;
@@ -4371,7 +4374,7 @@ Begin
                                 '{"name":"' + EscapeJsonString(Pad.Name) + '"' +
                                 ',"shape":"' + ShapeStr + '"' +
                                 ',"layer":"' + LayerStr + '"' +
-                                ',"hole":' + IntToStr(CoordToMils(Pad.HoleSize)) + '}';
+                                ',"hole":' + FloatToJsonStr(CoordToMilsF(Pad.HoleSize)) + '}';
                             Inc(PadN);
                             Pad := GrpIter.NextPCBObject;
                         End;
@@ -4389,8 +4392,8 @@ Begin
                 Begin
                     CenterX := SumX Div PadN;
                     CenterY := SumY Div PadN;
-                    CenterJson := '{"x":' + IntToStr(CoordToMils(CenterX)) +
-                                  ',"y":' + IntToStr(CoordToMils(CenterY)) +
+                    CenterJson := '{"x":' + FloatToJsonStr(CoordToMilsF(CenterX)) +
+                                  ',"y":' + FloatToJsonStr(CoordToMilsF(CenterY)) +
                                   ',"coord_x":' + IntToStr(CenterX) +
                                   ',"coord_y":' + IntToStr(CenterY) + '}';
                 End;
@@ -4487,7 +4490,7 @@ Begin
                                 ',"layer":"' + EscapeJsonString(LayerStr) + '"';
                             Try
                                 TextsJson := TextsJson +
-                                    ',"height":' + IntToStr(CoordToMils(Txt.Size));
+                                    ',"height":' + FloatToJsonStr(CoordToMilsF(Txt.Size));
                             Except End;
                             { Report the text's BOUNDING-BOX CENTRE, not its
                               XLocation. XLocation is the anchor (a corner), so
@@ -4513,8 +4516,8 @@ Begin
                               box read at write time. }
                             Try
                                 TextsJson := TextsJson +
-                                    ',"x":' + IntToStr(CoordToMils(TxtX - XOrg)) +
-                                    ',"y":' + IntToStr(CoordToMils(TxtY - YOrg)) +
+                                    ',"x":' + FloatToJsonStr(CoordToMilsF(TxtX - XOrg)) +
+                                    ',"y":' + FloatToJsonStr(CoordToMilsF(TxtY - YOrg)) +
                                     ',"coord_x":' + IntToStr(TxtX - XOrg) +
                                     ',"coord_y":' + IntToStr(TxtY - YOrg) +
                                     ',"anchor_x":' + IntToStr(Txt.XLocation - XOrg) +
@@ -4593,7 +4596,9 @@ Var
     Lyr : TLayer;
     XOrg, YOrg, TgtX, TgtY, CurCX, CurCY : TCoord;
     TRect : TCoordRect;
-    NewX, NewY, NewH, LayerId, WidthMils : Integer;
+    NewX, NewY, LayerId : Integer;
+    WidthMils : Double;
+    NewH : Double;
     DoCreate, Created : Boolean;
 Begin
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
@@ -4715,7 +4720,7 @@ Begin
     LayerId := StrToIntDef(LayerStr, -1);
     NewX := StrToIntDef(XStr, 0);
     NewY := StrToIntDef(YStr, 0);
-    NewH := StrToIntDef(HeightStr, 0);
+    NewH := StrToFloatDef(HeightStr, 0);
     Created := False;
     ChangedJson := '';
 
@@ -4748,9 +4753,9 @@ Begin
                 Exit;
             End;
             Desig.UnderlyingString := '.Designator';
-            WidthMils := NewH Div 5;
+            WidthMils := NewH / 5;
             If WidthMils < 1 Then WidthMils := 1;
-            Desig.Width := MilsToCoord(WidthMils);
+            Desig.Width := MilsToCoordF(WidthMils);
             Target.AddPCBObject(Desig);
             Board.AddPCBObject(Desig);
             PCBServer.SendMessageToRobots(Target.I_ObjectAddress,
@@ -4780,7 +4785,7 @@ Begin
         If NewH > 0 Then
         Begin
             Try
-                Desig.Size := MilsToCoord(NewH);
+                Desig.Size := MilsToCoordF(NewH);
                 ChangedJson := ChangedJson + '"height",';
             Except End;
         End;
@@ -5058,7 +5063,9 @@ Var
     XOrg, YOrg, TgtX, TgtY, CurCX, CurCY : TCoord;
     TRect : TCoordRect;
     ImmovableJson : String;
-    I, NewX, NewY, NewH, LayerId, WidthMils : Integer;
+    I, NewX, NewY, LayerId : Integer;
+    WidthMils : Double;
+    NewH : Double;
     Applied, CreatedCount, FailedCount, MissingCount, RefusedCount : Integer;
     ImmovableCount : Integer;
     DoCreate, MovedOk : Boolean;
@@ -5164,7 +5171,7 @@ Begin
                         LayerId := StrToIntDef(LayerStr, -1);
                         NewX := StrToIntDef(XStr, 0);
                         NewY := StrToIntDef(YStr, 0);
-                        NewH := StrToIntDef(HeightStr, 0);
+                        NewH := StrToFloatDef(HeightStr, 0);
 
                         { Existing .Designator, if any. Match on UnderlyingString:
                           .Text is the RENDERED special string and misses real
@@ -5231,9 +5238,9 @@ Begin
                                 Break;
                             End;
                             Desig.UnderlyingString := '.Designator';
-                            WidthMils := NewH Div 5;
+                            WidthMils := NewH / 5;
                             If WidthMils < 1 Then WidthMils := 1;
-                            Desig.Width := MilsToCoord(WidthMils);
+                            Desig.Width := MilsToCoordF(WidthMils);
                             Footprint.AddPCBObject(Desig);
                             Board.AddPCBObject(Desig);
                             PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
@@ -5257,7 +5264,7 @@ Begin
                         { Size FIRST: resizing the text changes its bounding box,
                           so centring must be computed against the final size. }
                         If NewH > 0 Then
-                            Try Desig.Size := MilsToCoord(NewH); Except End;
+                            Try Desig.Size := MilsToCoordF(NewH); Except End;
                         MovedOk := True;
                         If (XStr <> '') And (YStr <> '') Then
                         Begin
@@ -5918,8 +5925,8 @@ Begin
                     + JsonStr('footprint', FpName) + ','
                     + JsonStr('model', ExtractFileName(ModelPath)) + ','
                     + JsonBool('moved_to_footprint_origin', Shifted Or ((OrgX = 0) And (OrgY = 0))) + ','
-                    + JsonRaw('footprint_origin_mils', '[' + IntToStr(CoordToMils(OrgX))
-                        + ',' + IntToStr(CoordToMils(OrgY)) + ']') + ','
+                    + JsonRaw('footprint_origin_mils', '[' + FloatToJsonStr(CoordToMilsF(OrgX))
+                        + ',' + FloatToJsonStr(CoordToMilsF(OrgY)) + ']') + ','
                     + JsonRaw('applied', JsonObj(AppliedJson))));
             End;
         End;
@@ -6805,10 +6812,10 @@ Begin
             PinList := PinList + '{"designator":"' + EscapeJsonString(Pin.Designator) +
                 '","name":"' + EscapeJsonString(Pin.Name) +
                 '","electrical_type":"' + ElecStr +
-                '","x":' + IntToStr(CoordToMils(Pin.Location.X)) +
-                ',"y":' + IntToStr(CoordToMils(Pin.Location.Y)) +
+                '","x":' + FloatToJsonStr(CoordToMilsF(Pin.Location.X)) +
+                ',"y":' + FloatToJsonStr(CoordToMilsF(Pin.Location.Y)) +
                 ',"orientation":' + IntToStr(Pin.Orientation) +
-                ',"length":' + IntToStr(CoordToMils(Pin.PinLength)) +
+                ',"length":' + FloatToJsonStr(CoordToMilsF(Pin.PinLength)) +
                 ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
                 ',"label_hidden":' + BoolToJsonStr(PinLabelHidden) + '}';
             Inc(PinCount);
@@ -7324,7 +7331,8 @@ End;
 
 Function Lib_AddSymbolArc(Params : String; RequestId : String) : String;
 Var
-    XCenter, YCenter, Radius, Width : Integer;
+    Width : Integer;
+    XCenter, YCenter, Radius : Double;
     { Same defect as Lib_AddFootprintArc: `float` on the Python side, so    }
     { StrToIntDef never read the wire value and every symbol arc was drawn  }
     { with a zero sweep.                                                    }
@@ -7336,9 +7344,9 @@ Var
     ColorStr : String;
 Begin
     ColorStr := ExtractJsonValue(Params, 'color');
-    XCenter := StrToIntDef(ExtractJsonValue(Params, 'x_center'), 0);
-    YCenter := StrToIntDef(ExtractJsonValue(Params, 'y_center'), 0);
-    Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
+    XCenter := StrToFloatDef(ExtractJsonValue(Params, 'x_center'), 0);
+    YCenter := StrToFloatDef(ExtractJsonValue(Params, 'y_center'), 0);
+    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 100);
     StartAngle := StrToFloatDef(ExtractJsonValue(Params, 'start_angle'), 0.0);
     EndAngle := StrToFloatDef(ExtractJsonValue(Params, 'end_angle'), 360.0);
     Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 1);
@@ -7362,8 +7370,8 @@ Begin
     Arc := SchServer.SchObjectFactory(eArc, eCreate_Default);
     If Arc <> Nil Then
     Begin
-        Arc.Location := Point(MilsToCoord(XCenter), MilsToCoord(YCenter));
-        Arc.Radius := MilsToCoord(Radius);
+        Arc.Location := Point(MilsToCoordF(XCenter), MilsToCoordF(YCenter));
+        Arc.Radius := MilsToCoordF(Radius);
         Arc.StartAngle := StartAngle;
         Arc.EndAngle := EndAngle;
         Arc.LineWidth := Width;
@@ -7399,7 +7407,8 @@ Var
     Component : ISch_Component;
     Polygon : ISch_Polygon;
     Remaining : String;
-    CommaPos, X, Y, I : Integer;
+    CommaPos, I : Integer;
+    X, Y : Double;
     ViaLib : Boolean;
     { Parallel TStringLists of stringified coords. Fixed-size local arrays }
     { of any type corrupt the return slot, see                              }
@@ -7450,7 +7459,7 @@ Begin
             If CommaPos = 0 Then Break;
             Token := Copy(Remaining, 1, CommaPos - 1);
             Remaining := Copy(Remaining, CommaPos + 1, Length(Remaining));
-            X := StrToIntDef(Token, 0);
+            X := StrToFloatDef(Token, 0);
 
             CommaPos := Pos(',', Remaining);
             If CommaPos > 0 Then
@@ -7463,10 +7472,10 @@ Begin
                 Token := Remaining;
                 Remaining := '';
             End;
-            Y := StrToIntDef(Token, 0);
+            Y := StrToFloatDef(Token, 0);
 
-            XValues.Add(IntToStr(X));
-            YValues.Add(IntToStr(Y));
+            XValues.Add(FloatToJsonStr(X));
+            YValues.Add(FloatToJsonStr(Y));
         End;
 
         If XValues.Count < 3 Then
@@ -7503,8 +7512,8 @@ Begin
 
             For I := 1 To XValues.Count Do
                 Polygon.Vertex[I] := Point(
-                    MilsToCoord(StrToIntDef(XValues[I-1], 0)),
-                    MilsToCoord(StrToIntDef(YValues[I-1], 0)));
+                    MilsToCoordF(StrToFloatDef(XValues[I-1], 0)),
+                    MilsToCoordF(StrToFloatDef(YValues[I-1], 0)));
 
             SchServer.ProcessControl.PreProcess(SchLib, '');
             SetOwnerPartFrom(Polygon, Component, OwnerStr);
@@ -7663,10 +7672,10 @@ Begin
             JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Pin.Designator) +
                 '","name":"' + EscapeJsonString(Pin.Name) +
                 '","electrical_type":"' + ElecStr +
-                '","x":' + IntToStr(CoordToMils(Pin.Location.X)) +
-                ',"y":' + IntToStr(CoordToMils(Pin.Location.Y)) +
+                '","x":' + FloatToJsonStr(CoordToMilsF(Pin.Location.X)) +
+                ',"y":' + FloatToJsonStr(CoordToMilsF(Pin.Location.Y)) +
                 ',"orientation":' + IntToStr(Pin.Orientation) +
-                ',"length":' + IntToStr(CoordToMils(Pin.PinLength)) +
+                ',"length":' + FloatToJsonStr(CoordToMilsF(Pin.PinLength)) +
                 ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
                 ',"owner_part_id":' + IntToStr(Pin.OwnerPartId) +
                 { 0 is the normal display; 1 and up are alternate modes, which  }
@@ -7979,7 +7988,8 @@ Var
     OpCount, Added, Failed : Integer;
     Designator, Name, ElecType, HiddenStr, OwnerStr : String;
     OuterStr, InnerStr, ShowNameStr, ShowDesigStr : String;
-    X, Y, Length, Rotation, OwnerPartId : Integer;
+    Rotation, OwnerPartId : Integer;
+    X, Y, Length : Double;
     Hidden, OwnerExplicit, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
@@ -8022,9 +8032,9 @@ Begin
             OpCount := OpCount + 1;
             Designator := GetBatchField(Op, 'designator');
             Name := GetBatchField(Op, 'name');
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
-            Length := StrToIntDef(GetBatchField(Op, 'length'), 200);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
+            Length := StrToFloatDef(GetBatchField(Op, 'length'), 200);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
             ElecType := GetBatchField(Op, 'electrical_type');
             HiddenStr := GetBatchField(Op, 'hidden');
@@ -8059,10 +8069,10 @@ Begin
             Pin.Name := Name;
             { Location is a by-value record, read, mutate, write back.         }
             Loc := Pin.Location;
-            Loc.X := MilsToCoord(X);
-            Loc.Y := MilsToCoord(Y);
+            Loc.X := MilsToCoordF(X);
+            Loc.Y := MilsToCoordF(Y);
             Pin.Location := Loc;
-            Pin.PinLength := MilsToCoord(Length);
+            Pin.PinLength := MilsToCoordF(Length);
             Pin.Orientation := Rotation Div 90;
             Pin.IsHidden := Hidden;
 
@@ -8131,7 +8141,8 @@ Var
     TextsStr, Op, Remaining : String;
     OpCount, Added, Failed : Integer;
     Content, OwnerStr, FontName, BoldStr, ItalicStr : String;
-    X, Y, Rotation, FontSize, OwnerPartId : Integer;
+    Rotation, FontSize, OwnerPartId : Integer;
+    X, Y : Double;
     OwnerExplicit, Bold, Italic, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
@@ -8185,8 +8196,8 @@ Begin
                 Continue;
             End;
 
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
             FontSize := StrToIntDef(GetBatchField(Op, 'font_size'), 10);
             FontName := GetBatchField(Op, 'font_name');
@@ -8209,8 +8220,8 @@ Begin
             Lbl.Text := Content;
             { Location is a by-value record: read, mutate, write back. }
             Loc := Lbl.Location;
-            Loc.X := MilsToCoord(X);
-            Loc.Y := MilsToCoord(Y);
+            Loc.X := MilsToCoordF(X);
+            Loc.Y := MilsToCoordF(Y);
             Lbl.Location := Loc;
 
             { Orientation is enum-typed. Assign the quarter-turn ordinal as }
@@ -8258,7 +8269,8 @@ Function Lib_AddSymbolLines(Params : String; RequestId : String) : String;
 Var
     LinesStr, Op, Remaining : String;
     OpCount, Added, Failed : Integer;
-    X1, Y1, X2, Y2, Width : Integer;
+    Width : Integer;
+    X1, Y1, X2, Y2 : Double;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Line : ISch_Line;
@@ -8299,10 +8311,10 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
-            X1 := StrToIntDef(GetBatchField(Op, 'x1'), 0);
-            Y1 := StrToIntDef(GetBatchField(Op, 'y1'), 0);
-            X2 := StrToIntDef(GetBatchField(Op, 'x2'), 0);
-            Y2 := StrToIntDef(GetBatchField(Op, 'y2'), 0);
+            X1 := StrToFloatDef(GetBatchField(Op, 'x1'), 0);
+            Y1 := StrToFloatDef(GetBatchField(Op, 'y1'), 0);
+            X2 := StrToFloatDef(GetBatchField(Op, 'x2'), 0);
+            Y2 := StrToFloatDef(GetBatchField(Op, 'y2'), 0);
             Width := StrToIntDef(GetBatchField(Op, 'width'), 1);
             If Width < 0 Then Width := 0;
             If Width > 3 Then Width := 3;
@@ -8318,12 +8330,12 @@ Begin
 
             { Read-modify-write the TLocation record -- see Lib_AddSymbolLine. }
             Loc := Line.Location;
-            Loc.X := MilsToCoord(X1);
-            Loc.Y := MilsToCoord(Y1);
+            Loc.X := MilsToCoordF(X1);
+            Loc.Y := MilsToCoordF(Y1);
             Line.Location := Loc;
             Loc := Line.Corner;
-            Loc.X := MilsToCoord(X2);
-            Loc.Y := MilsToCoord(Y2);
+            Loc.X := MilsToCoordF(X2);
+            Loc.Y := MilsToCoordF(Y2);
             Line.Corner := Loc;
             Line.LineWidth := Width;
 
@@ -8573,8 +8585,8 @@ Begin
                             PinList := PinList + '{"designator":"' + EscapeJsonString(Pin.Designator) +
                                 '","name":"' + EscapeJsonString(Pin.Name) +
                                 '","electrical_type":"' + ElecStr +
-                                '","x":' + IntToStr(CoordToMils(Pin.Location.X)) +
-                                ',"y":' + IntToStr(CoordToMils(Pin.Location.Y)) +
+                                '","x":' + FloatToJsonStr(CoordToMilsF(Pin.Location.X)) +
+                                ',"y":' + FloatToJsonStr(CoordToMilsF(Pin.Location.Y)) +
                                 ',"orientation":' + IntToStr(Pin.Orientation) +
                                 ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
                                 ',"label_hidden":' + BoolToJsonStr(PinLabelHidden) + '}';
@@ -9002,8 +9014,8 @@ Begin
         Loc := Lbl.Location;
         WantX := Loc.X;
         WantY := Loc.Y;
-        If XStr <> '' Then WantX := MilsToCoord(StrToIntDef(XStr, 0));
-        If YStr <> '' Then WantY := MilsToCoord(StrToIntDef(YStr, 0));
+        If XStr <> '' Then WantX := MilsToCoordF(StrToFloatDef(XStr, 0));
+        If YStr <> '' Then WantY := MilsToCoordF(StrToFloatDef(YStr, 0));
         Changed := (WantX <> Loc.X) Or (WantY <> Loc.Y)
             Or ((TextStr <> '') And (Lbl.Text <> TextStr));
         If OnlyMismatched And (Not Changed) Then Exit;
@@ -11446,7 +11458,8 @@ Var
     GrpIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
     Txt : IPCB_Text;
-    HeightMils, PrimCount : Integer;
+    PrimCount : Integer;
+    HeightMils : Double;
     PFirst : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -11511,7 +11524,7 @@ Begin
     HeightMils := 0;
     Try FpName := Target.Name; Except End;
     Try FpDescr := Target.Description; Except End;
-    Try HeightMils := CoordToMils(Target.Height); Except End;
+    Try HeightMils := CoordToMilsF(Target.Height); Except End;
 
     { DEDUPE BY OBJECT ADDRESS. A primitive added in this session is
       registered with BOTH the footprint and the library's backing board,
@@ -11562,7 +11575,7 @@ Begin
     RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
         + ',"footprint":"' + EscapeJsonString(FpName) + '"'
         + ',"description":"' + EscapeJsonString(FpDescr) + '"'
-        + ',"height_mils":' + IntToStr(HeightMils)
+        + ',"height_mils":' + FloatToJsonStr(HeightMils)
         + ',"primitive_count":' + IntToStr(PrimCount)
         + ',"texts":' + PrimsJson + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
@@ -17988,7 +18001,8 @@ Function Lib_PlaceDbLibComponent(Params : String; RequestId : String) : String;
 Var
     LibPath, Table, KeyValue, SheetPath, DesigStr, TableList, Declared, Problem : String;
     LibRef, DbTable, Response, AvailPath : String;
-    X, Y, Rotation, OrientationVal, I, AvailCount, PartId, PartBack, PartCount : Integer;
+    Rotation, OrientationVal, I, AvailCount, PartId, PartBack, PartCount : Integer;
+    X, Y : Double;
     Lines : TStringList;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -17999,8 +18013,8 @@ Begin
     KeyValue := ExtractJsonValue(Params, 'key');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
     DesigStr := ExtractJsonValue(Params, 'designator');
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
     PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
 
@@ -18128,7 +18142,7 @@ Begin
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     OrientationVal := 0;
     If Rotation = 90 Then OrientationVal := 1;
     If Rotation = 180 Then OrientationVal := 2;
@@ -18169,7 +18183,7 @@ Begin
         + ',"lib_reference":"' + EscapeJsonString(LibRef) + '"'
         + ',"database_table":"' + EscapeJsonString(DbTable) + '"'
         + ',"database_linked":' + BoolToJsonStr(DbTable <> '')
-        + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y)
         + ',"rotation":' + IntToStr(Rotation)
         + ',"part_id":' + IntToStr(PartBack)
         + ',"part_count":' + IntToStr(PartCount)

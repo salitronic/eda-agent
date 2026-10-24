@@ -34,7 +34,7 @@ def test_import_flips_then_turns_then_moves():
 def test_a_part_given_no_position_keeps_its_origin():
     body = _pcb()["PCB_ImportPlacement"]
     keep = body.index("WantX := Comp.x;")
-    assert keep < body.index("If XStr <> '' Then WantX := MilsToCoord(StrToIntDef(XStr, 0));")
+    assert keep < body.index("If XStr <> '' Then WantX := MilsToCoordF(StrToFloatDef(XStr, 0));")
     assert keep < body.index("Comp.Layer := TargetLayer;")
 
 
@@ -69,4 +69,4 @@ def test_a_new_part_gets_its_origin_last():
     assert text.count("Comp.Layer := CompLayer;") == 2
     for start in [i for i in range(len(text)) if text.startswith("Comp.Layer := CompLayer;", i)]:
         chunk = text[start:start + 300]
-        assert chunk.index("Comp.Rotation := Rotation;") < chunk.index("Comp.x := MilsToCoord(X);")
+        assert chunk.index("Comp.Rotation := Rotation;") < chunk.index("Comp.x := MilsToCoordF(X);")
