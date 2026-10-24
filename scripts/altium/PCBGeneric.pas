@@ -445,6 +445,25 @@ Begin
         Begin
             Result := BoolToJsonStr(Obj.IsKeepout);
         End
+        { What a keepout keeps out: the Keepout Restrictions in the       }
+        { Properties panel. Copper alone is a wall polygons stop at while }
+        { tracks, vias and pads may still cross it.                       }
+        { Only asked of the four objects that have them: asked of a via,  }
+        { the property raised 'Undeclared identifier' as a modal.          }
+        Else If (PropName = 'IsKeepoutForCopper') Or (PropName = 'IsKeepoutForTrack') Or
+                (PropName = 'IsKeepoutForVia') Or (PropName = 'IsKeepoutForSMDPad') Or
+                (PropName = 'IsKeepoutForTHPad') Then
+        Begin
+            If (Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eFillObject) Or
+               (Oid = eRegionObject) Then
+            Begin
+                If PropName = 'IsKeepoutForCopper' Then Result := BoolToJsonStr(Obj.IsKeepoutForCopper);
+                If PropName = 'IsKeepoutForTrack' Then Result := BoolToJsonStr(Obj.IsKeepoutForTrack);
+                If PropName = 'IsKeepoutForVia' Then Result := BoolToJsonStr(Obj.IsKeepoutForVia);
+                If PropName = 'IsKeepoutForSMDPad' Then Result := BoolToJsonStr(Obj.IsKeepoutForSMDPad);
+                If PropName = 'IsKeepoutForTHPad' Then Result := BoolToJsonStr(Obj.IsKeepoutForTHPad);
+            End;
+        End
         Else If PropName = 'TearDrop' Then
         Begin
             Result := BoolToJsonStr(Obj.TearDrop);
@@ -1292,6 +1311,25 @@ Begin
             End
             Else Matched := False;
         End
+        { A keepout and what it keeps out, on the four objects Altium makes   }
+        { keepouts of. IsKeepout turns a placed track, arc, fill or region    }
+        { into one; the five restrictions follow the Properties panel.       }
+        Else If (PropName = 'IsKeepout') Or (PropName = 'IsKeepoutForCopper') Or
+                (PropName = 'IsKeepoutForTrack') Or (PropName = 'IsKeepoutForVia') Or
+                (PropName = 'IsKeepoutForSMDPad') Or (PropName = 'IsKeepoutForTHPad') Then
+        Begin
+            If (Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eFillObject) Or
+               (Oid = eRegionObject) Then
+            Begin
+                If PropName = 'IsKeepout' Then Obj.IsKeepout := StrToBool(Value);
+                If PropName = 'IsKeepoutForCopper' Then Obj.IsKeepoutForCopper := StrToBool(Value);
+                If PropName = 'IsKeepoutForTrack' Then Obj.IsKeepoutForTrack := StrToBool(Value);
+                If PropName = 'IsKeepoutForVia' Then Obj.IsKeepoutForVia := StrToBool(Value);
+                If PropName = 'IsKeepoutForSMDPad' Then Obj.IsKeepoutForSMDPad := StrToBool(Value);
+                If PropName = 'IsKeepoutForTHPad' Then Obj.IsKeepoutForTHPad := StrToBool(Value);
+            End
+            Else Matched := False;
+        End
         Else If PropName = 'RemoveDead' Then
         Begin
             If Oid = ePolyObject Then
@@ -1441,6 +1479,9 @@ Begin
         (PropName = 'BodyOpacity3D') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
         (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
+        (PropName = 'IsKeepoutForCopper') Or (PropName = 'IsKeepoutForTrack') Or
+        (PropName = 'IsKeepoutForVia') Or (PropName = 'IsKeepoutForSMDPad') Or
+        (PropName = 'IsKeepoutForTHPad') Or
         (PropName = 'TearDrop') Or
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
@@ -1514,7 +1555,9 @@ Begin
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
         + 'StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component, '
-        + 'InPolygon, IsKeepout, TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
+        + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
+        + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
+        + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
         + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts, MirrorFlag'
         + ', TopShapeName, BotXSize, BotYSize, Plated, HoleType, HoleWidth, '
         + 'HoleRotation, '
