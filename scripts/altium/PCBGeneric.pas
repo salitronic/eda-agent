@@ -736,12 +736,12 @@ Begin
         Else If PropName = 'StandoffHeight' Then
         Begin
             If Oid = eComponentBodyObject Then
-            Begin Body := Obj; Result := IntToStr(CoordToMils(Body.StandoffHeight)); End;
+            Begin Body := Obj; Result := FloatToJsonStr(CoordToMilsF(Body.StandoffHeight)); End;
         End
         Else If PropName = 'OverallHeight' Then
         Begin
             If Oid = eComponentBodyObject Then
-            Begin Body := Obj; Result := IntToStr(CoordToMils(Body.OverallHeight)); End;
+            Begin Body := Obj; Result := FloatToJsonStr(CoordToMilsF(Body.OverallHeight)); End;
         End
         { A body's opacity, 0 (clear) to 1 (solid), as the Properties panel  }
         { shows it divided by 100. BodyOpacity3D is the member several      }
