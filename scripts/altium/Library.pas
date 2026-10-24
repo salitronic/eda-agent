@@ -12909,6 +12909,257 @@ Begin
     Except End;
 End;
 
+{ Lib_SelectFootprintPrimitives (#120) - select primitives of ONE footprint }
+{ in the PcbLib editor, for an editor command that acts on the selection    }
+{ (PCB:CustomPadShape, PCB:Clear, ...). The library had no way to select:   }
+{ generic.select_objects resolves a BOARD, and with a PcbLib in front can   }
+{ answer from some other open PcbDoc (#100).                                }
+{ Params: footprint_name (required); either object_type / layer / name (a   }
+{ pad's designator or a region's Name) / box (left,bottom,right,top in mm   }
+{ from the footprint origin, within 0.001 mm: one exact primitive), or      }
+{ objects = several such sets in ONE call, '~~' between sets, ';' between   }
+{ fields. An object is selected when it matches ANY set. clear (default     }
+{ true): everything else deselected first.                                  }
+{ The footprint is made current only when it is not already: measured on   }
+{ AD 25.8, making it current again dropped the selection an earlier call    }
+{ had made, so a second call with clear=false kept only its own objects.    }
+{ Without that, clear=false adds to the selection. Pad names are NOT       }
+{ unique (a footprint can hold SMD "12" and thru-hole "12"): narrow with  }
+{ layer or box, and check the reply before running a command on the       }
+{ selection.                                                               }
+{ Walked over the library BOARD (a footprint's group iterator is a view     }
+{ onto it) inside SelectedObjects_BeginUpdate / _EndUpdate: without the     }
+{ bracket a programmatic Selected := True sets the flag but leaves the      }
+{ editor's selection list, which commands act on, empty (see                }
+{ CollectSelectedPCBPrims in PCB.pas).                                      }
+Function SelectSpecProblem(PcbLib : IPCB_Library; Spec : String) : String;
+Var
+    T, L : String;
+    Lay : TLayer;
+Begin
+    Result := '';
+    T := GetBatchField(Spec, 'object_type');
+    L := GetBatchField(Spec, 'layer');
+    If (T = '') And (L = '') And (GetBatchField(Spec, 'name') = '')
+       And (GetBatchField(Spec, 'box') = '') Then
+    Begin
+        Result := 'a set with no object_type, layer, name or box would select the whole footprint';
+        Exit;
+    End;
+    If (T <> '') And (ObjectTypeFromStringPCB(T) = -1) Then
+    Begin
+        Result := 'Unknown PCB object type: ' + T;
+        Exit;
+    End;
+    If L <> '' Then
+    Begin
+        Lay := eNoLayer;
+        Try Lay := ResolveLayerId(PcbLib.Board, L); Except Lay := eNoLayer; End;
+        If Lay = eNoLayer Then
+            Result := 'Unknown layer name: ' + L + '. ' + BoardLayerNamesHint(PcbLib.Board);
+    End;
+End;
+
+{ The FieldNo'th (0-based) comma-separated field of S, or ''. }
+Function SplitBoxField(S : String; FieldNo : Integer) : String;
+Var
+    P, I : Integer;
+Begin
+    Result := '';
+    For I := 0 To FieldNo Do
+    Begin
+        P := Pos(',', S);
+        If I = FieldNo Then
+        Begin
+            If P > 0 Then Result := Trim(Copy(S, 1, P - 1)) Else Result := Trim(S);
+            Exit;
+        End;
+        If P = 0 Then Exit;
+        S := Copy(S, P + 1, Length(S));
+    End;
+End;
+
+{ True when Box (left,bottom,right,top in mm from the footprint origin, as  }
+{ the footprint readers report a box) is the primitive's bounding box      }
+{ within 0.001 mm: one exact primitive when names cannot tell them apart.   }
+Function SelectBoxMatches(PcbLib : IPCB_Library; Box : String; Prim : IPCB_Primitive) : Boolean;
+Var
+    BR : TCoordRect;
+    Org : IPCB_LibComponent;
+    OX, OY : TCoord;
+    L, B, R, T : Double;
+Begin
+    Result := False;
+    OX := 0;
+    OY := 0;
+    Try
+        Org := PcbLib.CurrentComponent;
+        OX := FootprintOriginX(Org);
+        OY := FootprintOriginY(Org);
+    Except End;
+    L := StrToFloatDef(SplitBoxField(Box, 0), -1e9);
+    B := StrToFloatDef(SplitBoxField(Box, 1), -1e9);
+    R := StrToFloatDef(SplitBoxField(Box, 2), -1e9);
+    T := StrToFloatDef(SplitBoxField(Box, 3), -1e9);
+    Try
+        BR := Prim.BoundingRectangle;
+        Result := (Abs(CoordToMM(BR.Left - OX) - L) < 0.001)
+            And (Abs(CoordToMM(BR.Bottom - OY) - B) < 0.001)
+            And (Abs(CoordToMM(BR.Right - OX) - R) < 0.001)
+            And (Abs(CoordToMM(BR.Top - OY) - T) < 0.001);
+    Except Result := False; End;
+End;
+
+Function SelectSpecMatches(PcbLib : IPCB_Library; Spec : String; Prim : IPCB_Primitive) : Boolean;
+Var
+    T, L, N, NameOf, Box : String;
+    Pad : IPCB_Pad;
+    Rgn : IPCB_Region;
+Begin
+    Result := False;
+    T := GetBatchField(Spec, 'object_type');
+    L := GetBatchField(Spec, 'layer');
+    N := GetBatchField(Spec, 'name');
+    Box := GetBatchField(Spec, 'box');
+    If (T <> '') And (Prim.ObjectId <> ObjectTypeFromStringPCB(T)) Then Exit;
+    If (L <> '') And (Prim.Layer <> ResolveLayerId(PcbLib.Board, L)) Then Exit;
+    If (Box <> '') And (Not SelectBoxMatches(PcbLib, Box, Prim)) Then Exit;
+    If N <> '' Then
+    Begin
+        NameOf := '';
+        If Prim.ObjectId = ePadObject Then
+        Begin
+            Pad := Prim;
+            Try NameOf := Pad.Name; Except End;
+        End
+        Else If Prim.ObjectId = eRegionObject Then
+        Begin
+            Rgn := Prim;
+            Try NameOf := Rgn.Name; Except End;
+        End;
+        If NameOf <> N Then Exit;
+    End;
+    Result := True;
+End;
+
+Function Lib_SelectFootprintPrimitives(Params : String; RequestId : String) : String;
+Var
+    PcbLib : IPCB_Library;
+    Target, Cur : IPCB_LibComponent;
+    Problem, FpWanted, CurName, Specs, Spec, Remaining, PickedJson : String;
+    ClearFirst, Match : Boolean;
+    BIter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Picked, Total, NSpecs : Integer;
+Begin
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    FpWanted := ExtractJsonValue(Params, 'footprint_name');
+    If FpWanted = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'footprint_name is required');
+        Exit;
+    End;
+    CurName := '';
+    Try
+        Cur := PcbLib.CurrentComponent;
+        If Cur <> Nil Then CurName := Cur.Name;
+    Except End;
+    If CurName = FpWanted Then Target := Cur
+    Else
+    Begin
+        Target := PcbLibTarget(PcbLib, FpWanted, Problem);
+        If Target = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', Problem);
+            Exit;
+        End;
+    End;
+
+    Specs := ExtractJsonValue(Params, 'objects');
+    If Specs = '' Then
+        Specs := 'object_type=' + ExtractJsonValue(Params, 'object_type')
+            + ';layer=' + ExtractJsonValue(Params, 'layer')
+            + ';name=' + ExtractJsonValue(Params, 'name');
+    ClearFirst := LowerCase(ExtractJsonValue(Params, 'clear')) <> 'false';
+    NSpecs := 0;
+    Remaining := Specs;
+    While True Do
+    Begin
+        Spec := NextBatchOp(Remaining);
+        If Spec = '' Then Break;
+        NSpecs := NSpecs + 1;
+        Problem := SelectSpecProblem(PcbLib, Spec);
+        If Problem <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_FILTER',
+                'Set ' + IntToStr(NSpecs) + ': ' + Problem + '. Nothing was selected.');
+            Exit;
+        End;
+    End;
+    If NSpecs = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'give object_type, layer, name or objects');
+        Exit;
+    End;
+
+    Picked := 0;
+    Total := 0;
+    PickedJson := '';
+    Try PcbLib.Board.SelectedObjects_BeginUpdate; Except End;
+    Try
+        If ClearFirst Then Try PcbLib.Board.SelectedObjects_Clear; Except End;
+        BIter := PcbLib.Board.BoardIterator_Create;
+        Try
+            BIter.AddFilter_ObjectSet(AllObjects);
+            BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            BIter.AddFilter_Method(eProcessAll);
+            Prim := BIter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                Match := False;
+                Remaining := Specs;
+                While Not Match Do
+                Begin
+                    Spec := NextBatchOp(Remaining);
+                    If Spec = '' Then Break;
+                    Match := SelectSpecMatches(PcbLib, Spec, Prim);
+                End;
+                If Match Then
+                Begin
+                    Prim.Selected := True;
+                    Picked := Picked + 1;
+                    If PickedJson <> '' Then PickedJson := PickedJson + ',';
+                    PickedJson := PickedJson + '"' + EscapeJsonString(GetLayerString(Prim.Layer)) + '"';
+                End
+                Else If ClearFirst Then
+                    Prim.Selected := False;
+                Prim := BIter.NextPCBObject;
+            End;
+            { What the editor now holds selected, the caller's proof. }
+            Prim := BIter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                If Prim.Selected Then Total := Total + 1;
+                Prim := BIter.NextPCBObject;
+            End;
+        Finally
+            PcbLib.Board.BoardIterator_Destroy(BIter);
+        End;
+    Finally
+        Try PcbLib.Board.SelectedObjects_EndUpdate; Except End;
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"selected":' + IntToStr(Picked) + ',"layers":[' + PickedJson + ']'
+        + ',"selected_total":' + IntToStr(Total) + '}');
+End;
+
 { Lib_GetFootprintPrimitives - READ-ONLY list of one PcbLib footprint's       }
 { tracks, arcs, regions, fills and texts, each with its layer, in mm from    }
 { the footprint origin, plus the footprint height and its 3D body count.    }
@@ -18503,6 +18754,7 @@ Begin
         'probe_footprint':      Result := Lib_ProbeFootprint(Params, RequestId);
         'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'get_footprint_primitives': Result := Lib_GetFootprintPrimitives(Params, RequestId);
+        'select_footprint_primitives': Result := Lib_SelectFootprintPrimitives(Params, RequestId);
         'normalize_implementations': Result := Lib_NormalizeImplementations(Params, RequestId);
         'clear_source_library': Result := Lib_ClearSourceLibrary(Params, RequestId);
         'get_dblib_info':       Result := Lib_GetDbLibInfo(Params, RequestId);

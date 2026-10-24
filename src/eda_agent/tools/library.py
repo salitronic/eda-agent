@@ -6163,6 +6163,67 @@ def register_library_tools(mcp):
             "library.get_footprint_primitives", params)
 
     @mcp.tool()
+    async def lib_select_footprint_primitives(
+        footprint_name: str,
+        objects: list[dict[str, Any]],
+        clear: bool = True,
+    ) -> dict[str, Any]:
+        """Select primitives of one PcbLib footprint in the editor, for an
+        editor command that acts on the selection (obj_run_process with
+        PCB:CustomPadShape to merge a pad and a region into a custom pad,
+        PCB:Clear, ...). obj_select acts on a board, not a footprint.
+
+        Several sets select together in one call; with ``clear=False`` a
+        later call adds to the selection. Pad names are not unique (an
+        SMD "12" and a thru-hole "12" can share a footprint), so narrow by
+        layer or box and check the reply before running the command.
+
+        Args:
+            footprint_name: The footprint, made current if it is not.
+            objects: One or more filter sets; an object matching ANY set is
+                selected. Each set has any of ``object_type`` ("pad",
+                "region", "track", ...), ``layer`` ("TopLayer",
+                "MultiLayer", ...), ``name`` (a pad's designator or a
+                region's Name) and ``box`` ([x1, y1, x2, y2] in mm from the
+                footprint origin, the box lib_get_footprint_primitives
+                gives a region, fill or text; matched within 0.001 mm).
+            clear: Deselect everything else first (default True).
+
+        Returns:
+            {selected (how many matched), layers (theirs), selected_total
+            (everything the editor now holds selected)}
+        """
+        sets: list[str] = []
+        for i, spec in enumerate(objects or []):
+            if not isinstance(spec, dict):
+                return {"ok": False, "reason": f"set {i} is not an object"}
+            fields: list[str] = []
+            for key in ("object_type", "layer", "name"):
+                value = str(spec.get(key) or "").strip()
+                if value:
+                    fields.append(f"{key}={payload_safe(value)}")
+            box = spec.get("box")
+            if box is not None:
+                try:
+                    x1, y1, x2, y2 = (float(v) for v in box)
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "reason": f"set {i}: box is [x1, y1, x2, y2] in mm"}
+                fields.append("box=" + ",".join(
+                    format_length(v) for v in (x1, y1, x2, y2)))
+            if not fields:
+                return {"ok": False, "reason": f"set {i} has no filter; it "
+                        "would select the whole footprint"}
+            sets.append(";".join(fields))
+        if not sets:
+            return {"ok": False, "reason": "objects needs at least one set"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.select_footprint_primitives",
+            {"footprint_name": footprint_name, "objects": "~~".join(sets),
+             "clear": "true" if clear else "false"})
+
+    @mcp.tool()
     async def lib_extract_embedded_models(
         library_path: str,
         footprint_name: str = "",
