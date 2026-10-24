@@ -9567,6 +9567,13 @@ End;
 { of three or more vertices instead of the rectangle; x1..y2 are then not     }
 { needed. A malformed list is refused rather than drawn as a spike to 0,0.    }
 { The reply then carries the vertex count and the outline read back.          }
+{ Optional arcs=i,cx,cy,r,a1,a2[/...] with points (#119), the form            }
+{ add_footprint_regions takes: the edge from vertex i (1-based) to the next   }
+{ is a true arc, centre cx,cy and radius r in mils, angles counterclockwise   }
+{ from a1 to a2. The region is then built from shape segments, as             }
+{ add_footprint_regions builds one, and the reply adds arc_edges and the      }
+{ shape read back as [x, y, sweep] per vertex. Every field of every arc must  }
+{ be a number, or nothing is made (BAD_ARCS).                                 }
 {..............................................................................}
 
 Function PCB_PlaceRegion(Params : String; RequestId : String) : String;
@@ -9577,10 +9584,12 @@ Var
     ReadBack : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr, PointsStr, PtsJson, NameStr : String;
+    LayerStr, NetStr, PointsStr, PtsJson, NameStr, ArcsStr, ShapeJson : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
-    NPts, I, NBack : Integer;
+    NPts, I, K, NBack, ArcEdges : Integer;
+    Seg : TPolySegment;
+    ArcsOk, HasArc : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -9607,6 +9616,27 @@ Begin
                 + 'e.g. 0,0/100,0/50,80');
             Exit;
         End;
+    End;
+    { Every field of every arc a number, or nothing is made rather than an }
+    { arc drawn round a centre read as zero.                               }
+    ArcsStr := Trim(ExtractJsonValue(Params, 'arcs'));
+    ArcsOk := True;
+    If ArcsStr <> '' Then
+    Begin
+        If NPts < 3 Then ArcsOk := False
+        Else
+            For I := 1 To NPts Do
+                If RegionArcField(ArcsStr, I, 0) <> '' Then
+                    For K := 0 To 4 Do
+                        If Not IsFloatStr(RegionArcField(ArcsStr, I, K)) Then
+                            ArcsOk := False;
+    End;
+    If Not ArcsOk Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ARCS',
+            'arcs needs points, and each entry i,cx,cy,r,a1,a2 in mils and degrees '
+            + 'joined by "/", i the 1-based vertex the arc leaves');
+        Exit;
     End;
     NameStr := ExtractJsonValue(Params, 'name');
 
@@ -9659,6 +9689,38 @@ Begin
             Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
         End;
         Region.SetOutlineContour(Contour);
+        { With arcs (#119) the region is then built from shape segments,
+          exactly as Lib_AddFootprintRegions builds one: one segment per
+          vertex carrying the edge that leaves it, the count grown with
+          each write. UpdateContourFromShape replaces the contour above. }
+        ArcEdges := 0;
+        If ArcsStr <> '' Then
+        Begin
+            For I := 1 To NPts Do
+            Begin
+                Seg := TPolySegment;
+                Seg.vx := MilsToCoordF(StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0));
+                Seg.vy := MilsToCoordF(StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0));
+                If RegionArcField(ArcsStr, I, 0) <> '' Then
+                Begin
+                    Seg.Kind := ePolySegmentArc;
+                    Seg.cx := MilsToCoordF(StrToFloatDef(RegionArcField(ArcsStr, I, 0), 0));
+                    Seg.cy := MilsToCoordF(StrToFloatDef(RegionArcField(ArcsStr, I, 1), 0));
+                    Seg.Radius := MilsToCoordF(StrToFloatDef(RegionArcField(ArcsStr, I, 2), 0));
+                    Seg.Angle1 := StrToFloatDef(RegionArcField(ArcsStr, I, 3), 0);
+                    Seg.Angle2 := StrToFloatDef(RegionArcField(ArcsStr, I, 4), 0);
+                End
+                Else
+                    Seg.Kind := ePolySegmentLine;
+                Region.ShapeSegmentCount := I;
+                Region.ShapeSegments[I - 1] := Seg;
+            End;
+            Region.UpdateContourFromShape(True);
+            { Counted off the region, so the reply says what it holds. }
+            For I := 0 To Region.ShapeSegmentCount - 1 Do
+                If Region.ShapeSegments[I].Kind = ePolySegmentArc Then
+                    Inc(ArcEdges);
+        End;
         If NameStr <> '' Then Region.Name := NameStr;
 
         If NetStr <> '' Then
@@ -9693,8 +9755,16 @@ Begin
                     + ',' + FloatToJsonStr(CoordToMilsF(ReadBack.Y[I])) + ']';
             End;
         End;
+        ShapeJson := '';
+        If ArcsStr <> '' Then
+        Begin
+            ShapeJson := RegionShapeJson(Region, 10000.0, 0, 0, HasArc);
+            If ShapeJson = '' Then ShapeJson := '[]';
+            ShapeJson := '"arc_edges":' + IntToStr(ArcEdges) + ',"shape":' + ShapeJson + ',';
+        End;
         Result := BuildSuccessResponse(RequestId,
             '{"placed":true,"vertices":' + IntToStr(NPts) + ','
+            + ShapeJson
             + '"points":[' + PtsJson + '],'
             + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
             + '"net":"' + EscapeJsonString(NetStr) + '",'
@@ -16526,7 +16596,8 @@ Function LmRegionShape(Region : IPCB_Region) : String;
 Var
     Contour : IPCB_Contour;
     H, N : Integer;
-    Outer, Holes, Body : String;
+    Outer, Holes, Body, Shape : String;
+    HasArc : Boolean;
 Begin
     Outer := '[]';
     Contour := Nil;
@@ -16546,6 +16617,11 @@ Begin
         End;
     End;
     Body := '"pts":' + Outer + ',"holes":[' + Holes + ']';
+    { A region with true arcs also carries its shape (#119): [x, y, sweep] }
+    { per vertex, the points form pcb_place_region takes; pts is the       }
+    { flattened outline.                                                   }
+    Shape := RegionShapeJson(Region, 1.0, 0, 0, HasArc);
+    If HasArc Then Body := Body + ',"shape":' + Shape;
     Result := Body;
 End;
 

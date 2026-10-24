@@ -3058,6 +3058,65 @@ Begin
     End;
 End;
 
+{ A region's SHAPE read back (#119): [[x, y, sweep], ...], each vertex and  }
+{ the sweep in degrees of the edge from it to the next -- 0 for a line,     }
+{ positive counterclockwise -- the form lib_add_footprint_regions and       }
+{ pcb_place_region take as points. Each coordinate is                      }
+{ (internal - Off) / Scale. HasArc tells whether any edge is               }
+{ an arc. '' when there is no shape or it cannot be read. A segment is read }
+{ whole into a local first (MakeRegionShapes.pas reads them the same way).  }
+Function RegionShapeJson(Region : IPCB_Region; Scale : Double; OffX : Double; OffY : Double;
+    Var HasArc : Boolean) : String;
+Var
+    Seg : TPolySegment;
+    I, N, Ix, Iy : Integer;
+    Cx, Cy, Rad, A1, A2, Sweep, D1, D2, ToRad : Double;
+    S : String;
+Begin
+    Result := '';
+    HasArc := False;
+    N := 0;
+    Try N := Region.ShapeSegmentCount; Except N := 0; End;
+    If N <= 0 Then Exit;
+    ToRad := 3.14159265358979 / 180.0;
+    S := '';
+    Try
+        For I := 0 To N - 1 Do
+        Begin
+            Seg := Region.ShapeSegments(I);
+            Ix := Seg.vx;
+            Iy := Seg.vy;
+            Sweep := 0;
+            If Seg.Kind <> ePolySegmentLine Then
+            Begin
+                HasArc := True;
+                Cx := Seg.cx * 1.0;
+                Cy := Seg.cy * 1.0;
+                Rad := Seg.Radius * 1.0;
+                A1 := Seg.Angle1;
+                A2 := Seg.Angle2;
+                Sweep := A2 - A1;
+                While Sweep <= 0 Do Sweep := Sweep + 360.0;
+                While Sweep > 360.0 Do Sweep := Sweep - 360.0;
+                { The vertex is the arc's START: at Angle1 when it runs     }
+                { counter-clockwise, at Angle2 when it runs clockwise.      }
+                D1 := (Ix - (Cx + Rad * Cos(A1 * ToRad))) * (Ix - (Cx + Rad * Cos(A1 * ToRad)))
+                    + (Iy - (Cy + Rad * Sin(A1 * ToRad))) * (Iy - (Cy + Rad * Sin(A1 * ToRad)));
+                D2 := (Ix - (Cx + Rad * Cos(A2 * ToRad))) * (Ix - (Cx + Rad * Cos(A2 * ToRad)))
+                    + (Iy - (Cy + Rad * Sin(A2 * ToRad))) * (Iy - (Cy + Rad * Sin(A2 * ToRad)));
+                If D2 < D1 Then Sweep := -Sweep;
+            End;
+            If S <> '' Then S := S + ',';
+            S := S + '[' + FloatToJsonStr((Ix - OffX) / Scale) + ','
+                + FloatToJsonStr((Iy - OffY) / Scale) + ',' + FloatToJsonStr(Sweep) + ']';
+        End;
+    Except
+        HasArc := False;
+        Exit;
+    End;
+    Result := '[' + S + ']';
+End;
+
 { Lib_AddFootprintRegions - solid polygon regions in a PcbLib footprint:     }
 { paste windows over an exposed pad, or any filled shape on a named layer.   }
 {                                                                              }
@@ -12923,12 +12982,17 @@ End;
 { XLocation, YLocation and BoundingRectangle (Lib_GetLibraryGeometry) and   }
 { Rotation (Lib_ProbeDesignator); the footprint's X, Y and Height           }
 { (Lib_GetPadGeometry, Lib_ProbeFootprint). A region is given by its        }
-{ bounding box and area, not its vertices: whether a contour's points count }
-{ from 0 or from 1 when read back is not settled (see RegionCopperSqMils).  }
+{ bounding box and area, and by its SHAPE (#119): shape_mm, [x, y, sweep]   }
+{ per vertex in mm from the footprint origin, true arcs included -- the     }
+{ points form lib_add_footprint_regions takes. Read from ShapeSegments      }
+{ (0-based), not the contour, whose numbering on read-back is not settled   }
+{ (see RegionCopperSqMils).                                                 }
 { Deduplicated by object address, as Lib_GetPadGeometry is.                 }
 { Params: footprint_name (required), library_path (optional, focused).     }
 Function Lib_GetFootprintPrimitives(Params : String; RequestId : String) : String;
 Var
+    RgnShape : String;
+    RgnArc : Boolean;
     SeenPrims : TStringList;
     PrimAddr, LibPath, FocusedPath, FpWanted, FpName : String;
     LayerStr, TxtStr, Rec, RespJson : String;
@@ -13191,7 +13255,10 @@ Begin
                             + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
                             + ',"area":' + FloatToJsonStr(AreaMM2)
                             + ',"arc_edges":' + IntToStr(RegionArcs)
-                            + ',"selected":' + BoolToJsonStr(Region.Selected) + '}';
+                            + ',"selected":' + BoolToJsonStr(Region.Selected);
+                        RgnShape := RegionShapeJson(Region, 10000000.0 / 25.4, XOrg, YOrg, RgnArc);
+                        If RgnShape <> '' Then Rec := Rec + ',"shape_mm":' + RgnShape;
+                        Rec := Rec + '}';
                     Except
                         Rec := '';
                     End;

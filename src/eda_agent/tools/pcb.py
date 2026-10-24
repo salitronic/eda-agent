@@ -27,6 +27,7 @@ from ..placement import (
 )
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
+from .library import _angle_text, _edge_arc
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
@@ -5891,7 +5892,10 @@ def register_pcb_tools(mcp):
             net: Optional net assignment
             points: Optional outline, ``[{x, y}]`` (or ``[[x, y]]``) in
                 mils, three or more vertices in order, decimals kept; the
-                outline closes by itself
+                outline closes by itself. A vertex given as ``{x, y, sweep}``
+                (or ``[x, y, sweep]``) makes the edge from it to the next a
+                true arc of ``sweep`` degrees, counterclockwise when
+                positive, as in lib_add_footprint_regions
             name: Optional region Name, a tag to find the region again by
                 (``obj_query`` filter ``Name=...``); avoid ``=`` and ``|``,
                 which split a filter
@@ -5899,7 +5903,9 @@ def register_pcb_tools(mcp):
         Returns:
             Dictionary confirming the region placement, with the ``name``
             read back from the region; with points, also ``vertices`` and
-            ``points``, the outline read back from the placed region in mils
+            ``points``, the outline read back from the placed region in mils;
+            with arcs, ``arc_edges`` and ``shape``, ``[x, y, sweep]`` per
+            vertex read back
         """
         params: dict[str, Any] = {
             "x1": str(x1),
@@ -5911,15 +5917,33 @@ def register_pcb_tools(mcp):
         }
         if points:
             try:
-                pairs = [(float(p["x"]), float(p["y"])) if isinstance(p, dict)
-                         else (float(p[0]), float(p[1])) for p in points]
+                verts = [(float(p["x"]), float(p["y"]), float(p.get("sweep") or 0))
+                         if isinstance(p, dict)
+                         else (float(p[0]), float(p[1]),
+                               float(p[2]) if len(p) > 2 else 0.0)
+                         for p in points]
             except (KeyError, IndexError, TypeError, ValueError):
                 return {"ok": False,
-                        "reason": "each point is {x, y} or [x, y] in mils"}
-            if len(pairs) < 3:
+                        "reason": "each point is {x, y} or [x, y] in mils, "
+                                  "with an optional sweep"}
+            if len(verts) < 3:
                 return {"ok": False,
                         "reason": "an outline needs three or more points"}
-            params["points"] = "/".join(f"{x},{y}" for x, y in pairs)
+            params["points"] = "/".join(f"{x},{y}" for x, y, _ in verts)
+            # The same arc form lib_add_footprint_regions sends (#119).
+            arcs: list[str] = []
+            for k, (x, y, sweep) in enumerate(verts):
+                if not sweep:
+                    continue
+                nx, ny, _ = verts[(k + 1) % len(verts)]
+                arc = _edge_arc(x, y, nx, ny, sweep)
+                if isinstance(arc, str):
+                    return {"ok": False, "reason": f"point {k}: {arc}"}
+                cx, cy, r, a1, a2 = arc
+                arcs.append(f"{k + 1},{format_length(cx)},{format_length(cy)},"
+                            f"{format_length(r)},{_angle_text(a1)},{_angle_text(a2)}")
+            if arcs:
+                params["arcs"] = "/".join(arcs)
         if name:
             params["name"] = name
         bridge = get_bridge()
