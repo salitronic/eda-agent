@@ -2118,6 +2118,15 @@ Begin
         PropName := Copy(Assignment, 1, EqPos - 1);
         PropValue := Copy(Assignment, EqPos + 1, Length(Assignment));
         SetPCBProperty(Obj, PropName, PropValue);
+        { A lone SolderMaskExpansion is for both sides (issue #61): it is  }
+        { the top value once the sides are separate, so on such a via or   }
+        { pad the old bottom would stay behind. As set_pad_properties does, }
+        { the bottom follows unless the same set string gives it a value.  }
+        If (PropName = 'SolderMaskExpansion') And IsFloatStr(PropValue)
+            And (Pos('SolderMaskBottomExpansion=', SetStr) = 0) Then
+        Begin
+            Try PCBSetMask(Obj, 'SolderMaskBottomExpansion', PropValue); Except End;
+        End;
     End;
 End;
 

@@ -1936,10 +1936,18 @@ Begin
                 PadCache := FoundPad.GetState_Cache;
                 If ManualStr = 'true' Then PadCache.SolderMaskExpansionValid := eCacheManual
                 Else If ManualStr = 'false' Then PadCache.SolderMaskExpansionValid := eCacheInvalid;
+                { SolderMaskExpansion is the top value once the sides are
+                  separate, and the bottom value is kept while they are
+                  linked (issue #61). So, as set_pad_properties does, a value
+                  given for the via goes to both sides unless the bottom has
+                  a value of its own: a via with separate sides is not left
+                  with its old bottom. }
                 If MaskStr <> '' Then
                 Begin
                     PadCache.SolderMaskExpansionValid := eCacheManual;
                     PadCache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(MaskStr, 0), UnitsStr);
+                    If MaskBotStr = '' Then
+                        PadCache.SolderMaskBottomExpansion := PadCache.SolderMaskExpansion;
                 End;
                 If MaskBotStr <> '' Then
                     PadCache.SolderMaskBottomExpansion := CoordFromUnits(StrToFloatDef(MaskBotStr, 0), UnitsStr);
@@ -1955,6 +1963,9 @@ Begin
                 If MaskBotStr <> '' Then
                     If Abs(PadCache.SolderMaskBottomExpansion
                         - CoordFromUnits(StrToFloatDef(MaskBotStr, 0), UnitsStr)) > Tol Then Ok := False;
+                If (MaskStr <> '') And (MaskBotStr = '') Then
+                    If Abs(PadCache.SolderMaskBottomExpansion
+                        - CoordFromUnits(StrToFloatDef(MaskStr, 0), UnitsStr)) > Tol Then Ok := False;
                 If (MaskSepStr = 'true') Or (MaskSepStr = 'false') Then
                     If PadCache.UseSeparateExpansions <> (MaskSepStr = 'true') Then Ok := False;
                 If ManualStr = 'true' Then

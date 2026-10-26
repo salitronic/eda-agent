@@ -2620,7 +2620,8 @@ def register_library_tools(mcp):
             stack_mode: "simple" (one diameter on every layer) or
                 "top-middle-bottom", written before the sizes.
             tenting_top, tenting_bottom: Solder mask tenting on each side.
-            mask_expansion: Top solder mask expansion (manual).
+            mask_expansion: Solder mask expansion (manual), both sides
+                unless ``mask_bottom_expansion`` is also given.
             mask_bottom_expansion: Bottom solder mask expansion (manual).
             mask_separate: Separate (True) or linked (False) mask expansions.
             mask_manual: True keeps the mask as written; False hands it
