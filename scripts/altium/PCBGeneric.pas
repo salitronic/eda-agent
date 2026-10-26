@@ -763,7 +763,13 @@ Begin
     Try Comp.Comment.SetState_UnionIndex := UIndex; Except End;
     GIter := Comp.GroupIterator_Create;
     Try
-        GIter.AddFilter_ObjectSet(AllObjects);
+        { The kinds a component owns that carry a union index, never      }
+        { AllObjects: an unfiltered walk can hand back an object the       }
+        { scripting engine cannot cast, an access violation no Try        }
+        { catches (#44).                                                   }
+        GIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+            ePadObject, eViaObject, eFillObject, eRegionObject,
+            eTextObject, eComponentBodyObject));
         GIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Prim := GIter.FirstPCBObject;
         While Prim <> Nil Do

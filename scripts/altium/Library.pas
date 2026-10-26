@@ -11602,6 +11602,11 @@ Begin
     PrimCount := 0;
     GrpIter := Target.GroupIterator_Create;
     Try
+        { Every kind a footprint holds, never an unfiltered walk (#44). }
+        GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+            eTextObject, eRegionObject, eFillObject, eComponentBodyObject,
+            ePadObject, eViaObject, ePolyObject, eDimensionObject,
+            eCoordinateObject));
         Prim := GrpIter.FirstPCBObject;
         While Prim <> Nil Do
         Begin
@@ -11799,6 +11804,11 @@ Begin
     Seen := TStringList.Create;
     Iter := Dest.GroupIterator_Create;
     Try
+        { Every kind a footprint holds, never an unfiltered walk (#44). }
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+            eTextObject, eRegionObject, eFillObject, eComponentBodyObject,
+            ePadObject, eViaObject, ePolyObject, eDimensionObject,
+            eCoordinateObject));
         Prim := Iter.FirstPCBObject;
         While Prim <> Nil Do
         Begin
@@ -13191,7 +13201,15 @@ Begin
         If ClearFirst Then Try PcbLib.Board.SelectedObjects_Clear; Except End;
         BIter := PcbLib.Board.BoardIterator_Create;
         Try
-            BIter.AddFilter_ObjectSet(AllObjects);
+            { Only the kinds a footprint holds and a set can name, never     }
+            { AllObjects: an unfiltered walk over a footprint hands back      }
+            { objects the scripting engine cannot cast and faults with an     }
+            { access violation no Try catches (#44). The same set as          }
+            { FilterFootprintWalk, which is defined further down.             }
+            BIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+                eTextObject, eRegionObject, eFillObject, eComponentBodyObject,
+                ePadObject, eViaObject, ePolyObject, eDimensionObject,
+                eCoordinateObject));
             BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             BIter.AddFilter_Method(eProcessAll);
             Prim := BIter.FirstPCBObject;
