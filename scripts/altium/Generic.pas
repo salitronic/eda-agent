@@ -4460,26 +4460,26 @@ End;
 
 Function Gen_MeasureDistance(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2 : Integer;
-    DX, DY : Integer;
+    X1, Y1, X2, Y2 : Double;
+    DX, DY : Double;
     Distance : Double;
 Begin
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
 
     DX := X2 - X1;
     DY := Y2 - Y1;
     Distance := Sqrt(DX * DX + DY * DY);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"x1":' + IntToStr(X1) +
-        ',"y1":' + IntToStr(Y1) +
-        ',"x2":' + IntToStr(X2) +
-        ',"y2":' + IntToStr(Y2) +
-        ',"dx":' + IntToStr(DX) +
-        ',"dy":' + IntToStr(DY) +
+        '{"x1":' + FloatToJsonStr(X1) +
+        ',"y1":' + FloatToJsonStr(Y1) +
+        ',"x2":' + FloatToJsonStr(X2) +
+        ',"y2":' + FloatToJsonStr(Y2) +
+        ',"dx":' + FloatToJsonStr(DX) +
+        ',"dy":' + FloatToJsonStr(DY) +
         ',"distance_mils":' + FloatToJsonStr(Distance) +
         ',"distance_mm":' + FloatToJsonStr(Distance * 0.0254) + '}');
 End;
@@ -5575,7 +5575,8 @@ Var
     Sym : ISch_SheetSymbol;
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
-    WantSide, GotSide, GotX, GotY : Integer;
+    WantSide, GotSide : Integer;
+    GotX, GotY : Double;
     GotDist : Double;
     DistFromTop : Double;
     Found, Placed : Boolean;
@@ -5694,8 +5695,8 @@ Begin
     GotX := 0;
     GotY := 0;
     Try
-        GotX := CoordToMils(Entry.Location.X);
-        GotY := CoordToMils(Entry.Location.Y);
+        GotX := CoordToMilsF(Entry.Location.X);
+        GotY := CoordToMilsF(Entry.Location.Y);
     Except End;
 
     Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001);
@@ -5719,8 +5720,8 @@ Begin
             JsonFloat('requested_distance_from_top', DistFromTop) + ',' +
             JsonInt('actual_side', GotSide) + ',' +
             JsonFloat('actual_distance_from_top', GotDist) + ',' +
-            JsonInt('x', GotX) + ',' +
-            JsonInt('y', GotY) + ',' +
+            JsonFloat('x', GotX) + ',' +
+            JsonFloat('y', GotY) + ',' +
             JsonStr('note', 'x and y are read back from the placed entry. '
                 + 'If positioned_as_asked is false the entry exists but sits '
                 + 'where Altium put it; obj_modify on eSheetEntry can set '
@@ -6355,7 +6356,8 @@ Var
     Param : ISch_BasicContainer;
     JsonItems, ChildJson, PName, PValue, DirName : String;
     First, FirstChild : Boolean;
-    Count, X, Y : Integer;
+    Count : Integer;
+    X, Y : Double;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -6380,8 +6382,8 @@ Begin
             DirName := '';
             X := 0; Y := 0;
             Try DirName := ParamSet.Name; Except End;
-            Try X := CoordToMils(ParamSet.Location.X); Except End;
-            Try Y := CoordToMils(ParamSet.Location.Y); Except End;
+            Try X := CoordToMilsF(ParamSet.Location.X); Except End;
+            Try Y := CoordToMilsF(ParamSet.Location.Y); Except End;
 
             ChildJson := '';
             FirstChild := True;
@@ -6405,7 +6407,7 @@ Begin
             Except End;
 
             JsonItems := JsonItems + '{"name":"' + EscapeJsonString(DirName) + '",'
-                + '"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+                + '"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
                 + '"parameters":[' + ChildJson + ']}';
             Inc(Count);
             ParamSet := OuterIter.NextSchObject;
@@ -6695,19 +6697,19 @@ Var
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
     CompLoc : TLocation;
-    WantX, WantY : Integer;
+    WantX, WantY : Double;
     Narrow, Hit : Boolean;
 Begin
     Result := Nil;
     If SchDoc = Nil Then Exit;
 
-    Narrow := (LocX <> '') And (LocY <> '') And IsIntStr(LocX) And IsIntStr(LocY);
+    Narrow := (LocX <> '') And (LocY <> '') And IsFloatStr(LocX) And IsFloatStr(LocY);
     WantX := 0;
     WantY := 0;
     If Narrow Then
     Begin
-        WantX := StrToIntDef(LocX, 0);
-        WantY := StrToIntDef(LocY, 0);
+        WantX := StrToFloatDef(LocX, 0);
+        WantY := StrToFloatDef(LocY, 0);
     End;
 
     Iterator := SchDoc.SchIterator_Create;
@@ -6725,8 +6727,8 @@ Begin
                     { Read through a materialized local. This engine does not }
                     { accept a record field reached straight off a property.  }
                     CompLoc := Comp.Location;
-                    Hit := (CoordToMils(CompLoc.X) = WantX)
-                       And (CoordToMils(CompLoc.Y) = WantY);
+                    Hit := (Abs(CoordToMilsF(CompLoc.X) - WantX) < 0.0001)
+                       And (Abs(CoordToMilsF(CompLoc.Y) - WantY) < 0.0001);
                 End;
                 If Hit Then Result := Comp;
             End;
@@ -6810,9 +6812,10 @@ Var
     Data, PinList : String;
     First : Boolean;
     PinNum, PinName : String;
-    PinX, PinY : Integer;
-    PinOrient, PinLenMils : Integer;
-    CompX, CompY : Integer;
+    PinX, PinY, PinLenMils : Double;
+    PinXC, PinYC, PinLenC : TCoord;
+    PinOrient : Integer;
+    CompX, CompY : Double;
     CompLoc : TLocation;
     SymbolCount, OwnerPart : Integer;
 Begin
@@ -6884,8 +6887,8 @@ Begin
                 { slice; Pin.Location already reflects the placed orientation }
                 { because Altium updates it after RotateAroundXY / mirror.)   }
                 CompLoc := Comp.Location;
-                CompX := CoordToMils(CompLoc.X);
-                CompY := CoordToMils(CompLoc.Y);
+                CompX := CoordToMilsF(CompLoc.X);
+                CompY := CoordToMilsF(CompLoc.Y);
 
                 PinIter := Comp.SchIterator_Create;
                 Try
@@ -6897,14 +6900,14 @@ Begin
                         Begin
                         PinNum := '';
                         PinName := '';
-                        PinX := 0;
-                        PinY := 0;
+                        PinXC := 0;
+                        PinYC := 0;
                         PinOrient := 0;
-                        PinLenMils := 0;
+                        PinLenC := 0;
                         Try PinNum := Pin.Designator; Except End;
                         Try PinName := Pin.Name; Except End;
-                        Try PinX := CoordToMils(Pin.Location.X); Except End;
-                        Try PinY := CoordToMils(Pin.Location.Y); Except End;
+                        Try PinXC := Pin.Location.X; Except End;
+                        Try PinYC := Pin.Location.Y; Except End;
                         { Pin.Orientation is the TRotationBy90 enum:           }
                         { 0=right (eRotate0),   1=up (eRotate90),               }
                         { 2=left (eRotate180),  3=down (eRotate270).            }
@@ -6913,17 +6916,20 @@ Begin
                         { from Pin.Location must extend along this vector by   }
                         { Pin.PinLength to reach the electrical hot end.       }
                         Try PinOrient := Pin.Orientation; Except End;
-                        Try PinLenMils := CoordToMils(Pin.PinLength); Except End;
+                        Try PinLenC := Pin.PinLength; Except End;
+                        PinX := CoordToMilsF(PinXC);
+                        PinY := CoordToMilsF(PinYC);
+                        PinLenMils := CoordToMilsF(PinLenC);
 
                         If Not First Then PinList := PinList + ',';
                         First := False;
                         PinList := PinList +
                             '{"pin_number":"' + EscapeJsonString(PinNum) +
                             '","pin_name":"' + EscapeJsonString(PinName) +
-                            '","x_mils":' + IntToStr(PinX) +
-                            ',"y_mils":' + IntToStr(PinY) +
+                            '","x_mils":' + FloatToJsonStr(PinX) +
+                            ',"y_mils":' + FloatToJsonStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            ',"pin_length_mils":' + FloatToJsonStr(PinLenMils) +
                             { x_mils and y_mils are Pin.Location, which is the
                               BODY-SIDE ROOT. These are the point a wire has
                               to sit on. Handed over rather than left to the
@@ -6931,12 +6937,12 @@ Begin
                               direction gets reversed and the result is silent
                               geometry that does not connect. }
                             ',"connection_x_mils":'
-                                + IntToStr(PinEndX(PinX, PinOrient, PinLenMils)) +
+                                + FloatToJsonStr(CoordToMilsF(PinEndX(PinXC, PinOrient, PinLenC))) +
                             ',"connection_y_mils":'
-                                + IntToStr(PinEndY(PinY, PinOrient, PinLenMils)) +
+                                + FloatToJsonStr(CoordToMilsF(PinEndY(PinYC, PinOrient, PinLenC))) +
                             ',"owner_part_id":' + IntToStr(OwnerPart) +
-                            ',"owner_x":' + IntToStr(CompX) +
-                            ',"owner_y":' + IntToStr(CompY) + '}';
+                            ',"owner_x":' + FloatToJsonStr(CompX) +
+                            ',"owner_y":' + FloatToJsonStr(CompY) + '}';
                         End;
 
                         Pin := PinIter.NextSchObject;
@@ -10661,12 +10667,12 @@ End;
 { designator when one is given. Shared by the file and managed placements.    }
 {..............................................................................}
 Procedure PutLoadedComponent(SchDoc : ISch_Document; Comp : ISch_Component;
-    X : Integer; Y : Integer; Rotation : Integer; Desig : String);
+    X : Double; Y : Double; Rotation : Integer; Desig : String);
 Var
     Orientation : Integer;
 Begin
     Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     Orientation := 0;
     If Rotation = 90 Then Orientation := 1
     Else If Rotation = 180 Then Orientation := 2
@@ -10696,7 +10702,7 @@ Var
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
     ResolvedLib, LibReason, FpBefore, FpAfter, FpIssues : String;
     FpChosen, FpChoice : Integer;
-    X, Y : Integer;
+    X, Y : Double;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
 Begin
@@ -10733,8 +10739,8 @@ Begin
             LibRef := GetBatchField(Op, 'lib_reference');
             Desig := GetBatchField(Op, 'designator');
             Footprint := GetBatchField(Op, 'footprint');
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
             { Part 1 when not given: a symbol is placed as its first part   }
             { unless asked otherwise, and the part is written either way.  }
@@ -11004,8 +11010,8 @@ Begin
             Else
             Begin
                 PutLoadedComponent(SchDoc, Comp,
-                    StrToIntDef(GetBatchField(Op, 'x'), 0),
-                    StrToIntDef(GetBatchField(Op, 'y'), 0),
+                    StrToFloatDef(GetBatchField(Op, 'x'), 0),
+                    StrToFloatDef(GetBatchField(Op, 'y'), 0),
                     StrToIntDef(GetBatchField(Op, 'rotation'), 0), Desig);
                 Inc(Placed);
                 IsPlaced := True;
@@ -11289,7 +11295,8 @@ Var
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PinX, PinY, PinOrient, PinLenMils, PartId, Owner : Integer;
+    PinOrient, PartId, Owner : Integer;
+    PinX, PinY, PinLenMils : Double;
     First : Boolean;
     DataBlob : String;
 Begin
@@ -11342,10 +11349,10 @@ Begin
                         PinLenMils := 0;
                         Try PinNum := Pin.Designator; Except End;
                         Try PinName := Pin.Name; Except End;
-                        Try PinX := CoordToMils(Pin.Location.X); Except End;
-                        Try PinY := CoordToMils(Pin.Location.Y); Except End;
+                        Try PinX := CoordToMilsF(Pin.Location.X); Except End;
+                        Try PinY := CoordToMilsF(Pin.Location.Y); Except End;
                         Try PinOrient := Pin.Orientation; Except End;
-                        Try PinLenMils := CoordToMils(Pin.PinLength); Except End;
+                        Try PinLenMils := CoordToMilsF(Pin.PinLength); Except End;
 
                         If Not First Then PinList := PinList + ',';
                         First := False;
@@ -11353,10 +11360,10 @@ Begin
                             '{"refdes":"' + EscapeJsonString(RefDes) +
                             '","pin_number":"' + EscapeJsonString(PinNum) +
                             '","pin_name":"' + EscapeJsonString(PinName) +
-                            '","x_mils":' + IntToStr(PinX) +
-                            ',"y_mils":' + IntToStr(PinY) +
+                            '","x_mils":' + FloatToJsonStr(PinX) +
+                            ',"y_mils":' + FloatToJsonStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            ',"pin_length_mils":' + FloatToJsonStr(PinLenMils) +
                             ',"part_id":' + IntToStr(PartId) + '}';
                         End;
 
@@ -13842,11 +13849,13 @@ Var
     SchDoc : ISch_Document;
     PinsStr, RecStr, Remaining, Token : String;
     Desig, PinNum, Lbl : String;
-    PipePos, CommaPos, FieldIdx, StubLen, Stubbed, Failed : Integer;
+    PipePos, CommaPos, FieldIdx, Stubbed, Failed : Integer;
+    StubLen : Double;
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PX, PY, EX, EY, Orient : Integer;
+    PX, PY, EX, EY : Double;
+    Orient : Integer;
     Found : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
@@ -13866,7 +13875,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pins parameter required');
         Exit;
     End;
-    StubLen := StrToIntDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
+    StubLen := StrToFloatDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
 
     Stubbed := 0;
     Failed := 0;
@@ -13917,8 +13926,8 @@ Begin
                             Begin
                                 If (Pin.Designator = PinNum) And PinShownOn(Comp, Pin) Then
                                 Begin
-                                    Try PX := CoordToMils(Pin.Location.X); Except End;
-                                    Try PY := CoordToMils(Pin.Location.Y); Except End;
+                                    Try PX := CoordToMilsF(Pin.Location.X); Except End;
+                                    Try PY := CoordToMilsF(Pin.Location.Y); Except End;
                                     Try Orient := Pin.Orientation; Except End;
                                     Found := True;
                                 End;
@@ -13945,11 +13954,11 @@ Begin
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then
             Begin
-                Wire.Location := Point(MilsToCoord(PX), MilsToCoord(PY));
+                Wire.Location := Point(MilsToCoordF(PX), MilsToCoordF(PY));
                 Wire.InsertVertex := 1;
-                Wire.SetState_Vertex(1, Point(MilsToCoord(PX), MilsToCoord(PY)));
+                Wire.SetState_Vertex(1, Point(MilsToCoordF(PX), MilsToCoordF(PY)));
                 Wire.InsertVertex := 2;
-                Wire.SetState_Vertex(2, Point(MilsToCoord(EX), MilsToCoord(EY)));
+                Wire.SetState_Vertex(2, Point(MilsToCoordF(EX), MilsToCoordF(EY)));
                 SchDoc.RegisterSchObjectInContainer(Wire);
                 SchRegisterObject(SchDoc, Wire);
             End;
@@ -13959,7 +13968,7 @@ Begin
             If NetLabel <> Nil Then
             Begin
                 NetLabel.Text := Lbl;
-                NetLabel.Location := Point(MilsToCoord(EX), MilsToCoord(EY));
+                NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except End;

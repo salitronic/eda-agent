@@ -27,7 +27,7 @@ from ..placement import (
 )
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
-from .library import _angle_text, _edge_arc
+from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
@@ -288,15 +288,6 @@ def derive_netlist_build(
         "bindings": bindings,
         "components": sorted(components),
     }
-
-
-def _mils(value: Any) -> str:
-    """A length in mils for the wire: whole numbers as integers, the rest
-    to 1e-4 mil, which is one Altium internal unit."""
-    v = float(value)
-    if v.is_integer():
-        return str(int(v))
-    return f"{v:.4f}".rstrip("0").rstrip(".")
 
 
 def _encode_bindings_param(bindings: list[dict[str, Any]]) -> str:
@@ -1305,10 +1296,10 @@ def register_pcb_tools(mcp):
                         "fragment could move another component, so the "
                         "call is refused", "moves_applied": 0}
             x_str = (
-                str(round(m["x"])) if "x" in m and m["x"] is not None else ""
+                _mils(m["x"]) if "x" in m and m["x"] is not None else ""
             )
             y_str = (
-                str(round(m["y"])) if "y" in m and m["y"] is not None else ""
+                _mils(m["y"]) if "y" in m and m["y"] is not None else ""
             )
             rot_str = (
                 str(m["rotation"])
@@ -1446,8 +1437,8 @@ def register_pcb_tools(mcp):
             desig = str(p.get("designator", "")).strip()
             if not desig:
                 continue
-            x_str = str(round(p["x"])) if p.get("x") is not None else ""
-            y_str = str(round(p["y"])) if p.get("y") is not None else ""
+            x_str = _mils(p["x"]) if p.get("x") is not None else ""
+            y_str = _mils(p["y"]) if p.get("y") is not None else ""
             rot_str = str(p["rotation"]) if p.get("rotation") is not None else ""
             layer = p.get("layer")
             if not layer and p.get("side") is not None:
@@ -1544,12 +1535,12 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_tune_length(
         net: str,
-        add_length_mils: int,
-        x_mils: int,
-        y_mils: int,
+        add_length_mils: float,
+        x_mils: float,
+        y_mils: float,
         layer: str = "TopLayer",
-        amplitude_mils: int = 40,
-        width_mils: int = 6,
+        amplitude_mils: float = 40,
+        width_mils: float = 6,
     ) -> dict[str, Any]:
         """Add approximate routed length to a net with a square serpentine.
 
@@ -3128,14 +3119,14 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_stitching_vias(
         net: str,
-        x1_mils: int = 0,
-        y1_mils: int = 0,
-        x2_mils: int = 0,
-        y2_mils: int = 0,
-        spacing_mils: int = 50,
-        via_size_mils: int = 30,
-        via_hole_mils: int = 14,
-        clearance_mils: int = 10,
+        x1_mils: float = 0,
+        y1_mils: float = 0,
+        x2_mils: float = 0,
+        y2_mils: float = 0,
+        spacing_mils: float = 50,
+        via_size_mils: float = 30,
+        via_hole_mils: float = 14,
+        clearance_mils: float = 10,
         dry_run: bool = True,
         within_board: bool = True,
         edge_clearance_mils: int = 30,
@@ -3179,14 +3170,14 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, Any] = {
             "net": net,
-            "x1_mils": str(round(x1_mils)),
-            "y1_mils": str(round(y1_mils)),
-            "x2_mils": str(round(x2_mils)),
-            "y2_mils": str(round(y2_mils)),
-            "spacing_mils": str(round(spacing_mils)),
-            "via_size_mils": str(round(via_size_mils)),
-            "via_hole_mils": str(round(via_hole_mils)),
-            "clearance_mils": str(round(clearance_mils)),
+            "x1_mils": _mils(x1_mils),
+            "y1_mils": _mils(y1_mils),
+            "x2_mils": _mils(x2_mils),
+            "y2_mils": _mils(y2_mils),
+            "spacing_mils": _mils(spacing_mils),
+            "via_size_mils": _mils(via_size_mils),
+            "via_hole_mils": _mils(via_hole_mils),
+            "clearance_mils": _mils(clearance_mils),
             "dry_run": "true" if dry_run else "false",
             "avoid_parts": "1" if avoid_parts else "0",
         }
@@ -3848,8 +3839,8 @@ def register_pcb_tools(mcp):
     async def pcb_add_testpoints_for_net_class(
         net_class: str,
         type: str = "smd",
-        pad_size_mils: int = 40,
-        hole_size_mils: int = 20,
+        pad_size_mils: float = 40,
+        hole_size_mils: float = 20,
         fab_top: bool = False,
         fab_bottom: bool = False,
         assy_top: bool = True,
@@ -3888,8 +3879,8 @@ def register_pcb_tools(mcp):
             {
                 "net_class": net_class,
                 "type": type,
-                "pad_size_mils": str(round(pad_size_mils)),
-                "hole_size_mils": str(round(hole_size_mils)),
+                "pad_size_mils": _mils(pad_size_mils),
+                "hole_size_mils": _mils(hole_size_mils),
                 "fab_top": "true" if fab_top else "false",
                 "fab_bottom": "true" if fab_bottom else "false",
                 "assy_top": "true" if assy_top else "false",
@@ -4022,8 +4013,8 @@ def register_pcb_tools(mcp):
     async def pcb_make_paste_grid(
         designator: str,
         pad_name: str,
-        min_grid_size_mils: int = 15,
-        min_gap_mils: int = 5,
+        min_grid_size_mils: float = 15,
+        min_gap_mils: float = 5,
         min_coverage_pct: float = 60.0,
     ) -> dict[str, Any]:
         """Split one pad's solder-paste opening into a regular grid of
@@ -4052,8 +4043,8 @@ def register_pcb_tools(mcp):
             {
                 "designator": designator,
                 "pad_name": pad_name,
-                "min_grid_size_mils": str(round(min_grid_size_mils)),
-                "min_gap_mils": str(round(min_gap_mils)),
+                "min_grid_size_mils": _mils(min_grid_size_mils),
+                "min_gap_mils": _mils(min_gap_mils),
                 "min_coverage_pct": str(float(min_coverage_pct)),
             },
             timeout=30.0,
@@ -4426,10 +4417,10 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_check_placement_collision(
         designator: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         rotation: Optional[float] = None,
-        margin_mils: int = 0,
+        margin_mils: float = 0,
     ) -> dict[str, Any]:
         """Check, without moving it, whether a component at (x, y[,
         rotation]) would overlap another component on the same side.
@@ -4451,9 +4442,9 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, Any] = {
             "designator": designator,
-            "x": str(round(x)),
-            "y": str(round(y)),
-            "margin_mils": str(round(margin_mils)),
+            "x": _mils(x),
+            "y": _mils(y),
+            "margin_mils": _mils(margin_mils),
         }
         if rotation is not None:
             params["rotation"] = str(rotation)
@@ -5168,14 +5159,14 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_via_array(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        pitch: int = 50,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        pitch: float = 50,
         net: str = "",
-        size: int = 30,
-        hole_size: int = 12,
+        size: float = 30,
+        hole_size: float = 12,
         low_layer: str = "TopLayer",
         high_layer: str = "BottomLayer",
     ) -> dict[str, Any]:
@@ -5204,14 +5195,14 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async(
             "pcb.place_via_array",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "pitch": str(pitch),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
+                "pitch": _mils(pitch),
                 "net": net,
-                "size": str(size),
-                "hole_size": str(hole_size),
+                "size": _mils(size),
+                "hole_size": _mils(hole_size),
                 "low_layer": low_layer,
                 "high_layer": high_layer,
             },
@@ -5702,7 +5693,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_snap_to_grid(
         designator: str,
-        grid_size: int = 50,
+        grid_size: float = 50,
     ) -> dict[str, Any]:
         """Snap a component to the nearest grid point.
 
@@ -5719,7 +5710,7 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.snap_to_grid",
-            {"designator": designator, "grid_size": str(grid_size)},
+            {"designator": designator, "grid_size": _mils(grid_size)},
         )
         return result
 
@@ -6036,8 +6027,8 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_delete_object(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         layer: str = "TopLayer",
         object_type: str = "track",
     ) -> dict[str, Any]:
@@ -6075,7 +6066,7 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.delete_object",
-            {"x": str(x), "y": str(y), "layer": layer, "object_type": object_type},
+            {"x": _mils(x), "y": _mils(y), "layer": layer, "object_type": object_type},
         )
         return result
 
@@ -6277,10 +6268,10 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, Any] = {
             "model_path": model_path,
-            "x": str(int(round(x))),
-            "y": str(int(round(y))),
+            "x": _mils(x),
+            "y": _mils(y),
             "layer": layer,
-            "standoff_height": str(standoff_height),
+            "standoff_height": _mils(standoff_height),
         }
         return await bridge.send_command_async("pcb.place_3d_body", params)
 
@@ -6749,13 +6740,13 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_angular_dimension(
-        center_x: int,
-        center_y: int,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        radius: int = 100,
+        center_x: float,
+        center_y: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        radius: float = 100,
         layer: str = "TopOverlay",
     ) -> dict[str, Any]:
         """Place an angular dimension (angle between two reference directions).
@@ -6774,13 +6765,13 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async(
             "pcb.place_angular_dimension",
             {
-                "center_x": str(center_x),
-                "center_y": str(center_y),
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "radius": str(radius),
+                "center_x": _mils(center_x),
+                "center_y": _mils(center_y),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
+                "radius": _mils(radius),
                 "layer": layer,
             },
         )
@@ -6819,8 +6810,8 @@ def register_pcb_tools(mcp):
     async def pcb_distribute_components(
         designators: str,
         axis: str = "x",
-        start: int = 0,
-        end: int = 1000,
+        start: float = 0,
+        end: float = 1000,
     ) -> dict[str, Any]:
         """Evenly space components along an axis.
 
@@ -6845,8 +6836,8 @@ def register_pcb_tools(mcp):
             {
                 "designators": designators,
                 "axis": axis,
-                "start": str(start),
-                "end": str(end),
+                "start": _mils(start),
+                "end": _mils(end),
             },
         )
         return result

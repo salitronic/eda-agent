@@ -752,7 +752,7 @@ Begin
 
     ToleranceMils := StrToFloatDef(ExtractJsonValue(Params, 'tolerance_mils'), 1.0);
     If ToleranceMils < 0.0 Then ToleranceMils := 1.0;
-    Tolerance := MilsToCoord(Round(ToleranceMils));
+    Tolerance := MilsToCoordF(ToleranceMils);
 
     Checked := 0;
     Violations := 0;
@@ -874,8 +874,8 @@ Begin
                             JsonStr('kind', KindStr) + ',' +
                             JsonStr('layer', LayerStr) + ',' +
                             JsonStr('net', NetName) + ',' +
-                            JsonStr('at', '(' + IntToStr(CoordToMils(X)) + ',' +
-                                          IntToStr(CoordToMils(Y)) + ')');
+                            JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(X)) + ',' +
+                                          FloatToJsonStr(CoordToMilsF(Y)) + ')');
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
@@ -975,7 +975,7 @@ Begin
 
     RadiusMils := StrToFloatDef(ExtractJsonValue(Params, 'radius_mils'), 50.0);
     If RadiusMils <= 0.0 Then RadiusMils := 50.0;
-    Radius := MilsToCoord(Round(RadiusMils));
+    Radius := MilsToCoordF(RadiusMils);
 
     Checked := 0;
     Violations := 0;
@@ -1033,8 +1033,8 @@ Begin
                             First := False;
                             EntryJson :=
                                 JsonStr('net', SignalNet) + ',' +
-                                JsonStr('at', '(' + IntToStr(CoordToMils(Via1.x)) + ',' +
-                                              IntToStr(CoordToMils(Via1.y)) + ')');
+                                JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(Via1.x)) + ',' +
+                                              FloatToJsonStr(CoordToMilsF(Via1.y)) + ')');
                             ItemsJson := ItemsJson + JsonObj(EntryJson);
                         End;
                     End;
@@ -1127,8 +1127,8 @@ Begin
                         First := False;
                         EntryJson :=
                             JsonStr('layer', LayerStr) + ',' +
-                            JsonStr('at', '(' + IntToStr(CoordToMils(BBox.X1)) + ',' +
-                                          IntToStr(CoordToMils(BBox.Y1)) + ')');
+                            JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(BBox.X1)) + ',' +
+                                          FloatToJsonStr(CoordToMilsF(BBox.Y1)) + ')');
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
@@ -1533,8 +1533,8 @@ Begin
                     First := False;
                     EntryJson :=
                         JsonStr('net', NetName) + ',' +
-                        JsonStr('at', '(' + IntToStr(CoordToMils(Via.x)) + ',' +
-                                      IntToStr(CoordToMils(Via.y)) + ')') + ',' +
+                        JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(Via.x)) + ',' +
+                                      FloatToJsonStr(CoordToMilsF(Via.y)) + ')') + ',' +
                         JsonInt('connected_layers', Connected);
                     ItemsJson := ItemsJson + JsonObj(EntryJson);
                 End;
@@ -1826,8 +1826,8 @@ Begin
                                 JsonStr('designator', DesStr) + ',' +
                                 JsonStr('net', NetStr) + ',' +
                                 JsonStr('layer', LayerStr) + ',' +
-                                JsonStr('at', '(' + IntToStr(CoordToMils(PadX)) + ',' +
-                                              IntToStr(CoordToMils(PadY)) + ')');
+                                JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(PadX)) + ',' +
+                                              FloatToJsonStr(CoordToMilsF(PadY)) + ')');
                             ItemsJson := ItemsJson + JsonObj(EntryJson);
                         End;
                     Except End;
@@ -1876,7 +1876,8 @@ Var
     SchObj : ISch_GraphicalObject;
     Comp : ISch_Component;
     Loc : TLocation;
-    I, Checked, Violations, GridMils, XMils, YMils, Dx, Dy : Integer;
+    I, Checked, Violations : Integer;
+    GridMils, XMils, YMils, Dx, Dy : Double;
     GridStr, Designator, SheetName, DocKind, ItemsJson, EntryJson : String;
     First : Boolean;
 Begin
@@ -1894,7 +1895,7 @@ Begin
     End;
 
     GridStr := ExtractJsonValue(Params, 'grid_mils');
-    GridMils := StrToIntDef(GridStr, 100);
+    GridMils := StrToFloatDef(GridStr, 100);
     If GridMils <= 0 Then GridMils := 100;
 
     Checked := 0;
@@ -1928,15 +1929,19 @@ Begin
                     Comp := SchObj;
                     Inc(Checked);
                     Loc := Comp.Location;
-                    XMils := CoordToMils(Loc.X);
-                    YMils := CoordToMils(Loc.Y);
-                    Dx := XMils Mod GridMils;
-                    Dy := YMils Mod GridMils;
-                    { Mod can be negative on Pascal for negative coords; }
-                    { take absolute. Components at negative coords (off }
-                    { sheet origin) get treated symmetrically.            }
-                    If Dx < 0 Then Dx := -Dx;
-                    If Dy < 0 Then Dy := -Dy;
+                    XMils := CoordToMilsF(Loc.X);
+                    YMils := CoordToMilsF(Loc.Y);
+                    { The remainder as Mod gives it (sign of the dividend), }
+                    { in decimal mils: rounding the location to a whole mil }
+                    { first passed a part 0.4 mil off the grid. Taken       }
+                    { absolute, so components at negative coords (off sheet }
+                    { origin) get treated symmetrically. A remainder within }
+                    { half the 1e-4 mil resolution of either grid line is   }
+                    { the division's own error, not an offset.              }
+                    Dx := Abs(XMils - Trunc(XMils / GridMils) * GridMils);
+                    Dy := Abs(YMils - Trunc(YMils / GridMils) * GridMils);
+                    If (Dx < 0.00005) Or (GridMils - Dx < 0.00005) Then Dx := 0;
+                    If (Dy < 0.00005) Or (GridMils - Dy < 0.00005) Then Dy := 0;
                     If (Dx <> 0) Or (Dy <> 0) Then
                     Begin
                         Inc(Violations);
@@ -1947,10 +1952,10 @@ Begin
                         EntryJson :=
                             JsonStr('designator', Designator) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonStr('at', '(' + IntToStr(XMils) + ',' +
-                                          IntToStr(YMils) + ')') + ',' +
-                            JsonInt('dx', Dx) + ',' +
-                            JsonInt('dy', Dy);
+                            JsonStr('at', '(' + FloatToJsonStr(XMils) + ',' +
+                                          FloatToJsonStr(YMils) + ')') + ',' +
+                            JsonFloat('dx', Dx) + ',' +
+                            JsonFloat('dy', Dy);
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 Except End;
@@ -1965,7 +1970,7 @@ Begin
         JsonObj(
             JsonInt('checked', Checked) + ',' +
             JsonInt('violations', Violations) + ',' +
-            JsonInt('grid_mils', GridMils) + ',' +
+            JsonFloat('grid_mils', GridMils) + ',' +
             JsonRaw('items', '[' + ItemsJson + ']')
         ));
 End;
@@ -2046,8 +2051,8 @@ Begin
                     EntryJson :=
                         JsonStr('designator', Designator) + ',' +
                         JsonStr('layer', LayerStr) + ',' +
-                        JsonStr('at', '(' + IntToStr(CoordToMils(Comp.x)) + ',' +
-                                      IntToStr(CoordToMils(Comp.y)) + ')');
+                        JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(Comp.x)) + ',' +
+                                      FloatToJsonStr(CoordToMilsF(Comp.y)) + ')');
                     ItemsJson := ItemsJson + JsonObj(EntryJson);
                 End;
             Except End;
@@ -2261,8 +2266,8 @@ Begin
                     JsonStr('kind', KindStr) + ',' +
                     JsonStr('designator', DesStr) + ',' +
                     JsonRaw('distance_mils', FloatToJsonStr(Round(Gap * 100) / 100.0)) + ',' +
-                    JsonStr('at', '(' + IntToStr(CoordToMils(Obj.x)) + ',' +
-                                  IntToStr(CoordToMils(Obj.y)) + ')');
+                    JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(Obj.x)) + ',' +
+                                  FloatToJsonStr(CoordToMilsF(Obj.y)) + ')');
                 ItemsJson := ItemsJson + JsonObj(EntryJson);
             End;
             Obj := Iter.NextPCBObject;
@@ -2943,7 +2948,7 @@ Var
     Total, Bad : Integer;
     ItemsJson, EntryJson, SheetName : String;
     First : Boolean;
-    LocX, LocY : Integer;
+    LocX, LocY : Double;
     Embedded : Boolean;
 Begin
     Workspace := GetWorkspace;
@@ -2995,14 +3000,14 @@ Begin
                         Inc(Bad);
                         LocX := 0;
                         LocY := 0;
-                        Try LocX := CoordToMils(Img.Location.X); Except End;
-                        Try LocY := CoordToMils(Img.Location.Y); Except End;
+                        Try LocX := CoordToMilsF(Img.Location.X); Except End;
+                        Try LocY := CoordToMilsF(Img.Location.Y); Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
                         First := False;
                         EntryJson :=
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', LocX) + ',' +
-                            JsonInt('y_mils', LocY);
+                            JsonFloat('x_mils', LocX) + ',' +
+                            JsonFloat('y_mils', LocY);
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 Except End;
@@ -3409,8 +3414,8 @@ Begin
                         EntryJson :=
                             JsonStr('label', LabelText) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
-                            JsonInt('y_mils', CoordToMils(LY));
+                            JsonFloat('x_mils', CoordToMilsF(LX)) + ',' +
+                            JsonFloat('y_mils', CoordToMilsF(LY));
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 Except End;
@@ -3530,8 +3535,8 @@ Begin
                         EntryJson :=
                             JsonStr('net', NetName) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
-                            JsonInt('y_mils', CoordToMils(LY));
+                            JsonFloat('x_mils', CoordToMilsF(LX)) + ',' +
+                            JsonFloat('y_mils', CoordToMilsF(LY));
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 Except End;
@@ -3820,8 +3825,8 @@ Begin
                                         EntryJson :=
                                             JsonStr('net', NetName) + ',' +
                                             JsonStr('layer', LayerName) + ',' +
-                                            JsonInt('x_mils', CoordToMils(PX)) + ',' +
-                                            JsonInt('y_mils', CoordToMils(PY)) + ',' +
+                                            JsonFloat('x_mils', CoordToMilsF(PX)) + ',' +
+                                            JsonFloat('y_mils', CoordToMilsF(PY)) + ',' +
                                             JsonFloat('angle_deg', ThetaDeg);
                                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                                         If Bad >= 100 Then Break;
@@ -3967,11 +3972,11 @@ Begin
                         First := False;
                         Entry :=
                             JsonStr('net', NetName) + ',' +
-                            JsonFloat('min_width_mils', CoordToMils(MinW)) + ',' +
-                            JsonFloat('max_width_mils', CoordToMils(MaxW)) + ',' +
+                            JsonFloat('min_width_mils', CoordToMilsF(MinW)) + ',' +
+                            JsonFloat('max_width_mils', CoordToMilsF(MaxW)) + ',' +
                             JsonFloat('ratio', Ratio) + ',' +
-                            JsonInt('thin_x_mils', CoordToMils(TX)) + ',' +
-                            JsonInt('thin_y_mils', CoordToMils(TY));
+                            JsonFloat('thin_x_mils', CoordToMilsF(TX)) + ',' +
+                            JsonFloat('thin_y_mils', CoordToMilsF(TY));
                         Items := Items + JsonObj(Entry);
                     End;
                 End;
@@ -4157,8 +4162,8 @@ Begin
                                         JsonStr('pin', PinStr) + ',' +
                                         JsonStr('net', NetStr) + ',' +
                                         JsonStr('layer', LayerStr) + ',' +
-                                        JsonStr('at', '(' + IntToStr(CoordToMils(PadX)) + ',' +
-                                                      IntToStr(CoordToMils(PadY)) + ')');
+                                        JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(PadX)) + ',' +
+                                                      FloatToJsonStr(CoordToMilsF(PadY)) + ')');
                                     ItemsJson := ItemsJson + JsonObj(EntryJson);
                                 End;
                             End;
@@ -4219,8 +4224,8 @@ Begin
                             JsonStr('pin', PinStr) + ',' +
                             JsonStr('net', NetStr) + ',' +
                             JsonStr('layer', LayerStr) + ',' +
-                            JsonStr('at', '(' + IntToStr(CoordToMils(PadX)) + ',' +
-                                          IntToStr(CoordToMils(PadY)) + ')');
+                            JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(PadX)) + ',' +
+                                          FloatToJsonStr(CoordToMilsF(PadY)) + ')');
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
@@ -4389,8 +4394,8 @@ Begin
                             JsonStr('label', LabelText) + ',' +
                             JsonStr('conflicts_with', OtherText) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
-                            JsonInt('y_mils', CoordToMils(LY));
+                            JsonFloat('x_mils', CoordToMilsF(LX)) + ',' +
+                            JsonFloat('y_mils', CoordToMilsF(LY));
                         ConfJson := ConfJson + JsonObj(EntryJson);
                     End;
 
@@ -4402,8 +4407,8 @@ Begin
                         EntryJson :=
                             JsonStr('label', LabelText) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
-                            JsonInt('y_mils', CoordToMils(LY));
+                            JsonFloat('x_mils', CoordToMilsF(LX)) + ',' +
+                            JsonFloat('y_mils', CoordToMilsF(LY));
                         DupJson := DupJson + JsonObj(EntryJson);
                     End;
 
@@ -4464,10 +4469,10 @@ Begin
                             JsonStr('label', LabelText) + ',' +
                             JsonStr('pin', PinDesig) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
-                            JsonInt('y_mils', CoordToMils(LY)) + ',' +
-                            JsonInt('connect_x_mils', CoordToMils(CX)) + ',' +
-                            JsonInt('connect_y_mils', CoordToMils(CY));
+                            JsonFloat('x_mils', CoordToMilsF(LX)) + ',' +
+                            JsonFloat('y_mils', CoordToMilsF(LY)) + ',' +
+                            JsonFloat('connect_x_mils', CoordToMilsF(CX)) + ',' +
+                            JsonFloat('connect_y_mils', CoordToMilsF(CY));
                         RootJson := RootJson + JsonObj(EntryJson);
                     End;
                 Except End;

@@ -1635,7 +1635,7 @@ End;
 Function BuildViolationJson(Violation : IPCB_Violation) : String;
 Var
     RuleName, P1Desc, P2Desc, P1Net, P2Net, P1Type, P2Type : String;
-    P1X, P1Y, P2X, P2Y, VX, VY : Integer;
+    P1X, P1Y, P2X, P2Y, VX, VY : Double;
     P1Layer, P2Layer, VLayer : String;
     BBox : TCoordRect;
     Prim : IPCB_Primitive;
@@ -1651,12 +1651,12 @@ Begin
     VX := 0; VY := 0; VLayer := '';
     Try
         BBox := Violation.BoundingRectangle;
-        VX := CoordToMils((BBox.Left + BBox.Right) Div 2);
-        VY := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+        VX := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+        VY := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
     Except End;
     Try VLayer := GetLayerString(Violation.Layer); Except End;
-    Result := Result + ',"x_mils":' + IntToStr(VX);
-    Result := Result + ',"y_mils":' + IntToStr(VY);
+    Result := Result + ',"x_mils":' + FloatToJsonStr(VX);
+    Result := Result + ',"y_mils":' + FloatToJsonStr(VY);
     Result := Result + ',"layer":"' + EscapeJsonString(VLayer) + '"';
 
     P1Desc := ''; P1Net := ''; P1Type := ''; P1X := 0; P1Y := 0; P1Layer := '';
@@ -1669,8 +1669,8 @@ Begin
             Try P1Type := ObjectIDToObjectName(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
-                P1X := CoordToMils((BBox.Left + BBox.Right) Div 2);
-                P1Y := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+                P1X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+                P1Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
             Try P1Layer := GetLayerString(Prim.Layer); Except End;
         End;
@@ -1680,8 +1680,8 @@ Begin
         JsonStr('type', P1Type) + ',' +
         JsonStr('net', P1Net) + ',' +
         JsonStr('layer', P1Layer) + ',' +
-        JsonInt('x_mils', P1X) + ',' +
-        JsonInt('y_mils', P1Y)
+        JsonFloat('x_mils', P1X) + ',' +
+        JsonFloat('y_mils', P1Y)
     );
 
     P2Desc := ''; P2Net := ''; P2Type := ''; P2X := 0; P2Y := 0; P2Layer := '';
@@ -1694,8 +1694,8 @@ Begin
             Try P2Type := ObjectIDToObjectName(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
-                P2X := CoordToMils((BBox.Left + BBox.Right) Div 2);
-                P2Y := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+                P2X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+                P2Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
             Try P2Layer := GetLayerString(Prim.Layer); Except End;
         End;
@@ -1705,8 +1705,8 @@ Begin
         JsonStr('type', P2Type) + ',' +
         JsonStr('net', P2Net) + ',' +
         JsonStr('layer', P2Layer) + ',' +
-        JsonInt('x_mils', P2X) + ',' +
-        JsonInt('y_mils', P2Y)
+        JsonFloat('x_mils', P2X) + ',' +
+        JsonFloat('y_mils', P2Y)
     );
     Result := Result + '}';
 End;
@@ -1903,7 +1903,8 @@ Var
     BBox : TCoordRect;
     JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator : String;
     First : Boolean;
-    Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
+    Count : Integer;
+    HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1932,7 +1933,7 @@ Begin
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
         Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
-        Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
+        Try HeightMils := CoordToMilsF(Comp.Height); Except HeightMils := 0; End;
 
         { Bounding rectangle for collision/placement planning. Returns the    }
         { current axis-aligned bounding box in mils, accounting for the      }
@@ -1941,10 +1942,10 @@ Begin
         BBoxW := 0; BBoxH := 0;
         Try
             BBox := Comp.BoundingRectangle;
-            BBoxX1 := CoordToMils(BBox.X1);
-            BBoxY1 := CoordToMils(BBox.Y1);
-            BBoxX2 := CoordToMils(BBox.X2);
-            BBoxY2 := CoordToMils(BBox.Y2);
+            BBoxX1 := CoordToMilsF(BBox.X1);
+            BBoxY1 := CoordToMilsF(BBox.Y1);
+            BBoxX2 := CoordToMilsF(BBox.X2);
+            BBoxY2 := CoordToMilsF(BBox.Y2);
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
@@ -1957,10 +1958,10 @@ Begin
             + '"layer":"' + EscapeJsonString(LayerStr) + '",'
             + '"footprint":"' + EscapeJsonString(Footprint) + '",'
             + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
-            + '"height_mils":' + IntToStr(HeightMils) + ','
-            + '"bbox":{"x1":' + IntToStr(BBoxX1) + ',"y1":' + IntToStr(BBoxY1)
-            + ',"x2":' + IntToStr(BBoxX2) + ',"y2":' + IntToStr(BBoxY2)
-            + ',"width":' + IntToStr(BBoxW) + ',"height":' + IntToStr(BBoxH) + '}}';
+            + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
+            + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
+            + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
+            + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '}}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
     End;
@@ -4507,15 +4508,15 @@ Begin
             If Obj.ObjectId = eTrackObject Then
             Begin
                 Track := Obj;
-                DX := CoordToMils(Track.x2) - CoordToMils(Track.x1);
-                DY := CoordToMils(Track.y2) - CoordToMils(Track.y1);
+                DX := CoordToMilsF(Track.x2) - CoordToMilsF(Track.x1);
+                DY := CoordToMilsF(Track.y2) - CoordToMilsF(Track.y1);
                 SegLen := Sqrt(DX * DX + DY * DY);
             End
             Else If Obj.ObjectId = eArcObject Then
             Begin
                 Arc := Obj;
                 Try
-                    RadiusMils := CoordToMils(Arc.Radius);
+                    RadiusMils := CoordToMilsF(Arc.Radius);
                     ArcAngle := Arc.EndAngle - Arc.StartAngle;
                     If ArcAngle < 0 Then ArcAngle := ArcAngle + 360;
                     SegLen := RadiusMils * ArcAngle * 3.14159265358979 / 180.0;
@@ -6232,7 +6233,7 @@ Var
     Model : IPCB_Model;
     ModelPath, LayerStr, Why : String;
     BodyLayer : TLayer;
-    Standoff, CurX, CurY : Integer;
+    Standoff, CurX, CurY : Double;
     BodyX, BodyY : Double;
     DidStandoff, DidMove : Boolean;
     ReadBackX, ReadBackY : Double;
@@ -6264,7 +6265,7 @@ Begin
 
     BodyX := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     BodyY := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
-    Standoff := Round(StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0));
+    Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopLayer';
     { Checked against the board before anything is made: the layer was   }
@@ -6333,8 +6334,8 @@ Begin
           The delta is computed from where the factory actually put the
           body rather than assuming it starts at the origin. }
         Try
-            CurX := CoordToMils(Body.x);
-            CurY := CoordToMils(Body.y);
+            CurX := CoordToMilsF(Body.x);
+            CurY := CoordToMilsF(Body.y);
         Except
             CurX := 0;
             CurY := 0;
@@ -6357,7 +6358,7 @@ Begin
 
         If Standoff <> 0 Then
             Try
-                Body.StandoffHeight := MilsToCoord(Standoff);
+                Body.StandoffHeight := MilsToCoordF(Standoff);
                 DidStandoff := True;
             Except End;
     Finally
@@ -6389,7 +6390,7 @@ Begin
             JsonFloat('x', ReadBackX) + ',' +
             JsonFloat('y', ReadBackY) + ',' +
             JsonStr('layer', LayerStr) + ',' +
-            JsonInt('standoff_height', Standoff) + ',' +
+            JsonFloat('standoff_height', Standoff) + ',' +
             JsonBool('standoff_applied', DidStandoff) + ',' +
             JsonBool('moved', DidMove) + ',' +
             JsonBool('rotation_applied', False) + ',' +
@@ -7838,7 +7839,8 @@ Var
     Board : IPCB_Board;
     DesStr, AlignStr, Remaining, OneDesig : String;
     Comp : IPCB_Component;
-    CommaPos, I, CX, CY : Integer;
+    CommaPos, I : Integer;
+    CX, CY : Double;
     { Heap-allocated list of resolved designators. The original code held }
     { IPCB_Component pointers in `Array[0..99] Of IPCB_Component`, which  }
     { is a fixed-size local array of a managed type - that triggers the   }
@@ -7846,7 +7848,7 @@ Var
     { [[delphiscript_fixed_string_array_bug]]. The fix walks twice:        }
     { first pass to validate + measure bounds, second pass to apply.      }
     Resolved : TStringList;
-    MinX, MaxX, MinY, MaxY, CenterX, CenterY : Integer;
+    MinX, MaxX, MinY, MaxY, CenterX, CenterY : Double;
     DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -7899,23 +7901,23 @@ Begin
 
         { First pass: bounding extents. }
         Comp := Board.GetPcbComponentByRefDes(Resolved[0]);
-        MinX := CoordToMils(Comp.x);
+        MinX := CoordToMilsF(Comp.x);
         MaxX := MinX;
-        MinY := CoordToMils(Comp.y);
+        MinY := CoordToMilsF(Comp.y);
         MaxY := MinY;
         For I := 1 To Resolved.Count - 1 Do
         Begin
             Comp := Board.GetPcbComponentByRefDes(Resolved[I]);
             If Comp = Nil Then Continue;
-            CX := CoordToMils(Comp.x);
-            CY := CoordToMils(Comp.y);
+            CX := CoordToMilsF(Comp.x);
+            CY := CoordToMilsF(Comp.y);
             If CX < MinX Then MinX := CX;
             If CX > MaxX Then MaxX := CX;
             If CY < MinY Then MinY := CY;
             If CY > MaxY Then MaxY := CY;
         End;
-        CenterX := (MinX + MaxX) Div 2;
-        CenterY := (MinY + MaxY) Div 2;
+        CenterX := (MinX + MaxX) / 2;
+        CenterY := (MinY + MaxY) / 2;
 
         { Second pass: apply alignment. }
         PCBServer.PreProcess;
@@ -7934,17 +7936,17 @@ Begin
                 DeltaX := 0;
                 DeltaY := 0;
                 If AlignStr = 'left' Then
-                    DeltaX := MilsToCoord(MinX) - Comp.x
+                    DeltaX := MilsToCoordF(MinX) - Comp.x
                 Else If AlignStr = 'right' Then
-                    DeltaX := MilsToCoord(MaxX) - Comp.x
+                    DeltaX := MilsToCoordF(MaxX) - Comp.x
                 Else If AlignStr = 'top' Then
-                    DeltaY := MilsToCoord(MaxY) - Comp.y
+                    DeltaY := MilsToCoordF(MaxY) - Comp.y
                 Else If AlignStr = 'bottom' Then
-                    DeltaY := MilsToCoord(MinY) - Comp.y
+                    DeltaY := MilsToCoordF(MinY) - Comp.y
                 Else If AlignStr = 'center_x' Then
-                    DeltaX := MilsToCoord(CenterX) - Comp.x
+                    DeltaX := MilsToCoordF(CenterX) - Comp.x
                 Else If AlignStr = 'center_y' Then
-                    DeltaY := MilsToCoord(CenterY) - Comp.y;
+                    DeltaY := MilsToCoordF(CenterY) - Comp.y;
                 If (DeltaX <> 0) Or (DeltaY <> 0) Then
                     Comp.MoveByXY(DeltaX, DeltaY);
 
@@ -8063,7 +8065,7 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     DesStr, GridStr : String;
-    GridSize, OldX, OldY, NewX, NewY : Integer;
+    GridSize, OldX, OldY, NewX, NewY : Double;
     DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -8082,7 +8084,7 @@ Begin
         Exit;
     End;
 
-    GridSize := StrToIntDef(GridStr, 50);
+    GridSize := StrToFloatDef(GridStr, 50);
     If GridSize <= 0 Then GridSize := 50;
 
     Comp := Board.GetPcbComponentByRefDes(DesStr);
@@ -8092,8 +8094,8 @@ Begin
         Exit;
     End;
 
-    OldX := CoordToMils(Comp.x);
-    OldY := CoordToMils(Comp.y);
+    OldX := CoordToMilsF(Comp.x);
+    OldY := CoordToMilsF(Comp.y);
 
     // Snap to nearest grid point using rounding
     NewX := Round(OldX / GridSize) * GridSize;
@@ -8105,8 +8107,8 @@ Begin
             PCBM_BeginModify, c_NoEventData);
 
         { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
-        DeltaX := MilsToCoord(NewX) - Comp.x;
-        DeltaY := MilsToCoord(NewY) - Comp.y;
+        DeltaX := MilsToCoordF(NewX) - Comp.x;
+        DeltaY := MilsToCoordF(NewY) - Comp.y;
         If (DeltaX <> 0) Or (DeltaY <> 0) Then
             Comp.MoveByXY(DeltaX, DeltaY);
 
@@ -8120,11 +8122,11 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
-        + '"old_x":' + IntToStr(OldX) + ','
-        + '"old_y":' + IntToStr(OldY) + ','
-        + '"new_x":' + IntToStr(NewX) + ','
-        + '"new_y":' + IntToStr(NewY) + ','
-        + '"grid_size":' + IntToStr(GridSize) + '}');
+        + '"old_x":' + FloatToJsonStr(OldX) + ','
+        + '"old_y":' + FloatToJsonStr(OldY) + ','
+        + '"new_x":' + FloatToJsonStr(NewX) + ','
+        + '"new_y":' + FloatToJsonStr(NewY) + ','
+        + '"grid_size":' + FloatToJsonStr(GridSize) + '}');
 End;
 
 {..............................................................................}
@@ -8326,7 +8328,7 @@ Var
     ArcObj : IPCB_Arc;
     ViaObj : IPCB_Via;
     XStr, YStr, LayerStr, ObjTypeStr : String;
-    TargetX, TargetY : Integer;
+    TargetX, TargetY : Double;
     TargetLayer : TLayer;
     ObjFilter : TObjectId;
     Found : Boolean;
@@ -8361,8 +8363,8 @@ Begin
 
     If ObjTypeStr = '' Then ObjTypeStr := 'track';
 
-    TargetX := StrToIntDef(XStr, 0);
-    TargetY := StrToIntDef(YStr, 0);
+    TargetX := StrToFloatDef(XStr, 0);
+    TargetY := StrToFloatDef(YStr, 0);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -8466,7 +8468,7 @@ Begin
     If (Not Found) Or (BestDist > 100) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
-            'No ' + ObjTypeStr + ' found within 100 mils of (' + IntToStr(TargetX) + ',' + IntToStr(TargetY) + ')');
+            'No ' + ObjTypeStr + ' found within 100 mils of (' + FloatToJsonStr(TargetX) + ',' + FloatToJsonStr(TargetY) + ')');
         Exit;
     End;
 
@@ -8511,7 +8513,7 @@ Var
     FilterNet, FilterDesig : String;
     JsonItems, PadName, NetName, LayerStr, CompDesig, ShapeStr : String;
     PadCache : TPadCache;
-    SolderMask, SolderMaskBottom, PasteMask : Integer;
+    SolderMask, SolderMaskBottom, PasteMask : Double;
     MaskSeparateFlag : Boolean;
     First : Boolean;
     Count : Integer;
@@ -8590,11 +8592,11 @@ Begin
             MaskSeparateFlag := PadCache.UseSeparateExpansions;
             If PadCache.SolderMaskExpansionValid = eCacheManual Then
             Begin
-                SolderMask := CoordToMils(PadCache.SolderMaskExpansion);
-                SolderMaskBottom := CoordToMils(PadCache.SolderMaskBottomExpansion);
+                SolderMask := CoordToMilsF(PadCache.SolderMaskExpansion);
+                SolderMaskBottom := CoordToMilsF(PadCache.SolderMaskBottomExpansion);
             End;
             If PadCache.PasteMaskExpansionValid = eCacheManual Then
-                PasteMask := CoordToMils(PadCache.PasteMaskExpansion);
+                PasteMask := CoordToMilsF(PadCache.PasteMaskExpansion);
         Except End;
 
         JsonItems := JsonItems + '{"name":"' + EscapeJsonString(PadName) + '",'
@@ -8609,10 +8611,10 @@ Begin
             + '"hole_size":' + FloatToJsonStr(CoordToMilsF(Pad.HoleSize)) + ','
             + '"rotation":' + FloatToJsonStr(Pad.Rotation) + ','
             + '"is_smd":' + BoolToJsonStr(Pad.IsSurfaceMount) + ','
-            + '"solder_mask_expansion":' + IntToStr(SolderMask) + ','
-            + '"solder_mask_bottom_expansion":' + IntToStr(SolderMaskBottom) + ','
+            + '"solder_mask_expansion":' + FloatToJsonStr(SolderMask) + ','
+            + '"solder_mask_bottom_expansion":' + FloatToJsonStr(SolderMaskBottom) + ','
             + '"solder_mask_separate":' + BoolToJsonStr(MaskSeparateFlag) + ','
-            + '"paste_mask_expansion":' + IntToStr(PasteMask) + '}';
+            + '"paste_mask_expansion":' + FloatToJsonStr(PasteMask) + '}';
         Inc(Count);
 
         If Count >= 500 Then Break;  // Limit output size
@@ -9460,8 +9462,8 @@ Begin
         Begin
             Inc(TrackCount);
             TrkObj := Obj;
-            DX := CoordToMils(TrkObj.X2) - CoordToMils(TrkObj.X1);
-            DY := CoordToMils(TrkObj.Y2) - CoordToMils(TrkObj.Y1);
+            DX := CoordToMilsF(TrkObj.X2) - CoordToMilsF(TrkObj.X1);
+            DY := CoordToMilsF(TrkObj.Y2) - CoordToMilsF(TrkObj.Y1);
             TotalTraceLen := TotalTraceLen + Sqrt(DX * DX + DY * DY);
         End
         Else If Obj.ObjectId = eViaObject Then Inc(ViaCount)
@@ -9487,8 +9489,8 @@ Begin
             Outline.Rebuild;
             Outline.Validate;
             BR := Outline.BoundingRectangle;
-            BoardWidth := CoordToMils(BR.Right) - CoordToMils(BR.Left);
-            BoardHeight := CoordToMils(BR.Top) - CoordToMils(BR.Bottom);
+            BoardWidth := CoordToMilsF(BR.Right) - CoordToMilsF(BR.Left);
+            BoardHeight := CoordToMilsF(BR.Top) - CoordToMilsF(BR.Bottom);
             BoardArea := BoardWidth * BoardHeight;
         End;
     Except End;
@@ -10186,11 +10188,12 @@ Function PCB_PlaceViaArray(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Via : IPCB_Via;
-    X1, Y1, X2, Y2, TmpI, Pitch : Integer;
+    X1, Y1, X2, Y2, TmpI, Pitch : Double;
     ViaSize, ViaHole : Double;
     NetStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
-    Ix, Iy, PlacedCount : Integer;
+    Ix, Iy : Double;
+    Nx, Ny, PlacedCount : Integer;
     LowLayer, HighLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -10200,11 +10203,11 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
-    Pitch := StrToIntDef(ExtractJsonValue(Params, 'pitch'), 50);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
+    Pitch := StrToFloatDef(ExtractJsonValue(Params, 'pitch'), 50);
     ViaSize := StrToFloatDef(ExtractJsonValue(Params, 'size'), 30);
     ViaHole := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 12);
     NetStr := ExtractJsonValue(Params, 'net');
@@ -10239,17 +10242,22 @@ Begin
     PlacedCount := 0;
     PCBServer.PreProcess;
     Try
+        { Positions are X1 + n * Pitch, not a running sum, so a decimal pitch }
+        { does not drift; the 1e-6 mil slack keeps the last column when the  }
+        { span is an exact multiple of the pitch.                           }
+        Ny := 0;
         Iy := Y1;
-        While Iy <= Y2 Do
+        While Iy <= Y2 + 0.000001 Do
         Begin
+            Nx := 0;
             Ix := X1;
-            While Ix <= X2 Do
+            While Ix <= X2 + 0.000001 Do
             Begin
                 Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
                 If Via <> Nil Then
                 Begin
-                    Via.x := MilsToCoord(Ix);
-                    Via.y := MilsToCoord(Iy);
+                    Via.x := MilsToCoordF(Ix);
+                    Via.y := MilsToCoordF(Iy);
                     Via.Size := MilsToCoordF(ViaSize);
                     Via.HoleSize := MilsToCoordF(ViaHole);
                     Via.LowLayer := LowLayer;
@@ -10260,9 +10268,11 @@ Begin
                         PCBM_BoardRegisteration, Via.I_ObjectAddress);
                     Inc(PlacedCount);
                 End;
-                Ix := Ix + Pitch;
+                Inc(Nx);
+                Ix := X1 + Nx * Pitch;
             End;
-            Iy := Iy + Pitch;
+            Inc(Ny);
+            Iy := Y1 + Ny * Pitch;
         End;
     Finally
         PCBServer.PostProcess;
@@ -10272,9 +10282,9 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount) + ','
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"pitch":' + IntToStr(Pitch) + ','
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
+        + '"pitch":' + FloatToJsonStr(Pitch) + ','
         + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
         + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
@@ -10585,9 +10595,9 @@ Var
     Board : IPCB_Board;
     DesStr, AxisStr, StartStr, EndStr, Remaining, DesName : String;
     AxisX : Boolean;
-    StartVal, EndVal, CommaPos, Count, I : Integer;
-    Step : Double;
-    NewPos : Integer;
+    CommaPos, Count, I : Integer;
+    StartVal, EndVal, Step : Double;
+    NewPos : Double;
     CompList : TInterfaceList;
     Comp : IPCB_Component;
     Iterator : IPCB_BoardIterator;
@@ -10617,8 +10627,8 @@ Begin
     End;
     If AxisStr = '' Then AxisStr := 'x';
     AxisX := (AxisStr = 'x');
-    StartVal := StrToIntDef(StartStr, 0);
-    EndVal := StrToIntDef(EndStr, 0);
+    StartVal := StrToFloatDef(StartStr, 0);
+    EndVal := StrToFloatDef(EndStr, 0);
 
     { Collect components that match the comma list, preserving list order. }
     CompList := CreateObject(TInterfaceList);
@@ -10675,19 +10685,19 @@ Begin
         Begin
             Comp := CompList.Items[I];
             If Comp = Nil Then Continue;
-            NewPos := StartVal + Round(Step * I);
+            NewPos := StartVal + Step * I;
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
             { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
             If AxisX Then
             Begin
-                DeltaX := MilsToCoord(NewPos) - Comp.x;
+                DeltaX := MilsToCoordF(NewPos) - Comp.x;
                 DeltaY := 0;
             End
             Else
             Begin
                 DeltaX := 0;
-                DeltaY := MilsToCoord(NewPos) - Comp.y;
+                DeltaY := MilsToCoordF(NewPos) - Comp.y;
             End;
             If (DeltaX <> 0) Or (DeltaY <> 0) Then
                 Comp.MoveByXY(DeltaX, DeltaY);
@@ -10703,7 +10713,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"distributed":' + IntToStr(Count) + ','
         + '"axis":"' + EscapeJsonString(AxisStr) + '",'
-        + '"start":' + IntToStr(StartVal) + ',"end":' + IntToStr(EndVal) + '}');
+        + '"start":' + FloatToJsonStr(StartVal) + ',"end":' + FloatToJsonStr(EndVal) + '}');
 End;
 
 {..............................................................................}
@@ -11854,7 +11864,7 @@ Function PCB_PlaceAngularDimension(Params : String; RequestId : String) : String
 Var
     Board : IPCB_Board;
     Dim : IPCB_Dimension;
-    X1, Y1, X2, Y2 : Integer;
+    X1, Y1, X2, Y2 : Double;
     Cx, Cy, Radius : Double;
     LayerStr : String;
     TargetLayer : TLayer;
@@ -11868,10 +11878,10 @@ Begin
 
     Cx := StrToFloatDef(ExtractJsonValue(Params, 'center_x'), 0);
     Cy := StrToFloatDef(ExtractJsonValue(Params, 'center_y'), 0);
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
@@ -12321,13 +12331,14 @@ Var
     Pad : IPCB_Pad;
     Cache : TPadCache;
     Designator, PadName, CompDes, PadId : String;
-    MinGridSizeMils, MinGapMils : Integer;
+    MinGridSizeMils, MinGapMils : Double;
     MinCoverPct : Double;
-    GridSize, MinGap : Integer;
+    GridSize, MinGap : Double;
     GridXCnt, GridYCnt : Integer;
-    GridXPad, GridYPad : Integer;
+    GridXPad, GridYPad : Double;
     PadW, PadH, PadCenterX, PadCenterY : Integer;
-    PadAreaMils2, PasteAreaMils2 : Int64;
+    PadWMils, PadHMils : Double;
+    PadAreaMils2, PasteAreaMils2 : Double;
     PctCover : Double;
     Found : Boolean;
     PasteLayer : TLayer;
@@ -12345,8 +12356,8 @@ Begin
     End;
     Designator := ExtractJsonValue(Params, 'designator');
     PadName    := ExtractJsonValue(Params, 'pad_name');
-    MinGridSizeMils := StrToIntDef(ExtractJsonValue(Params, 'min_grid_size_mils'), 15);
-    MinGapMils      := StrToIntDef(ExtractJsonValue(Params, 'min_gap_mils'), 5);
+    MinGridSizeMils := StrToFloatDef(ExtractJsonValue(Params, 'min_grid_size_mils'), 15);
+    MinGapMils      := StrToFloatDef(ExtractJsonValue(Params, 'min_gap_mils'), 5);
     MinCoverPct     := StrToFloatDef(ExtractJsonValue(Params, 'min_coverage_pct'), 60.0);
     If Designator = '' Then
     Begin
@@ -12424,7 +12435,9 @@ Begin
 
     PadCenterX := Pad.X;
     PadCenterY := Pad.Y;
-    PadAreaMils2 := CoordToMils(PadW) * CoordToMils(PadH);
+    PadWMils := CoordToMilsF(PadW);
+    PadHMils := CoordToMilsF(PadH);
+    PadAreaMils2 := PadWMils * PadHMils;
     GridSize := MinGridSizeMils;
     MinGap := MinGapMils;
 
@@ -12437,8 +12450,8 @@ Begin
     { Outer loop -- bump grid size until coverage % satisfied.               }
     While PctCover < MinCoverPct Do
     Begin
-        GridXCnt := Trunc(CoordToMils(PadW) / GridSize);
-        GridYCnt := Trunc(CoordToMils(PadH) / GridSize);
+        GridXCnt := Trunc(PadWMils / GridSize);
+        GridYCnt := Trunc(PadHMils / GridSize);
 
         { Inner loop -- shrink grid count until gap is >= MinGap.             }
         GridXPad := 0; GridYPad := 0;
@@ -12446,8 +12459,8 @@ Begin
         Begin
             If GridXCnt <= 0 Then Break;
             If GridYCnt <= 0 Then Break;
-            GridXPad := (CoordToMils(PadW) - (GridXCnt * GridSize)) Div (GridXCnt + 1);
-            GridYPad := (CoordToMils(PadH) - (GridYCnt * GridSize)) Div (GridYCnt + 1);
+            GridXPad := (PadWMils - (GridXCnt * GridSize)) / (GridXCnt + 1);
+            GridYPad := (PadHMils - (GridYCnt * GridSize)) / (GridYCnt + 1);
             If GridXPad < MinGap Then Dec(GridXCnt);
             If GridYPad < MinGap Then Dec(GridYCnt);
         End;
@@ -12455,8 +12468,8 @@ Begin
         If (GridXCnt <= 0) Or (GridYCnt <= 0) Then
         Begin
             Result := BuildErrorResponse(RequestId, 'INFEASIBLE',
-                'Pad too small to fit grid at min_grid_size=' + IntToStr(MinGridSizeMils) +
-                ' / min_gap=' + IntToStr(MinGapMils));
+                'Pad too small to fit grid at min_grid_size=' + FloatToJsonStr(MinGridSizeMils) +
+                ' / min_gap=' + FloatToJsonStr(MinGapMils));
             Exit;
         End;
 
@@ -12464,8 +12477,8 @@ Begin
         PctCover := (PasteAreaMils2 * 100.0) / PadAreaMils2;
         If PctCover < MinCoverPct Then GridSize := GridSize + 5;
         { Safety -- stop if a single grid square fills the whole pad.        }
-        If GridSize >= CoordToMils(PadW) Then Break;
-        If GridSize >= CoordToMils(PadH) Then Break;
+        If GridSize >= PadWMils Then Break;
+        If GridSize >= PadHMils Then Break;
     End;
 
     PCBServer.PreProcess;
@@ -12485,11 +12498,11 @@ Begin
             For J := 0 To GridYCnt - 1 Do
             Begin
                 FillX1 := PadCenterX - (PadW Div 2)
-                          + MilsToCoord(GridXPad * (I + 1) + I * GridSize);
-                FillX2 := FillX1 + MilsToCoord(GridSize);
+                          + MilsToCoordF(GridXPad * (I + 1) + I * GridSize);
+                FillX2 := FillX1 + MilsToCoordF(GridSize);
                 FillY1 := PadCenterY - (PadH Div 2)
-                          + MilsToCoord(GridYPad * (J + 1) + J * GridSize);
-                FillY2 := FillY1 + MilsToCoord(GridSize);
+                          + MilsToCoordF(GridYPad * (J + 1) + J * GridSize);
+                FillY2 := FillY1 + MilsToCoordF(GridSize);
 
                 Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
                 Fill.X1Location := FillX1;
@@ -12514,9 +12527,9 @@ Begin
             JsonStr('pad_name', PadName) + ',' +
             JsonInt('grid_x', GridXCnt) + ',' +
             JsonInt('grid_y', GridYCnt) + ',' +
-            JsonInt('grid_size_mils', GridSize) + ',' +
-            JsonInt('gap_x_mils', GridXPad) + ',' +
-            JsonInt('gap_y_mils', GridYPad) + ',' +
+            JsonFloat('grid_size_mils', GridSize) + ',' +
+            JsonFloat('gap_x_mils', GridXPad) + ',' +
+            JsonFloat('gap_y_mils', GridYPad) + ',' +
             JsonInt('fills_placed', Placed) + ',' +
             JsonFloat('coverage_pct', PctCover)
         ));
@@ -12721,8 +12734,8 @@ Function PCB_GetDifferentialPairs(Params : String; RequestId : String) : String;
                     If Prim.ObjectId = eTrackObject Then
                     Begin
                         Track := Prim;
-                        Dx := CoordToMils(Track.X2 - Track.X1);
-                        Dy := CoordToMils(Track.Y2 - Track.Y1);
+                        Dx := CoordToMilsF(Track.X2 - Track.X1);
+                        Dy := CoordToMilsF(Track.Y2 - Track.Y1);
                         Total := Total + Sqrt(Dx * Dx + Dy * Dy);
                     End
                     Else If Prim.ObjectId = eArcObject Then
@@ -12731,7 +12744,7 @@ Function PCB_GetDifferentialPairs(Params : String; RequestId : String) : String;
                         SweepDeg := Abs(Arc.EndAngle - Arc.StartAngle);
                         If SweepDeg > 360 Then SweepDeg := SweepDeg - 360;
                         Total := Total + (SweepDeg / 360.0) * 2.0 * 3.14159265358979 *
-                                          CoordToMils(Arc.Radius);
+                                          CoordToMilsF(Arc.Radius);
                     End;
                 Except End;
                 Prim := GrIter.NextPCBObject;
@@ -15031,10 +15044,11 @@ Var
     Board : IPCB_Board;
     Net : IPCB_Net;
     NetName, LayerStr : String;
-    AddLen, Bumps, I : Integer;
+    Bumps, I : Integer;
+    AddLen, BeforeLen, AfterLen : Double;
     X0, Y0, Amp, WidthMils : Double;
     Layer : TLayer;
-    BeforeLen, AfterLen, AmpC, WidthC, X, Step : Integer;
+    AmpC, WidthC, X, Step : Integer;
     Trk : IPCB_Track;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -15057,7 +15071,7 @@ Begin
         Exit;
     End;
 
-    AddLen := StrToIntDef(ExtractJsonValue(Params, 'add_length_mils'), 0);
+    AddLen := StrToFloatDef(ExtractJsonValue(Params, 'add_length_mils'), 0);
     X0 := StrToFloatDef(ExtractJsonValue(Params, 'x_mils'), 0);
     Y0 := StrToFloatDef(ExtractJsonValue(Params, 'y_mils'), 0);
     Amp := StrToFloatDef(ExtractJsonValue(Params, 'amplitude_mils'), 40);
@@ -15088,7 +15102,7 @@ Begin
     Step := MilsToCoordF(Amp);            { horizontal pitch per bump leg }
     X := MilsToCoordF(X0);
 
-    BeforeLen := CoordToMils(Net.RoutedLength);
+    BeforeLen := CoordToMilsF(Net.RoutedLength);
 
     PCBServer.PreProcess;
     Try
@@ -15126,15 +15140,15 @@ Begin
 
     ResetParameters;
     RunProcess('PCB:UpdateConnectivity');
-    AfterLen := CoordToMils(Net.RoutedLength);
+    AfterLen := CoordToMilsF(Net.RoutedLength);
     MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(NetName) + '",'
         + '"bumps":' + IntToStr(Bumps) + ','
-        + '"length_before_mils":' + IntToStr(BeforeLen) + ','
-        + '"length_after_mils":' + IntToStr(AfterLen) + ','
-        + '"added_mils":' + IntToStr(AfterLen - BeforeLen) + ','
+        + '"length_before_mils":' + FloatToJsonStr(BeforeLen) + ','
+        + '"length_after_mils":' + FloatToJsonStr(AfterLen) + ','
+        + '"added_mils":' + FloatToJsonStr(AfterLen - BeforeLen) + ','
         + '"drc_checked":false}');
 End;
 
@@ -16090,7 +16104,8 @@ Var
     MoveEnd : Integer;
     fx, fy, mx, my, tx, ty : Double;
     dxv, dyv, len2, t, nx, ny : Double;
-    NewMx, NewMy, OldMxMils, OldMyMils : Integer;
+    NewMx, NewMy : Integer;
+    OldMxMils, OldMyMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -16153,8 +16168,8 @@ Begin
     Begin
         mx := Best.x2; my := Best.y2; fx := Best.x1; fy := Best.y1;
     End;
-    OldMxMils := CoordToMils(Round(mx));
-    OldMyMils := CoordToMils(Round(my));
+    OldMxMils := CoordToMilsF(Round(mx));
+    OldMyMils := CoordToMilsF(Round(my));
 
     dxv := mx - fx; dyv := my - fy;
     len2 := dxv * dxv + dyv * dyv;
@@ -16185,7 +16200,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"moved_end":' + IntToStr(MoveEnd)
-        + ',"old_x":' + IntToStr(OldMxMils) + ',"old_y":' + IntToStr(OldMyMils)
+        + ',"old_x":' + FloatToJsonStr(OldMxMils) + ',"old_y":' + FloatToJsonStr(OldMyMils)
         + ',"new_x":' + FloatToJsonStr(CoordToMilsF(NewMx)) + ',"new_y":' + FloatToJsonStr(CoordToMilsF(NewMy))
         + ',"layer":"' + EscapeJsonString(GetLayerString(Best.Layer)) + '"}');
 End;

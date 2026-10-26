@@ -5818,7 +5818,7 @@ End;
 Function Lib_Link3DModel(Params : String; RequestId : String) : String;
 Var
     ModelPath, ComponentName, FpName, AppliedJson : String;
-    OffX, OffY, OffZ : Integer;
+    OffX, OffY, OffZ : Double;
     OrgX, OrgY : TCoord;
     RotZ : Double;
     DidStandoff, DidRotation, DidMove, Shifted : Boolean;
@@ -5835,18 +5835,18 @@ Begin
     { StandoffHeight and a PLANAR Rotation, and the PCB API reference     }
     { gives the model no X or Y tilt, so reading them would imply a       }
     { capability that does not exist.                                      }
-    { Parse as FLOAT then round. These three are declared `float` on the    }
+    { Parse as FLOAT. These three are declared `float` on the    }
     { Python side, so pydantic turns an argument of 25 into 25.0 and the    }
     { wire carries "25.0". StrToIntDef cannot read that and returns its     }
     { default, so EVERY offset arrived as 0, the `If Off <> 0` guards below }
     { skipped the assignment, and `applied` reported false. That false read }
     { as "Altium refused the adjustment" when the value had simply never    }
     { arrived, which is the worst version of this bug: the tool looked      }
-    { honest while silently discarding the caller's numbers. MilsToCoord    }
-    { takes an Integer, hence the Round rather than widening the locals.    }
-    OffX := Round(StrToFloatDef(ExtractJsonValue(Params, 'offset_x'), 0.0));
-    OffY := Round(StrToFloatDef(ExtractJsonValue(Params, 'offset_y'), 0.0));
-    OffZ := Round(StrToFloatDef(ExtractJsonValue(Params, 'offset_z'), 0.0));
+    { honest while silently discarding the caller's numbers. Kept as read: }
+    { rounding them to a whole mil lost the fraction the same way (#130).   }
+    OffX := StrToFloatDef(ExtractJsonValue(Params, 'offset_x'), 0.0);
+    OffY := StrToFloatDef(ExtractJsonValue(Params, 'offset_y'), 0.0);
+    OffZ := StrToFloatDef(ExtractJsonValue(Params, 'offset_z'), 0.0);
     RotZ := StrToFloatDef(ExtractJsonValue(Params, 'rotation_z'), 0.0);
 
     If (ModelPath = '') Or (Not FileExists(ModelPath)) Then
@@ -5961,7 +5961,7 @@ Begin
                 Shifted := False;
                 If OffZ <> 0 Then
                     Try
-                        Body.StandoffHeight := MilsToCoord(OffZ);
+                        Body.StandoffHeight := MilsToCoordF(OffZ);
                         DidStandoff := True;
                     Except End;
                 { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
@@ -5974,7 +5974,7 @@ Begin
                 OrgY := FootprintOriginY(Footprint);
                 If (OrgX <> 0) Or (OrgY <> 0) Or (OffX <> 0) Or (OffY <> 0) Then
                     Try
-                        Body.MoveByXY(OrgX + MilsToCoord(OffX), OrgY + MilsToCoord(OffY));
+                        Body.MoveByXY(OrgX + MilsToCoordF(OffX), OrgY + MilsToCoordF(OffY));
                         Shifted := True;
                         DidMove := (OffX <> 0) Or (OffY <> 0);
                     Except End;
@@ -6518,7 +6518,8 @@ End;
 Function BuildLabelStyleJson(Lbl : ISch_Label; IncludeText : Boolean) : String;
 Var
     Txt : String;
-    FontId, ColorVal, OrientVal, JustVal, LocX, LocY : Integer;
+    FontId, ColorVal, OrientVal, JustVal : Integer;
+    LocX, LocY : Double;
     HiddenVal : Boolean;
 Begin
     Txt := '';
@@ -6533,8 +6534,8 @@ Begin
     Try FontId := Lbl.FontId; Except End;
     Try ColorVal := Lbl.Color; Except End;
     Try HiddenVal := Lbl.IsHidden; Except End;
-    Try LocX := CoordToMils(Lbl.Location.X); Except End;
-    Try LocY := CoordToMils(Lbl.Location.Y); Except End;
+    Try LocX := CoordToMilsF(Lbl.Location.X); Except End;
+    Try LocY := CoordToMilsF(Lbl.Location.Y); Except End;
     Try OrientVal := Lbl.Orientation; Except End;
     Try JustVal := Lbl.Justification; Except End;
 
@@ -6545,8 +6546,8 @@ Begin
         '"font_id":' + IntToStr(FontId) +
         ',"color":' + IntToStr(ColorVal) +
         ',"is_hidden":' + BoolToJsonStr(HiddenVal) +
-        ',"x":' + IntToStr(LocX) +
-        ',"y":' + IntToStr(LocY) +
+        ',"x":' + FloatToJsonStr(LocX) +
+        ',"y":' + FloatToJsonStr(LocY) +
         ',"orientation":' + IntToStr(OrientVal) +
         ',"justification":' + IntToStr(JustVal) + '}';
 End;

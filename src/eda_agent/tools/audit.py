@@ -990,7 +990,7 @@ def register_audit_tools(mcp):
 
     @mcp.tool()
     async def audit_find_off_grid_components(
-        grid_mils: int = 100,
+        grid_mils: float = 100,
     ) -> dict[str, Any]:
         """Find schematic components placed off the snap grid.
 
@@ -1018,7 +1018,7 @@ def register_audit_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "audit.find_off_grid_components",
-            {"grid_mils": str(round(grid_mils))},
+            {"grid_mils": _mils(grid_mils)},
         )
 
     @mcp.tool()

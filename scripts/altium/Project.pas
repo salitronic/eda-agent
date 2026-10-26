@@ -1969,8 +1969,8 @@ Begin
         Begin
             If Not First Then OutlineStr := OutlineStr + ',';
             First := False;
-            OutlineStr := OutlineStr + '{"x":' + IntToStr(CoordToMils(Board.BoardOutline.Segments[I].vx)) +
-                ',"y":' + IntToStr(CoordToMils(Board.BoardOutline.Segments[I].vy)) + '}';
+            OutlineStr := OutlineStr + '{"x":' + FloatToJsonStr(CoordToMilsF(Board.BoardOutline.Segments[I].vx)) +
+                ',"y":' + FloatToJsonStr(CoordToMilsF(Board.BoardOutline.Segments[I].vy)) + '}';
         End;
     Except
     End;
@@ -2013,8 +2013,8 @@ Begin
     BoardFile := '';
     Try BoardFile := Board.FileName; Except End;
 
-    Data := '{"origin_x":' + IntToStr(CoordToMils(Board.XOrigin));
-    Data := Data + ',"origin_y":' + IntToStr(CoordToMils(Board.YOrigin));
+    Data := '{"origin_x":' + FloatToJsonStr(CoordToMilsF(Board.XOrigin));
+    Data := Data + ',"origin_y":' + FloatToJsonStr(CoordToMilsF(Board.YOrigin));
     Data := Data + ',"board_path":"' + EscapeJsonString(BoardFile) + '"';
     Data := Data + ',"outline":' + OutlineStr;
     Data := Data + ',"layers":' + LayerStr + '}';

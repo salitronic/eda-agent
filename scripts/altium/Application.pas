@@ -400,8 +400,8 @@ Begin
         If Board <> Nil Then
         Begin
             Data := Data + '"pcb":{';
-            Try Data := Data + '"snap_x_mils":' + IntToStr(CoordToMils(Board.SnapGridSizeX)); Except Data := Data + '"snap_x_mils":0'; End;
-            Try Data := Data + ',"snap_y_mils":' + IntToStr(CoordToMils(Board.SnapGridSizeY)); Except Data := Data + ',"snap_y_mils":0'; End;
+            Try Data := Data + '"snap_x_mils":' + FloatToJsonStr(CoordToMilsF(Board.SnapGridSizeX)); Except Data := Data + '"snap_x_mils":0'; End;
+            Try Data := Data + ',"snap_y_mils":' + FloatToJsonStr(CoordToMilsF(Board.SnapGridSizeY)); Except Data := Data + ',"snap_y_mils":0'; End;
             Try Data := Data + ',"display_unit":"' + IntToStr(Board.DisplayUnit) + '"'; Except Data := Data + ',"display_unit":"unknown"'; End;
             Data := Data + '}';
         End
