@@ -155,6 +155,212 @@ def test_a_point_over_another_process_is_refused():
 
 
 # --------------------------------------------------------------------
+# A target whose UI thread is busy.
+# --------------------------------------------------------------------
+
+_PM_QS_SENDMESSAGE = 0x00400000
+
+
+class _BusyWindow:
+    """A real top-level window whose thread can be made to stop reading input.
+
+    Stands in for Altium while its UI thread is inside a command that
+    services SENT messages only, as a COM call or a modal wait does. That
+    is the state that reproduces the refusal: a thread that services
+    nothing makes BringWindowToTop block until it is free, which hides it.
+    A second window holds the foreground first, so the target has to be
+    activated rather than found active.
+    """
+
+    def __init__(self):
+        import threading
+
+        import win32api
+        import win32con
+        import win32gui
+
+        self._gui = win32gui
+        self._threading = threading
+        inst = win32api.GetModuleHandle(None)
+        wc = win32gui.WNDCLASS()
+        wc.lpszClassName = "EdaAgentBusyProbe"
+        wc.lpfnWndProc = lambda h, m, w, p: win32gui.DefWindowProc(h, m, w, p)
+        wc.hInstance = inst
+        try:
+            win32gui.RegisterClass(wc)
+        except win32gui.error:
+            pass                      # already registered by an earlier test
+        self._make = lambda title: win32gui.CreateWindow(
+            "EdaAgentBusyProbe", title,
+            win32con.WS_OVERLAPPEDWINDOW | win32con.WS_VISIBLE,
+            60, 60, 220, 120, 0, 0, inst, None)
+        self.pumping = threading.Event()
+        self.pumping.set()
+        self._stop = threading.Event()
+        self.hwnd = self._start("busy target", self.pumping)
+        always = threading.Event()
+        always.set()
+        self.other = self._start("foreground holder", always)
+
+    def _start(self, title, pumping):
+        box, ready = {}, self._threading.Event()
+
+        def run():
+            import ctypes
+            from ctypes import wintypes
+
+            box["h"] = self._make(title)
+            ready.set()
+            msg = wintypes.MSG()
+            while not self._stop.is_set():
+                if pumping.is_set():
+                    self._gui.PumpWaitingMessages()
+                else:
+                    ctypes.windll.user32.PeekMessageW(
+                        ctypes.byref(msg), 0, 0, 0, _PM_QS_SENDMESSAGE)
+                self._threading.Event().wait(0.01)
+            self._gui.PumpWaitingMessages()
+            self._gui.DestroyWindow(box["h"])
+            self._gui.PumpWaitingMessages()
+
+        t = self._threading.Thread(target=run, daemon=True)
+        t.start()
+        ready.wait(5)
+        self._threads = getattr(self, "_threads", []) + [t]
+        return box["h"]
+
+    def go_busy(self):
+        """Stop reading input, and let the thread's current pump finish."""
+        self.pumping.clear()
+        self._threading.Event().wait(0.1)
+
+    def close(self):
+        self.pumping.set()
+        self._stop.set()
+        for t in self._threads:
+            t.join(5)
+
+
+@pytest.fixture
+def busy_window():
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Win32 only")
+    pytest.importorskip("win32gui")
+    import os
+
+    w = _BusyWindow()
+    win._force_foreground(w.other)
+    if not win.wait_until(lambda: win.foreground_pid() == os.getpid(), 2.0):
+        w.close()
+        pytest.skip("this process cannot take the foreground (another "
+                    "application holds it, or the session is disconnected "
+                    "or locked), so a pending activation cannot be set up")
+    try:
+        yield w
+    finally:
+        w.close()
+
+
+def test_an_activation_pending_on_a_busy_target_is_waited_out(busy_window):
+    """No active window while the target's thread is busy is not a refusal.
+
+    MEASURED: SetForegroundWindow on a window whose thread is not pumping
+    returns success, and GetForegroundWindow then returns NULL until that
+    thread next pumps, when the target becomes active. The guard used to
+    read that NULL as "another process is active" and refused with
+    "belongs to process None" while Altium was visibly in front, busy
+    with a bridge command.
+    """
+    import ctypes
+    import threading
+
+    busy_window.go_busy()
+    ctypes.windll.user32.SetForegroundWindow(busy_window.hwnd)
+    assert win.foreground_pid() is None, "the activation did not stay pending"
+    # Longer than the guard's own refocus timeout, shorter than the wait
+    # a busy target is allowed.
+    threading.Timer(2.0, busy_window.pumping.set).start()
+
+    win.require_foreground(busy_window.hwnd, "a test event", busy_timeout=6.0)
+    assert win.foreground_pid() == win.window_pid(busy_window.hwnd)
+
+
+def test_a_target_that_stays_busy_is_refused_as_busy(busy_window):
+    """Still refused when it never pumps, and the reason says why."""
+    import ctypes
+
+    busy_window.go_busy()
+    ctypes.windll.user32.SetForegroundWindow(busy_window.hwnd)
+    assert win.foreground_pid() is None, "the activation did not stay pending"
+
+    with pytest.raises(win.ForegroundLost) as caught:
+        win.require_foreground(busy_window.hwnd, "a test event",
+                               busy_timeout=0.5)
+    message = str(caught.value)
+    assert "busy" in message
+    assert "process None" not in message
+
+
+def _no_window_calls(monkeypatch, foreground):
+    """Stand the guard on scripted reads instead of the live desktop."""
+    import ctypes
+
+    calls = {"raised": 0}
+    monkeypatch.setattr(win, "window_pid", lambda hwnd: 4321)
+    monkeypatch.setattr(win, "foreground_pid", foreground)
+    monkeypatch.setattr(win, "input_desktop_available", lambda: True)
+
+    def raised(root):
+        calls["raised"] += 1
+    monkeypatch.setattr(win, "_force_foreground", raised)
+
+    class _User32:
+        def __getattr__(self, name):
+            return lambda *a: 0
+    monkeypatch.setattr(ctypes, "windll", type("W", (), {"user32": _User32()})())
+    return calls
+
+
+def test_a_pending_activation_is_waited_out_not_refused(monkeypatch):
+    """NULL foreground for longer than the refocus timeout, then the target."""
+    import time
+
+    start = time.monotonic()
+    _no_window_calls(monkeypatch, lambda: (
+        4321 if time.monotonic() - start > 0.5 else None))
+    assert win.require_foreground(1, "a test event", timeout=0.1,
+                                  busy_timeout=3.0) is True
+
+
+def test_a_pending_activation_that_never_lands_names_the_cause(monkeypatch):
+    _no_window_calls(monkeypatch, lambda: None)
+    with pytest.raises(win.ForegroundLost) as caught:
+        win.require_foreground(1, "a test event", timeout=0.05,
+                               busy_timeout=0.1)
+    assert "no active window" in str(caught.value)
+    assert "process None" not in str(caught.value)
+
+
+def test_another_application_in_front_is_still_refused(monkeypatch):
+    _no_window_calls(monkeypatch, lambda: 999)
+    with pytest.raises(win.ForegroundLost) as caught:
+        win.require_foreground(1, "a test event", timeout=0.05,
+                               busy_timeout=0.1)
+    assert "process 999" in str(caught.value)
+
+
+def test_a_session_without_input_is_refused_at_once(monkeypatch):
+    """Disconnected or locked: nothing to wait for and nothing to raise."""
+    calls = _no_window_calls(monkeypatch, lambda: None)
+    monkeypatch.setattr(win, "input_desktop_available", lambda: False)
+    with pytest.raises(win.ForegroundLost) as caught:
+        win.require_foreground(1, "a test event", busy_timeout=30.0)
+    assert "not receiving input" in str(caught.value)
+    assert calls["raised"] == 0
+
+
+# --------------------------------------------------------------------
 # The kill switch.
 # --------------------------------------------------------------------
 
