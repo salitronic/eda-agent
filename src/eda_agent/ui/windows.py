@@ -397,7 +397,66 @@ def _force_foreground(root: int) -> None:
             user32.AttachThreadInput(current, other, False)
 
 
-def require_foreground(hwnd, what: str = "input", timeout: float = 1.2) -> bool:
+#: OpenInputDesktop's DESKTOP_SWITCHDESKTOP access.
+_DESKTOP_SWITCHDESKTOP = 0x0100
+
+
+def input_desktop_available() -> bool:
+    """Whether this session currently receives input at all.
+
+    MEASURED with the remote desktop session disconnected: OpenInputDesktop
+    fails with access denied, GetCursorPos fails and GetForegroundWindow
+    is NULL for every process, while Altium stays visible, responsive and
+    not hung. A locked session behaves the same way. No synthesised event
+    can reach any window then, so there is nothing to wait for.
+    """
+    user32 = ctypes.windll.user32
+    desk = user32.OpenInputDesktop(0, False, _DESKTOP_SWITCHDESKTOP)
+    if not desk:
+        return False
+    user32.CloseDesktop(desk)
+    return True
+
+
+#: How long an activation may stay pending on a busy target. A bridge
+#: command or a modal wait holds Altium's UI thread for seconds at a time.
+_BUSY_TIMEOUT = 10.0
+
+
+def _wait_out_pending_activation(timeout: float) -> None:
+    """Wait while Windows reports NO active window at all.
+
+    MEASURED: SetForegroundWindow on a window whose thread services only
+    sent messages (a COM call, a modal wait, a bridge command on Altium's
+    UI thread) returns success, and GetForegroundWindow then returns NULL
+    until that thread next reads input, when the target becomes active.
+    A NULL is therefore an activation in flight, not another application
+    in front, and is waited out instead of refused. Input is still never
+    sent until the target is confirmed active.
+    """
+    if foreground_pid() is None:
+        wait_until(lambda: foreground_pid() is not None, timeout, poll=0.05)
+
+
+def _not_foreground_reason(what: str, target: int, root: int,
+                           busy_timeout: float) -> str:
+    got = foreground_pid()
+    if got is not None:
+        return (f"refusing to send {what}: the target could not be brought "
+                f"to the front and the active window belongs to process "
+                f"{got}, not {target}. Synthesised input goes to whatever is "
+                f"active, so this would have gone elsewhere")
+    hung = bool(ctypes.windll.user32.IsHungAppWindow(root))
+    return (f"refusing to send {what}: Windows reports no active window. "
+            f"The activation of process {target} was still pending after "
+            f"{busy_timeout:.0f}s, which is what a target whose UI thread is "
+            f"busy and not reading input looks like"
+            f"{' (Windows marks it not responding)' if hung else ''}. "
+            f"Retry once Altium is idle")
+
+
+def require_foreground(hwnd, what: str = "input", timeout: float = 1.2,
+                       busy_timeout: float = _BUSY_TIMEOUT) -> bool:
     """Make the target active, then confirm it, IMMEDIATELY BEFORE an event.
 
     SYNTHESISED INPUT IS NOT ADDRESSED TO A WINDOW. keybd_event and
@@ -431,6 +490,12 @@ def require_foreground(hwnd, what: str = "input", timeout: float = 1.2) -> bool:
             f"refusing to send {what}: the target window is gone")
     if foreground_pid() == target:
         return False
+    if not input_desktop_available():
+        raise ForegroundLost(
+            f"refusing to send {what}: this Windows session is not "
+            f"receiving input (remote desktop disconnected, or the session "
+            f"locked), so there is no active window and no synthesised "
+            f"event can reach Altium. Reconnect or unlock, then retry")
 
     user32 = ctypes.windll.user32
     root = user32.GetAncestor(int(hwnd), _GA_ROOT) or int(hwnd)
@@ -439,13 +504,11 @@ def require_foreground(hwnd, what: str = "input", timeout: float = 1.2) -> bool:
         wait_until(lambda: not user32.IsIconic(root), timeout)
     _force_foreground(root)
     wait_until(lambda: foreground_pid() == target, timeout)
+    _wait_out_pending_activation(busy_timeout)
 
     if foreground_pid() != target:
         raise ForegroundLost(
-            f"refusing to send {what}: the target could not be brought to "
-            f"the front and the active window belongs to process "
-            f"{foreground_pid()}, not {target}. Synthesised input goes to "
-            f"whatever is active, so this would have gone elsewhere")
+            _not_foreground_reason(what, target, root, busy_timeout))
     return True
 
 
