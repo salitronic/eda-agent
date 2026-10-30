@@ -1288,6 +1288,17 @@ that they arrived:
   board crashed the scripting system (an access violation no Try can
   catch) with nothing to say which object it was on; with `trace`, the
   last line names it. Delete the file afterwards.
+* The copper read narrows. `section=copper kinds=polygon` lists the
+  board's pours and nothing else (compare the count with
+  `pcb_get_polygons`), each with its `pts`, arcs as
+  `[vx,vy,cx,cy,r,a1,a2]`; on a board of thousands of tracks it answers
+  in about a second, where the unnarrowed read took most of a minute.
+  `kinds=polygon layer=<a mechanical layer>` lists only the pours on
+  that layer. Select two pours by hand: `kinds=polygon selected=true`
+  lists exactly those two, and `offset=1 limit=1` the second. `kinds=pad`
+  is refused `BAD_KINDS` and `layer=Nowhere` `UNKNOWN_LAYER`, before
+  anything is read. Without the three, the read is unchanged: the same
+  entries in the same order as before.
 
 ---
 
