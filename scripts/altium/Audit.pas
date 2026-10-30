@@ -3778,9 +3778,13 @@ Begin
                             Try
                                 Other := Obj;
                                 { Each join is seen from both of its tracks: }
-                                { reported from the lower address only.       }
+                                { reported from the lower address only. The   }
+                                { layer filter above does not hold: tracks on }
+                                { two layers meeting at a via came back, and  }
+                                { they leave no copper wedge.                 }
                                 If (Other.I_ObjectAddress > Track.I_ObjectAddress)
-                                   And (Other.Net = Track.Net) Then
+                                   And (Other.Net = Track.Net)
+                                   And (Other.Layer = Track.Layer) Then
                                 Begin
                                     { Find which of Other's endpoints is at (PX,PY) }
                                     { and build a vector pointing away from it.    }

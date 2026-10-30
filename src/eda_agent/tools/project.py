@@ -756,7 +756,8 @@ def register_project_tools(mcp):
         Args:
             output_dir: folder for the two files (made when missing).
             lcsc_parameter: the parameter holding the LCSC number. Empty
-                tries "LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #".
+                tries "LCSC Part #", "LCSC Part Number", "LCSC", "LCSC Part",
+                "JLCPCB Part #".
             name: file name stem; default the board's name.
 
         Returns:
@@ -786,7 +787,8 @@ def register_project_tools(mcp):
             if isinstance(c, dict) and isinstance(c.get("parameters"), dict):
                 params_of[str(c.get("designator"))] = c["parameters"]
         keys = ([lcsc_parameter] if lcsc_parameter else
-                ["LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #"])
+                ["LCSC Part #", "LCSC Part Number", "LCSC", "LCSC Part",
+                 "JLCPCB Part #"])
 
         def lcsc(ref: str) -> str:
             got = {k.lower(): v for k, v in params_of.get(ref, {}).items()}
