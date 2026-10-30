@@ -372,7 +372,9 @@ Some tool paths trigger DelphiScript compile or runtime errors ("Undeclared iden
 - An Altium error dialog stating the problem
 - Your MCP client timing out waiting for a response
 
-**Recovery:** in Altium Designer, open the script project tab and press the **red Stop** button in the Script IDE toolbar (equivalently **Run > Stop** from the menu, or **Ctrl+F3**; use **Ctrl+Pause/Break** if the script is stuck in an infinite loop). This stops the halted debugger. Then re-launch the polling loop via **File > Run Script... > StartMCPServer > Run**.
+**Recovery is automatic** when the crash happens during a call. The server takes a screenshot of the error box, presses OK, takes a screenshot of the halted line, stops the script and restarts the loop. Other sessions' calls wait while it does. The call that crashed fails with a message saying the script crashed and where the screenshots and a crash record are (`logs/crashes` in the workspace). The handler may have applied part of its change, so read the design back before repeating it. For a script found halted some other way, call `app_recover_script`, or run `eda-agent relaunch --restart`.
+
+**By hand:** in Altium Designer, open the script project tab and press the **red Stop** button in the Script IDE toolbar (equivalently **Run > Stop** from the menu, or **Ctrl+F3**; use **Ctrl+Pause/Break** if the script is stuck in an infinite loop). This stops the halted debugger. Then re-launch the polling loop via **File > Run Script... > StartMCPServer > Run**.
 
 This is an ongoing reliability effort. Every identified crash is either fixed or guarded. If you hit a new one, the Altium error dialog tells you the exact identifier or line. Opening an issue with that text helps us harden the relevant path.
 

@@ -1284,6 +1284,47 @@ def register_uiauto_tools(mcp):
                 "note": "read the file to look at it"}
 
     @mcp.tool()
+    async def app_recover_script(force: bool = False) -> dict[str, Any]:
+        """Clear a crashed bridge script and restart the loop.
+
+        A call that crashes the script does this by itself. This is for a
+        script found halted later: the Script IDE holding a line, or
+        "Another script executing now". It screenshots and answers OK on a
+        script error box, screenshots the halted line, stops the script
+        (Run > Stop, Ctrl+F3) and restarts the loop, with other sessions'
+        calls waiting through it. Screenshots and a record go to
+        logs/crashes in the workspace.
+
+        Args:
+            force: restart even when Altium's title does not name the
+                script project, the usual sign of a halt.
+
+        Returns:
+            ``halted`` (whether a restart ran), ``screenshots``,
+            ``dialog``, ``title``, ``restart`` {restarted, output} and
+            ``record``.
+        """
+        from ..bridge import get_bridge, script_crash
+
+        pid, problem = _altium_pid()
+        if problem:
+            return problem
+
+        def recover():
+            report = dialog_report.report(pid)
+            box = script_crash.script_error_dialog(report)
+            return script_crash.recover(
+                get_bridge().config.workspace_dir, pid, "app_recover_script",
+                "manual00", box, lambda seconds: False, force=force)
+
+        outcome = await asyncio.to_thread(recover)
+        if not outcome.get("halted"):
+            outcome["reason"] = (
+                "no halt was seen: Altium's title does not name the script "
+                "project. Check app_ping; pass force=True to restart anyway.")
+        return outcome
+
+    @mcp.tool()
     async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,
                          double: bool = False) -> dict[str, Any]:
         """Click or drag on the editor canvas, at screen coordinates.

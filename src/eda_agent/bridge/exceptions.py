@@ -109,6 +109,14 @@ class AltiumTimeoutError(AltiumError):
         super().__init__(message, code="ALTIUM_TIMEOUT", details=details)
 
 
+class AltiumScriptCrashError(AltiumError):
+    """A handler crashed the bridge script; the bridge cleared it and
+    restarted the loop (bridge/script_crash.py)."""
+
+    def __init__(self, message: str, details: Optional[dict] = None):
+        super().__init__(message, code="SCRIPT_CRASHED", details=details)
+
+
 class ScriptNotLoadedError(AltiumError):
     def __init__(
         self,
