@@ -22667,8 +22667,33 @@ Begin
     End;
 End;
 
+{ LmCopperKinds - The object kinds a copper read may be narrowed to, as the  }
+{ "k" each entry carries. An empty list is every kind, read as before.       }
+Function LmNextKind(Var Rest : String) : String;
+Var
+    C : Integer;
+Begin
+    C := Pos(',', Rest);
+    If C > 0 Then
+    Begin
+        Result := Trim(Copy(Rest, 1, C - 1));
+        Rest := Copy(Rest, C + 1, Length(Rest));
+    End
+    Else
+    Begin
+        Result := Trim(Rest);
+        Rest := '';
+    End;
+End;
+
+Function LmCopperKindKnown(Kind : String) : Boolean;
+Begin
+    Result := (Kind = 'track') Or (Kind = 'arc') Or (Kind = 'via')
+        Or (Kind = 'region') Or (Kind = 'fill') Or (Kind = 'polygon');
+End;
+
 Function LmCopperSection(Board : IPCB_Board; Offset : Integer; Limit : Integer;
-    Trace : Boolean) : String;
+    Trace : Boolean; Kinds : String; OnLayer : TLayer; SelectedOnly : Boolean) : String;
 Var
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
@@ -22686,7 +22711,10 @@ Var
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
     Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
-    More, Keepout, InPoly : Boolean;
+    More, Keepout, InPoly, Wanted : Boolean;
+    Passes : TStringList;
+    P : Integer;
+    Rest, Kind : String;
 Begin
     Items := '';
     Idx := 0;
@@ -22708,15 +22736,52 @@ Begin
         End;
     End;
     If Trace Then LmTrace('copper offset=' + IntToStr(Offset) + ' limit=' + IntToStr(Limit));
+    { One pass per kind asked for, in the order given; no kinds is ONE pass  }
+    { over every kind, so the unnarrowed read keeps its order and paging.    }
+    Passes := TStringList.Create;
+    Rest := Kinds;
+    While Rest <> '' Do
+    Begin
+        Kind := LmNextKind(Rest);
+        If Kind <> '' Then Passes.Add(Kind);
+    End;
+    If Passes.Count = 0 Then Passes.Add('all');
+    For P := 0 To Passes.Count - 1 Do
+    Begin
+    If More Then Break;
     Iter := Board.BoardIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
-            eRegionObject, eFillObject, ePolyObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        { One object type per pass; 'all' is the unnarrowed read. A read of }
+        { polygons then never walks the tracks: on a 10,000-object board the }
+        { pours came last, and a reader that wanted them read everything.    }
+        Kind := Trim(Passes[P]);
+        If Kind = 'track' Then Iter.AddFilter_ObjectSet(MkSet(eTrackObject))
+        Else If Kind = 'arc' Then Iter.AddFilter_ObjectSet(MkSet(eArcObject))
+        Else If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
+        Else If Kind = 'region' Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject))
+        Else If Kind = 'fill' Then Iter.AddFilter_ObjectSet(MkSet(eFillObject))
+        Else If Kind = 'polygon' Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject))
+        Else
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                eRegionObject, eFillObject, ePolyObject));
+        If OnLayer <> eNoLayer Then
+            Iter.AddFilter_LayerSet(MkSet(OnLayer))
+        Else
+            Iter.AddFilter_LayerSet(AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
+            { Selected only: an object not selected is not counted either, }
+            { so offset and limit page through the selection itself.       }
+            Wanted := True;
+            If SelectedOnly Then
+            Begin
+                Wanted := False;
+                Try Wanted := Obj.Selected; Except Wanted := False; End;
+            End;
+            If Wanted Then
+            Begin
             If Idx >= Offset Then
             Begin
                 If Emitted >= Limit Then
@@ -22844,11 +22909,14 @@ Begin
                 Inc(Emitted);
             End;
             Inc(Idx);
+            End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    End;
+    Passes.Free;
     SigLayers.Free;
     Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
         + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
@@ -23077,6 +23145,8 @@ Var
     Board : IPCB_Board;
     Section, Body, Response : String;
     Offset, Limit : Integer;
+    Kinds, KindList, KindOne, LayerStr, Bad : String;
+    OnLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -23096,8 +23166,46 @@ Begin
     If Section = 'components' Then Body := LmComponentsSection(Board);
     If Section = 'pads' Then Body := LmPadsSection(Board, Offset, Limit);
     If Section = 'copper' Then
+    Begin
+        { kinds, layer and selected narrow the copper read. A kind or layer }
+        { not known is refused, not dropped: a typo must not read as "none".}
+        Kinds := LowerCase(Trim(ExtractJsonValue(Params, 'kinds')));
+        KindList := '';
+        Bad := '';
+        While Kinds <> '' Do
+        Begin
+            KindOne := LmNextKind(Kinds);
+            If KindOne = '' Then Continue;
+            If LmCopperKindKnown(KindOne) Then
+            Begin
+                If KindList <> '' Then KindList := KindList + ',';
+                KindList := KindList + KindOne;
+            End
+            Else
+                Bad := Bad + ' ' + KindOne;
+        End;
+        If Bad <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_KINDS',
+                'kinds takes track, arc, via, region, fill, polygon; got' + Bad);
+            Exit;
+        End;
+        OnLayer := eNoLayer;
+        LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
+        If LayerStr <> '' Then
+        Begin
+            OnLayer := ResolveLayerId(Board, LayerStr);
+            If OnLayer = eNoLayer Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                    'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+                Exit;
+            End;
+        End;
         Body := LmCopperSection(Board, Offset, Limit,
-            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true');
+            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true', KindList, OnLayer,
+            LowerCase(ExtractJsonValue(Params, 'selected')) = 'true');
+    End;
     If Section = 'rules' Then Body := LmRulesSection(Board);
     If Section = 'classes' Then Body := LmClassesSection(Board);
 
