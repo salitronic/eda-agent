@@ -665,7 +665,7 @@ object StatusForm: TStatusForm
     object lbl_LogHint: TLabel
       Left = 132
       Top = 6
-      Width = 240
+      Width = 204
       Height = 14
       Alignment = taRightJustify
       AutoSize = False
@@ -676,6 +676,25 @@ object StatusForm: TStatusForm
       Font.Name = 'Segoe UI'
       Font.Style = []
       ParentFont = False
+    end
+    object btn_CopyLog: TPanel
+      Left = 344
+      Top = 3
+      Width = 28
+      Height = 18
+      BevelOuter = bvNone
+      Caption = #59592
+      Color = $00545454
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00E5E5E5
+      Font.Height = -12
+      Font.Name = 'Segoe MDL2 Assets'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 2
+      OnClick = btn_CopyLogClick
+      OnMouseLeave = btn_CopyLogLeave
     end
   end
   object mmo_Log: TMemo

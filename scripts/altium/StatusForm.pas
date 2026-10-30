@@ -399,6 +399,124 @@ Begin
 End;
 
 
+{ Tooltips. Each button's icon is a label lying on top of it, so the label }
+{ carries the same hint, or hovering the icon would show nothing. The      }
+{ delay before a hint appears is Altium's own, the same as its toolbars.  }
+{ Altium's hint window does not wrap, so a long hint is broken into lines }
+{ here at the first space after 50 characters.                            }
+Function WrapTip(Text : String) : String;
+Var
+    I, LineLen : Integer;
+    C, Wrapped : String;
+Begin
+    Wrapped := '';
+    LineLen := 0;
+    For I := 1 To Length(Text) Do
+    Begin
+        C := Copy(Text, I, 1);
+        If (C = ' ') And (LineLen >= 50) Then
+        Begin
+            Wrapped := Wrapped + #13#10;
+            LineLen := 0;
+        End
+        Else
+        Begin
+            Wrapped := Wrapped + C;
+            LineLen := LineLen + 1;
+        End;
+    End;
+    Result := Wrapped;
+End;
+
+Procedure SetTip(Ctl : TControl; Text : String);
+Begin
+    Try
+        Ctl.Hint := WrapTip(Text);
+        Ctl.ShowHint := True;
+    Except End;
+End;
+
+Const
+    TIP_OPENWEB_ON = 'Open the web dashboard in your browser: design review, '
+        + 'components, nets, libraries and the plan for the open project.';
+    TIP_OPENWEB_OFF = 'The web dashboard is not running. Start it with the '
+        + 'command at the bottom of this window, then this button opens it.';
+    TIP_PAUSE = 'Stop handling commands from the AI. New requests wait until '
+        + 'you resume (the AI may give up on them if the pause is long), and '
+        + 'the bridge does not switch itself off while paused.';
+    TIP_RESUME = 'Start handling commands from the AI again.';
+    TIP_SAVING_ON = 'Saving is allowed: the bridge saves documents when a '
+        + 'command asks it to. Click to turn saving off, so edits stay '
+        + 'unsaved in Altium until you save them yourself. Kept across restarts.';
+    TIP_SAVING_OFF = 'Saving is off: the bridge refuses every save, and its '
+        + 'edits stay unsaved in Altium until you save them yourself. Click '
+        + 'to allow saving again. Kept across restarts.';
+
+Procedure ApplyTips(Dummy : Integer);
+Var
+    Tip : String;
+Begin
+    Tip := 'What the bridge is doing now. Green: idle and ready. Amber: '
+        + 'running a command, shown with its name and elapsed time. '
+        + 'Grey: paused.';
+    SetTip(pnl_StatusDot, Tip);  SetTip(lbl_Status, Tip);
+    SetTip(lbl_Spinner, Tip);
+    SetTip(lbl_Version, 'Version of the eda-agent scripts loaded in Altium.');
+
+    Tip := 'How long this bridge session has been running in Altium.';
+    SetTip(pnl_K1, Tip);  SetTip(lbl_LblUp, Tip);  SetTip(lbl_ValUp, Tip);
+    Tip := 'Commands handled in this session, keep-alive pings included.';
+    SetTip(pnl_K2, Tip);  SetTip(lbl_LblReq, Tip);  SetTip(lbl_ValReq, Tip);
+    Tip := 'Total time Altium has spent running commands in this session. '
+        + 'The rest of the time it is free for you to work.';
+    SetTip(pnl_K3, Tip);  SetTip(lbl_LblMs, Tip);  SetTip(lbl_ValMs, Tip);
+    Tip := 'Time left before the bridge stops on its own when no commands '
+        + 'arrive. Every command starts the countdown again, and so does '
+        + 'Renew. Amber under two minutes, red under 30 seconds; it does not '
+        + 'run while paused.';
+    SetTip(pnl_K4, Tip);  SetTip(lbl_LblStop, Tip);  SetTip(lbl_ValStop, Tip);
+
+    Tip := 'The latest error or notice from the bridge.';
+    SetTip(pnl_ErrBar, Tip);  SetTip(lbl_LastErr, Tip);
+
+    SetTip(btn_OpenWeb, TIP_OPENWEB_OFF);  SetTip(ico_OpenWeb, TIP_OPENWEB_OFF);
+    SetTip(btn_Pause, TIP_PAUSE);  SetTip(ico_Pause, TIP_PAUSE);
+    SetTip(ico_Resume, TIP_RESUME);
+    Tip := 'Start the auto-off countdown again, so the bridge stays '
+        + 'connected for another full period.';
+    SetTip(btn_Renew, Tip);  SetTip(ico_Renew, Tip);
+    Tip := 'Empty the command log below. Altium, the Perf tab and the '
+        + 'session totals are not affected.';
+    SetTip(btn_ClearLog, Tip);  SetTip(ico_ClearLog, Tip);
+    SetTip(btn_Saving, TIP_SAVING_ON);  SetTip(ico_Saving, TIP_SAVING_ON);
+    Tip := 'Disconnect the AI from Altium: the bridge stops and this window '
+        + 'closes. Nothing is saved, so unsaved edits stay open in Altium.';
+    SetTip(btn_Detach, Tip);  SetTip(ico_Detach, Tip);
+
+    Tip := 'Show only new log lines that contain this text (any case). '
+        + 'Changing it clears the log.';
+    SetTip(ico_Filter, Tip);  SetTip(edt_Filter, Tip);
+    SetTip(chk_HidePings, 'Leave out the keep-alive pings the AI client '
+        + 'sends every 30 seconds, so the log shows real work. Changing it '
+        + 'clears the log.');
+    SetTip(chk_OnlySlow, 'Show only commands that took 100 ms or more, '
+        + 'and every error. Changing it clears the log.');
+    SetTip(chk_OnTop, 'Keep this window in front of Altium''s other windows.');
+
+    SetTip(tab_Log, 'Commands as they run, newest at the top: time taken '
+        + 'in ms, request id and command.');
+    SetTip(tab_Perf, 'Totals per command for this session: how many times '
+        + 'it ran, and its average and longest time in ms.');
+    Tip := 'Starts the web dashboard on its own, without an AI client. '
+        + 'Copy it with the button on the right and run it in a terminal.';
+    SetTip(lbl_FooterHint, Tip);  SetTip(lbl_LaunchCmd, Tip);
+    SetTip(btn_CopyCmd, 'Copy the command that starts the web dashboard '
+        + 'to the clipboard.');
+    SetTip(btn_CopyLog, 'Copy the open tab to the clipboard: the command '
+        + 'log on Log, the table of totals on Perf.');
+End;
+
+
 { Open-Dashboard button reflects actual dashboard availability via a         }
 { heartbeat file the Python dashboard process writes every ~3s: a Unix      }
 { epoch timestamp in workspace/dashboard.heartbeat. If the timestamp is     }
@@ -445,7 +563,8 @@ Begin
             btn_OpenWeb.Font.Color := COLOR_TEXT_BODY;
             Try ico_OpenWeb.Font.Color := COLOR_TEXT_BODY; Except End;
             btn_OpenWeb.Cursor := crHandPoint;
-            btn_OpenWeb.Hint := 'Open the web dashboard';
+            SetTip(btn_OpenWeb, TIP_OPENWEB_ON);
+            SetTip(ico_OpenWeb, TIP_OPENWEB_ON);
         End
         Else
         Begin
@@ -453,9 +572,9 @@ Begin
             btn_OpenWeb.Font.Color := COLOR_TEXT_FAINT;
             Try ico_OpenWeb.Font.Color := COLOR_TEXT_FAINT; Except End;
             btn_OpenWeb.Cursor := crDefault;
-            btn_OpenWeb.Hint := 'The web dashboard is not running';
+            SetTip(btn_OpenWeb, TIP_OPENWEB_OFF);
+            SetTip(ico_OpenWeb, TIP_OPENWEB_OFF);
         End;
-        btn_OpenWeb.ShowHint := True;
     Except End;
 End;
 
@@ -605,6 +724,7 @@ Begin
     OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
     OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
+    OwnPanelColours(btn_CopyLog);
 End;
 
 
@@ -619,6 +739,8 @@ Begin
             btn_Saving.Color := COLOR_ACCENT_AMBER;
             btn_Saving.Font.Color := $00111111;
             ico_Saving.Font.Color := $00111111;
+            SetTip(btn_Saving, TIP_SAVING_OFF);
+            SetTip(ico_Saving, TIP_SAVING_OFF);
         End
         Else
         Begin
@@ -626,6 +748,8 @@ Begin
             btn_Saving.Color := COLOR_BG_ELEVATED;
             btn_Saving.Font.Color := COLOR_TEXT_BODY;
             ico_Saving.Font.Color := COLOR_TEXT_BODY;
+            SetTip(btn_Saving, TIP_SAVING_ON);
+            SetTip(ico_Saving, TIP_SAVING_ON);
         End;
     Except End;
 End;
@@ -656,6 +780,7 @@ Begin
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  'Slow only');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'On top');
+        ApplyTips(0);
         PaintSavingSwitch(0);
         ApplyAlwaysOnTop(0);
 
@@ -729,6 +854,7 @@ Begin
             btn_Pause.Font.Color := $00111111;
             Try ico_Pause.Visible := False; Except End;
             Try ico_Resume.Visible := True; Except End;
+            SetTip(btn_Pause, TIP_RESUME);
             pnl_StatusDot.Color := COLOR_TEXT_FAINT;
             lbl_Status.Caption := 'paused';
             lbl_Status.Font.Color := COLOR_TEXT_MUTED;
@@ -740,6 +866,7 @@ Begin
             btn_Pause.Font.Color := COLOR_TEXT_BODY;
             Try ico_Resume.Visible := False; Except End;
             Try ico_Pause.Visible := True; Except End;
+            SetTip(btn_Pause, TIP_PAUSE);
             If Not InFlightActive Then
             Begin
                 pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
@@ -798,6 +925,24 @@ Begin
         Try btn_CopyCmd.Caption := 'Copied'; Except End;
     Except End;
 End;
+
+
+{ Copy whichever tab is showing, so a log or the timings can be pasted }
+{ into a bug report.                                                   }
+Procedure btn_CopyLogClick(Sender : TObject);
+Begin
+    Try
+        If mmo_Perf.Visible Then
+            Clipboard.AsText := mmo_Perf.Lines.Text
+        Else
+            Clipboard.AsText := mmo_Log.Lines.Text;
+        btn_CopyLog.Caption := #59643;
+    Except End;
+End;
+
+{ The tick shown after a copy turns back into the copy icon on leaving. }
+Procedure btn_CopyLogLeave(Sender : TObject);
+Begin Try btn_CopyLog.Caption := #59592; Except End; End;
 
 
 { Toggles ================================================================== }
