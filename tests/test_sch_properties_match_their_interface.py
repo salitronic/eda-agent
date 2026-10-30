@@ -90,9 +90,8 @@ _ORIENTATION_TYPES = {
 def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
     """A list of the types WITHOUT it let a sheet symbol through, and
     obj_modify Orientation=1 on one halted the bridge (2026-10-30). The
-    list now names the types WITH it, each checked against the SDK."""
-    import json
-
+    list now names the types WITH it; test_orientation_matches_the_sdk
+    checks each against the SDK."""
     code = _decommented(_source())
     start = code.index("Function SchObjectHasOrientation")
     body = code[start:code.index("\nEnd;", start)]
@@ -101,26 +100,6 @@ def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
     assert re.search(r"Result := False;\s*If Obj = Nil Then Exit;", body)
     for absent in ("eSheetSymbol", "ePort", "eSheetEntry", "eWire"):
         assert absent not in body
-
-    index = Path(__file__).parent.parent / "reference" / "altium_sdk" / "altium_sdk_index.json"
-    if not index.exists():
-        pytest.skip("the SDK index is not in this checkout (reference/ is untracked)")
-    interfaces = json.loads(index.read_text(encoding="utf-8-sig"))["interfaces"]
-
-    def lineage(name):
-        out = [name]
-        for base in interfaces.get(name, {}).get("bases") or []:
-            out += lineage(base)
-        return out
-
-    def has_orientation(name):
-        return any("Orientation" in str(member) for n in lineage(name)
-                   for member in interfaces.get(n, {}).get("props", [])
-                   + interfaces.get(n, {}).get("methods", []))
-
-    for constant, interface in _ORIENTATION_TYPES.items():
-        assert has_orientation(interface), f"{constant}: {interface} has no Orientation"
-    assert not has_orientation("ISch_SheetSymbol")
 
 
 def test_the_connection_point_is_pin_only():

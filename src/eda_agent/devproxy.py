@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .noconsole import no_window
+
 RELOAD_ENV = "EDA_AGENT_RELOAD"
 
 #: How often the source is checked, and how long it must stay unchanged
@@ -145,7 +147,7 @@ class Proxy:
         child = subprocess.Popen(
             [*self.child_command, *self.child_args],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env)
+            stderr=subprocess.PIPE, env=env, **no_window())
         with self.state:
             self.child = child
             self.dead_reason = ""

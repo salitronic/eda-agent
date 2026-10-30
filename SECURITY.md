@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-`eda-agent` is in alpha (current version 0.7.x). Only the latest released
+`eda-agent` is in alpha (current version 0.8.x). Only the latest released
 version receives security fixes. There are no LTS branches.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.7.x   | :white_check_mark: |
-| < 0.7   | :x:                |
+| 0.8.x   | :white_check_mark: |
+| < 0.8   | :x:                |
 
 ## Reporting a vulnerability
 

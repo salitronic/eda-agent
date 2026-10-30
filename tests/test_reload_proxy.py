@@ -150,8 +150,10 @@ def test_a_server_that_fails_to_start_says_why_and_recovers(client):
     (client.watched / "broken").write_text("")
     client.change_source()
     client.read()  # the list-changed notice
-    time.sleep(0.5)
+    deadline = time.monotonic() + 10
     reply = client.call("tools/list")
+    while "error" not in reply and time.monotonic() < deadline:
+        reply = client.call("tools/list")
     assert "half-written edit" in reply["error"]["message"]
     (client.watched / "broken").unlink()
     client.change_source()
