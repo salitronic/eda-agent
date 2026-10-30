@@ -3590,8 +3590,8 @@ def register_pcb_tools(mcp):
         unsaved edits in the editor are not in it, so save first if there
         are any.
 
-        For other selections of board copper, ``obj_delete`` and
-        ``obj_batch_delete`` take a board type with a filter, e.g.
+        For other selections of board copper, ``obj_delete`` (one filter
+        or a list as ``items``) takes a board type with a filter, e.g.
         ``eTrackObject`` with ``Layer=TopLayer|InComponent=false``.
 
         Args:
@@ -4862,7 +4862,8 @@ def register_pcb_tools(mcp):
         """Move and reshape thousands of free primitives in ONE pass, from a
         JSON map of each object's CURRENT geometry and its new one.
 
-        Use it past a few hundred objects, where obj_batch_modify is slow.
+        Use it past a few hundred objects, where obj_modify with items is
+        slow.
         Each entry is matched to exactly one object within the tolerance;
         none, several, or one object named twice is reported, never
         guessed, and an object changed since the dump is left alone. Free

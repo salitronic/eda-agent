@@ -125,7 +125,7 @@ def build_reference() -> str:
         f"**{sum(1 for r in records if not r.get('hidden'))} tools "
         f"advertised** across {len(by_cat)} categories, and "
         f"{sum(1 for r in records if r.get('hidden'))} more reached through "
-        f"a family tool or a bulk tool (marked \"through\").",
+        f"a family tool, a bulk tool or a tool's items (marked \"through\").",
         "",
         "**Maturity**: "
         + "; ".join(f"`{k}` = {v}" for k, v in _MATURITY_NOTE.items())

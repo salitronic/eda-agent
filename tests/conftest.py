@@ -216,6 +216,20 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_bulk_hint_counts():
+    """Start each test with no calls counted toward the repeat nudge.
+
+    Every tool that takes ``items`` counts its single calls process-wide
+    and adds ``_hint_bulk`` to a reply once one repeats; a test calling a
+    tool the test before it called would otherwise see a reply it did not
+    cause.
+    """
+    from eda_agent.tools.bulk_hints import BulkHintTracker
+    BulkHintTracker.reset()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _restore_active_backend():
     """Undo any backend a test registers, so the next one starts clean.
 

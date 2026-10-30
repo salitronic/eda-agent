@@ -51,7 +51,7 @@ def test_a_bad_or_conflicting_hole_type_is_refused_before_anything_is_touched():
     assert body.count("'INVALID_HOLE_TYPE'") == 2
     assert "And (ExtractJsonValue(Params, 'hole_width') <> '') Then" in body
     assert first < body.index("Workspace := GetWorkspace;")
-    assert body.rindex("'INVALID_HOLE_TYPE'") < body.index("PCBServer.PreProcess;")
+    assert body.rindex("'INVALID_HOLE_TYPE'") < body.index("PcbBeginEdit(0);")
 
 
 def test_the_drill_type_is_written_before_the_hole_sizes():

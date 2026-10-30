@@ -40,7 +40,7 @@ def test_place_region_refuses_a_bad_arc_before_anything_is_made():
     read = body.index("ArcsStr := Trim(ExtractJsonValue(Params, 'arcs'));")
     check = body.index("If Not IsFloatStr(RegionArcField(ArcsStr, I, K)) Then")
     refuse = body.index("'BAD_ARCS'")
-    assert read < check < refuse < body.index("PCBServer.PreProcess;")
+    assert read < check < refuse < body.index("PcbBeginEdit(0);")
     assert "For K := 0 To 4 Do" in body[read:refuse]
     # a bad field clears the flag, and the flag alone decides the refusal
     assert "ArcsOk := False;" in body[check:refuse]
@@ -67,7 +67,7 @@ def test_place_region_builds_arcs_from_shape_segments_as_the_footprint_writer_do
 def test_without_arcs_the_contour_route_is_unchanged():
     body = _pcb("PCB_PlaceRegion")
     contour = body.index("Region.SetOutlineContour(Contour);")
-    arcs = body.index("If ArcsStr <> '' Then", body.index("PCBServer.PreProcess;"))
+    arcs = body.index("If ArcsStr <> '' Then", body.index("PcbBeginEdit(0);"))
     shape = body.index("Region.UpdateContourFromShape(True);")
     assert contour < arcs < shape
     assert "Contour := Region.MainContour.Replicate;" in body[:contour]

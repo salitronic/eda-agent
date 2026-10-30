@@ -205,8 +205,11 @@ def test_every_step_that_writes_a_property_is_ranked():
 #
 # Step 59 (the Saving switch) writes the dashboard's saving.json and makes
 # the save paths refuse; it sets no Altium property.
+#
+# Step 61 (items on every tool) runs existing handlers in one request and
+# one undo step; every property it reaches is ranked under its own step.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
-                             "30", "58", "59"}
+                             "30", "58", "59", "61"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

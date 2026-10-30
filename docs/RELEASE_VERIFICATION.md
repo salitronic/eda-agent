@@ -1,4 +1,4 @@
-# Release verification: 2026.10.30.1
+# Release verification: 2026.10.30.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -228,6 +228,8 @@ works elsewhere cannot be an undeclared identifier:
 | 60, guides | `DeleteAllGuides` on the board's grid manager | no, nowhere | low, removes guides only; ran live |
 | 60, STEP settings | `SetState_ExportFoldedBoard` on the STEP exporter | no, nowhere | low, Altium's kept export settings; ran live, written back unchanged |
 | 60, generated documents | `DM_AddGeneratedDocument` on a project | no, nowhere | low, lists a file under Generated; ran live on a scratch project, unsaved |
+| 62, label rotation | `RotateBy90` by 90 and back on a part or sheet symbol, to reposition its labels | no, nowhere | low, the object returns to its rotation; ran live, size and entries unchanged, saved and reopened |
+| 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -403,8 +405,8 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.30.1`, `version_match` =
-`true`, and `mcp_server_version` = `0.7.1`.
+Expect `altium_script_version` = `2026.10.30.7`, `version_match` =
+`true`, and `mcp_server_version` = `0.8.0`.
 
 Those are two different versions and they fail differently.
 `altium_script_version` is the Pascal that Altium compiled;
@@ -1355,11 +1357,11 @@ Taking the routing up first, on a saved copy of a public example board:
   (`pcb_lock_net_routing`) is still there and counted in `kept_locked`.
 * `pcb_unroute nets=["NOT_A_NET"]` answers with an error and removes
   nothing; with another board focused it refuses the same way.
-* `obj_batch_delete` with a board type (`eViaObject`,
+* `obj_delete` with `items` of a board type (`eViaObject`,
   `filter=InComponent=false|Net=<a net>`) deletes them and reports a
   `results` row with the count; a board type with `scope=project` is
   reported as `scope_not_supported`, not skipped in silence.
-  `obj_batch_modify` takes the same board types.
+  `obj_modify` with `items` takes the same board types.
 * Undo (Ctrl+Z) in Altium after `pcb_unroute` puts the routing back.
 * `obj_query object_type=eConnectionObject properties=Net,X1,Y1,X2,Y2,Layer1,Layer2`
   lists one row per ratsnest line, as many as `pcb_get_unrouted_nets`
@@ -3451,7 +3453,83 @@ generator without an OutJob (`DM_Generate_OutputFilesTo` wrote nothing for
 Gerber or NC Drill, with or without the OutJob's own settings string; use
 `proj_run_outjob`).
 
+## 61. One call for many: `items` on every tool
+
+Nearly every tool takes `items`, a list of its own arguments. The items'
+requests are gathered into one bulk request per command, which the script
+runs item by item inside one edit: one board edit for the whole call, and
+on a schematic or SchLib one edit per document, joined as the items reach
+it. `obj_modify`, `obj_create`, `obj_delete` and `lib_rename_component`
+send their list to the batch handlers that `obj_batch_modify`,
+`obj_batch_create`, `obj_batch_delete` and `lib_batch_rename` used; those
+names are no longer advertised and still answer through `tool_invoke`,
+with a note naming the new form. The family tools (`pcb_calc`, `audit`,
+`pcb_dimension`, `pcb_body`) take a list of `{kind, args}`.
+
+On a scratch board and a scratch sheet:
+
+* `pcb_place_arc` with 20 items: one request, the reply lists 20 placed
+  arcs in order, and one Undo (Ctrl+Z) removes all 20. A single
+  `pcb_place_arc` call still takes one Undo.
+* Three items, the second on a layer that does not exist: the first is
+  placed, the second refused with the layer error, the third reported
+  skipped.
+* `sch_place_net_label` with 10 items on one sheet: one Undo removes all
+  10. Ten items spread over two sheets: one Undo on each sheet.
+* `proj_replace_component` with two items: each new part keeps its old
+  UniqueId (read it back with `obj_query`); the board still links both.
+* `obj_modify` with items of different filters on one symbol's pins: the
+  same reply shape as `obj_batch_modify` gave, and one Undo.
+* `tool_invoke('obj_batch_modify', ...)` still works and its reply notes
+  `obj_modify(items=[...])`.
+* Call one tool singly three times within ten seconds: the third reply
+  carries `_hint_bulk` naming `items`.
+
+## 62. Labels where Altium puts them, library scope, and a crash told at once
+
+Measured 2026-10-30 on AD 26.11.1.5 with 2026.10.30.7, on scratch
+documents:
+
+* `sch_place_sheet_symbol` at (1000,1000)-(2200,1600): the name reads back
+  at (1000,1700) and the file name at (1000,1600), not at the sheet origin.
+  Before, six symbols on a real sheet had all twelve texts at (0,0)/(0,100).
+* `sch_autoposition_labels` on symbols already placed: 'rotate' (90 and
+  back) positioned the labels and left a 1600 x 400 symbol's size and its
+  right-side entry as they were; 'modify' and 'move' changed nothing.
+  `obj_query` / `obj_modify` read and write `SheetName.Location.X/Y`,
+  `SheetFileName.Location.X/Y`, `.Autoposition` and `SheetName.Text`.
+* A part placed by `sch_place_components` or `sch_draw_template`, rotated:
+  its designator and comment sit where Altium puts them for that rotation.
+  Not yet measured live.
+* `obj_modify eSheetSymbol set=Orientation=1`: refused as unknown, the
+  loop keeps running (it halted the script with "Undeclared identifier:
+  Orientation").
+* A scratch SchLib, two symbols, one with a hidden power pin 11:
+  `obj_query ePin scope=lib_component:HID_SYM` lists pin 11;
+  `obj_modify ... filter=Designator=11 set=HiddenNetName=GND` reads back
+  GND; `obj_modify eSchComponent scope=lib_component:HID_SYM
+  set=ShowHiddenPins=true` matched 1 and the other symbols stayed false
+  (it matched all 25 of a real library).
+* A handler that halts the script: the call reports the crash as soon as
+  the halt is confirmed, with the restart running behind it; other calls
+  wait for the new loop. `relaunch --restart` prints, and traces as
+  `RESTART`, how long each of its steps took. Not yet measured on a real
+  halt.
+
+Found while deploying: calling `LookupLibComponent` from Generic.pas left
+the whole unit undeclared in Altium ("Undeclared identifier:
+HandleGenericCommand" on every generic command) with no compile error
+shown. A test refuses that call.
+
 ## Still open, and not blocking
+
+* **Redo doubles a placed schematic object.** Measured 2026-10-30 on a
+  scratch sheet: one `sch_place_net_label` call, Undo (0 labels), Redo, 2
+  labels at the same spot; ten in one list call came back as 20. The
+  handlers register each new object twice, `RegisterSchObjectInContainer`
+  and then the `SCHM_PrimitiveRegistration` robot message, and Altium's
+  Redo replays both (44 sites). Undo itself removes the object once.
+  Which of the two to drop needs a live check that Undo still takes it.
 
 * **#23** font size: the importer places symbol text but not its height.
   Altium's font size is not in mils and the conversion is undocumented,
@@ -3535,12 +3613,12 @@ Repeatable acceptance, on a disposable schematic only:
    coordinates. Expect empty unsupported fields, unreadable diagnostics, and
    unchanged valid coordinates. Neither call may open a modal or stop polling.
    Do the same for `IsHidden` and `Text` on a wire.
-4. Attempt those writes with `obj_modify` and `obj_batch_modify`. Expect
+4. Attempt those writes with `obj_modify`, single and with `items`. Expect
    failure diagnostics, unchanged objects, and no modal. These operations
    preflight the complete assignment list for known unsupported Text,
    IsHidden and TextColor pairs before writing any other field. Unknown
    names outside that preflight retain the existing partial-write semantics.
-5. Attempt each unsupported pair through `obj_create` and `obj_batch_create`.
+5. Attempt each unsupported pair through `obj_create`, single and with `items`.
    Verify failed objects are absent. In a batch containing invalid, valid,
    invalid, and valid items, expect two creations, two indexed failures and
    no property diagnostic leaking from one item into another.

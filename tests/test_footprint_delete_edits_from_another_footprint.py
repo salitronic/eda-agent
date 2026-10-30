@@ -27,7 +27,7 @@ def test_the_target_is_moved_off_screen_before_anything_is_removed():
     body = _body("Lib_DeleteFootprintPrimitives")
     swap = body.index("PcbLib.SetState_CurrentComponent(Holder)")
     assert body.index("WasCurrent := IsCurrentFootprint(PcbLib, Target)") < swap
-    assert swap < body.index("PCBServer.PreProcess")
+    assert swap < body.index("PcbBeginEdit(0)")
     assert swap < body.index("Target.RemovePCBObject(Prim)")
 
 
@@ -40,7 +40,7 @@ def test_each_removed_primitive_is_freed_inside_its_open_iterator():
 
 def test_the_target_is_shown_again_and_a_temporary_holder_removed():
     body = _body("Lib_DeleteFootprintPrimitives")
-    tail = body[body.index("PCBServer.PostProcess"):]
+    tail = body[body.index("PcbEndEdit(0)"):]
     restore = tail.index("PcbLib.SetState_CurrentComponent(Target)")
     assert tail.index("If WasCurrent Then") < restore
     cleanup = tail[restore:]

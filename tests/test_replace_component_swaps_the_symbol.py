@@ -41,7 +41,7 @@ def test_the_relink_says_the_symbol_stayed():
 def test_the_swap_compares_pins_before_removing_the_old_part():
     body = _fns()["SwapSchSymbol"]
     load_at = body.index("SchServer.LoadComponentFromLibrary(")
-    pre = body.index("SchServer.ProcessControl.PreProcess(SchDoc")
+    pre = body.index("SchBeginEdit(SchDoc")
     old_map = body.index("OldMap := SchPinMap(OldComp);")
     new_map = body.index("NewMap := SchPinMap(NewComp);")
     refuse = body.index("'PIN_MISMATCH'")
@@ -58,7 +58,8 @@ def test_the_id_is_checked_again_after_the_commit():
     reminted at PostProcess on another, unlinking the part from the
     board."""
     body = _fns()["SwapSchSymbol"]
-    post = body.index("SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');")
+    # Committed even inside a bulk call, which holds a plain SchEndEdit.
+    post = body.index("SchCommitEdit(SchDoc, 'Edit');")
     again = body.index("If (OldId <> '') And (NewId <> OldId) Then", post)
     assert body.index("NewComp.UniqueId := OldId;", again) < body.index(
         "unique_id_kept", again)

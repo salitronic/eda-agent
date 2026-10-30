@@ -1784,7 +1784,7 @@ def register_library_tools(mcp):
         """Make a named component the editor's current selection in the
         active SchLib.
 
-        Call it before ``obj_modify`` / ``obj_batch_modify`` with scope
+        Call it before ``obj_modify`` (one filter or ``items``) with scope
         "active_doc" on a symbol's pins, rectangles or parameters: those
         act on the current component, which reading one with
         ``lib_get_component_details`` does not change. (Scope
@@ -4762,6 +4762,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Batch rename components in a schematic library.
 
+        What ``lib_rename_component(items=[...])`` runs by name, kept under
+        this name for callers that use it.
+
         Each assignment renames one component from old_name to new_name.
 
         Args:
@@ -5870,10 +5873,11 @@ def register_library_tools(mcp):
 
     @mcp.tool()
     async def lib_rename_component(
-        new_name: str,
+        new_name: str = "",
         component_name: str = "",
         library_path: str = "",
         component_index: Optional[int] = None,
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Rename one symbol's LibReference in a schematic library (.SchLib).
 
@@ -5881,6 +5885,11 @@ def register_library_tools(mcp):
         character from a broken import): address it by
         ``component_index``. A name another component has is NAME_EXISTS.
         Save with app_save_all.
+
+        For several, give ``items``: a list of {component_name, new_name}
+        dicts (component_index works too). Items by name in one library
+        run as one batch in Altium; arguments given beside ``items`` apply
+        to every item.
 
         Args:
             new_name: the clean LibReference to write.
@@ -5894,8 +5903,33 @@ def register_library_tools(mcp):
 
         Returns:
             {"success": true, "library_path": "...", "old_name": "...",
-             "new_name": "..."}.
+             "new_name": "..."}. With items by name: the counts of renamed
+            and failed; otherwise each item's own reply.
         """
+        if items is not None:
+            if not isinstance(items, list) or not items or not all(
+                    isinstance(i, dict) for i in items):
+                return {"ok": False, "reason": "items must be a non-empty "
+                                               "list of argument dicts"}
+            shared = {k: v for k, v in (("new_name", new_name),
+                                        ("component_name", component_name),
+                                        ("library_path", library_path)) if v}
+            merged = [{**shared, **i} for i in items]
+            libraries = {m.get("library_path", "") for m in merged}
+            by_name = all(m.get("component_name") and m.get("new_name")
+                          and m.get("component_index") is None
+                          for m in merged)
+            if by_name and len(libraries) == 1:
+                return await lib_batch_rename(
+                    [{"old_name": m["component_name"],
+                      "new_name": m["new_name"]} for m in merged],
+                    library_path=libraries.pop() or None)
+            from .bulk import run_bulk
+            return await run_bulk(lib_rename_component, "lib_rename_component",
+                                  merged, {}, {})
+        if not new_name:
+            return {"ok": False, "reason":
+                    "lib_rename_component needs new_name, or items"}
         if not component_name and component_index is None:
             return {"ok": False, "reason":
                     "provide component_name or component_index to pick "

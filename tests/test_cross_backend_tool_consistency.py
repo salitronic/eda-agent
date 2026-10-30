@@ -59,7 +59,11 @@ def _surface(backend: str) -> dict[str, inspect.Signature]:
     # family tool can still differ in what each kind takes.
     specs = {name: registry.get(name) for name in registry.names}
     specs.update(registry.hidden)
-    return {name: inspect.signature(spec.fn) for name, spec in specs.items()}
+    # The tools as written: the items wrapper advertises a required
+    # argument as optional, which is not a default of the physics.
+    from eda_agent.tools.bulk import single
+    return {name: inspect.signature(single(spec.fn))
+            for name, spec in specs.items()}
 
 
 @pytest.fixture(scope="module")

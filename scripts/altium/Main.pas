@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.30.1';
+    SCRIPT_VERSION = '2026.10.30.7';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -135,6 +135,29 @@ Var
     BoardFallbackPath : String;
     BoardFallbackFrom : String;
     BoardMissWhy : String;
+
+    { How many board edits are open, and how many of them were opened by  }
+    { a bulk call. Only the outermost PcbBeginEdit and PcbEndEdit reach   }
+    { Altium, so a bulk call is one edit however many items it runs. See  }
+    { PcbBeginEdit and RunBulk.                                           }
+    PcbEditDepth : Integer;
+
+    { The schematic and SchLib edits that are open, as '|' then one entry  }
+    { per edit, 'R' (it called Altium) or 'N' (nested inside one that did) }
+    { followed by the document path and '|'. While SchBulkHold is set, the }
+    { last edit a bulk item closes stays open as SchHeldDoc, so the next   }
+    { item on the same document joins it. See SchBeginEdit.               }
+    SchEditOpen : String;
+    SchBulkHold : Boolean;
+    SchHeld : Boolean;
+    SchHeldDoc : ISch_Document;
+    SchHeldPath : String;
+
+    { The symbol a lib_component scope names, and its part (0 = none     }
+    { asked for), for the walk that follows. Set by ApplyLibComponentScope }
+    { on every call, cleared per request by ProcessOne.                    }
+    LibScopeName : String;
+    LibScopePart : Integer;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -508,6 +531,159 @@ Var
 Begin
     Ext := UpperCase(ExtractFileExt(FilePath));
     Result := (Ext = '.SCHLIB') Or (Ext = '.PCBLIB');
+End;
+
+{..............................................................................}
+{ Open and close a board edit. Only the outermost pair calls Altium's         }
+{ PreProcess and PostProcess, so a bulk call that wraps its items in one pair }
+{ makes every item's own pair part of the same edit. A single call works as   }
+{ before: its pair is the outermost.                                          }
+{..............................................................................}
+
+Procedure PcbBeginEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth <= 0 Then
+    Begin
+        PcbEditDepth := 0;
+        PCBServer.PreProcess;
+    End;
+    PcbEditDepth := PcbEditDepth + 1;
+End;
+
+Procedure PcbEndEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth > 0 Then PcbEditDepth := PcbEditDepth - 1;
+    If PcbEditDepth = 0 Then PCBServer.PostProcess;
+End;
+
+{..............................................................................}
+{ Open and close a schematic or SchLib edit. The schematic server takes the   }
+{ document, so the open edits are kept per document path: an edit on a        }
+{ document that already has one open is nested and does not reach Altium,    }
+{ one on another document does. During a bulk call the last edit an item      }
+{ closes is held open, and the next item on the same document joins it, so    }
+{ the whole call is one undo step per document. RunBulk closes what is held.  }
+{..............................................................................}
+
+Function SchDocPath(Doc : ISch_Document) : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    Try Result := Doc.DocumentName; Except End;
+End;
+
+Procedure SchReleaseHeld(Dummy : Integer);
+Begin
+    If Not SchHeld Then Exit;
+    SchHeld := False;
+    Try SchServer.ProcessControl.PostProcess(SchHeldDoc, 'Edit'); Except End;
+    SchHeldDoc := Nil;
+    SchHeldPath := '';
+End;
+
+{ Removes the last open edit on Path and returns its kind, 'R' or 'N', or '' }
+{ when none is open on it.                                                   }
+Function SchPopEdit(Path : String) : String;
+Var
+    Rest, Entry, Kept : String;
+    P, N, Last : Integer;
+Begin
+    Result := '';
+    { First the position of the last entry on Path, then the list without it. }
+    Last := 0;
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If Copy(Entry, 2, Length(Entry)) = Path Then Last := N;
+    End;
+    If Last = 0 Then Exit;
+    Kept := '';
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If N = Last Then
+            Result := Copy(Entry, 1, 1)
+        Else
+            Kept := Kept + Entry + '|';
+    End;
+    SchEditOpen := '|' + Kept;
+End;
+
+Procedure SchBeginEdit(Doc : ISch_Document; Name : String);
+Var
+    Path : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0)
+        Or (SchHeld And (SchHeldPath = Path)) Then
+    Begin
+        SchEditOpen := SchEditOpen + 'N' + Path + '|';
+        Exit;
+    End;
+    { Another document: what a previous bulk item held is finished. }
+    If SchHeld And (SchEditOpen = '|') Then SchReleaseHeld(0);
+    SchServer.ProcessControl.PreProcess(Doc, Name);
+    SchEditOpen := SchEditOpen + 'R' + Path + '|';
+End;
+
+Procedure SchEndEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If Kind = 'N' Then Exit;
+    If (Kind = 'R') And SchBulkHold And (SchEditOpen = '|') Then
+    Begin
+        If SchHeld And (SchHeldPath <> Path) Then SchReleaseHeld(0);
+        SchHeld := True;
+        SchHeldDoc := Doc;
+        SchHeldPath := Path;
+        Exit;
+    End;
+    { One more close than opens on the held document ends the held edit. }
+    If (Kind = '') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
+End;
+
+{ SchEndEdit for a handler that reads back what Altium does AT the commit   }
+{ (a UniqueId reminted at PostProcess): the edit reaches Altium now, even   }
+{ when a bulk call would have held it. Nested in the same handler's own     }
+{ edit on the document, it closes as SchEndEdit would.                      }
+Procedure SchCommitEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0) Then Exit;
+    If (Kind <> 'R') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
 End;
 
 Procedure MarkDocDirtyByPath(FilePath : String);

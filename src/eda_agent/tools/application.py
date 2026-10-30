@@ -356,10 +356,16 @@ def register_meta_tools(mcp):
         content = result[0] if isinstance(result, tuple) else result
         if isinstance(content, list) and content and hasattr(content[0], "text"):
             try:
-                return {"tool": name, "result": _json.loads(content[0].text)}
+                out = {"tool": name, "result": _json.loads(content[0].text)}
             except (ValueError, TypeError):
-                return {"tool": name, "result": content[0].text}
-        return {"tool": name, "result": content}
+                out = {"tool": name, "result": content[0].text}
+        else:
+            out = {"tool": name, "result": content}
+        from .folds import FOLDED_BATCH
+        if name in FOLDED_BATCH:
+            out["note"] = (f"{name} is now {FOLDED_BATCH[name]}(items=[...]), "
+                           "which runs the same handler")
+        return out
 
 
 async def _run_declared_menu(bridge, menu_path: str) -> dict:

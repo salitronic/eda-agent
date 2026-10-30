@@ -43,7 +43,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 - **~600 tools on the default Altium backend** (600+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
-- **Bulk batch primitives**: `obj_batch_modify`, `obj_batch_create`, `obj_batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `sch_place_wires`, `place_net_labels`, `place_power_ports`, `sch_place_components`, `sch_set_components_parameters`, `get_sch_doc_pins`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10 to 100x on multi-item edits
+- **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and the whole list is one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
 - **Design-lint sweep**: `design_lint_report` runs 31 audit checks in one IPC pass and returns a structured violation list - schematic-side (component-parameter visibility per class, power-port orientation, floating ports, multi-output / no-driver nets, duplicate designators, off-grid components) and PCB-side (DNP variant components, tented-via ratio, near-miss track endpoints, signal vias without nearby return via, via antennas, removed pad shapes, components outside outline, pads too close to board edge, invalid polygon regions, optional DRC). Each check is also exposed as a standalone `audit_*` MCP tool; the dashboard's Status → Health subtab has a one-click Lint panel that calls `/api/lint` and groups results by Schematic / PCB
 - **Canonical circuit blocks**: `design_add_circuit_block` folds a whole block into a `DesignPlan` in one call, allocating refdes, wiring every pin to the right net and tagging power / ground and roles. Twelve of them: `decoupling`, `pullup`, `pulldown`, `series_resistor`, `voltage_divider`, `rc_lowpass`, `rc_highpass`, `led_indicator`, `crystal`, `pi_filter`, `mosfet_low_side`, `mosfet_high_side`. Naming-agnostic: you supply the part identities, it owns only the wiring pattern. `design_list_circuit_blocks` returns each one's parameter contract, so the planner never guesses a parameter name
@@ -217,11 +217,14 @@ advertised list shrinks, from several hundred to two.
 claude mcp add -s user altium -e EDA_AGENT_TOOLSET=minimal eda-agent
 ```
 
-The tools are deliberately **not** merged into generic dispatchers. Each one
-carries its own name, description and schema, and those are what let a model
-find the right operation and follow the per-tool discipline; collapsing them
-into `pcb(action=...)` style entry points loses that. Hiding them from the
-advertised list keeps the information available on demand via `tool_catalog`.
+Only families of tools that differ by a mode are advertised as one tool each:
+the calculators (`pcb_calc`), the audits (`audit`), the dimension and 3D body
+kinds, the menu runners, the dialog drivers and the checkpoints. Each takes a
+`kind` and that kind's arguments. Every member keeps its own name,
+description and schema, which `tool_catalog` returns and `tool_invoke` runs.
+Everything else keeps a tool of its own; collapsing whole areas into
+`pcb(action=...)` style entry points would lose the per-tool descriptions a
+model finds the right operation by.
 
 The trade-off: in `minimal` the model no longer sees
 tool schemas up front, so it must discover before it can act, and an argument
@@ -333,7 +336,7 @@ That last one uses `pcb_get_rule_properties`, which returns the actual numeric g
 >
 > *"Move C1-C20 into this 200-mil grid layout pattern."*
 
-Bulk tools like `obj_batch_modify`, `pcb_move_components`, and `sch_place_components` finish the whole operation in one IPC round-trip.
+A list given to `obj_modify`, `pcb_move_components` or `sch_place_components` (or as `items` to any other tool) finishes the whole operation in one call and one undo step.
 
 ## Known limitations
 

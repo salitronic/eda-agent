@@ -110,16 +110,17 @@ class TestBatchCreate:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_missing_object_type_is_skipped(self, monkeypatch):
+    async def test_missing_object_type_is_refused_not_dropped(self, monkeypatch):
+        """It was dropped, and the reply counted only the ops that ran."""
         sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
         from eda_agent.tools import generic as g
         tools = _capture(g, "register_generic_tools")
-        await tools["obj_batch_create"](operations=[
+        out = await tools["obj_batch_create"](operations=[
             {"object_type": "eJunction", "properties": "Location.X=1"},
-            {"properties": "Text=orphan"},  # no object_type → drop
+            {"properties": "Text=orphan"},
         ])
-        # Exactly one op survived → no separator in the final string.
-        assert "~~" not in sent.params["operations"]
+        assert out["ok"] is False and "operations[1]" in out["reason"]
+        assert sent.command is None
 
 
 class TestBatchDelete:

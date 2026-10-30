@@ -39,6 +39,7 @@ from ..config import get_config
 from .path_spelling import one_spelling
 from .process_manager import AltiumProcessManager
 from .exceptions import (
+    AltiumError,
     AltiumNotRunningError,
     AltiumTimeoutError,
     AltiumCommandError,
@@ -1249,15 +1250,25 @@ class AltiumBridge:
                               encoding="utf-8")
         except OSError:
             pass
-        try:
-            outcome = script_crash.recover(workspace_dir, process.pid,
-                                           command, request_id, dialog,
-                                           reply_came)
-        finally:
+        def drop_marker() -> None:
             try:
                 marker.unlink()
             except OSError:
                 pass
+
+        # The restart runs on in the background and drops the marker when
+        # it is over; this call reports the crash at once (see recover).
+        outcome = None
+        try:
+            outcome = script_crash.recover(workspace_dir, process.pid,
+                                           command, request_id, dialog,
+                                           reply_came,
+                                           on_restarted=drop_marker)
+        finally:
+            restarting = bool(outcome and (outcome.get("restart") or {})
+                              .get("in_background"))
+            if not restarting:
+                drop_marker()
         if not outcome.get("halted"):
             _trace_log(workspace_dir,
                        f"SCRIPT_CRASH_NONE id={request_id[:8]} "
@@ -1491,6 +1502,76 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
+        # An item of a bulk call: its request waits with the others' and
+        # goes to Altium in one bulk request. See bridge/bulk.py.
+        from . import bulk
+        collector = bulk.current()
+        if collector is not None and refuse_command(command) is None:
+            return await collector.submit(command, params or {}, timeout)
+        return await self.send_command_direct(command, params, timeout)
+
+    async def send_bulk_async(
+        self,
+        command: str,
+        items: list,
+        timeout: Optional[float] = None,
+        keep_going: bool = False,
+    ) -> list:
+        """Run one command for many items in ONE request, and so in one
+        Altium edit (ProcessBulk in StatusForm.pas).
+
+        Returns one (ok, value) per item, in order: the item's data, or
+        the exception its own call would have raised. Items after a failed
+        one are not run unless ``keep_going``.
+        """
+        params: dict[str, Any] = {"bulk_count": len(items),
+                                  "bulk_continue": bool(keep_going)}
+        for index, item in enumerate(items):
+            params[f"bulk_item_{index}"] = item or {}
+        data = await self.send_command_direct(command, params, timeout)
+        envelopes = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(envelopes, list):
+            raise AltiumCommandError(
+                f"{command} answered a bulk request without per-item replies; "
+                f"the running script may predate bulk calls: deploy it.",
+                code="BULK_UNSUPPORTED", details={"reply": data})
+        out = [self._bulk_item_outcome(env) for env in envelopes]
+        while len(out) < len(items):
+            out.append((False, AltiumCommandError(
+                "No reply for this item.", code="BULK_ITEM_MISSING")))
+        return out
+
+    @staticmethod
+    def _bulk_item_outcome(envelope: Any) -> tuple:
+        """(ok, data or exception) for one item's reply in a bulk reply."""
+        if not isinstance(envelope, dict):
+            return False, AltiumCommandError("Unreadable item reply.",
+                                             code="BULK_ITEM_UNREADABLE")
+        if envelope.get("skipped"):
+            return False, AltiumCommandError(
+                "Not run: an earlier item in the same bulk call failed.",
+                code="SKIPPED")
+        response = CommandResponse.from_dict(envelope)
+        if response.success:
+            return True, _with_envelope_notes(response.data, response)
+        error = response.error or {}
+        message = error.get("message", "Unknown error")
+        if response.next_step:
+            message = f"{message} Next step: {response.next_step}"
+        try:
+            raise_for_code(error.get("code", "UNKNOWN_ERROR"), message,
+                           error.get("details"))
+        except AltiumError as exc:
+            return False, exc
+        return False, AltiumCommandError(message)
+
+    async def send_command_direct(
+        self,
+        command: str,
+        params: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Send one request now, collector or not."""
         refusal = refuse_command(command)
         if refusal is not None:
             return {"success": False, "error": {

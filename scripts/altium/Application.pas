@@ -1151,6 +1151,10 @@ Begin
             PCBServer.PostProcess;
             PcbOk := True;
         Except End;
+    { Raw calls on purpose, past the PcbEndEdit count, which now matches. }
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchHeld := False;
 
     { The schematic server keeps its own transaction, and a SchLib handler    }
     { can die the same way, so close that too. Its PostProcess takes the      }

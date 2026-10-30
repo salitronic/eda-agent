@@ -26,7 +26,7 @@ def _body():
 def test_the_symbol_is_checked_before_anything_is_written():
     body = _body()
     check = body.index("If Not ResolveLibRef(LibPath, LibRef, Avail) Then")
-    assert check < body.index("SchServer.ProcessControl.PreProcess")
+    assert check < body.index("SchBeginEdit(")
     assert "'LIB_REF_NOT_FOUND'" in body
 
 
@@ -52,7 +52,7 @@ def test_library_identifier_is_reported_never_written():
 
 def test_a_dry_run_writes_nothing():
     body = _body()
-    assert "If Not DryRun Then SchServer.ProcessControl.PreProcess" in body
+    assert "If Not DryRun Then SchBeginEdit(" in body
     assert "If Not DryRun Then\n                        Begin" in body \
         or "If Not DryRun Then\r\n                        Begin" in body
 

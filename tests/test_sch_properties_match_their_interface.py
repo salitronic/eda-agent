@@ -65,15 +65,62 @@ def test_the_access_is_gated_by_type(prop):
             f"Try/Except cannot contain")
 
 
-@pytest.mark.parametrize("guard", ["SchObjectHasText", "SchObjectHasOrientation"])
-def test_a_port_is_excluded(guard):
-    """The reported type. Both properties are absent on ISch_Port."""
+def test_a_port_is_excluded():
+    """The reported type. Text is absent on ISch_Port."""
     code = _source()
-    start = code.index(f"Function {guard}")
+    start = code.index("Function SchObjectHasText")
     body = code[start:code.index("\nEnd;", start)]
     assert "ePort" in body, (
-        f"{guard} does not exclude ePort, which is the type the report "
-        f"reproduced against")
+        "SchObjectHasText does not exclude ePort, which is the type the "
+        "report reproduced against")
+
+
+#: Object type constant -> the interface it is, for the Orientation list.
+_ORIENTATION_TYPES = {
+    "eSchComponent": "ISch_Component", "eNetLabel": "ISch_NetLabel",
+    "ePowerObject": "ISch_PowerObject",
+    "eCrossSheetConnector": "ISch_CrossSheetConnector", "ePin": "ISch_Pin",
+    "eParameter": "ISch_Parameter", "eDesignator": "ISch_Designator",
+    "eLabel": "ISch_Label", "eNoERC": "ISch_NoERC",
+    "eParameterSet": "ISch_ParameterSet", "eProbe": "ISch_Probe",
+    "eSheetName": "ISch_SheetName", "eSheetFileName": "ISch_SheetFileName",
+}
+
+
+def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
+    """A list of the types WITHOUT it let a sheet symbol through, and
+    obj_modify Orientation=1 on one halted the bridge (2026-10-30). The
+    list now names the types WITH it, each checked against the SDK."""
+    import json
+
+    code = _decommented(_source())
+    start = code.index("Function SchObjectHasOrientation")
+    body = code[start:code.index("\nEnd;", start)]
+    allowed = set(re.findall(r"Id = (e\w+)", body))
+    assert allowed == set(_ORIENTATION_TYPES), sorted(allowed ^ set(_ORIENTATION_TYPES))
+    assert re.search(r"Result := False;\s*If Obj = Nil Then Exit;", body)
+    for absent in ("eSheetSymbol", "ePort", "eSheetEntry", "eWire"):
+        assert absent not in body
+
+    index = Path(__file__).parent.parent / "reference" / "altium_sdk" / "altium_sdk_index.json"
+    if not index.exists():
+        pytest.skip("the SDK index is not in this checkout (reference/ is untracked)")
+    interfaces = json.loads(index.read_text(encoding="utf-8-sig"))["interfaces"]
+
+    def lineage(name):
+        out = [name]
+        for base in interfaces.get(name, {}).get("bases") or []:
+            out += lineage(base)
+        return out
+
+    def has_orientation(name):
+        return any("Orientation" in str(member) for n in lineage(name)
+                   for member in interfaces.get(n, {}).get("props", [])
+                   + interfaces.get(n, {}).get("methods", []))
+
+    for constant, interface in _ORIENTATION_TYPES.items():
+        assert has_orientation(interface), f"{constant}: {interface} has no Orientation"
+    assert not has_orientation("ISch_SheetSymbol")
 
 
 def test_the_connection_point_is_pin_only():
@@ -335,6 +382,12 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))
+    # The real edit helpers the creators open and close their edit with.
+    parsers += ("\nvar SchEditOpen, SchHeldPath: String; SchBulkHold, SchHeld: Boolean;"
+                "\n    SchHeldDoc: TSchObject;\n"
+                + "\n".join(_routine(main, name) for name in (
+                    "SchDocPath", "SchReleaseHeld", "SchPopEdit",
+                    "SchBeginEdit", "SchEndEdit")))
     stubs = r'''
 program creation_regression;
 {$mode delphi}

@@ -21,7 +21,8 @@ _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 
 
 def test_the_dispatcher_resets_and_reports_per_request():
-    body = load(_SCRIPTS / "StatusForm.pas")["ProcessCommand"]
+    # Per request, and per item of a bulk request: ProcessOne runs each.
+    body = load(_SCRIPTS / "StatusForm.pas")["ProcessOne"]
     reset = body.index("SheetsSkipped := 0;")
     route = body.index("Case Category Of")
     report = body.index("Result := SheetCoverage(Result);")

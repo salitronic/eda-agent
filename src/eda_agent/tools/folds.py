@@ -11,7 +11,8 @@ reachable through ``tool_invoke``, and ``tool_catalog`` still returns its
 own description and schema, so nothing a member did is lost.
 
 ``HIDDEN`` lists single-item tools whose bulk twin takes the same fields
-per item. They are not advertised, and stay callable by name.
+per item, and ``FOLDED_BATCH`` batch tools whose single tool takes their
+list as ``items``. Neither is advertised; both stay callable by name.
 
 :class:`FoldingServer` sits between the registrars and the server: it
 captures the members and hidden tools as they register, passes everything
@@ -26,7 +27,7 @@ from typing import Any, Callable, Optional
 
 from .registry import ToolSpec
 
-__all__ = ["FOLDS", "HIDDEN", "Fold", "FoldingServer", "built_members",
+__all__ = ["FOLDS", "HIDDEN", "FOLDED_BATCH", "Fold", "FoldingServer", "built_members",
            "call_form", "reach_of"]
 
 
@@ -134,6 +135,15 @@ HIDDEN: dict[str, str] = {
     "proj_get_connectivity": "proj_get_connectivity_many",
 }
 
+#: Batch tools whose single tool now takes their list as ``items`` and
+#: runs it through the same handler, by that single tool.
+FOLDED_BATCH: dict[str, str] = {
+    "obj_batch_modify": "obj_modify",
+    "obj_batch_create": "obj_create",
+    "obj_batch_delete": "obj_delete",
+    "lib_batch_rename": "lib_rename_component",
+}
+
 #: Members of every family tool built so far, fold name -> {kind: tool}.
 _BUILT: dict[str, dict[str, str]] = {}
 
@@ -163,6 +173,8 @@ def reach_of(name: str) -> Optional[str]:
         return f"{fold_name}({FOLDS[fold_name].key}='{kind}', args={{...}})"
     if name in HIDDEN:
         return f"{HIDDEN[name]} with a list of one, or tool_invoke('{name}')"
+    if name in FOLDED_BATCH:
+        return f"{FOLDED_BATCH[name]}(items=[...]), or tool_invoke('{name}')"
     return None
 
 
@@ -170,13 +182,14 @@ def call_form(name: str) -> str:
     """How to name a tool to an agent: the advertised tool that runs it.
 
     A family member reads ``audit kind=acute_angles``; a single-item tool
-    reads as its bulk twin; any other name is returned unchanged.
+    reads as its bulk twin; a folded batch tool reads as its single tool;
+    any other name is returned unchanged.
     """
     found = _fold_of(name)
     if found:
         fold_name, kind = found
         return f"{fold_name} {FOLDS[fold_name].key}={kind}"
-    return HIDDEN.get(name, name)
+    return HIDDEN.get(name) or FOLDED_BATCH.get(name, name)
 
 
 def _signature_line(kind: str, fn: Callable) -> str:
@@ -285,11 +298,14 @@ class FoldingServer:
     def tool(self, *args: Any, **kwargs: Any):
         def deco(fn: Callable) -> Callable:
             name = kwargs.get("name") or fn.__name__
-            if name in HIDDEN or _fold_of(name):
+            if name in HIDDEN or name in FOLDED_BATCH or _fold_of(name):
                 self.hidden[name] = ToolSpec(
                     name=name, description=inspect.getdoc(fn) or "", fn=fn)
                 return fn
-            return self._server.tool(*args, **kwargs)(fn)
+            # Every advertised tool takes one item or a list of them; see
+            # bulk.py. Family members are reached through their family.
+            from .bulk import with_items
+            return self._server.tool(*args, **kwargs)(with_items(fn, name))
         return deco
 
     def finish(self) -> None:
@@ -314,7 +330,11 @@ class FoldingServer:
             if not members:
                 continue
             _BUILT[fold_name] = {k: s.name for k, s in members.items()}
-            self._server.tool()(_make_dispatcher(fold_name, fold, members))
+            # A family tool takes a list too: one dict of kind and args
+            # per item, kinds mixed freely.
+            from .bulk import with_items
+            self._server.tool()(with_items(
+                _make_dispatcher(fold_name, fold, members), fold_name))
 
     async def call_tool(self, name: str, arguments: Optional[dict] = None):
         spec = self.hidden.get(name)

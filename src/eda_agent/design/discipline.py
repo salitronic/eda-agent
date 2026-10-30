@@ -335,11 +335,12 @@ one design. They apply in every session.
    rating). NEVER hard-code or regex against one library's `lib_ref` naming
    layout: the planner is the matcher, not a string template.
 
-4. **Prefer bulk tools over looping.** `obj_batch_modify`, `pcb_move_components`,
-   `sch_place_components`, `sch_place_wires`, `sch_set_components_parameters`,
-   etc. do N operations in one IPC round-trip. Looping the singular variant
-   costs one LLM turn each: 10-100× slower wall-clock. Plan the whole set,
-   then issue one batch.
+4. **Prefer bulk calls over looping.** Every editing tool takes `items`, a
+   list of its own arguments, and runs them as one request and one undo
+   step; `pcb_move_components`, `sch_place_components`, `sch_place_wires`,
+   `sch_set_components_parameters`, etc. take their list directly. Looping
+   the single call costs one LLM turn each: 10-100× slower wall-clock. Plan
+   the whole set, then issue one call.
 
 5. **Target the document explicitly.** Schematic placement and most
    mutations act on the ACTIVE document, and a freshly `app_create_document`'d

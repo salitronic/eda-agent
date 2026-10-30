@@ -449,7 +449,6 @@ _EQUIVALENTS = {
     "design_validate": "design_validate_plan",
     "app_set_active_document": "easyeda_open_document",
     "app_checkpoint": "easyeda_checkpoint",
-    "obj_batch_modify": "easyeda_modify_pcb_components",
     "sch_place_components": "easyeda_place_schematic_components",
     "sch_place_wires": "easyeda_add_wires",
     "sch_set_components_parameters":

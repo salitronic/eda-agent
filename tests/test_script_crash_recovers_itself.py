@@ -91,29 +91,58 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(script_crash, "_press_ok", press_ok)
     monkeypatch.setattr(script_crash, "_main_frame", lambda pid: _Frame(state["title"]))
     monkeypatch.setattr(script_crash, "restart_loop", restart)
+    from eda_agent.ui import dialog_report
+    monkeypatch.setattr(dialog_report, "report", lambda pid: {"dialog_count": 0})
     ab._CALL.command = "pcb.place_arc"
     return b, tmp_path, state, monkeypatch
 
 
 def test_a_script_error_box_is_cleared_and_the_loop_restarted(rig):
     """The regression: the box, a halt, and the caller told it crashed."""
+    import threading
+    import time
+
     bridge, ws, state, mp = rig
     mp.setattr(bridge, "_dialog_probe", lambda: _probe(_box()))
+    go = threading.Event()
+    done = threading.Event()
+
+    def slow_restart():
+        state["restarts"] += 1
+        state["marker_during_restart"] = (ws / ab.MAINTENANCE_FILE).exists()
+        go.wait(5)
+        done.set()
+        return {"restarted": True, "output": "The bridge answers again"}
+
+    mp.setattr(script_crash, "restart_loop", slow_restart)
 
     with pytest.raises(AltiumScriptCrashError) as caught:
         bridge._poll_response(REQ, timeout=5.0)
 
+    # Told while the restart is still running: it measured 145 s, past the
+    # client's 120 s, and the crash reached nobody (2026-10-30).
+    assert not done.is_set()
+    assert (ws / ab.MAINTENANCE_FILE).exists(), (
+        "other sessions must see the maintenance marker while it restarts")
     text = str(caught.value)
     assert "CRASHED" in text and "pcb.place_arc" in text
-    assert "read the design back" in text
-    assert state["pressed"] == 1 and state["restarts"] == 1
+    assert "read the design back" in text and "being restarted now" in text
+    assert state["pressed"] == 1
     shots = caught.value.details["screenshots"]
     assert [s.rsplit("_", 1)[-1] for s in shots] == ["dialog.png", "altium.png"]
     record = json.loads(open(caught.value.details["record"], encoding="utf-8").read())
     assert record["command"] == "pcb.place_arc"
-    assert state["marker_during_restart"], (
-        "other sessions must see the maintenance marker while it restarts")
-    assert not (ws / ab.MAINTENANCE_FILE).exists()
+
+    go.set()
+    assert done.wait(5)
+    for _ in range(50):
+        if not (ws / ab.MAINTENANCE_FILE).exists():
+            break
+        time.sleep(0.02)
+    assert state["restarts"] == 1 and state["marker_during_restart"]
+    assert not (ws / ab.MAINTENANCE_FILE).exists(), "the marker outlived the restart"
+    record = json.loads(open(caught.value.details["record"], encoding="utf-8").read())
+    assert record["restart"]["restarted"] is True
 
 
 def test_a_box_the_handler_survives_is_answered_and_reported(rig):
@@ -165,9 +194,16 @@ def test_a_halt_with_no_box_is_recovered_at_the_deadline(rig):
     mp.setattr(bridge, "_dialog_probe", lambda: None)
     (ws / f"progress_{REQ}.json").write_text("{}", encoding="utf-8")
 
+    import time
+
     with pytest.raises(AltiumScriptCrashError):
         bridge._poll_response(REQ, timeout=0.2)
 
+    # The restart runs in the background once the caller is told.
+    for _ in range(100):
+        if state["restarts"]:
+            break
+        time.sleep(0.02)
     assert state["pressed"] == 0 and state["restarts"] == 1
     assert not (ws / f"progress_{REQ}.json").exists()
 
@@ -192,3 +228,34 @@ def test_a_failed_restart_is_said_plainly():
         "restart": {"restarted": False, "output": "no answer"}})
     assert "did NOT come back" in message
     assert "relaunch --restart" in message
+
+
+def test_a_box_already_gone_is_not_reported_as_pressed(monkeypatch):
+    """It was: the record said "pressed" while a box stayed on screen until
+    a person closed it (2026-10-30)."""
+    import eda_agent.ui.windows as windows
+
+    monkeypatch.setattr(windows, "capture", lambda hwnd: None)
+    assert script_crash._press_ok(99) != ""
+
+
+def test_every_error_box_is_pressed_and_anything_else_reported(monkeypatch, tmp_path):
+    from eda_agent.ui import dialog_report
+
+    question = _box(buttons=("Yes", "No"), title="Confirm")
+    question["kind"] = "confirm"
+    screens = [
+        {"blocked": True, "dialogs": [_box(title="Error"), question], "summary": "two"},
+        {"blocked": True, "dialogs": [question], "summary": "Confirm is open"},
+    ]
+    monkeypatch.setattr(dialog_report, "report", lambda pid: screens.pop(0))
+    pressed = []
+    monkeypatch.setattr(script_crash, "_press_ok", lambda hwnd: pressed.append(hwnd) or "")
+    monkeypatch.setattr(script_crash, "_capture", lambda hwnd, path: str(path))
+
+    out = script_crash.clear_error_boxes(4242, tmp_path, "crash")
+
+    assert pressed == [99], "only the OK-only error box is pressed"
+    assert out["cleared"][0]["title"] == "Error"
+    assert out["cleared"][0]["pressed"] == "pressed"
+    assert out["blocking"] == "Confirm is open"

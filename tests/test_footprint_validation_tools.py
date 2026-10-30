@@ -371,7 +371,8 @@ def test_the_primitives_read_writes_nothing():
     nothing is added or removed, the document is not marked dirty."""
     body = _routine(_library_pas(), "Lib_GetFootprintPrimitives")
     for banned in ("AddPCBObject", "RemovePCBObject", "PreProcess",
-                   "PostProcess", "MarkDocDirty", "MarkLibDirty",
+                   "PostProcess", "PcbBeginEdit", "PcbEndEdit",
+                   "MarkDocDirty", "MarkLibDirty",
                    "SendMessageToRobots"):
         assert banned not in body, banned
     writes = re.findall(r"(?m)^\s*([A-Za-z_][\w]*(?:\.[\w\[\]]+)+)\s*:=", body)

@@ -494,7 +494,7 @@ def register_audit_tools(mcp):
         Returns:
             Dict with `{checked, violations, items[]}` where each item
             carries `{designator}` for an unlocked component. Pair
-            with `obj_batch_modify` to re-lock at scale.
+            with `obj_modify` and `items` to re-lock at scale.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(

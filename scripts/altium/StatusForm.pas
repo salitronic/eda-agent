@@ -1322,7 +1322,7 @@ Begin
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
-Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
+Function ProcessOne(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
     DotPos : Integer;
@@ -1348,6 +1348,8 @@ Begin
 
     SheetsSeen := 0;
     SheetsSkipped := 0;
+    LibScopeName := '';
+    LibScopePart := 0;
     BoardFallbackPath := '';
     BoardFallbackFrom := '';
     BoardMissWhy := '';
@@ -1371,6 +1373,124 @@ Begin
     Result := SheetCoverage(Result);
     Result := BoardFallbackNote(Result);
     Result := SavingNote(Result);
+End;
+
+{..............................................................................}
+{ Whether one item's reply is a failure. Every reply starts with its           }
+{ protocol_version, id and success keys, in that order, so the first success   }
+{ key is the envelope's own and not one inside its data.                       }
+{..............................................................................}
+
+Function ReplyFailed(Reply : String) : Boolean;
+Var
+    P : Integer;
+Begin
+    P := Pos('"success":', Reply);
+    Result := (P = 0) Or (Copy(Reply, P + 10, 5) = 'false');
+End;
+
+{..............................................................................}
+{ A bulk call: the params carry bulk_count and the items as bulk_item_0 to     }
+{ bulk_item_<count-1>, each the parameters one call of the command takes. The  }
+{ items run through ProcessOne in order inside ONE board edit, and the edits   }
+{ on one schematic join up, so a bulk call is one undo step per document.      }
+{ Every item's reply comes back whole, in order,                               }
+{ under "items". The run stops at the first failed item unless bulk_continue   }
+{ is true, and the items after it are reported as skipped.                     }
+{..............................................................................}
+
+Function ProcessBulk(Command : String; Params : String; RequestId : String) : String;
+Var
+    Count, I, Ran, Failed, Skipped, Depth : Integer;
+    ItemParams, ItemReply, Replies, Category, SchOpen : String;
+    KeepGoing, Stopped, OnBoard : Boolean;
+Begin
+    Count := StrToIntDef(ExtractJsonValue(Params, 'bulk_count'), 0);
+    If Count <= 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER',
+            'bulk_count must be a positive number of items.');
+        Exit;
+    End;
+    If Copy(Command, 1, 12) = 'application.' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER',
+            Command + ' runs once per call and takes no items.');
+        Exit;
+    End;
+    KeepGoing := LowerCase(ExtractJsonValue(Params, 'bulk_continue')) = 'true';
+    { Board, footprint library and object commands edit through PCBServer, }
+    { so their items share one board edit.                                 }
+    Category := Copy(Command, 1, Pos('.', Command) - 1);
+    OnBoard := ((Category = 'pcb') Or (Category = 'generic')
+        Or (Category = 'library')) And (PCBServer <> Nil);
+
+    Replies := '';
+    Ran := 0;
+    Failed := 0;
+    Skipped := 0;
+    Stopped := False;
+    If OnBoard Then PcbBeginEdit(0);
+    { Schematic edits name their document, so they are joined as they }
+    { come: see SchBeginEdit.                                         }
+    SchBulkHold := True;
+    Try
+        For I := 0 To Count - 1 Do
+        Begin
+            If Replies <> '' Then Replies := Replies + ',';
+            If Stopped Then
+            Begin
+                Replies := Replies + '{"success":false,"skipped":true}';
+                Skipped := Skipped + 1;
+                Continue;
+            End;
+            ItemParams := ExtractJsonValue(Params, 'bulk_item_' + IntToStr(I));
+            If ItemParams = '' Then ItemParams := '{}';
+            { A handler that exits before ending its edit leaves the count  }
+            { up; one that ends an edit twice takes it to zero, and that    }
+            { closed the shared edit, so it is opened again. Either way the }
+            { next item finds the depth as this one did.                    }
+            Depth := PcbEditDepth;
+            SchOpen := SchEditOpen;
+            ItemReply := ProcessOne(Command, ItemParams, RequestId);
+            If OnBoard And (Depth > 0) And (PcbEditDepth <= 0) Then
+                PCBServer.PreProcess;
+            PcbEditDepth := Depth;
+            SchEditOpen := SchOpen;
+            Ran := Ran + 1;
+            If ReplyFailed(ItemReply) Then
+            Begin
+                Failed := Failed + 1;
+                If Not KeepGoing Then Stopped := True;
+            End;
+            Replies := Replies + ItemReply;
+        End;
+    Finally
+        If OnBoard Then PcbEndEdit(0);
+        SchBulkHold := False;
+        SchReleaseHeld(0);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"bulk":true,"count":' + IntToStr(Count)
+        + ',"ran":' + IntToStr(Ran)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"skipped":' + IntToStr(Skipped)
+        + ',"items":[' + Replies + ']}');
+End;
+
+Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
+Begin
+    { A handler that crashed mid-edit leaves the count up, and every later }
+    { edit would then skip PreProcess. Each request starts from none open. }
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchBulkHold := False;
+    SchReleaseHeld(0);
+    If ExtractJsonValue(Params, 'bulk_count') <> '' Then
+        Result := ProcessBulk(Command, Params, RequestId)
+    Else
+        Result := ProcessOne(Command, Params, RequestId);
 End;
 
 {..............................................................................}

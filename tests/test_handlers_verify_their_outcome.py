@@ -476,13 +476,15 @@ def test_pcb_transactions_survive_an_exception():
     exception there is an ordinary outcome rather than a remote one.
     """
     body = _body(_decommented(_src("PCBGeneric.pas")), "ProcessPCBBoardObjects")
-    assert body.count("PCBServer.PreProcess") >= 1
-    # Every PreProcess must be followed by a Finally before the function ends.
-    for m in re.finditer(r"PCBServer\.PreProcess", body):
+    # Board edits open and close through PcbBeginEdit / PcbEndEdit, which
+    # reach PCBServer.PreProcess / PostProcess (Main.pas).
+    assert body.count("PcbBeginEdit(0)") >= 1
+    # Every edit opened must be followed by a Finally before the function ends.
+    for m in re.finditer(r"PcbBeginEdit\(0\)", body):
         rest = body[m.end():]
-        fin, post = rest.find("Finally"), rest.find("PCBServer.PostProcess")
+        fin, post = rest.find("Finally"), rest.find("PcbEndEdit(0)")
         assert fin != -1 and post != -1 and fin < post, (
-            "a PCBServer.PreProcess is not unwound by a Finally; an "
+            "a PcbBeginEdit is not unwound by a Finally; an "
             "exception in the loop would leave Altium unable to save any "
             "PCB document until it is restarted")
 

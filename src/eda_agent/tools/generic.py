@@ -203,6 +203,20 @@ _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 _FILTER_COND = re.compile(r"([^=!<>]*)(!=|<=|>=|=|<|>)(.*)", re.S)
 
 
+def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
+    """The items of a list call with the arguments given beside them;
+    an item's own value wins. A refusal dict when items is not a list of
+    dicts."""
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "reason": "items must be a non-empty list of "
+                                       "argument dicts"}
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            return {"ok": False, "reason": f"items[{i}] is not a dict of "
+                                           "arguments; nothing was sent"}
+    return [{**shared, **item} for item in items]
+
+
 def filter_problem(filt: str) -> str:
     """The first condition of ``filt`` that is not Name<op>Value, or ''.
 
@@ -531,16 +545,23 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_modify(
-        object_type: str,
-        set: str,
+        object_type: str = "",
+        set: str = "",
         scope: str = "active_doc",
         filter: str = "",
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Apply ONE set of property values to every object matching ONE filter.
 
         When each object needs a DIFFERENT value (10 pins to 10 positions,
-        distinct designators), use `obj_batch_modify`: one call instead of
-        one turn per object.
+        distinct designators), give ``items``: a list of
+        {scope, object_type, filter, set} dicts, one per filter. They run in
+        ONE Altium transaction (one undo step); arguments given beside
+        ``items`` apply to every item. No rollback: items before a failure
+        stay applied. After a designator list, check the netlist: duplicate
+        designators merge nets silently (proj_annotate renumbers without
+        duplicates). With items a value in ``set`` may hold ';' but no
+        field may hold '~~'.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
@@ -612,10 +633,15 @@ def register_generic_tools(mcp):
                 selected for you).
             filter: Pipe-separated property=value conditions (AND logic)
 
+            items: Several filter+set operations at once (see above).
+
         Returns:
             "matched", "sheets_processed", and on a schematic "modified"
             (something was written) with "saved" false: the sheet is
             marked modified, not saved. Run app_save_all to write it.
+            With items: operations_processed, operations_skipped,
+            total_matched and per-item ``results`` with ``matched`` and a
+            ``note`` ("no_objects_matched" when nothing matched).
 
         Example - rename a net on every sheet:
             obj_modify(object_type="eNetLabel", scope="project",
@@ -627,7 +653,22 @@ def register_generic_tools(mcp):
         via, pad, fill, region, polygon; the net must exist, "" = no net):
             obj_modify(object_type="eRegionObject",
                        filter="Layer=TopLayer|Net=GND", set="Net=")
+        Example - a different value per pin, one call:
+            obj_modify(scope="lib_component:U_MCU", object_type="ePin",
+                       items=[{"filter": "Designator=1", "set": "Name=VDD"},
+                              {"filter": "Designator=2", "set": "Name=GND"}])
         """
+        if items is not None:
+            shared = {k: v for k, v in (("scope", scope),
+                                        ("object_type", object_type),
+                                        ("filter", filter), ("set", set)) if v}
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_modify(ops)
+        if not object_type or not set:
+            return {"ok": False, "reason":
+                    "obj_modify needs object_type and set, or items"}
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
@@ -651,13 +692,16 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_create(
-        object_type: str,
-        properties: str,
+        object_type: str = "",
+        properties: str = "",
         container: str = "document",
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Create and place a schematic object.
 
-        For more than one object use `obj_batch_create`.
+        For several, give ``items``: a list of {object_type, properties,
+        container} dicts, created in ONE Altium transaction (one undo
+        step); arguments given beside ``items`` apply to every item.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
@@ -665,10 +709,34 @@ def register_generic_tools(mcp):
                 "Text=MY_NET|Location.X=100|Location.Y=200"
             container: "document" (place on active schematic) or
                       "component" (add to current library component)
+            items: Several objects at once (see above).
+
+        Example, three net labels in one call:
+            obj_create(object_type="eNetLabel", items=[
+                {"properties": "Text=VCC|Location.X=100|Location.Y=200"},
+                {"properties": "Text=GND|Location.X=100|Location.Y=400"},
+                {"properties": "Text=SCK|Location.X=300|Location.Y=200"}])
 
         Returns:
-            Dictionary confirming creation
+            Dictionary confirming creation. With items: created, failed,
+            total and the failures by index. Known unsupported properties
+            (IsHidden on anything but pins, parameters, designators and
+            sheet names; Text on a type without it, such as eParameterSet
+            or eWire) reject that item before registration with reason
+            UNSUPPORTED_PROPERTY; the other items still run.
         """
+        if items is not None:
+            shared = {"object_type": object_type, "properties": properties}
+            shared = {k: v for k, v in shared.items() if v}
+            if container != "document":
+                shared["container"] = container
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_create(ops)
+        if not object_type:
+            return {"ok": False, "reason":
+                    "obj_create needs object_type, or items"}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.create_object",
@@ -685,14 +753,18 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_delete(
-        object_type: str,
+        object_type: str = "",
         scope: str = "active_doc",
         filter: str = "",
         confirm_delete_all: bool = False,
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Find and delete schematic or PCB objects.
 
-        For several type/filter sets at once, use `obj_batch_delete`.
+        For several type/filter sets at once, give ``items``: a list of
+        {scope, object_type, filter} dicts, run in one round trip; an item
+        with an empty filter needs confirm_delete_all, or nothing is sent.
+        Arguments given beside ``items`` apply to every item.
 
         A PCB type deletes from the active board and also matches
         footprint primitives and polygon hatching unless the filter says
@@ -707,6 +779,10 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
+            items: Several deletes at once (see above). Reply:
+                operations_processed, total, total_deleted and per-item
+                ``results`` with ``deleted``; ``partial:`` notes and
+                ``operations_partial`` as for a single delete.
 
         A filter that is not Name=Value pairs (an Altium query expression
         such as ``OnLayer('TopLayer') Or ...``, or a bare name) is refused,
@@ -719,6 +795,17 @@ def register_generic_tools(mcp):
             removed. Query before repeating a delete that failed or timed
             out: the first part of it may already have happened.
         """
+        if items is not None:
+            shared = {k: v for k, v in (("scope", scope),
+                                        ("object_type", object_type),
+                                        ("filter", filter)) if v}
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_delete(ops, confirm_delete_all=confirm_delete_all)
+        if not object_type:
+            return {"ok": False, "reason":
+                    "obj_delete needs object_type, or items", "matched": 0}
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
@@ -1132,9 +1219,10 @@ def register_generic_tools(mcp):
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Apply many filter+set operations in ONE call. PREFER THIS over
-        looping obj_modify whenever each object gets its own value (pins,
-        designators, per-sheet titles): one call, one Altium transaction.
+        """Apply many filter+set operations in ONE call (obj_modify items).
+
+        What ``obj_modify(items=[...])`` runs, kept under this name for
+        callers that use it.
 
         No rollback: ops that ran before a failure stay applied. After a
         designator batch, check the netlist: duplicate designators merge
@@ -1191,7 +1279,10 @@ def register_generic_tools(mcp):
                             "there; nothing was sent",
                             "operations_processed": 0}
             if not obj_type or not set_str:
-                continue
+                # Skipped, it vanished from the batch without a trace.
+                return {"ok": False, "reason":
+                        f"operations[{i}] needs object_type and set; "
+                        "nothing was sent", "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
@@ -1747,6 +1838,42 @@ def register_generic_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def sch_autoposition_labels(
+        names: Optional[list[str]] = None,
+        method: str = "rotate",
+    ) -> dict[str, Any]:
+        """Put part designators and comments, and sheet-symbol names and file
+        names, back where Altium positions them, on the active schematic.
+
+        For labels left at the sheet origin (the bottom-left corner) or
+        anywhere odd after a scripted placement. Each label's auto-position
+        is turned back on and Altium is made to position it, as rotating a
+        part and rotating it back does by hand. A label moved on purpose
+        (obj_modify Designator.Location.X) loses that position.
+
+        Args:
+            names: Designators and sheet names to fix; none means every
+                part and sheet symbol on the sheet.
+            method: What makes Altium reposition: "rotate" (90 degrees and
+                back), "move" (one grid step and back) or "modify" (an
+                edit with no change).
+
+        Returns:
+            ``count`` and per object ``name``, ``kind``, ``location`` and
+            every label ``before`` and ``after`` (x, y in mils and
+            autoposition).
+        """
+        names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        bad = [n for n in names if "|" in n]
+        if bad:
+            return {"ok": False, "reason": f"a name cannot contain '|': {bad}"}
+        if method not in ("rotate", "move", "modify"):
+            return {"ok": False, "reason": "method is rotate, move or modify"}
+        return await get_bridge().send_command_async(
+            "generic.autoposition_labels",
+            {"names": "|".join(names), "method": method})
 
     @mcp.tool()
     async def sch_place_sheet_entry(
@@ -3416,7 +3543,10 @@ def register_generic_tools(mcp):
     async def obj_batch_create(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Create many schematic objects in ONE IPC round-trip.
+        """Create many schematic objects in ONE call (obj_create items).
+
+        What ``obj_create(items=[...])`` runs, kept under this name for
+        callers that use it.
 
         One Altium transaction for the whole list.
 
@@ -3451,13 +3581,14 @@ def register_generic_tools(mcp):
             object_type. Other valid items still run.
         """
         op_strs: list[str] = []
-        for op in operations:
+        for i, op in enumerate(operations):
             scope = op.get("scope", "active_doc")
             obj_type = op.get("object_type", "")
             props = op.get("properties", "")
             container = op.get("container", "")
             if not obj_type:
-                continue
+                return {"ok": False, "reason": f"operations[{i}] needs "
+                        "object_type; nothing was sent", "created": 0}
             # `properties` is PIPE-separated ("Text=X|Location.X=100"),
             # so ";" is not a legitimate separator inside it and "=" is.
             # payload_safe leaves "=" alone for exactly that reason.
@@ -3484,9 +3615,10 @@ def register_generic_tools(mcp):
         operations: list[dict[str, str]],
         confirm_delete_all: bool = False,
     ) -> dict[str, Any]:
-        """Delete matching objects across many scope/type/filter operations.
+        """Delete objects for many scope/type/filter sets (obj_delete items).
 
-        PREFER THIS over looping `obj_delete`: one round trip.
+        What ``obj_delete(items=[...])`` runs, kept under this name for
+        callers that use it. One round trip.
 
         Args:
             operations: List of delete dicts, each with:
@@ -3534,7 +3666,9 @@ def register_generic_tools(mcp):
                             "batch is refused rather than reshaped",
                             "operations_processed": 0}
             if not obj_type:
-                continue
+                return {"ok": False, "reason": f"operations[{i}] needs "
+                        "object_type; nothing was sent",
+                        "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)

@@ -86,7 +86,7 @@ def test_a_via_with_no_ring_is_refused_before_anything_is_made():
     body = _routine("PCB_PlaceVia")
     refuse = body.find("'BAD_SIZE'")
     assert refuse > 0
-    assert refuse < body.find("PCBServer.PreProcess")
+    assert refuse < body.find("PcbBeginEdit(0)")
 
 
 def test_the_simulator_keeps_the_fraction(e2e_bridge):

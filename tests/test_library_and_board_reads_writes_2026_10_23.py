@@ -60,7 +60,8 @@ def test_a_board_found_by_walking_is_named_on_the_reply():
     body = _fn("Main.pas", "GetPCBBoardAnywhere")
     walk = body.index("Client.OpenDocument('PCB', Path)")
     assert "BoardFallbackPath := Path;" in body[walk:]
-    process = _fn("StatusForm.pas", "ProcessCommand")
+    # ProcessOne: each item of a bulk call is a request of its own.
+    process = _fn("StatusForm.pas", "ProcessOne")
     assert "BoardFallbackPath := '';" in process
     assert process.index("BoardFallbackPath := '';") < process.index("Case Category Of")
     assert "Result := BoardFallbackNote(Result);" in process
@@ -110,7 +111,7 @@ def test_every_footprint_delete_walk_is_filtered():
 
 def test_the_delete_counts_again_and_says_when_something_stayed():
     body = _fn("Library.pas", "Lib_DeleteFootprintPrimitives")
-    assert body.index("Leftover := CountFootprintMatches(") > body.index("PCBServer.PostProcess;")
+    assert body.index("Leftover := CountFootprintMatches(") > body.index("PcbEndEdit(0);")
     assert '"leftover":' in body and '"hint":"' in body and '"matched":' in body
     count = _fn("Library.pas", "CountFootprintMatches")
     assert "FilterFootprintWalk(GrpIter, ObjFilter);" in count

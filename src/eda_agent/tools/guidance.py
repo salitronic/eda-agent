@@ -970,7 +970,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_rename_designators"],
-        "avoid": ["obj_batch_modify"],
+        "avoid": ["obj_modify"],
         "note": ("Collisions are refused before any write; parts go through "
                  "temporary names, so a swap works. proj_annotate renumbers a "
                  "whole design."),

@@ -382,7 +382,7 @@ def test_the_apply_pass_deletes_and_creates_with_proven_calls():
     assert "If NewLayer = eNoLayer Then" in create
     assert "PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default)" in create
     assert "PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default)" in create
-    assert create.index("Board.AddPCBObject(Track);") < create.index("PostProcess")
+    assert create.index("Board.AddPCBObject(Track);") < create.index("PcbEndEdit(0)")
     assert create.index("Track.IsKeepout := True;") < create.index("Board.AddPCBObject(Track);")
     assert create.index("Arc.IsKeepout := True;") < create.index("Board.AddPCBObject(Arc);")
     raw = PCB.read_text(encoding="ascii")

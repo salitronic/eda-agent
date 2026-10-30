@@ -92,13 +92,18 @@ def _capture(hwnd: int, path: Path) -> str:
 
 
 def _press_ok(hwnd: int) -> str:
-    """Press OK on the box. "" when it closed, else why not."""
+    """Press OK on the box. "" when it closed after OK, else why not.
+
+    A box already gone is NOT "" (2026-10-30): it was recorded as pressed
+    while the box, or the one in front of it, stayed on screen until a
+    person closed it.
+    """
     try:
         from ..ui import windows
 
         window = windows.capture(hwnd)
         if window is None:
-            return ""
+            return "the box was gone before OK could be pressed"
         button = window.find_button("OK")
         if button is None:
             return "the box has no OK button"
@@ -108,6 +113,49 @@ def _press_ok(hwnd: int) -> str:
         return "the box stayed open after OK"
     except Exception as exc:                           # noqa: BLE001
         return f"pressing OK failed: {exc}"
+
+
+def clear_error_boxes(pid: int, folder: Optional[Path] = None,
+                      base: str = "") -> dict:
+    """Press OK on every script error box Altium has up, and say what else
+    blocks it.
+
+    MEASURED 2026-10-30: a recovery that had pressed OK on the crash box
+    then sat 80 s in its restart behind a box on screen, until a person
+    closed it. A restart cannot stop or start the script past a modal, so
+    it clears them as they come rather than waiting out its timeouts.
+
+    Returns ``cleared`` (one entry per box: title, what it said, the
+    screenshot and how the press went) and ``blocking`` (the summary of
+    what still blocks Altium, "" when nothing does).
+    """
+    out: dict = {"cleared": [], "blocking": ""}
+    try:
+        from ..ui import dialog_report
+
+        report = dialog_report.report(pid)
+    except Exception:                                  # noqa: BLE001
+        return out
+    for dialog in report.get("dialogs") or []:
+        if not is_script_error_dialog(dialog):
+            continue
+        hwnd = int(dialog.get("hwnd") or 0)
+        shot = ""
+        if folder is not None:
+            shot = _capture(hwnd, folder / f"{base}_box{len(out['cleared']) + 1}.png")
+        out["cleared"].append({
+            "title": dialog.get("title"),
+            "said": dialog.get("message") or dialog.get("ocr_text") or [],
+            "screenshot": shot,
+            "pressed": _press_ok(hwnd) or "pressed",
+        })
+    try:
+        after = dialog_report.report(pid)
+        if after.get("blocked"):
+            out["blocking"] = after.get("summary") or "a dialog is open"
+    except Exception:                                  # noqa: BLE001
+        pass
+    return out
 
 
 def _main_frame(pid: int):
@@ -148,8 +196,14 @@ def restart_loop() -> dict:
 
 def recover(workspace_dir, pid: int, command: str, request_id: str,
             dialog: Optional[dict], reply_came: Callable[[float], bool],
-            force: bool = False) -> dict:
+            force: bool = False,
+            on_restarted: Optional[Callable[[], None]] = None) -> dict:
     """Clear a crashed handler and restart the loop.
+
+    With ``on_restarted`` the restart runs in the background and this
+    returns as soon as the halt is confirmed; ``on_restarted`` is called
+    when the restart is over, however it went. Without it, it returns
+    after the restart.
 
     ``dialog`` is the error box from the dialog report, or None when the
     script halted without one. ``reply_came(seconds)`` waits that long
@@ -171,9 +225,12 @@ def recover(workspace_dir, pid: int, command: str, request_id: str,
         if shot:
             shots.append(shot)
         pressed = _press_ok(int(dialog.get("hwnd") or 0))
+        # A box that stayed, or another behind it, is pressed too.
+        again = clear_error_boxes(pid, folder, base)
         if reply_came(REPLY_AFTER_OK_S):
             return {"halted": False, "screenshots": shots, "dialog": dialog,
-                    "pressed_ok": pressed or "pressed"}
+                    "pressed_ok": pressed or "pressed",
+                    "more_boxes": again["cleared"]}
     frame = _main_frame(pid)
     title = frame.title if frame is not None else ""
     if not force and not title_shows_halt(title):
@@ -185,7 +242,6 @@ def recover(workspace_dir, pid: int, command: str, request_id: str,
         shot = _capture(frame.hwnd, folder / f"{base}_altium.png")
         if shot:
             shots.append(shot)
-    restart = restart_loop()
     record = folder / f"{base}.json"
     outcome = {
         "halted": True,
@@ -194,17 +250,49 @@ def recover(workspace_dir, pid: int, command: str, request_id: str,
         "at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dialog": dialog,
         "pressed_ok": pressed or ("pressed" if dialog else "no box"),
+        "more_boxes": again["cleared"] if dialog is not None else [],
         "title": title,
         "screenshots": shots,
-        "restart": restart,
         "record": str(record),
     }
+
+    def run_restart() -> dict:
+        started = time.monotonic()
+        restart = restart_loop()
+        restart["seconds"] = round(time.monotonic() - started, 1)
+        outcome["restart"] = restart
+        _write_record(record, outcome)
+        return restart
+
+    if on_restarted is None:
+        run_restart()
+        return outcome
+    # THE CALLER IS TOLD NOW, NOT AFTER THE RESTART. The restart measured
+    # 145 s (2026-10-30), past the client's 120 s, so the crash reached
+    # nobody: the call went to the background and the agent saw nothing.
+    # Other calls wait for the new loop through the maintenance marker,
+    # which on_restarted removes.
+    outcome["restart"] = {"in_background": True}
+    _write_record(record, outcome)
+
+    def background() -> None:
+        try:
+            run_restart()
+        finally:
+            on_restarted()
+
+    import threading
+    threading.Thread(target=background, name="eda-agent-restart",
+                     daemon=True).start()
+    return outcome
+
+
+def _write_record(record: Path, outcome: dict) -> None:
     try:
         record.write_text(json.dumps(outcome, indent=2, default=str),
                           encoding="utf-8")
     except OSError:
         outcome["record"] = ""
-    return outcome
 
 
 def crash_message(outcome: dict) -> str:
@@ -214,7 +302,10 @@ def crash_message(outcome: dict) -> str:
     box = (f"Altium showed {dialog.get('title', 'an error')!r}"
            + (f" saying {said[0]!r}" if said else "") + ". ") if dialog else ""
     restart = outcome.get("restart") or {}
-    if restart.get("restarted"):
+    if restart.get("in_background"):
+        after = ("The loop is being restarted now; the next call waits for "
+                 "it and then works. ")
+    elif restart.get("restarted"):
         after = ("The script was stopped and the loop restarted, so the next "
                  "call works. ")
     else:
