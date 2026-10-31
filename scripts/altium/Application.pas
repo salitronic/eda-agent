@@ -161,6 +161,8 @@ Var
     Doc : IDocument;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    View : IServerDocumentView;
+    ServerDoc : IServerDocument;
     Data, FileName : String;
 Begin
     Data := '';
@@ -180,9 +182,29 @@ Begin
 
     // DM_FocusedDocument is UI-focus-dependent and returns Nil when no
     // editor window holds focus (e.g. right after a programmatic
-    // create/place). Fall back to the SCH then PCB server module's
-    // current document, which track the last-shown sheet/board
-    // independent of workspace focus.
+    // create/place). The editor's current view names the document on
+    // screen, a free library included; the SCH and PCB servers' current
+    // documents come last, as they can name a sheet shown earlier.
+    If Data = '' Then
+    Begin
+        ServerDoc := Nil;
+        Try
+            View := Client.CurrentView;
+            If View <> Nil Then ServerDoc := View.OwnerDocument;
+        Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            FileName := '';
+            Try FileName := ServerDoc.FileName; Except End;
+            If FileName <> '' Then
+            Begin
+                Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
+                Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
+                Data := Data + ',"document_kind":"' + EscapeJsonString(ServerDoc.Kind) + '"';
+                Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            End;
+        End;
+    End;
     If Data = '' Then
     Begin
         SchDoc := Nil;
@@ -910,6 +932,9 @@ Begin
 
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except End;
+    { Edits made through the API leave Modified False; the bridge's own   }
+    { record of them counts too, as it does when a document is closed.    }
+    If DocWasEdited(FilePath) Then WasModified := True;
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
     Try ServerDoc.SetModified(True); Except End;
