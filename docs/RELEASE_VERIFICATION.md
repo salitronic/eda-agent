@@ -158,7 +158,8 @@ works elsewhere cannot be an undeclared identifier:
 | 45, auto-save | `DM_SetRecoveryParameters` on the workspace | no, nowhere | medium, changes an Altium setting; ran live and restored |
 | 45, net kinds | `DM_IsLocal`, `DM_ElectricalString`, `DM_SuppressERC`, bus members on a net | no, nowhere | low, reads only; ran live |
 | 45, project options | `DM_SetAppendSheetNumberToLocalNets`, `DM_SetPinSwapBy_Netlabel`, `DM_SetPinSwapBy_Pin` | no, nowhere | low, ran live, read back and restored |
-| 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline`, `AutoGenerateName` on a pour | no, nowhere | low, ran live and restored; `AutoGenerateName` renames the pour |
+| 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline` on a pour | no, nowhere | low, ran live and restored |
+| 45, pour switches | `AutoGenerateName` on a pour | yes, `PCBSetPoly` clears it when a polygon Name is written (#150) | low, ran live and restored; `AutoGenerateName` renames the pour |
 | 45, inverted text | `InvertedTTTextBorder`, `TTFInvertedTextJustify`, `TTFOffsetFromInvertedRect` on board text | no, nowhere | low, ran live, read back and restored |
 | 45, text inversion | `Inverted`, `UseInvertedRectangle` on board text | yes, `Lib_ConvertDesignatorsToStroke` | low, ran live, read back and restored |
 | 45, parameters and ports | `ReadOnlyState`, `ParamType`, synchronize switches; port `AutoSize`, `OverrideDisplayString`, `HarnessColor` | no, nowhere | low, ran live, read back and restored |

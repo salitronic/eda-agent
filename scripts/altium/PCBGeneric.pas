@@ -864,8 +864,13 @@ Begin
     If PropName = 'Name' Then
     Begin
         If Trim(Value) = '' Then Exit;
+        { A pour with Auto Naming on builds its name from layer, net and    }
+        { index again and the assigned one is lost, while the write answered }
+        { success (issue #150). Typing a name in the Polygon Pour dialog     }
+        { unticks Auto Naming; do the same, then report what the pour holds. }
+        Try Poly.AutoGenerateName := False; Except End;
         Poly.Name := Value;
-        Result := True;
+        Result := Poly.Name = Value;
         Exit;
     End;
     If PropName = 'UseOctagons' Then
