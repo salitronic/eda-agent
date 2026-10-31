@@ -7031,6 +7031,294 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_LayerView - What the board view shows, and changes to it, in one call   }
+{ (issue #153).                                                                }
+{                                                                              }
+{ get_layer_display walks the legacy layer range, which stops at              }
+{ Mechanical16, and set_layer_visibility takes one layer at a time. A caller  }
+{ that wants to put a view back the way the user had it (a working view for   }
+{ one task, then the user's own) needs the rest of what the editor shows:     }
+{ the current layer, single layer mode, and for a mechanical layer whether    }
+{ it stays drawn in single layer mode (the Ctrl+click lock in the View        }
+{ Configuration panel, DisplayInSingleLayerMode).                             }
+{                                                                              }
+{ Params, all optional, applied in this order:                                }
+{   show, hide     comma lists of layers to display / hide                    }
+{   lock, unlock   comma lists of MECHANICAL layers to keep drawn / not in     }
+{                  single layer mode                                           }
+{   current_layer  the layer to make current                                   }
+{   single_layer_mode  true / false                                            }
+{ A layer is a name ResolveLayerId knows, "Mechanical21", or the user's name  }
+{ of any mechanical layer, Mechanical17 and up included. Every write is read  }
+{ back; one that did not take is listed in not_applied, a name that resolves  }
+{ to nothing in unknown_layers. The reply always lists every layer: the       }
+{ legacy range as get_layer_display does, then each ENABLED mechanical layer  }
+{ from 17 up. View state only: the document is not marked modified.          }
+{..............................................................................}
+
+Function LvNextItem(Var Rest : String) : String;
+Var
+    C : Integer;
+Begin
+    C := Pos(',', Rest);
+    If C > 0 Then
+    Begin
+        Result := Trim(Copy(Rest, 1, C - 1));
+        Rest := Copy(Rest, C + 1, Length(Rest));
+    End
+    Else
+    Begin
+        Result := Trim(Rest);
+        Rest := '';
+    End;
+End;
+
+{ The layer a caller named, or eNoLayer. ResolveLayerId covers the stack and  }
+{ the user names of Mechanical1-16; the user names above 16 are matched here. }
+Function LvResolve(Board : IPCB_Board; LayerStack : IPCB_LayerStack_V7;
+    Name : String) : TLayer;
+Var
+    Obj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    N : Integer;
+    Wanted, ThisName : String;
+Begin
+    Result := ResolveLayerId(Board, Name);
+    If Result <> eNoLayer Then Exit;
+    If LayerStack = Nil Then Exit;
+    Wanted := NormalizeLayerName(Name);
+    If Wanted = '' Then Exit;
+    For N := 17 To 1024 Do
+    Begin
+        Lyr := MechLayerFromNumber(N);
+        If Lyr = eNoLayer Then Exit;
+        Obj := Nil;
+        Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+        If Obj <> Nil Then
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If (ThisName <> '') And (NormalizeLayerName(ThisName) = Wanted) Then
+            Begin
+                Result := Lyr;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ One layer of the reply. Lock is read only on a mechanical layer.            }
+Function LvLayerJson(Board : IPCB_Board; LayerStack : IPCB_LayerStack_V7;
+    Lyr : TLayer; Mech : Boolean) : String;
+Var
+    Obj : IPCB_LayerObject_V7;
+    MechObj : IPCB_MechanicalLayer;
+    UserName, LockJson : String;
+    Visible, Locked : Boolean;
+Begin
+    UserName := '';
+    Visible := False;
+    LockJson := '';
+    Try Visible := Board.LayerIsDisplayed[Lyr]; Except Visible := False; End;
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+        If Obj <> Nil Then
+            Try UserName := Obj.Name; Except UserName := ''; End;
+        If Mech Then
+        Begin
+            MechObj := Nil;
+            Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+            If MechObj <> Nil Then
+            Begin
+                Locked := False;
+                Try
+                    Locked := MechObj.DisplayInSingleLayerMode;
+                    LockJson := ',"single_layer_lock":' + BoolToJsonStr(Locked);
+                Except
+                    LockJson := '';
+                End;
+            End;
+        End;
+    End;
+    Result := '{"layer":"' + EscapeJsonString(LayerDisplayName(Lyr)) + '",'
+        + '"name":"' + EscapeJsonString(UserName) + '",'
+        + '"visible":' + BoolToJsonStr(Visible) + LockJson + '}';
+End;
+
+Function LvIsMech(Lyr : TLayer) : Boolean;
+Begin
+    { By name, so Mechanical17 and up count too (LayerDisplayName). }
+    Result := ParseMechLayerNumber(LayerDisplayName(Lyr)) > 0;
+End;
+
+Function LvAddNote(List : String; Item : String) : String;
+Begin
+    Result := List;
+    If Result <> '' Then Result := Result + ',';
+    Result := Result + '"' + EscapeJsonString(Item) + '"';
+End;
+
+Function PCB_LayerView(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Opts : IPCB_SystemOptions;
+    LayerStack : IPCB_LayerStack_V7;
+    MechObj : IPCB_MechanicalLayer;
+    Lyr, Cur, WantCur : TLayer;
+    Pass, N : Integer;
+    Rest, Item, Want, Items, NotApplied, Unknown, SlmStr : String;
+    Show, Lock, Got, Enabled, Slm, Changed : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Opts := Nil;
+    Try Opts := PCBServer.SystemOptions; Except Opts := Nil; End;
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+
+    NotApplied := '';
+    Unknown := '';
+    Changed := False;
+
+    { show / hide, then lock / unlock }
+    For Pass := 1 To 4 Do
+    Begin
+        If Pass = 1 Then Rest := ExtractJsonValue(Params, 'show')
+        Else If Pass = 2 Then Rest := ExtractJsonValue(Params, 'hide')
+        Else If Pass = 3 Then Rest := ExtractJsonValue(Params, 'lock')
+        Else Rest := ExtractJsonValue(Params, 'unlock');
+        Show := Pass = 1;
+        Lock := Pass = 3;
+        While Rest <> '' Do
+        Begin
+            Item := LvNextItem(Rest);
+            If Item = '' Then Continue;
+            Lyr := LvResolve(Board, LayerStack, Item);
+            If Lyr = eNoLayer Then
+            Begin
+                Unknown := LvAddNote(Unknown, Item);
+                Continue;
+            End;
+            If Pass <= 2 Then
+            Begin
+                Try Board.LayerIsDisplayed[Lyr] := Show; Except End;
+                Got := Not Show;
+                Try Got := Board.LayerIsDisplayed[Lyr]; Except End;
+                If Got <> Show Then NotApplied := LvAddNote(NotApplied, Item + ': visible')
+                Else Changed := True;
+            End
+            Else
+            Begin
+                If Not LvIsMech(Lyr) Then
+                Begin
+                    NotApplied := LvAddNote(NotApplied,
+                        Item + ': lock exists on mechanical layers only');
+                    Continue;
+                End;
+                MechObj := Nil;
+                If LayerStack <> Nil Then
+                    Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+                Got := Not Lock;
+                If MechObj <> Nil Then
+                Begin
+                    Try MechObj.DisplayInSingleLayerMode := Lock; Except End;
+                    Try Got := MechObj.DisplayInSingleLayerMode; Except End;
+                End;
+                If Got <> Lock Then NotApplied := LvAddNote(NotApplied, Item + ': lock')
+                Else Changed := True;
+            End;
+        End;
+    End;
+
+    { The current layer is checked AFTER the view update below: Altium   }
+    { accepts a layer that is not shown, reads it back, then falls back   }
+    { to another one when the layer tabs are rebuilt (seen live on a      }
+    { mechanical layer that was not enabled).                             }
+    WantCur := eNoLayer;
+    Want := ExtractJsonValue(Params, 'current_layer');
+    If Want <> '' Then
+    Begin
+        Lyr := LvResolve(Board, LayerStack, Want);
+        If Lyr = eNoLayer Then
+            Unknown := LvAddNote(Unknown, Want)
+        Else
+        Begin
+            Try Board.CurrentLayer := Lyr; Except End;
+            WantCur := Lyr;
+            Changed := True;
+        End;
+    End;
+
+    SlmStr := LowerCase(Trim(ExtractJsonValue(Params, 'single_layer_mode')));
+    If (SlmStr = 'true') Or (SlmStr = 'false') Then
+    Begin
+        If Opts = Nil Then
+            NotApplied := LvAddNote(NotApplied, 'single_layer_mode: no system options')
+        Else
+        Begin
+            Try Opts.SingleLayerMode := (SlmStr = 'true'); Except End;
+            Got := Not (SlmStr = 'true');
+            Try Got := Opts.SingleLayerMode; Except End;
+            If Got <> (SlmStr = 'true') Then
+                NotApplied := LvAddNote(NotApplied, 'single_layer_mode')
+            Else Changed := True;
+        End;
+    End;
+
+    If Changed Then
+    Begin
+        Try Board.ViewManager_UpdateLayerTabs; Except End;
+        Try Board.ViewManager_FullUpdate; Except End;
+    End;
+
+    { the reply: the legacy range, then every enabled mechanical layer above 16 }
+    Items := '';
+    For Lyr := eTopLayer To eMultiLayer Do
+    Begin
+        If GetLayerString(Lyr) <> 'Unknown' Then
+        Begin
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + LvLayerJson(Board, LayerStack, Lyr, LvIsMech(Lyr));
+        End;
+    End;
+    If LayerStack <> Nil Then
+        For N := 17 To 1024 Do
+        Begin
+            Lyr := MechLayerFromNumber(N);
+            If Lyr = eNoLayer Then Break;
+            MechObj := Nil;
+            Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+            If MechObj = Nil Then Continue;
+            Enabled := False;
+            Try Enabled := MechObj.MechanicalLayerEnabled; Except Enabled := False; End;
+            If Not Enabled Then Continue;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + LvLayerJson(Board, LayerStack, Lyr, True);
+        End;
+
+    Cur := eNoLayer;
+    Try Cur := Board.CurrentLayer; Except Cur := eNoLayer; End;
+    If (WantCur <> eNoLayer) And (Cur <> WantCur) Then
+        NotApplied := LvAddNote(NotApplied, Want + ': current layer');
+    Slm := False;
+    If Opts <> Nil Then
+        Try Slm := Opts.SingleLayerMode; Except Slm := False; End;
+
+    Result := BuildSuccessResponse(RequestId, '{'
+        + '"current_layer":"' + EscapeJsonString(LayerDisplayName(Cur)) + '",'
+        + '"single_layer_mode":' + BoolToJsonStr(Slm) + ','
+        + '"layers":[' + Items + '],'
+        + '"not_applied":[' + NotApplied + '],'
+        + '"unknown_layers":[' + Unknown + ']}');
+End;
+
+{..............................................................................}
 { PCB_SetLayerColor - Recolour one layer.                                     }
 { Params: layer, color (#RRGGBB)                                              }
 {..............................................................................}
@@ -26150,6 +26438,7 @@ Begin
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
+        'layer_view':              Result := PCB_LayerView(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
         'place_3d_body':           Result := PCB_Place3DBody(Params, RequestId);
