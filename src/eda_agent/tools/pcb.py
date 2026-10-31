@@ -7623,8 +7623,8 @@ def register_pcb_tools(mcp):
     async def pcb_create_design_rule(
         name: str,
         rule_type: str = "clearance",
-        value: int = 10,
-        max_value: Optional[int] = None,
+        value: float = 10,
+        max_value: Optional[float] = None,
         favored_value: Optional[int] = None,
         max_uncoupled_length: Optional[int] = None,
         scope: str = "",
@@ -7646,7 +7646,13 @@ def register_pcb_tools(mcp):
                 favored_value, max_uncoupled_length),
                 "solder_mask_expansion" / "paste_mask_expansion" (value =
                 SIGNED radial expansion; negative with scope "IsVia" tents
-                vias), "vias_under_smd" (set ``allowed``, not value).
+                vias), "vias_under_smd" (set ``allowed``, not value),
+                "length" (value = min length in mils, max_value = max),
+                "signal_impedance" (value = min ohms, max_value = max),
+                "flight_time_rising" / "flight_time_falling" (value =
+                max flight time in ns). These four read their limits back
+                in ``limits``; change them later with
+                pcb_set_rule_properties.
             value: Primary value in mils (the MIN for ranged kinds).
             max_value: MAX for ranged kinds (default 5x value).
             favored_value: Preferred value (default value).
@@ -7693,6 +7699,18 @@ def register_pcb_tools(mcp):
             params["allowed"] = "true" if allowed else "false"
         if rule_type in ("polygon_connect", "plane_connect"):
             params["connect_style"] = connect_style
+        limit_keys = {
+            "length": ("min_length_mils", "max_length_mils"),
+            "signal_impedance": ("min_signal_impedance_ohms", "max_signal_impedance_ohms"),
+            "flight_time_rising": ("max_flight_time_ns", None),
+            "flight_time_falling": ("max_flight_time_ns", None),
+        }.get(rule_type)
+        if limit_keys:
+            if value <= 0 and rule_type != "length":
+                return {"ok": False, "reason": f"{rule_type} takes a value more than 0"}
+            params[limit_keys[0]] = str(value)
+            if limit_keys[1] and max_value is not None:
+                params[limit_keys[1]] = str(max_value)
         result = await bridge.send_command_async("pcb.create_design_rule", params)
         return result
 
@@ -7852,18 +7870,32 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_vias() -> dict[str, Any]:
-        """Get all vias on the active PCB board.
+    async def pcb_get_vias(net: str = "", offset: int = 0, limit: int = 0) -> dict[str, Any]:
+        """Get the vias on the active PCB board.
 
         Returns via position, pad size, hole size, net assignment, and
-        start/end layer for every via on the board.
+        start/end layer.
+
+        Args:
+            net: Only this net's vias (exact name). Empty is every via.
+            offset, limit: Page a large board; limit 0 returns every match.
 
         Returns:
             Dictionary with "vias" array (each with x, y, size, hole_size,
-            net, low_layer, high_layer) and "count"
+            net, low_layer, high_layer), "count" (every via that matches),
+            "returned" (on this page), "offset" and "more".
         """
+        if offset < 0 or limit < 0:
+            return {"ok": False, "reason": "offset and limit are 0 or more"}
+        ask: dict[str, Any] = {}
+        if net:
+            ask["net"] = net
+        if offset:
+            ask["offset"] = str(offset)
+        if limit:
+            ask["limit"] = str(limit)
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_vias", {})
+        result = await bridge.send_command_async("pcb.get_vias", ask)
         return result
 
     @mcp.tool()
@@ -8345,6 +8377,47 @@ def register_pcb_tools(mcp):
         if name.strip():
             ask["name"] = name.strip()
         return await get_bridge().send_command_async("pcb.pour_outline", ask)
+
+    @mcp.tool()
+    async def pcb_get_copper(
+        kinds: str = "",
+        layer: str = "",
+        selected: bool = False,
+        offset: int = 0,
+        limit: int = 1500,
+    ) -> dict[str, Any]:
+        """Read the board's tracks, arcs, vias, regions, fills and pours with
+        their geometry, a page at a time. Pours carry their outline in
+        ``pts`` (``[x, y]`` per vertex, ``[x, y, cx, cy, r, a1, a2]`` where
+        the edge is an arc). Unlike the other tools, lengths here are in
+        Altium's internal units: divide by ``coord_per_mil`` in the reply.
+
+        Args:
+            kinds: Comma list of track, arc, via, region, fill, polygon;
+                read in that order. Empty reads every kind in one pass. An
+                unknown kind is refused (BAD_KINDS).
+            layer: One layer name, Mechanical17 and up included. Unknown is
+                refused (UNKNOWN_LAYER) with the board's layer names.
+            selected: Only the selected objects; offset and limit page
+                through the selection.
+            offset, limit: Paging; ``more`` says whether another page is
+                left.
+
+        Returns:
+            ``copper`` (one entry per object: ``k`` its kind, ``layer``,
+            ``net``, ``comp``, ``keepout`` and its geometry), ``offset``,
+            ``count`` and ``more``.
+        """
+        if offset < 0 or limit <= 0:
+            return {"ok": False, "reason": "offset is 0 or more and limit more than 0"}
+        ask = {"section": "copper", "offset": str(offset), "limit": str(limit)}
+        if kinds.strip():
+            ask["kinds"] = kinds.strip()
+        if layer.strip():
+            ask["layer"] = layer.strip()
+        if selected:
+            ask["selected"] = "true"
+        return await get_bridge().send_command_async("pcb.get_layout_model", ask)
 
     @mcp.tool()
     async def pcb_modify_polygon(
@@ -9069,6 +9142,11 @@ def register_pcb_tools(mcp):
         max_via_hole_mils: float | None = None,
         preferred_via_hole_mils: float | None = None,
         testpoint: dict[str, Any] | None = None,
+        min_length_mils: float | None = None,
+        max_length_mils: float | None = None,
+        min_signal_impedance_ohms: float | None = None,
+        max_signal_impedance_ohms: float | None = None,
+        max_flight_time_ns: float | None = None,
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
@@ -9133,6 +9211,13 @@ def register_pcb_tools(mcp):
                 relief_expansion_mils (plane only): the relief's settings.
             min_hole_size_mils / max_hole_size_mils: HoleSize
                 constraint limits.
+            min_length_mils / max_length_mils: a Length rule's limits.
+            min_signal_impedance_ohms / max_signal_impedance_ohms: a
+                Signal Integrity Impedance rule's limits.
+            max_flight_time_ns: a Flight Time (rising or falling edge)
+                rule's limit. These three are read back in limits; one
+                that did not hold, or that belongs to another kind of rule,
+                is named in limits_note.
             testpoint: a Testpoint Style rule's settings, by name:
                 min_size_mils, max_size_mils, preferred_size_mils,
                 min_hole_mils, max_hole_mils, preferred_hole_mils,
@@ -9202,21 +9287,29 @@ def register_pcb_tools(mcp):
             ("width_min_impedance", width_min_impedance),
             ("width_max_impedance", width_max_impedance),
             ("width_preferred_impedance", width_preferred_impedance),
+            ("min_length_mils", min_length_mils),
+            ("max_length_mils", max_length_mils),
+            ("min_signal_impedance_ohms", min_signal_impedance_ohms),
+            ("max_signal_impedance_ohms", max_signal_impedance_ohms),
+            ("max_flight_time_ns", max_flight_time_ns),
         ]:
             if value is not None:
                 params[key] = str(value)
         for key in ("dp_min_impedance", "dp_max_impedance", "dp_preferred_impedance",
                     "width_min_impedance", "width_max_impedance",
-                    "width_preferred_impedance"):
+                    "width_preferred_impedance", "min_signal_impedance_ohms",
+                    "max_signal_impedance_ohms", "max_flight_time_ns"):
             if key in params and float(params[key]) <= 0:
-                return {"ok": False, "reason": f"{key} is more than 0 ohms"}
+                unit = "ns" if key == "max_flight_time_ns" else "ohms"
+                return {"ok": False, "reason": f"{key} is more than 0 {unit}"}
         if enabled is not None:
             params["enabled"] = "true" if enabled else "false"
         for key in ("height_min_mils", "height_max_mils", "height_preferred_mils",
                     "vertical_gap_mils", "corner_min_setback_mils",
                     "corner_max_setback_mils", "antenna_tolerance_mils",
                     "fanout_via_grid_mils", "collision_check_mode", "fanout_style",
-                    "fanout_direction", "bga_fanout_direction", "bga_via_mode"):
+                    "fanout_direction", "bga_fanout_direction", "bga_via_mode",
+                    "min_length_mils", "max_length_mils"):
             if key in params and float(params[key]) < 0:
                 return {"ok": False, "reason": f"{key} is 0 or more"}
         for key, value in (("width_impedance_driven", width_impedance_driven),

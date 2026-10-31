@@ -1,4 +1,4 @@
-# Release verification: 2026.10.30.7
+# Release verification: 2026.10.31.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -158,7 +158,8 @@ works elsewhere cannot be an undeclared identifier:
 | 45, auto-save | `DM_SetRecoveryParameters` on the workspace | no, nowhere | medium, changes an Altium setting; ran live and restored |
 | 45, net kinds | `DM_IsLocal`, `DM_ElectricalString`, `DM_SuppressERC`, bus members on a net | no, nowhere | low, reads only; ran live |
 | 45, project options | `DM_SetAppendSheetNumberToLocalNets`, `DM_SetPinSwapBy_Netlabel`, `DM_SetPinSwapBy_Pin` | no, nowhere | low, ran live, read back and restored |
-| 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline`, `AutoGenerateName` on a pour | no, nowhere | low, ran live and restored; `AutoGenerateName` renames the pour |
+| 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline` on a pour | no, nowhere | low, ran live and restored |
+| 45, pour switches | `AutoGenerateName` on a pour | yes, `PCBSetPoly` clears it when a polygon Name is written (#150) | low, ran live and restored; `AutoGenerateName` renames the pour |
 | 45, inverted text | `InvertedTTTextBorder`, `TTFInvertedTextJustify`, `TTFOffsetFromInvertedRect` on board text | no, nowhere | low, ran live, read back and restored |
 | 45, text inversion | `Inverted`, `UseInvertedRectangle` on board text | yes, `Lib_ConvertDesignatorsToStroke` | low, ran live, read back and restored |
 | 45, parameters and ports | `ReadOnlyState`, `ParamType`, synchronize switches; port `AutoSize`, `OverrideDisplayString`, `HarnessColor` | no, nowhere | low, ran live, read back and restored |
@@ -230,6 +231,9 @@ works elsewhere cannot be an undeclared identifier:
 | 60, generated documents | `DM_AddGeneratedDocument` on a project | no, nowhere | low, lists a file under Generated; ran live on a scratch project, unsaved |
 | 62, label rotation | `RotateBy90` by 90 and back on a part or sheet symbol, to reposition its labels | no, nowhere | low, the object returns to its rotation; ran live, size and entries unchanged, saved and reopened |
 | 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
+| 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
+| 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
+| 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -405,7 +409,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.30.7`, `version_match` =
+Expect `altium_script_version` = `2026.10.31.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -1287,6 +1291,23 @@ that they arrived:
   board crashed the scripting system (an access violation no Try can
   catch) with nothing to say which object it was on; with `trace`, the
   last line names it. Delete the file afterwards.
+* The copper read narrows. `section=copper kinds=polygon` lists the
+  board's pours and nothing else (compare the count with
+  `pcb_get_polygons`), each with its `pts`, arcs as
+  `[vx,vy,cx,cy,r,a1,a2]`; on a board of thousands of tracks it answers
+  in about a second, where the unnarrowed read took most of a minute.
+  `kinds=polygon layer=<a mechanical layer>` lists only the pours on
+  that layer. Select two pours by hand: `kinds=polygon selected=true`
+  lists exactly those two, and `offset=1 limit=1` the second. `kinds=pad`
+  is refused `BAD_KINDS` and `layer=Nowhere` `UNKNOWN_LAYER`, before
+  anything is read. Without the three, the read is unchanged: the same
+  entries in the same order as before.
+* The copper read reaches Mechanical17 and up (issue #149). Enable
+  Mechanical17 and Mechanical21 and place a pour on each:
+  `place_polygon_rect` answers with those layer names, not `Unknown`;
+  `kinds=polygon` lists both, `layer=Mechanical21` exactly its pour,
+  and `layer=BottomLayer` the same pours as before. Remove the pours and
+  disable the two layers again.
 
 ---
 
@@ -3487,7 +3508,7 @@ On a scratch board and a scratch sheet:
 
 ## 62. Labels where Altium puts them, library scope, and a crash told at once
 
-Measured 2026-10-30 on AD 26.11.1.5 with 2026.10.30.7, on scratch
+Measured 2026-10-30 on AD 26.11.1.5 with the 30 October scripts, on scratch
 documents:
 
 * `sch_place_sheet_symbol` at (1000,1000)-(2200,1600): the name reads back
@@ -3520,6 +3541,43 @@ Found while deploying: calling `LookupLibComponent` from Generic.pas left
 the whole unit undeclared in Altium ("Undeclared identifier:
 HandleGenericCommand" on every generic command) with no compile error
 shown. A test refuses that call.
+
+## 63. Rule limits, the copper read by kind and layer, pour names, the foreground guard
+
+Measured 2026-10-31 on AD 26.11.1.5 with the 31 October scripts, on the
+scratch board Tent.PcbDoc, closed without saving:
+
+* A pour with Auto Naming on, `obj_modify ePolyObject set=Name=SCRATCH_POUR_A`:
+  the pour reads the new name and `AutoGenerateName` false. Before, the
+  reply said matched 1 and the old name stayed (#150).
+* Mechanical17 enabled, `pcb_place_polygon_rect layer=Mechanical17`: the
+  reply names `Mechanical17` (it said `Unknown`). `pcb_get_copper
+  kinds=polygon layer=Mechanical17` finds that pour (#149);
+  `kinds=via,polygon` lists the 2 vias then both pours; with the
+  Mechanical17 pour selected, `selected=true` lists only it;
+  `kinds=pad` is refused (BAD_KINDS) and `layer=Nowhere` (UNKNOWN_LAYER).
+* `pcb_create_design_rule` made a Length rule (100 / 2500.5 mil), an
+  Impedance rule (45 to 55 ohm) and Flight Time rules (rising 1.5 ns,
+  falling 2 ns), each read back in `limits`. `pcb_set_rule_properties`
+  in one call set the length maximum to 3000 mil, the impedance to 90 to
+  110 ohm and the falling flight time to 0.75 ns; a flight time sent to
+  the impedance rule came back in `limits_note`, unwritten. Altium's own
+  descriptors read "Max=3000mil", "Maximum=750.0pS" and
+  "Minimum=90.00Ohms Maximum=110.0Ohms".
+* `app_click_menu` while Altium is busy with a bridge command waits for
+  the window activation instead of refusing ("belongs to process
+  None"); with the session locked or the remote desktop disconnected it
+  refuses at once. Covered by simulated tests; the two real-window tests
+  skip on this desktop, where the activation never stays pending.
+* `pcb_get_vias offset=1 limit=1` on the 2-via scratch board: the second
+  via, `count` 2, `returned` 1, `more` false; `net=GND` returns 0 of 0.
+  Not yet checked on a board whose vias carry nets.
+* A via placed with `pcb_place_vias`, then `app_save_document`:
+  `was_modified` true (it said false after an edit made through the API).
+  The via was deleted and the board saved again as it was.
+* `app_get_active_document` with nothing focused now names the document
+  in the editor's current view before the schematic server's last
+  sheet. Not provoked live: the state needs no focused document.
 
 ## Still open, and not blocking
 

@@ -644,14 +644,24 @@ Function CurrentFocusedDocPath(Dummy : Integer): String;
 Var
     Workspace : IWorkspace;
     Doc : IDocument;
+    View : IServerDocumentView;
 Begin
     Result := '';
     Try
         Workspace := GetWorkspace;
-        If Workspace = Nil Then Exit;
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then Result := Doc.DM_FullPath;
+        If Workspace <> Nil Then
+        Begin
+            Doc := Workspace.DM_FocusedDocument;
+            If Doc <> Nil Then Result := Doc.DM_FullPath;
+        End;
     Except End;
+    If Result <> '' Then Exit;
+    { No focused document: the editor's current view still names the one }
+    { on screen, a free library outside every project included.          }
+    Try
+        View := Client.CurrentView;
+        If View <> Nil Then Result := View.OwnerDocument.FileName;
+    Except Result := ''; End;
 End;
 
 Procedure RestoreFocusedDoc(SavedPath : String);

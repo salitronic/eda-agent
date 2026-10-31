@@ -1270,6 +1270,167 @@ Begin
 End;
 
 {..............................................................................}
+{ RuleLimitsReport - Write a Length, Signal Impedance or Flight Time rule's     }
+{ limits and read each back.                                                    }
+{                                                                               }
+{ min/max_length_mils on MaxMinLength (MinLimit/MaxLimit, coords);             }
+{ min/max_signal_impedance_ohms on MaxMinImpedance (Minimum/Maximum);          }
+{ max_flight_time_ns on FlightTime rising or falling (MaximumFlightTime, in     }
+{ seconds). Each interface is a typed local assigned from the iterator, the     }
+{ one way DelphiScript narrows it. A value given for another kind of rule is    }
+{ named in the note, not written; a value that does not read back as written   }
+{ is named too. Updated counts the values that held.                           }
+{..............................................................................}
+Function RuleLimitsReport(Board : IPCB_Board; Kind : Integer; RuleName : String;
+    Params : String; Var Updated : Integer) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    LenRule : IPCB_MaxMinLengthConstraint;
+    ImpRule : IPCB_RuleMaxMinImpedance;
+    RiseRule : IPCB_RuleFlightTime_RisingEdge;
+    FallRule : IPCB_RuleFlightTime_FallingEdge;
+    MinLen, MaxLen, MinImp, MaxImp, Flight, Written, Missed, Wrong : String;
+    WantC, GotC : TCoord;
+    WantD, GotD : Double;
+    Found : Boolean;
+Begin
+    Result := '';
+    MinLen := ExtractJsonValue(Params, 'min_length_mils');
+    MaxLen := ExtractJsonValue(Params, 'max_length_mils');
+    MinImp := ExtractJsonValue(Params, 'min_signal_impedance_ohms');
+    MaxImp := ExtractJsonValue(Params, 'max_signal_impedance_ohms');
+    Flight := ExtractJsonValue(Params, 'max_flight_time_ns');
+    If (MinLen = '') And (MaxLen = '') And (MinImp = '') And (MaxImp = '')
+        And (Flight = '') Then Exit;
+
+    Written := '';
+    Missed := '';
+    Wrong := '';
+    WantD := 0;
+    GotD := 0;
+    If ((MinLen <> '') Or (MaxLen <> '')) And (Kind <> eRule_MaxMinLength) Then
+        Wrong := Wrong + ' length';
+    If ((MinImp <> '') Or (MaxImp <> '')) And (Kind <> eRule_MaxMinImpedance) Then
+        Wrong := Wrong + ' signal_impedance';
+    If (Flight <> '') And (Kind <> eRule_FlightTime_RisingEdge)
+        And (Kind <> eRule_FlightTime_FallingEdge) Then
+        Wrong := Wrong + ' flight_time';
+
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Found := False;
+    Try
+        If Kind = eRule_MaxMinLength Then
+        Begin
+            LenRule := Iter.FirstPCBObject;
+            While (LenRule <> Nil) And (Not Found) Do
+            Begin
+                If (LenRule.RuleKind = Kind) And (LenRule.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    If MinLen <> '' Then
+                    Begin
+                        WantC := MilsToCoordF(StrToFloatDef(MinLen, -1));
+                        Try LenRule.MinLimit := WantC; Except End;
+                        GotC := LenRule.MinLimit;
+                        Written := Written + ',"min_length_mils":' + FloatToJsonStr(CoordToMilsF(GotC));
+                        If GotC = WantC Then Inc(Updated) Else Missed := Missed + ' min_length_mils';
+                    End;
+                    If MaxLen <> '' Then
+                    Begin
+                        WantC := MilsToCoordF(StrToFloatDef(MaxLen, -1));
+                        Try LenRule.MaxLimit := WantC; Except End;
+                        GotC := LenRule.MaxLimit;
+                        Written := Written + ',"max_length_mils":' + FloatToJsonStr(CoordToMilsF(GotC));
+                        If GotC = WantC Then Inc(Updated) Else Missed := Missed + ' max_length_mils';
+                    End;
+                End;
+                If Not Found Then LenRule := Iter.NextPCBObject;
+            End;
+        End
+        Else If Kind = eRule_MaxMinImpedance Then
+        Begin
+            ImpRule := Iter.FirstPCBObject;
+            While (ImpRule <> Nil) And (Not Found) Do
+            Begin
+                If (ImpRule.RuleKind = Kind) And (ImpRule.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    If MinImp <> '' Then
+                    Begin
+                        WantD := StrToFloatDef(MinImp, -1);
+                        Try ImpRule.Minimum := WantD; Except End;
+                        GotD := ImpRule.Minimum;
+                        Written := Written + ',"min_signal_impedance_ohms":' + FloatToJsonStr(GotD);
+                        If Abs(GotD - WantD) < 0.0001 Then Inc(Updated)
+                        Else Missed := Missed + ' min_signal_impedance_ohms';
+                    End;
+                    If MaxImp <> '' Then
+                    Begin
+                        WantD := StrToFloatDef(MaxImp, -1);
+                        Try ImpRule.Maximum := WantD; Except End;
+                        GotD := ImpRule.Maximum;
+                        Written := Written + ',"max_signal_impedance_ohms":' + FloatToJsonStr(GotD);
+                        If Abs(GotD - WantD) < 0.0001 Then Inc(Updated)
+                        Else Missed := Missed + ' max_signal_impedance_ohms';
+                    End;
+                End;
+                If Not Found Then ImpRule := Iter.NextPCBObject;
+            End;
+        End
+        Else If (Kind = eRule_FlightTime_RisingEdge) And (Flight <> '') Then
+        Begin
+            RiseRule := Iter.FirstPCBObject;
+            While (RiseRule <> Nil) And (Not Found) Do
+            Begin
+                If (RiseRule.RuleKind = Kind) And (RiseRule.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    WantD := StrToFloatDef(Flight, -1) / 1000000000;
+                    Try RiseRule.MaximumFlightTime := WantD; Except End;
+                    GotD := RiseRule.MaximumFlightTime;
+                End;
+                If Not Found Then RiseRule := Iter.NextPCBObject;
+            End;
+        End
+        Else If (Kind = eRule_FlightTime_FallingEdge) And (Flight <> '') Then
+        Begin
+            FallRule := Iter.FirstPCBObject;
+            While (FallRule <> Nil) And (Not Found) Do
+            Begin
+                If (FallRule.RuleKind = Kind) And (FallRule.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    WantD := StrToFloatDef(Flight, -1) / 1000000000;
+                    Try FallRule.MaximumFlightTime := WantD; Except End;
+                    GotD := FallRule.MaximumFlightTime;
+                End;
+                If Not Found Then FallRule := Iter.NextPCBObject;
+            End;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    If Found And (Flight <> '') And ((Kind = eRule_FlightTime_RisingEdge)
+        Or (Kind = eRule_FlightTime_FallingEdge)) Then
+    Begin
+        Written := Written + ',"max_flight_time_ns":' + FloatToJsonStr(GotD * 1000000000);
+        If Abs(GotD - WantD) < 0.000000000001 Then Inc(Updated)
+        Else Missed := Missed + ' max_flight_time_ns';
+    End;
+    If Written <> '' Then Result := ',"limits":{' + Copy(Written, 2, Length(Written)) + '}';
+    If Wrong <> '' Then
+        Result := Result + ',"limits_note":"Not written, this rule is kind '
+            + IntToStr(Kind) + ' and these apply to another kind:' + Wrong + '"'
+    Else If Missed <> '' Then
+        Result := Result + ',"limits_note":"Written but not held, read back different:'
+            + Missed + '"';
+End;
+
+{..............................................................................}
 { PCB_SetRuleProperties - Update metadata + constraint values of a rule.        }
 {                                                                               }
 { Metadata params (writable on the base IPCB_Rule reference):                   }
@@ -1292,6 +1453,7 @@ End;
 {     SilkToSilkClearance (55):  gap_mils, through each one's SetState_ pair   }
 {   - MaxMinWidth (kind 2):  min_width_mils / max_width_mils / favored_width_mils}
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
+{   - MaxMinLength, MaxMinImpedance, FlightTime: through RuleLimitsReport      }
 {                                                                               }
 { Empirically determined kind 52 from the runtime rule list; the published     }
 { TRuleKind enum stops at 51 (DifferentialPairsRouting). Kinds 52+ are newer   }
@@ -1319,6 +1481,7 @@ Var
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
     DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport : String;
     ImpDriven, ImpMin, ImpMax, ImpFav, ImpReport, ImpMissed : String;
+    LimitsReport : String;
     XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt : String;
     XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
     XWDrv, XWMin, XWMax, XWFav, XWCopper : String;
@@ -2119,11 +2282,14 @@ Begin
                 + 'Set it in PCB > Rules and Constraints Editor."';
     End;
 
+    LimitsReport := RuleLimitsReport(Board, Kind, RuleName, Params, UpdatedCount);
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
+        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport
+        + LimitsReport + '}');
 End;
 
 {..............................................................................}
@@ -9035,6 +9201,7 @@ Var
     RuleValue, MaxValue, FavoredValue, MaxUncoupVal : Double;
     HasMaxValue, AllowedVal : Boolean;
     L : TLayer;
+    LimitCount : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -9235,13 +9402,30 @@ Begin
                 Rule := RulePlaneC;
             End;
         End
+        Else If (RuleTypeStr = 'length') Or (RuleTypeStr = 'signal_impedance')
+            Or (RuleTypeStr = 'flight_time_rising') Or (RuleTypeStr = 'flight_time_falling') Then
+        Begin
+            { Made with its name and scope here; the limits are written and }
+            { read back by RuleLimitsReport once the rule is on the board.  }
+            If RuleTypeStr = 'length' Then
+                Rule := PCBServer.PCBRuleFactory(eRule_MaxMinLength)
+            Else If RuleTypeStr = 'signal_impedance' Then
+                Rule := PCBServer.PCBRuleFactory(eRule_MaxMinImpedance)
+            Else If RuleTypeStr = 'flight_time_rising' Then
+                Rule := PCBServer.PCBRuleFactory(eRule_FlightTime_RisingEdge)
+            Else
+                Rule := PCBServer.PCBRuleFactory(eRule_FlightTime_FallingEdge);
+            Rule.Name := RuleName;
+            If ScopeStr <> '' Then Rule.Scope1Expression := ScopeStr;
+        End
         Else
         Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
                 'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
                 + 'via_size, differential_pairs, solder_mask_expansion, '
-                + 'paste_mask_expansion, vias_under_smd, polygon_connect or '
-                + 'plane_connect');
+                + 'paste_mask_expansion, vias_under_smd, polygon_connect, '
+                + 'plane_connect, length, signal_impedance, flight_time_rising or '
+                + 'flight_time_falling');
             Exit;
         End;
 
@@ -9254,6 +9438,18 @@ Begin
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+
+    If (RuleTypeStr = 'length') Or (RuleTypeStr = 'signal_impedance')
+        Or (RuleTypeStr = 'flight_time_rising') Or (RuleTypeStr = 'flight_time_falling') Then
+    Begin
+        LimitCount := 0;
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '"'
+            + RuleLimitsReport(Board, Rule.RuleKind, RuleName, Params, LimitCount) + '}');
+        Exit;
+    End;
 
     { vias_under_smd carries no measurement, so reporting value_mils for it }
     { would be reporting a number the rule does not hold.                   }
@@ -9848,9 +10044,9 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Via : IPCB_Via;
-    JsonItems, NetName : String;
+    JsonItems, NetName, WantNet : String;
     First : Boolean;
-    Count : Integer;
+    Count, Returned, Offset, Limit : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -9859,9 +10055,16 @@ Begin
         Exit;
     End;
 
+    { net keeps one net's vias; offset and limit page a large board. Count }
+    { is every via that matches, Returned the ones on this page; limit 0   }
+    { is every one, as before.                                               }
+    WantNet := ExtractJsonValue(Params, 'net');
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 0);
     JsonItems := '';
     First := True;
     Count := 0;
+    Returned := 0;
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
@@ -9871,13 +10074,23 @@ Begin
     Via := Iterator.FirstPCBObject;
     While Via <> Nil Do
     Begin
-        If Not First Then JsonItems := JsonItems + ',';
-        First := False;
-
         Try
             If Via.Net <> Nil Then NetName := Via.Net.Name
             Else NetName := '';
         Except NetName := ''; End;
+        If (WantNet <> '') And (NetName <> WantNet) Then
+        Begin
+            Via := Iterator.NextPCBObject;
+            Continue;
+        End;
+        Inc(Count);
+        If (Count <= Offset) Or ((Limit > 0) And (Returned >= Limit)) Then
+        Begin
+            Via := Iterator.NextPCBObject;
+            Continue;
+        End;
+        If Not First Then JsonItems := JsonItems + ',';
+        First := False;
 
         JsonItems := JsonItems + '{"x":' + FloatToJsonStr(CoordToMilsF(Via.x)) + ','
             + '"y":' + FloatToJsonStr(CoordToMilsF(Via.y)) + ','
@@ -9886,13 +10099,17 @@ Begin
             + '"net":"' + EscapeJsonString(NetName) + '",'
             + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
             + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
-        Inc(Count);
+        Inc(Returned);
         Via := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"returned":' + IntToStr(Returned)
+        + ',"offset":' + IntToStr(Offset)
+        + ',"more":' + BoolToJsonStr(Offset + Returned < Count)
+        + ',"net":"' + EscapeJsonString(WantNet) + '"}');
 End;
 
 { Distance in mils from (Px, Py) to the segment A-B, every input in mils.   }
@@ -11709,7 +11926,7 @@ Begin
         + '"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0) + ','
         + '"repour_mode":"' + RepourModeName(0) + '",'
         + '"name":"' + EscapeJsonString(Polygon.Name) + '",'
-        + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -22955,8 +23172,33 @@ Begin
     End;
 End;
 
+{ LmCopperKinds - The object kinds a copper read may be narrowed to, as the  }
+{ "k" each entry carries. An empty list is every kind, read as before.       }
+Function LmNextKind(Var Rest : String) : String;
+Var
+    C : Integer;
+Begin
+    C := Pos(',', Rest);
+    If C > 0 Then
+    Begin
+        Result := Trim(Copy(Rest, 1, C - 1));
+        Rest := Copy(Rest, C + 1, Length(Rest));
+    End
+    Else
+    Begin
+        Result := Trim(Rest);
+        Rest := '';
+    End;
+End;
+
+Function LmCopperKindKnown(Kind : String) : Boolean;
+Begin
+    Result := (Kind = 'track') Or (Kind = 'arc') Or (Kind = 'via')
+        Or (Kind = 'region') Or (Kind = 'fill') Or (Kind = 'polygon');
+End;
+
 Function LmCopperSection(Board : IPCB_Board; Offset : Integer; Limit : Integer;
-    Trace : Boolean) : String;
+    Trace : Boolean; Kinds : String; OnLayer : TLayer; SelectedOnly : Boolean) : String;
 Var
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
@@ -22974,7 +23216,10 @@ Var
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
     Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
-    More, Keepout, InPoly : Boolean;
+    More, Keepout, InPoly, Wanted, Wide : Boolean;
+    Passes : TStringList;
+    P : Integer;
+    Rest, Kind : String;
 Begin
     Items := '';
     Idx := 0;
@@ -22996,147 +23241,196 @@ Begin
         End;
     End;
     If Trace Then LmTrace('copper offset=' + IntToStr(Offset) + ' limit=' + IntToStr(Limit));
-    Iter := Board.BoardIterator_Create;
-    Try
-        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
-            eRegionObject, eFillObject, ePolyObject));
-        Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Obj := Iter.FirstPCBObject;
-        While Obj <> Nil Do
-        Begin
-            If Idx >= Offset Then
-            Begin
-                If Emitted >= Limit Then
-                Begin
-                    More := True;
-                    Break;
-                End;
-                If Trace Then LmTrace(IntToStr(Idx) + ' kind=' + IntToStr(Obj.ObjectId) + ' flags');
-                Keepout := False;
-                Try Keepout := Obj.IsKeepout; Except Keepout := False; End;
-                InPoly := False;
-                Try InPoly := Obj.InPolygon; Except InPoly := False; End;
-                { Poured copper carries no net of its own: the pour that   }
-                { made it does. Name it here so the reader need not guess  }
-                { the owner from geometry, which fails on nested pours.    }
-                OwnerName := '';
-                OwnerNet := '';
-                If InPoly Then
-                Begin
-                    If Trace Then LmTrace(IntToStr(Idx) + ' owner');
-                    PourOwner := Obj.Polygon;
-                    If PourOwner <> Nil Then
-                    Begin
-                        OwnerName := PourOwner.Name;
-                        If PourOwner.Net <> Nil Then OwnerNet := PourOwner.Net.Name;
-                    End;
-                End;
-                If Trace Then LmTrace(IntToStr(Idx) + ' common');
-                Common := ',"layer":"' + GetLayerString(Obj.Layer)
-                    + '","net":"' + EscapeJsonString(LmNetName(Obj))
-                    + '","comp":"' + EscapeJsonString(LmOwner(Obj))
-                    + '","keepout":' + BoolToJsonStr(Keepout)
-                    + ',"in_polygon":' + BoolToJsonStr(InPoly)
-                    + ',"pour":"' + EscapeJsonString(OwnerName)
-                    + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
-                Entry := '';
-                If Obj.ObjectId = eTrackObject Then
-                Begin
-                    Track := Obj;
-                    Entry := '{"k":"track","v":[' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
-                        + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2) + ','
-                        + IntToStr(Track.Width) + ']' + Common;
-                End;
-                If Obj.ObjectId = eArcObject Then
-                Begin
-                    Arc := Obj;
-                    Entry := '{"k":"arc","v":[' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
-                        + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle)
-                        + ',' + FloatToJsonStr(Arc.EndAngle) + ',' + IntToStr(Arc.LineWidth) + ']'
-                        + Common;
-                End;
-                If Obj.ObjectId = eViaObject Then
-                Begin
-                    Via := Obj;
-                    If Trace Then LmTrace(IntToStr(Idx) + ' via sizes');
-                    { Size per spanned signal layer. Where Altium removed an  }
-                    { unconnected pad the size falls to the hole, and the    }
-                    { clearance there is measured from the barrel.            }
-                    Sizes := '';
-                    For I := 0 To SigLayers.Count - 1 Do
-                    Begin
-                        Lyr := StrToIntDef(SigLayers[I], 0);
-                        If Via.IntersectLayer(Lyr) Then
-                        Begin
-                            If Sizes <> '' Then Sizes := Sizes + ',';
-                            Sizes := Sizes + '["' + GetLayerString(Lyr) + '",'
-                                + IntToStr(Via.SizeOnLayer(Lyr)) + ']';
-                        End;
-                    End;
-                    Entry := '{"k":"via","v":[' + IntToStr(Via.X) + ',' + IntToStr(Via.Y)
-                        + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
-                        + ',"low":"' + GetLayerString(Via.LowLayer)
-                        + '","high":"' + GetLayerString(Via.HighLayer)
-                        + '","sizes":[' + Sizes + ']' + LmMaskJson(Via) + Common;
-                End;
-                If Obj.ObjectId = eRegionObject Then
-                Begin
-                    Region := Obj;
-                    If Trace Then LmTrace(IntToStr(Idx) + ' region shape');
-                    Entry := '{"k":"region","kind":' + IntToStr(Region.Kind)
-                        + ',"cutout":' + BoolToJsonStr(Region.Kind = eRegionKind_BoardCutout)
-                        + ',"copper":' + BoolToJsonStr(Region.Kind = eRegionKind_Copper)
-                        + ',' + LmRegionShape(Region) + Common;
-                End;
-                If Obj.ObjectId = eFillObject Then
-                Begin
-                    Fill := Obj;
-                    Entry := '{"k":"fill","v":[' + IntToStr(Fill.X1Location) + ','
-                        + IntToStr(Fill.Y1Location) + ',' + IntToStr(Fill.X2Location) + ','
-                        + IntToStr(Fill.Y2Location) + ',' + FloatToJsonStr(Fill.Rotation) + ']'
-                        + Common;
-                End;
-                If Obj.ObjectId = ePolyObject Then
-                Begin
-                    { A pour's BOUNDARY. The copper it pours is its own   }
-                    { regions and tracks, which arrive flagged in_polygon.  }
-                    Poly := Obj;
-                    If Trace Then LmTrace(IntToStr(Idx) + ' polygon points');
-                    PolyPts := '';
-                    For I := 0 To Poly.PointCount - 1 Do
-                    Begin
-                        Seg := Poly.Segments[I];
-                        If PolyPts <> '' Then PolyPts := PolyPts + ',';
-                        If Seg.Kind = ePolySegmentLine Then
-                        Begin
-                            PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy) + ']';
-                        End
-                        Else
-                        Begin
-                            PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy)
-                                + ',' + IntToStr(Seg.cx) + ',' + IntToStr(Seg.cy) + ','
-                                + IntToStr(Seg.Radius) + ',' + FloatToJsonStr(Seg.Angle1) + ','
-                                + FloatToJsonStr(Seg.Angle2) + ']';
-                        End;
-                    End;
-                    Entry := '{"k":"polygon","name":"' + EscapeJsonString(Poly.Name)
-                        + '","pour_over":' + BoolToJsonStr(Poly.PourOver <> ePolygonPourOver_None)
-                        + ',"pts":[' + PolyPts + ']' + Common;
-                End;
-                If Entry <> '' Then
-                Begin
-                    If Items <> '' Then Items := Items + ',';
-                    Items := Items + Entry;
-                End;
-                Inc(Emitted);
-            End;
-            Inc(Idx);
-            Obj := Iter.NextPCBObject;
-        End;
-    Finally
-        Board.BoardIterator_Destroy(Iter);
+    { One pass per kind asked for, in the order given; no kinds is ONE pass  }
+    { over every kind, so the unnarrowed read keeps its order and paging.    }
+    Passes := TStringList.Create;
+    Rest := Kinds;
+    While Rest <> '' Do
+    Begin
+        Kind := LmNextKind(Rest);
+        If Kind <> '' Then Passes.Add(Kind);
     End;
+    If Passes.Count = 0 Then Passes.Add('all');
+    For P := 0 To Passes.Count - 1 Do
+    Begin
+        If More Then Break;
+        Iter := Board.BoardIterator_Create;
+        Try
+            { One object type per pass; 'all' is the unnarrowed read. A read of }
+            { polygons then never walks the tracks: on a 10,000-object board the }
+            { pours came last, and a reader that wanted them read everything.    }
+            Kind := Trim(Passes[P]);
+            If Kind = 'track' Then Iter.AddFilter_ObjectSet(MkSet(eTrackObject))
+            Else If Kind = 'arc' Then Iter.AddFilter_ObjectSet(MkSet(eArcObject))
+            Else If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
+            Else If Kind = 'region' Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject))
+            Else If Kind = 'fill' Then Iter.AddFilter_ObjectSet(MkSet(eFillObject))
+            Else If Kind = 'polygon' Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject))
+            Else
+                Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    eRegionObject, eFillObject, ePolyObject));
+            { The legacy layer set stops at Mechanical16: the V7 set reaches  }
+            { every mechanical layer (issue #149). A layer the legacy set     }
+            { cannot hold is matched by name while walking the whole V7 set.  }
+            Wide := (OnLayer <> eNoLayer) And (GetLayerString(OnLayer) = 'Unknown');
+            If (OnLayer <> eNoLayer) And Not Wide Then
+                Iter.AddFilter_LayerSet(MkSet(OnLayer))
+            Else
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                { Selected only: an object not selected is not counted either, }
+                { so offset and limit page through the selection itself.       }
+                Wanted := True;
+                If SelectedOnly Then
+                Begin
+                    Wanted := False;
+                    Try Wanted := Obj.Selected; Except Wanted := False; End;
+                End;
+                If Wanted And Wide Then
+                Begin
+                    Try Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);
+                    Except Wanted := False; End;
+                End;
+                If Wanted Then
+                Begin
+                    If Idx >= Offset Then
+                    Begin
+                        If Emitted >= Limit Then
+                        Begin
+                            More := True;
+                            Break;
+                        End;
+                        If Trace Then LmTrace(IntToStr(Idx) + ' kind=' + IntToStr(Obj.ObjectId) + ' flags');
+                        Keepout := False;
+                        Try Keepout := Obj.IsKeepout; Except Keepout := False; End;
+                        InPoly := False;
+                        Try InPoly := Obj.InPolygon; Except InPoly := False; End;
+                        { Poured copper carries no net of its own: the pour that   }
+                        { made it does. Name it here so the reader need not guess  }
+                        { the owner from geometry, which fails on nested pours.    }
+                        OwnerName := '';
+                        OwnerNet := '';
+                        If InPoly Then
+                        Begin
+                            If Trace Then LmTrace(IntToStr(Idx) + ' owner');
+                            PourOwner := Obj.Polygon;
+                            If PourOwner <> Nil Then
+                            Begin
+                                OwnerName := PourOwner.Name;
+                                If PourOwner.Net <> Nil Then OwnerNet := PourOwner.Net.Name;
+                            End;
+                        End;
+                        If Trace Then LmTrace(IntToStr(Idx) + ' common');
+                        Common := ',"layer":"' + LayerDisplayName(Obj.Layer)
+                            + '","net":"' + EscapeJsonString(LmNetName(Obj))
+                            + '","comp":"' + EscapeJsonString(LmOwner(Obj))
+                            + '","keepout":' + BoolToJsonStr(Keepout)
+                            + ',"in_polygon":' + BoolToJsonStr(InPoly)
+                            + ',"pour":"' + EscapeJsonString(OwnerName)
+                            + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
+                        Entry := '';
+                        If Obj.ObjectId = eTrackObject Then
+                        Begin
+                            Track := Obj;
+                            Entry := '{"k":"track","v":[' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
+                                + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2) + ','
+                                + IntToStr(Track.Width) + ']' + Common;
+                        End;
+                        If Obj.ObjectId = eArcObject Then
+                        Begin
+                            Arc := Obj;
+                            Entry := '{"k":"arc","v":[' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
+                                + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle)
+                                + ',' + FloatToJsonStr(Arc.EndAngle) + ',' + IntToStr(Arc.LineWidth) + ']'
+                                + Common;
+                        End;
+                        If Obj.ObjectId = eViaObject Then
+                        Begin
+                            Via := Obj;
+                            If Trace Then LmTrace(IntToStr(Idx) + ' via sizes');
+                            { Size per spanned signal layer. Where Altium removed an  }
+                            { unconnected pad the size falls to the hole, and the    }
+                            { clearance there is measured from the barrel.            }
+                            Sizes := '';
+                            For I := 0 To SigLayers.Count - 1 Do
+                            Begin
+                                Lyr := StrToIntDef(SigLayers[I], 0);
+                                If Via.IntersectLayer(Lyr) Then
+                                Begin
+                                    If Sizes <> '' Then Sizes := Sizes + ',';
+                                    Sizes := Sizes + '["' + GetLayerString(Lyr) + '",'
+                                        + IntToStr(Via.SizeOnLayer(Lyr)) + ']';
+                                End;
+                            End;
+                            Entry := '{"k":"via","v":[' + IntToStr(Via.X) + ',' + IntToStr(Via.Y)
+                                + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
+                                + ',"low":"' + GetLayerString(Via.LowLayer)
+                                + '","high":"' + GetLayerString(Via.HighLayer)
+                                + '","sizes":[' + Sizes + ']' + LmMaskJson(Via) + Common;
+                        End;
+                        If Obj.ObjectId = eRegionObject Then
+                        Begin
+                            Region := Obj;
+                            If Trace Then LmTrace(IntToStr(Idx) + ' region shape');
+                            Entry := '{"k":"region","kind":' + IntToStr(Region.Kind)
+                                + ',"cutout":' + BoolToJsonStr(Region.Kind = eRegionKind_BoardCutout)
+                                + ',"copper":' + BoolToJsonStr(Region.Kind = eRegionKind_Copper)
+                                + ',' + LmRegionShape(Region) + Common;
+                        End;
+                        If Obj.ObjectId = eFillObject Then
+                        Begin
+                            Fill := Obj;
+                            Entry := '{"k":"fill","v":[' + IntToStr(Fill.X1Location) + ','
+                                + IntToStr(Fill.Y1Location) + ',' + IntToStr(Fill.X2Location) + ','
+                                + IntToStr(Fill.Y2Location) + ',' + FloatToJsonStr(Fill.Rotation) + ']'
+                                + Common;
+                        End;
+                        If Obj.ObjectId = ePolyObject Then
+                        Begin
+                            { A pour's BOUNDARY. The copper it pours is its own   }
+                            { regions and tracks, which arrive flagged in_polygon.  }
+                            Poly := Obj;
+                            If Trace Then LmTrace(IntToStr(Idx) + ' polygon points');
+                            PolyPts := '';
+                            For I := 0 To Poly.PointCount - 1 Do
+                            Begin
+                                Seg := Poly.Segments[I];
+                                If PolyPts <> '' Then PolyPts := PolyPts + ',';
+                                If Seg.Kind = ePolySegmentLine Then
+                                Begin
+                                    PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy) + ']';
+                                End
+                                Else
+                                Begin
+                                    PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy)
+                                        + ',' + IntToStr(Seg.cx) + ',' + IntToStr(Seg.cy) + ','
+                                        + IntToStr(Seg.Radius) + ',' + FloatToJsonStr(Seg.Angle1) + ','
+                                        + FloatToJsonStr(Seg.Angle2) + ']';
+                                End;
+                            End;
+                            Entry := '{"k":"polygon","name":"' + EscapeJsonString(Poly.Name)
+                                + '","pour_over":' + BoolToJsonStr(Poly.PourOver <> ePolygonPourOver_None)
+                                + ',"pts":[' + PolyPts + ']' + Common;
+                        End;
+                        If Entry <> '' Then
+                        Begin
+                            If Items <> '' Then Items := Items + ',';
+                            Items := Items + Entry;
+                        End;
+                        Inc(Emitted);
+                    End;
+                    Inc(Idx);
+                End;
+                Obj := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    End;
+    Passes.Free;
     SigLayers.Free;
     Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
         + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
@@ -23365,6 +23659,8 @@ Var
     Board : IPCB_Board;
     Section, Body, Response : String;
     Offset, Limit : Integer;
+    Kinds, KindList, KindOne, LayerStr, Bad : String;
+    OnLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -23384,8 +23680,46 @@ Begin
     If Section = 'components' Then Body := LmComponentsSection(Board);
     If Section = 'pads' Then Body := LmPadsSection(Board, Offset, Limit);
     If Section = 'copper' Then
+    Begin
+        { kinds, layer and selected narrow the copper read. A kind or layer }
+        { not known is refused, not dropped: a typo must not read as "none".}
+        Kinds := LowerCase(Trim(ExtractJsonValue(Params, 'kinds')));
+        KindList := '';
+        Bad := '';
+        While Kinds <> '' Do
+        Begin
+            KindOne := LmNextKind(Kinds);
+            If KindOne = '' Then Continue;
+            If LmCopperKindKnown(KindOne) Then
+            Begin
+                If KindList <> '' Then KindList := KindList + ',';
+                KindList := KindList + KindOne;
+            End
+            Else
+                Bad := Bad + ' ' + KindOne;
+        End;
+        If Bad <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_KINDS',
+                'kinds takes track, arc, via, region, fill, polygon; got' + Bad);
+            Exit;
+        End;
+        OnLayer := eNoLayer;
+        LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
+        If LayerStr <> '' Then
+        Begin
+            OnLayer := ResolveLayerId(Board, LayerStr);
+            If OnLayer = eNoLayer Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                    'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+                Exit;
+            End;
+        End;
         Body := LmCopperSection(Board, Offset, Limit,
-            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true');
+            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true', KindList, OnLayer,
+            LowerCase(ExtractJsonValue(Params, 'selected')) = 'true');
+    End;
     If Section = 'rules' Then Body := LmRulesSection(Board);
     If Section = 'classes' Then Body := LmClassesSection(Board);
 
