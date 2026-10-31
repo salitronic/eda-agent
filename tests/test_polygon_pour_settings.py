@@ -140,7 +140,9 @@ def test_a_polygon_name_is_read_and_written_and_an_empty_one_refused():
     assert "Else If Not PCBSetPoly(Obj, PropName, Value) Then Matched := False;" in branch
     writer = fns["PCBSetPoly"]
     arm = writer[writer.index("If PropName = 'Name' Then"):writer.index("If PropName = 'UseOctagons'")]
-    assert re.search(r"If Trim\(Value\) = '' Then Exit;\s*Poly\.Name := Value;\s*Result := True;", arm)
+    # Auto Naming is turned off first and the name read back (issue #150).
+    assert re.search(r"If Trim\(Value\) = '' Then Exit;.*Poly\.AutoGenerateName := False;.*"
+                     r"Poly\.Name := Value;\s*Result := Poly\.Name = Value;", arm, re.S)
 
 
 def test_every_setting_is_a_known_and_advertised_property():
