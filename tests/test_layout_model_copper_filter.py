@@ -38,7 +38,7 @@ def test_each_kind_filters_the_iterator_to_its_own_object_type():
 def test_no_kinds_is_one_pass_over_every_kind_as_before():
     section = _pcb("LmCopperSection")
     chain = section[section.index("Kind := Trim(Passes[P]);"):
-                    section.index("If OnLayer <> eNoLayer Then")]
+                    section.index("Wide := (OnLayer <> eNoLayer)")]
     fallback = chain[chain.rindex("Else"):]
     for obj in _KINDS.values():
         assert obj in fallback
@@ -52,9 +52,9 @@ def test_the_kinds_accepted_are_the_kinds_filtered():
 
 def test_a_layer_narrows_the_iterator_and_none_keeps_every_layer():
     section = _pcb("LmCopperSection")
-    gate = section.index("If OnLayer <> eNoLayer Then")
+    gate = section.index("If (OnLayer <> eNoLayer) And Not Wide Then")
     one = section.index("Iter.AddFilter_LayerSet(MkSet(OnLayer))")
-    every = section.index("Iter.AddFilter_LayerSet(AllLayers);")
+    every = section.index("Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);")
     assert gate < one < every < section.index("Iter.FirstPCBObject")
 
 

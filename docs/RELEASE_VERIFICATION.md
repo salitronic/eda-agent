@@ -1298,6 +1298,12 @@ that they arrived:
   is refused `BAD_KINDS` and `layer=Nowhere` `UNKNOWN_LAYER`, before
   anything is read. Without the three, the read is unchanged: the same
   entries in the same order as before.
+* The copper read reaches Mechanical17 and up (issue #149). Enable
+  Mechanical17 and Mechanical21 and place a pour on each:
+  `place_polygon_rect` answers with those layer names, not `Unknown`;
+  `kinds=polygon` lists both, `layer=Mechanical21` exactly its pour,
+  and `layer=BottomLayer` the same pours as before. Remove the pours and
+  disable the two layers again.
 
 ---
 
