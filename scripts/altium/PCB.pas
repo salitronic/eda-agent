@@ -11421,7 +11421,7 @@ Begin
         + '"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0) + ','
         + '"repour_mode":"' + RepourModeName(0) + '",'
         + '"name":"' + EscapeJsonString(Polygon.Name) + '",'
-        + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -22711,7 +22711,7 @@ Var
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
     Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
-    More, Keepout, InPoly, Wanted : Boolean;
+    More, Keepout, InPoly, Wanted, Wide : Boolean;
     Passes : TStringList;
     P : Integer;
     Rest, Kind : String;
@@ -22764,10 +22764,14 @@ Begin
         Else
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
                 eRegionObject, eFillObject, ePolyObject));
-        If OnLayer <> eNoLayer Then
+        { The legacy layer set stops at Mechanical16: the V7 set reaches  }
+        { every mechanical layer (issue #149). A layer the legacy set     }
+        { cannot hold is matched by name while walking the whole V7 set.  }
+        Wide := (OnLayer <> eNoLayer) And (GetLayerString(OnLayer) = 'Unknown');
+        If (OnLayer <> eNoLayer) And Not Wide Then
             Iter.AddFilter_LayerSet(MkSet(OnLayer))
         Else
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -22779,6 +22783,11 @@ Begin
             Begin
                 Wanted := False;
                 Try Wanted := Obj.Selected; Except Wanted := False; End;
+            End;
+            If Wanted And Wide Then
+            Begin
+                Try Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);
+                Except Wanted := False; End;
             End;
             If Wanted Then
             Begin
@@ -22810,7 +22819,7 @@ Begin
                     End;
                 End;
                 If Trace Then LmTrace(IntToStr(Idx) + ' common');
-                Common := ',"layer":"' + GetLayerString(Obj.Layer)
+                Common := ',"layer":"' + LayerDisplayName(Obj.Layer)
                     + '","net":"' + EscapeJsonString(LmNetName(Obj))
                     + '","comp":"' + EscapeJsonString(LmOwner(Obj))
                     + '","keepout":' + BoolToJsonStr(Keepout)
