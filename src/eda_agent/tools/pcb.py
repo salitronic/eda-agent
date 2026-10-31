@@ -8102,6 +8102,51 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.get_layer_display", {})
 
     @mcp.tool()
+    async def pcb_layer_view(
+        show: Optional[Any] = None,
+        hide: Optional[Any] = None,
+        lock: Optional[Any] = None,
+        unlock: Optional[Any] = None,
+        current_layer: str = "",
+        single_layer_mode: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read the board view, and change it in one call.
+
+        With no arguments it only reads. The reply lists every layer with
+        ``visible``, Mechanical17 and up included (enabled ones only), and
+        for a mechanical layer ``single_layer_lock``: whether it stays drawn
+        in single layer mode (the Ctrl+click lock in View Configuration).
+        It also gives ``current_layer`` and ``single_layer_mode``, which is
+        enough to put a view back the way it was.
+
+        Args:
+            show: Layers to display (a list, or text with commas).
+            hide: Layers to hide.
+            lock: Mechanical layers to keep drawn in single layer mode.
+            unlock: Mechanical layers to release from that.
+            current_layer: The layer to make current.
+            single_layer_mode: True or False to switch single layer mode.
+
+        A layer is a stack name, an id such as "Mechanical21", or the
+        user's name of any mechanical layer. Every write is read back:
+        ``not_applied`` lists what did not take, ``unknown_layers`` the
+        names that matched no layer. View state only; the board is not
+        marked modified.
+        """
+        params: dict[str, str] = {}
+        for key, value in (("show", show), ("hide", hide), ("lock", lock),
+                           ("unlock", unlock)):
+            names = _layer_names("", value)
+            if names:
+                params[key] = ",".join(names)
+        if current_layer:
+            params["current_layer"] = current_layer
+        if single_layer_mode is not None:
+            params["single_layer_mode"] = "true" if single_layer_mode else "false"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.layer_view", params)
+
+    @mcp.tool()
     async def pcb_set_layer_color(layer: str, color: str) -> dict[str, Any]:
         """Recolour one layer.
 
