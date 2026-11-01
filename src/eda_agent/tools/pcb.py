@@ -4858,6 +4858,8 @@ def register_pcb_tools(mcp):
         dry_run: bool = False,
         repour: bool = True,
         region_shape: str = "rebuild",
+        kinds: str = "",
+        layer: str = "",
     ) -> dict[str, Any]:
         """Move and reshape thousands of free primitives in ONE pass, from a
         JSON map of each object's CURRENT geometry and its new one.
@@ -4932,6 +4934,14 @@ def register_pcb_tools(mcp):
                 Altium draws): "rebuild" (default) rewrites them from the
                 new outline; "clear" drops them; "keep" leaves the OLD
                 shape on screen.
+            kinds: Dump only these kinds, comma-separated (track, arc,
+                via, text, fill, region, polygon); empty is every kind.
+                A map that edits one layer's tracks need not have the
+                whole board dumped first.
+            layer: Dump only this layer (any layer name, Mechanical17 and
+                up included); empty is every layer. The apply pass walks
+                the same kinds and layer, so entries outside them are
+                unmatched, never applied elsewhere.
 
         Returns:
             {"board", "dry_run", "match": {kind: {entries, matched,
@@ -4962,9 +4972,13 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         workspace = Path(bridge.config.workspace_dir)
         dump_path = workspace / "geometry_dump.tsv"
+        dump_params = {"out_path": str(dump_path), "board_path": board_path}
+        if kinds.strip():
+            dump_params["kinds"] = kinds.strip()
+        if layer.strip():
+            dump_params["layer"] = layer.strip()
         dumped = await bridge.send_command_async(
-            "pcb.dump_free_primitives",
-            {"out_path": str(dump_path), "board_path": board_path},
+            "pcb.dump_free_primitives", dump_params,
             timeout=_GEOMETRY_MAP_TIMEOUT)
         if not isinstance(dumped, dict) or "tracks" not in dumped:
             return dumped

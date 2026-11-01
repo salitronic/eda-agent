@@ -24529,6 +24529,58 @@ End;
 { first line break.                                                            }
 {..............................................................................}
 
+{..............................................................................}
+{ The geometry map's walk, narrowed (dump_free_primitives kinds / layer).      }
+{ GmKindsBad names the first kind the dump does not know; GmWants says whether }
+{ a kind is in the list (an empty list is every kind); GmWalkSet is the layer  }
+{ set of one layer, a V7 set of its own so Mechanical17 and up are walked      }
+{ alone too (issue #155), or Nil for every layer. The apply pass reads the     }
+{ dump's W line and walks the same set, so the ordinals agree.                 }
+{..............................................................................}
+
+Function GmKindsBad(Kinds : String) : String;
+Var
+    Rest, Kind : String;
+    Cut : Integer;
+Begin
+    Result := '';
+    Rest := Kinds;
+    While Rest <> '' Do
+    Begin
+        Cut := Pos(',', Rest);
+        If Cut > 0 Then
+        Begin
+            Kind := Trim(Copy(Rest, 1, Cut - 1));
+            Rest := Copy(Rest, Cut + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Kind := Trim(Rest);
+            Rest := '';
+        End;
+        If (Kind <> '') And (Kind <> 'track') And (Kind <> 'arc') And (Kind <> 'via')
+            And (Kind <> 'text') And (Kind <> 'fill') And (Kind <> 'region')
+            And (Kind <> 'polygon') Then
+        Begin
+            Result := Kind;
+            Exit;
+        End;
+    End;
+End;
+
+Function GmWants(Kinds : String; Kind : String) : Boolean;
+Begin
+    Result := (Kinds = '') Or (Pos(',' + Kind + ',', ',' + Kinds + ',') > 0);
+End;
+
+Function GmWalkSet(OnLayer : TLayer) : IPCB_LayerSet;
+Begin
+    Result := Nil;
+    If OnLayer = eNoLayer Then Exit;
+    Result := LayerSet.CreateLayerSet;
+    Result.Include(OnLayer);
+End;
+
 Function PCB_DumpFreePrimitives(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -24546,6 +24598,9 @@ Var
     Idx, Lyr, N, Holes, Cut, I, SC : Integer;
     NT, NA, NV, NX, NF, NR, NP, NO : Integer;
     BR : TCoordRect;
+    Kinds, LayerStr, Bad : String;
+    OnLayer : TLayer;
+    Walk : IPCB_LayerSet;
 Begin
     OutPath := ExtractJsonValue(Params, 'out_path');
     If OutPath = '' Then
@@ -24562,210 +24617,281 @@ Begin
         Exit;
     End;
 
+    { Narrowed to kinds and one layer when asked: a caller that edits one   }
+    { layer's objects need not have the whole board dumped.                 }
+    Kinds := LowerCase(StringReplace(Trim(ExtractJsonValue(Params, 'kinds')), ' ', '', MkSet(rfReplaceAll)));
+    Bad := GmKindsBad(Kinds);
+    If Bad <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'BAD_KINDS', 'Unknown kind: ' + Bad
+            + '. Kinds are track, arc, via, text, fill, region, polygon.');
+        Result := Response;
+        Exit;
+    End;
+    LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
+    OnLayer := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        OnLayer := ResolveLayerId(Board, LayerStr);
+        If OnLayer = eNoLayer Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+            Result := Response;
+            Exit;
+        End;
+    End;
+    Walk := GmWalkSet(OnLayer);
+
     NT := 0; NA := 0; NV := 0; NX := 0; NF := 0; NR := 0; NP := 0; NO := 0;
     Dump := TStringList.Create;
     LayerIds := TStringList.Create;
     Try
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Track := Iter.FirstPCBObject;
-            While Track <> Nil Do
-            Begin
-                If Not (Track.InComponent Or Track.InPolygon Or Track.InDimension) Then
+        { The walk, for the apply pass: it must walk the same set. }
+        If (Kinds <> '') Or (LayerStr <> '') Then
+            Dump.Add('W' + #9 + Kinds + #9 + LayerStr);
+        If GmWants(Kinds, 'track') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Track := Iter.FirstPCBObject;
+                While Track <> Nil Do
                 Begin
-                    Lyr := Track.Layer;
-                    Dump.Add('T' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(Track.Width) + #9 + IntToStr(Track.X1) + #9
-                        + IntToStr(Track.Y1) + #9 + IntToStr(Track.X2) + #9
-                        + IntToStr(Track.Y2));
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NT);
+                    If Not (Track.InComponent Or Track.InPolygon Or Track.InDimension) Then
+                    Begin
+                        Lyr := Track.Layer;
+                        Dump.Add('T' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(Track.Width) + #9 + IntToStr(Track.X1) + #9
+                            + IntToStr(Track.Y1) + #9 + IntToStr(Track.X2) + #9
+                            + IntToStr(Track.Y2));
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NT);
+                    End;
+                    Inc(Idx);
+                    Track := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Track := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eArcObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Arc := Iter.FirstPCBObject;
-            While Arc <> Nil Do
-            Begin
-                If Not (Arc.InComponent Or Arc.InPolygon Or Arc.InDimension) Then
+        If GmWants(Kinds, 'arc') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eArcObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Arc := Iter.FirstPCBObject;
+                While Arc <> Nil Do
                 Begin
-                    Lyr := Arc.Layer;
-                    Dump.Add('A' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(Arc.LineWidth) + #9 + IntToStr(Arc.XCenter) + #9
-                        + IntToStr(Arc.YCenter) + #9 + IntToStr(Arc.Radius) + #9
-                        + FloatToJsonStr(Arc.StartAngle) + #9 + FloatToJsonStr(Arc.EndAngle));
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NA);
+                    If Not (Arc.InComponent Or Arc.InPolygon Or Arc.InDimension) Then
+                    Begin
+                        Lyr := Arc.Layer;
+                        Dump.Add('A' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(Arc.LineWidth) + #9 + IntToStr(Arc.XCenter) + #9
+                            + IntToStr(Arc.YCenter) + #9 + IntToStr(Arc.Radius) + #9
+                            + FloatToJsonStr(Arc.StartAngle) + #9 + FloatToJsonStr(Arc.EndAngle));
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NA);
+                    End;
+                    Inc(Idx);
+                    Arc := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Arc := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Via := Iter.FirstPCBObject;
-            While Via <> Nil Do
-            Begin
-                If Not (Via.InComponent Or Via.InPolygon Or Via.InDimension) Then
+        If GmWants(Kinds, 'via') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Via := Iter.FirstPCBObject;
+                While Via <> Nil Do
                 Begin
-                    Dump.Add('V' + #9 + IntToStr(Idx) + #9 + IntToStr(Via.X) + #9
-                        + IntToStr(Via.Y));
-                    Inc(NV);
+                    If Not (Via.InComponent Or Via.InPolygon Or Via.InDimension) Then
+                    Begin
+                        Dump.Add('V' + #9 + IntToStr(Idx) + #9 + IntToStr(Via.X) + #9
+                            + IntToStr(Via.Y));
+                        Inc(NV);
+                    End;
+                    Inc(Idx);
+                    Via := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Via := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eTextObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Txt := Iter.FirstPCBObject;
-            While Txt <> Nil Do
-            Begin
-                If Not (Txt.InComponent Or Txt.InPolygon Or Txt.InDimension) Then
+        If GmWants(Kinds, 'text') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eTextObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Txt := Iter.FirstPCBObject;
+                While Txt <> Nil Do
                 Begin
-                    Lyr := Txt.Layer;
-                    TxtStr := '';
-                    Try TxtStr := Txt.Text; Except TxtStr := ''; End;
-                    Cut := Pos(#13, TxtStr);
-                    If Cut > 0 Then TxtStr := Copy(TxtStr, 1, Cut - 1);
-                    Cut := Pos(#10, TxtStr);
-                    If Cut > 0 Then TxtStr := Copy(TxtStr, 1, Cut - 1);
-                    Dump.Add('X' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(Txt.XLocation) + #9 + IntToStr(Txt.YLocation) + #9
-                        + TxtStr);
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NX);
+                    If Not (Txt.InComponent Or Txt.InPolygon Or Txt.InDimension) Then
+                    Begin
+                        Lyr := Txt.Layer;
+                        TxtStr := '';
+                        Try TxtStr := Txt.Text; Except TxtStr := ''; End;
+                        Cut := Pos(#13, TxtStr);
+                        If Cut > 0 Then TxtStr := Copy(TxtStr, 1, Cut - 1);
+                        Cut := Pos(#10, TxtStr);
+                        If Cut > 0 Then TxtStr := Copy(TxtStr, 1, Cut - 1);
+                        Dump.Add('X' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(Txt.XLocation) + #9 + IntToStr(Txt.YLocation) + #9
+                            + TxtStr);
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NX);
+                    End;
+                    Inc(Idx);
+                    Txt := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Txt := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eFillObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Fil := Iter.FirstPCBObject;
-            While Fil <> Nil Do
-            Begin
-                If Not (Fil.InComponent Or Fil.InPolygon Or Fil.InDimension) Then
+        If GmWants(Kinds, 'fill') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eFillObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Fil := Iter.FirstPCBObject;
+                While Fil <> Nil Do
                 Begin
-                    Lyr := Fil.Layer;
-                    Dump.Add('F' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(Fil.X1Location) + #9 + IntToStr(Fil.Y1Location) + #9
-                        + IntToStr(Fil.X2Location) + #9 + IntToStr(Fil.Y2Location));
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NF);
+                    If Not (Fil.InComponent Or Fil.InPolygon Or Fil.InDimension) Then
+                    Begin
+                        Lyr := Fil.Layer;
+                        Dump.Add('F' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(Fil.X1Location) + #9 + IntToStr(Fil.Y1Location) + #9
+                            + IntToStr(Fil.X2Location) + #9 + IntToStr(Fil.Y2Location));
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NF);
+                    End;
+                    Inc(Idx);
+                    Fil := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Fil := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Region := Iter.FirstPCBObject;
-            While Region <> Nil Do
-            Begin
-                If Not (Region.InComponent Or Region.InPolygon Or Region.InDimension) Then
+        If GmWants(Kinds, 'region') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Region := Iter.FirstPCBObject;
+                While Region <> Nil Do
                 Begin
-                    Lyr := Region.Layer;
-                    N := 0;
-                    X0 := ''; Y0 := ''; X1 := ''; Y1 := '';
-                    Contour := Region.MainContour;
-                    Try N := Contour.Count; Except N := 0; End;
-                    Try X0 := IntToStr(Contour.X[0]); Except X0 := ''; End;
-                    Try Y0 := IntToStr(Contour.Y[0]); Except Y0 := ''; End;
-                    Try X1 := IntToStr(Contour.X[1]); Except X1 := ''; End;
-                    Try Y1 := IntToStr(Contour.Y[1]); Except Y1 := ''; End;
-                    Holes := 0;
-                    Try Holes := Region.HoleCount; Except Holes := 0; End;
-                    { Then the shape-segment count and the drawn box, which }
-                    { show whether the shape agrees with the contours.      }
-                    SC := 0;
-                    Try SC := Region.ShapeSegmentCount; Except SC := 0; End;
-                    BR := Region.BoundingRectangle;
-                    Dump.Add('R' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(N) + #9 + X0 + #9 + Y0 + #9 + X1 + #9 + Y1 + #9
-                        + IntToStr(Holes) + #9 + IntToStr(SC) + #9 + IntToStr(BR.X1)
-                        + #9 + IntToStr(BR.Y1) + #9 + IntToStr(BR.X2) + #9 + IntToStr(BR.Y2));
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NR);
+                    If Not (Region.InComponent Or Region.InPolygon Or Region.InDimension) Then
+                    Begin
+                        Lyr := Region.Layer;
+                        N := 0;
+                        X0 := ''; Y0 := ''; X1 := ''; Y1 := '';
+                        Contour := Region.MainContour;
+                        Try N := Contour.Count; Except N := 0; End;
+                        Try X0 := IntToStr(Contour.X[0]); Except X0 := ''; End;
+                        Try Y0 := IntToStr(Contour.Y[0]); Except Y0 := ''; End;
+                        Try X1 := IntToStr(Contour.X[1]); Except X1 := ''; End;
+                        Try Y1 := IntToStr(Contour.Y[1]); Except Y1 := ''; End;
+                        Holes := 0;
+                        Try Holes := Region.HoleCount; Except Holes := 0; End;
+                        { Then the shape-segment count and the drawn box, which }
+                        { show whether the shape agrees with the contours.      }
+                        SC := 0;
+                        Try SC := Region.ShapeSegmentCount; Except SC := 0; End;
+                        BR := Region.BoundingRectangle;
+                        Dump.Add('R' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(N) + #9 + X0 + #9 + Y0 + #9 + X1 + #9 + Y1 + #9
+                            + IntToStr(Holes) + #9 + IntToStr(SC) + #9 + IntToStr(BR.X1)
+                            + #9 + IntToStr(BR.Y1) + #9 + IntToStr(BR.X2) + #9 + IntToStr(BR.Y2));
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NR);
+                    End;
+                    Inc(Idx);
+                    Region := Iter.NextPCBObject;
                 End;
-                Inc(Idx);
-                Region := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
         { Every polygon, by its place in the iteration: a polygon is never  }
         { owned, and the index is the one pcb_modify_polygon counts.          }
-        Iter := Board.BoardIterator_Create;
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iter.AddFilter_Method(eProcessAll);
-            Idx := 0;
-            Poly := Iter.FirstPCBObject;
-            While Poly <> Nil Do
-            Begin
-                Lyr := Poly.Layer;
-                N := 0;
-                Try N := Poly.PointCount; Except N := 0; End;
-                X0 := ''; Y0 := '';
-                If N > 0 Then
+        If GmWants(Kinds, 'polygon') Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+                If Walk = Nil Then
+                    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                Else
+                    Iter.AddFilter_IPCB_LayerSet(Walk);
+                Iter.AddFilter_Method(eProcessAll);
+                Idx := 0;
+                Poly := Iter.FirstPCBObject;
+                While Poly <> Nil Do
                 Begin
-                    Try X0 := IntToStr(Poly.Segments[0].vx); Except X0 := ''; End;
-                    Try Y0 := IntToStr(Poly.Segments[0].vy); Except Y0 := ''; End;
+                    Lyr := Poly.Layer;
+                    N := 0;
+                    Try N := Poly.PointCount; Except N := 0; End;
+                    X0 := ''; Y0 := '';
+                    If N > 0 Then
+                    Begin
+                        Try X0 := IntToStr(Poly.Segments[0].vx); Except X0 := ''; End;
+                        Try Y0 := IntToStr(Poly.Segments[0].vy); Except Y0 := ''; End;
+                    End;
+                    Dump.Add('P' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                        + IntToStr(N) + #9 + X0 + #9 + Y0);
+                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                    Inc(NP);
+                    Inc(Idx);
+                    Poly := Iter.NextPCBObject;
                 End;
-                Dump.Add('P' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                    + IntToStr(N) + #9 + X0 + #9 + Y0);
-                If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                Inc(NP);
-                Inc(Idx);
-                Poly := Iter.NextPCBObject;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
         End;
 
         Try NO := Board.BoardOutline.PointCount; Except NO := 0; End;
@@ -24787,7 +24913,9 @@ Begin
         + ',"tracks":' + IntToStr(NT) + ',"arcs":' + IntToStr(NA)
         + ',"vias":' + IntToStr(NV) + ',"texts":' + IntToStr(NX)
         + ',"fills":' + IntToStr(NF) + ',"regions":' + IntToStr(NR)
-        + ',"polygons":' + IntToStr(NP) + ',"outline_segments":' + IntToStr(NO) + '}');
+        + ',"polygons":' + IntToStr(NP) + ',"outline_segments":' + IntToStr(NO)
+        + ',"kinds":"' + EscapeJsonString(Kinds) + '"'
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
     Result := Response;
 End;
 
@@ -24855,6 +24983,9 @@ Var
     BR : TCoordRect;
     ShapeMode : String;
     IsFree, Ok, HoleOk, DoRepour : Boolean;
+    LayerStr : String;
+    OnLayer : TLayer;
+    Walk : IPCB_LayerSet;
 Begin
     InPath := ExtractJsonValue(Params, 'in_path');
     If InPath = '' Then
@@ -24895,6 +25026,33 @@ Begin
             'Could not read the edit file ' + InPath);
         Result := Response;
         Exit;
+    End;
+    { The dump's walk (its W line): the ordinals count over that set only. }
+    Walk := Nil;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        If Copy(Lines[I], 1, 2) = 'W' + #9 Then
+        Begin
+            Rest := Lines[I];
+            SplitNextTab(Rest);
+            SplitNextTab(Rest);
+            LayerStr := Trim(SplitNextTab(Rest));
+            If LayerStr <> '' Then
+            Begin
+                OnLayer := ResolveLayerId(Board, LayerStr);
+                If OnLayer = eNoLayer Then
+                Begin
+                    Lines.Free;
+                    Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                        'The edit file walks layer ' + LayerStr
+                        + ', which this board does not have');
+                    Result := Response;
+                    Exit;
+                End;
+                Walk := GmWalkSet(OnLayer);
+            End;
+            Break;
+        End;
     End;
 
     Stats := '';
@@ -24939,7 +25097,10 @@ Begin
                         If KindNo = 6 Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
                         If KindNo = 7 Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
                         { The same layer set as the dump, so ordinals agree. }
-                        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                        If Walk = Nil Then
+                            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                        Else
+                            Iter.AddFilter_IPCB_LayerSet(Walk);
                         Iter.AddFilter_Method(eProcessAll);
                         Idx := 0;
                         Prim := Iter.FirstPCBObject;
@@ -25362,7 +25523,10 @@ Begin
                         Iter := Board.BoardIterator_Create;
                         Try
                             Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-                            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                            If Walk = Nil Then
+                                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+                            Else
+                                Iter.AddFilter_IPCB_LayerSet(Walk);
                             Iter.AddFilter_Method(eProcessAll);
                             Idx := 0;
                             I := 0;

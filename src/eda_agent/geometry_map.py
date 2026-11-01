@@ -47,6 +47,9 @@ class Dump:
     polygons: list = field(default_factory=list)  # (ord, layer, n, vx0, vy0)
     outline_segments: int = 0
     layers: dict = field(default_factory=dict)    # id -> name
+    # The walk a narrowed dump used: (kinds, layer); None for the whole board.
+    # The apply pass must walk the same set, so its ordinals count the same.
+    walk: Optional[tuple] = None
 
 
 def _int(text: str) -> Optional[int]:
@@ -90,6 +93,8 @@ def parse_dump(text: str) -> Dump:
                 dump.outline_segments = int(parts[1])
             elif kind == "L" and len(parts) >= 3:
                 dump.layers[int(parts[1])] = parts[2]
+            elif kind == "W" and len(parts) >= 3:
+                dump.walk = (parts[1], parts[2])
         except ValueError:
             continue
     return dump
@@ -720,6 +725,9 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         report["create"] = rep
 
     ordered = []
+    if dump.walk:
+        # The narrowed walk goes first: the apply pass walks the same set.
+        ordered.append("W\t%s\t%s" % dump.walk)
     for kind in "TAVXFRPOC":
         for _o, text in sorted(out.get(kind, []), key=lambda t: t[0]):
             ordered.extend(text.split("\n"))
