@@ -1018,6 +1018,21 @@ def main() -> int:
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
 
+    # Pull the latest code and scripts before serving, then serve from a
+    # child running the new Python. A child, not execv: on Windows execv
+    # ends this process, and the MCP client takes that as the server dying.
+    # It inherits stdio, and the env var stops a second pull in it.
+    if ((args.command is None or args.command == "serve")
+            and not os.environ.get("_EDA_AGENT_UPDATED")):
+        from . import updates
+        os.environ["_EDA_AGENT_UPDATED"] = "1"
+        if updates.update_on_start():
+            import subprocess
+            from .noconsole import no_window
+            return subprocess.call(
+                [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]],
+                **no_window())
+
     if (args.command is None or args.command == "serve") \
             and os.environ.get("EDA_AGENT_RELOAD") == "1":
         # Development: a proxy runs the server as a child and restarts it

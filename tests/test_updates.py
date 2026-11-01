@@ -206,3 +206,38 @@ def test_the_cli_shows_and_asks(clones, capsys, monkeypatch):
     assert (user / "README.md").exists() is False
     assert cli.cmd_update(assume_yes=True) == 0
     assert (user / "README.md").read_text() == "hi"
+
+
+def test_startup_pulls_and_deploys_the_scripts(clones, monkeypatch):
+    pub, user, steps = clones
+    monkeypatch.setenv("EDA_AGENT_AUTO_UPDATE", "1")
+    _publish(pub, "scripts/altium/Main.pas", "v2", "Fix the bridge")
+    assert updates.update_on_start() is True
+    assert (user / "scripts/altium/Main.pas").read_text() == "v2"
+    assert steps == [["install-scripts", "--force"], ["relaunch", "--restart"]]
+    assert updates.update_on_start() is False          # nothing new now
+
+
+def test_startup_leaves_local_work_and_can_be_turned_off(clones, monkeypatch):
+    pub, user, steps = clones
+    _publish(pub, "README.md", "hi", "Say hello")
+    monkeypatch.setenv("EDA_AGENT_AUTO_UPDATE", "0")
+    assert updates.update_on_start() is False
+    monkeypatch.setenv("EDA_AGENT_AUTO_UPDATE", "1")
+    (user / "pyproject.toml").write_text("mine", encoding="utf-8")
+    assert updates.update_on_start() is False
+    assert not (user / "README.md").exists() and steps == []
+
+
+def test_main_serves_from_a_child_after_an_update(monkeypatch):
+    import subprocess
+    import eda_agent.server as server
+    monkeypatch.delenv("_EDA_AGENT_UPDATED", raising=False)
+    monkeypatch.delenv("EDA_AGENT_RELOAD", raising=False)
+    monkeypatch.setattr("sys.argv", ["eda-agent"])
+    monkeypatch.setattr(updates, "update_on_start", lambda: True)
+    monkeypatch.setattr(subprocess, "call", lambda argv, **k: 5)
+    monkeypatch.setattr(server, "serve_mcp", lambda **k: 7)
+    assert server.main() == 5
+    # The child sees the marker, so it serves rather than pulling again.
+    assert server.main() == 7

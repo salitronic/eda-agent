@@ -39,6 +39,8 @@ from unittest.mock import patch
 # workspace inherited WITHOUT the marker is not trusted, because that is a
 # user's own EDA_AGENT_WORKSPACE, which is their real one.
 _NESTED_MARKER = "EDA_AGENT_TEST_WORKSPACE_ISOLATED"
+# A test that runs server.main() would otherwise pull this very clone.
+os.environ["EDA_AGENT_AUTO_UPDATE"] = "0"
 if os.environ.get("EDA_AGENT_INTEGRATION") != "1":
     if os.environ.get(_NESTED_MARKER) != "1":
         _scratch_ws = tempfile.mkdtemp(prefix="eda-agent-test-ws-")

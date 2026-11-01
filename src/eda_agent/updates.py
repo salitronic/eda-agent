@@ -14,6 +14,10 @@ says yes, and the MCP client's own approval prompt is a second gate.
 A clone with local changes, or with commits of its own, is never touched:
 the update is refused and says why. EDA_AGENT_UPDATE_CHECK=0 stops the
 daily check from reaching the network.
+
+EXCEPT AT STARTUP: ``update_on_start`` applies an update before the server
+serves, so a session always starts on the latest code and scripts. Set
+EDA_AGENT_AUTO_UPDATE=0 (or EDA_AGENT_UPDATE_CHECK=0) to go back to asking.
 """
 from __future__ import annotations
 
@@ -155,6 +159,34 @@ def notice() -> Optional[dict[str, Any]]:
                       "whether to update; only after they agree, call "
                       "server_update(apply=True)."),
     }
+
+
+def update_on_start() -> bool:
+    """Pull and apply any update before the server starts serving.
+
+    True when new code was pulled, so the caller re-runs itself on it.
+    Never fails the startup: a refused or failed update is reported on
+    stderr and the server serves the code it has. Local work refuses it
+    exactly as ``apply`` does.
+    """
+    if (os.environ.get("EDA_AGENT_AUTO_UPDATE", "1").strip().lower()
+            in ("0", "false", "no", "off")
+            or not _checks_enabled() or repo_root() is None):
+        return False
+    try:
+        out = apply()
+    except Exception as exc:  # noqa: BLE001  never blocks the server
+        print(f"eda-agent: update at startup failed: {exc}", file=sys.stderr)
+        return False
+    if not out.get("updated"):
+        reason = out.get("reason") or out.get("error")
+        if reason:
+            print(f"eda-agent: not updated at startup: {reason}", file=sys.stderr)
+        return False
+    print(f"eda-agent: updated {out['from']} -> {out['to']} at startup"
+          + (f"; failed: {', '.join(out['failed_steps'])}"
+             if out.get("failed_steps") else ""), file=sys.stderr)
+    return True
 
 
 def start_background_check() -> None:
