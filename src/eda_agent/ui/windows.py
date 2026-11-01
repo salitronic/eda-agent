@@ -1154,17 +1154,31 @@ def type_text(text: str, target=None) -> dict:
 
 #: Mouse event flags. Absolute coordinates are normalised to 0..65535
 #: across the virtual desktop, which is the only form that works on a
-#: multi-monitor setup.
-_ME_MOVE, _ME_ABSOLUTE = 0x0001, 0x8000
+#: multi-monitor setup. WITHOUT _ME_VIRTUALDESK the 0..65535 range maps
+#: onto the PRIMARY monitor only, so a point on any other monitor lands
+#: somewhere on the primary one instead.
+_ME_MOVE, _ME_ABSOLUTE, _ME_VIRTUALDESK = 0x0001, 0x8000, 0x4000
+_ME_MOVE_TO = _ME_MOVE | _ME_ABSOLUTE | _ME_VIRTUALDESK
 _ME_LDOWN, _ME_LUP = 0x0002, 0x0004
+_SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
 _SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
 
 
-def _to_absolute(x: int, y: int):
-    user32 = ctypes.windll.user32
-    width = user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN) or 1
-    height = user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN) or 1
-    return int(x * 65535 / width), int(y * 65535 / height)
+def _to_absolute(x: int, y: int, metrics=None):
+    """Screen point to mouse_event's normalised virtual-desktop units.
+
+    The virtual desktop's origin is NOT 0,0 when a monitor sits left of
+    or above the primary: it is negative, and screen coordinates are
+    relative to the primary, so the origin is subtracted first.
+    ``metrics`` is (left, top, width, height), for testing off-Windows.
+    """
+    if metrics is None:
+        get = ctypes.windll.user32.GetSystemMetrics
+        metrics = (get(_SM_XVIRTUALSCREEN), get(_SM_YVIRTUALSCREEN),
+                   get(_SM_CXVIRTUALSCREEN), get(_SM_CYVIRTUALSCREEN))
+    left, top, width, height = metrics
+    return (round((x - left) * 65535 / max(width - 1, 1)),
+            round((y - top) * 65535 / max(height - 1, 1)))
 
 
 def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12, target=None,
@@ -1199,7 +1213,7 @@ def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12, target=None,
         # delivered elsewhere, but the release can be.
         require_point_in_app(int(x1), int(y1), target, "a drag start")
         require_point_in_app(int(x2), int(y2), target, "a drag end")
-    user32.mouse_event(_ME_MOVE | _ME_ABSOLUTE, ax, ay, 0, 0)
+    user32.mouse_event(_ME_MOVE_TO, ax, ay, 0, 0)
     time.sleep(hold)
     if target is not None:
         require_foreground(target, "a drag press")
@@ -1215,7 +1229,7 @@ def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12, target=None,
         # wanders while focus changes is drawing in another window.
         if target is not None:
             require_foreground(target, "a drag move")
-        user32.mouse_event(_ME_MOVE | _ME_ABSOLUTE, mx, my, 0, 0)
+        user32.mouse_event(_ME_MOVE_TO, mx, my, 0, 0)
         time.sleep(hold / 2)
 
     # A drag holds the button down across many events, so losing focus
@@ -1248,7 +1262,7 @@ def click_at(x: int, y: int, double: bool = False, target=None) -> dict:
     if target is not None:
         require_foreground(target, "a pointer move")
         require_point_in_app(int(x), int(y), target, "a click")
-    user32.mouse_event(_ME_MOVE | _ME_ABSOLUTE, ax, ay, 0, 0)
+    user32.mouse_event(_ME_MOVE_TO, ax, ay, 0, 0)
     time.sleep(0.05)
     for _ in range(2 if double else 1):
         if target is not None:
