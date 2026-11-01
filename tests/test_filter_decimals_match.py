@@ -129,6 +129,7 @@ def test_lengths_match_as_numbers_under_either_separator(tmp_path, separator):
         # The filter grammar (=, <>, <, >, <=, >=) MatchesFilterPCB uses.
         _routine("Utils.pas", "FilterOpPos"),
         _routine("Utils.pas", "FilterOpText"),
+        _routine("Utils.pas", "FilterWildMatch"),
         _routine("Utils.pas", "FilterOpHolds"),
         _routine("PCBGeneric.pas", "IsLengthProperty"),
         _routine("PCBGeneric.pas", "FilterValueMatchesPCB"),

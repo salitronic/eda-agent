@@ -161,6 +161,7 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
     # What the PCB matcher compares a value with: a length as a number.
     value = "\n".join([_routine(_code("Utils.pas"), "IsFloatStr"),
                        _routine(_code("Utils.pas"), "StrToFloatDef"),
+                       _routine(_code("Utils.pas"), "FilterWildMatch"),
                        _routine(_code("Utils.pas"), "FilterOpHolds"),
                        _routine(_code("PCBGeneric.pas"), "IsLengthProperty"),
                        _routine(_code("PCBGeneric.pas"), "FilterValueMatchesPCB")])

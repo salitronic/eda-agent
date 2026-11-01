@@ -287,23 +287,23 @@ End;
 { to be skipped, which emptied the filter and matched every object: an       }
 { obj_delete given one removed every track on the board and reported         }
 { success. Names are letters, digits, '_' and '.' (Designator.Text).        }
-{ FilterOpPos - where a condition's operator starts (its first = ! < or >), }
-{ 0 when it has none. Names hold none of those characters.                }
+{ FilterOpPos - where a condition's operator starts (its first = ! < > or }
+{ ~), 0 when it has none. Names hold none of those characters.            }
 Function FilterOpPos(Condition : String) : Integer;
 Var
     I : Integer;
 Begin
     Result := 0;
     For I := 1 To Length(Condition) Do
-        If Pos(Copy(Condition, I, 1), '=!<>') > 0 Then
+        If Pos(Copy(Condition, I, 1), '=!<>~') > 0 Then
         Begin
             Result := I;
             Exit;
         End;
 End;
 
-{ FilterOpText - the condition's operator: = != < > <= >=, '' for none or }
-{ a bare '!'.                                                              }
+{ FilterOpText - the condition's operator: = != < > <= >= ~ !~, '' for   }
+{ none or a bare '!'.                                                      }
 Function FilterOpText(Condition : String) : String;
 Var
     P : Integer;
@@ -315,7 +315,8 @@ Begin
     Two := Copy(Condition, P, 2);
     One := Copy(Condition, P, 1);
     If One <> '!' Then Result := One;
-    If (Two = '!=') Or (Two = '<=') Or (Two = '>=') Then Result := Two;
+    If (Two = '!=') Or (Two = '<=') Or (Two = '>=') Or (Two = '!~') Then
+        Result := Two;
 End;
 
 Function FilterProblem(FilterStr : String) : String;
@@ -370,7 +371,8 @@ Begin
         Hint := 'For a true/false property write ' + Trim(Condition) + '=true. ';
     Result := 'Filter condition "' + Condition + '" is not Name=Value. A filter '
         + 'is Name=Value conditions joined by |, each matched exactly (also '
-        + 'Name!=Value, and Name<Value, >, <=, >= on numbers); Altium query '
+        + 'Name!=Value, Name<Value, >, <=, >= on numbers, and Name~pattern / '
+        + 'Name!~pattern with * and ? wildcards); Altium query '
         + 'expressions (OnLayer(...), Or, And) and bare names are not understood. '
         + Hint + 'Nothing was matched or changed.';
 End;
@@ -1121,10 +1123,61 @@ Begin
     End;
 End;
 
+{ FilterWildMatch - whether Actual matches Pattern, case ignored: * is any }
+{ run of characters (none too), ? exactly one, anything else itself. One   }
+{ pass with a single backtrack point (the last *), so a pattern of many    }
+{ stars costs no more than one: no recursion, nothing to blow up.          }
+Function FilterWildMatch(Actual, Pattern : String) : Boolean;
+Var
+    S, P, PC : String;
+    SPos, PPos, StarP, StarS, SLen, PLen : Integer;
+Begin
+    S := UpperCase(Actual);
+    P := UpperCase(Pattern);
+    SLen := Length(S);
+    PLen := Length(P);
+    SPos := 1;
+    PPos := 1;
+    StarP := 0;
+    StarS := 0;
+    While SPos <= SLen Do
+    Begin
+        PC := '';
+        If PPos <= PLen Then PC := Copy(P, PPos, 1);
+        If PC = '*' Then
+        Begin
+            StarP := PPos;
+            StarS := SPos;
+            Inc(PPos);
+        End
+        Else If (PC <> '') And ((PC = '?') Or (PC = Copy(S, SPos, 1))) Then
+        Begin
+            Inc(SPos);
+            Inc(PPos);
+        End
+        Else If StarP > 0 Then
+        Begin
+            { the last * takes one more character; retry from after it }
+            PPos := StarP + 1;
+            Inc(StarS);
+            SPos := StarS;
+        End
+        Else
+        Begin
+            Result := False;
+            Exit;
+        End;
+    End;
+    While (PPos <= PLen) And (Copy(P, PPos, 1) = '*') Do Inc(PPos);
+    Result := PPos > PLen;
+End;
+
 { FilterOpHolds - whether Actual stands in relation Op to Expected. Equal }
 { is the caller's own equality (a PCB length matches within half a unit). }
 { < > <= >= compare numbers ('.' or ',' decimal); a value that is not a   }
-{ number matches none of them.                                            }
+{ number matches none of them. ~ and !~ match a wildcard pattern           }
+{ (FilterWildMatch); = stays exact, so a name holding a literal * or ?     }
+{ still matches only itself.                                               }
 Function FilterOpHolds(Op, Actual, Expected : String; Equal : Boolean) : Boolean;
 Var
     A, E, Ch : String;
@@ -1133,6 +1186,8 @@ Var
 Begin
     If Op = '=' Then Begin Result := Equal; Exit; End;
     If Op = '!=' Then Begin Result := Not Equal; Exit; End;
+    If Op = '~' Then Begin Result := FilterWildMatch(Actual, Expected); Exit; End;
+    If Op = '!~' Then Begin Result := Not FilterWildMatch(Actual, Expected); Exit; End;
     Result := False;
     A := '';
     For I := 1 To Length(Actual) Do

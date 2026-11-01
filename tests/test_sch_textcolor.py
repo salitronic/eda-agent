@@ -147,7 +147,8 @@ end.
     # The filter's operator helpers live in Utils.pas.
     utils = (GENERIC.parent / "Utils.pas").read_text(encoding="utf-8", errors="replace")
     helpers = "\n".join(_routine(utils, name) for name in (
-        "FilterOpPos", "FilterOpText", "IsFloatStr", "StrToFloatDef", "FilterOpHolds"))
+        "FilterOpPos", "FilterOpText", "IsFloatStr", "StrToFloatDef", "FilterWildMatch",
+        "FilterOpHolds"))
     program = program.replace("@@HELPERS@@", helpers)
     path = tmp_path / "textcolor_filters.pas"
     path.write_text(program, encoding="utf-8")

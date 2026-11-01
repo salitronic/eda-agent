@@ -198,9 +198,9 @@ async def _refuse_manual_sheet_layout(
 
 
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
-# Name, operator, value. The operator is the first = ! < or > (names hold
+# Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
-_FILTER_COND = re.compile(r"([^=!<>]*)(!=|<=|>=|=|<|>)(.*)", re.S)
+_FILTER_COND = re.compile(r"([^=!<>~]*)(!=|!~|<=|>=|=|<|>|~)(.*)", re.S)
 
 
 def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
@@ -221,7 +221,8 @@ def filter_problem(filt: str) -> str:
     """The first condition of ``filt`` that is not Name<op>Value, or ''.
 
     A filter is conditions joined by ``|`` and nothing else, each Name=Value,
-    Name!=Value or a numeric Name<Value, >, <=, >=. The script used to skip
+    Name!=Value, a numeric Name<Value, >, <=, >=, or a wildcard Name~pattern /
+    Name!~pattern (* any run, ? one character, case ignored). The script used to skip
     a condition it could not parse, which emptied the filter: obj_delete
     given an Altium query expression removed every track on a board and
     reported success. The script now refuses such a filter too; this says
@@ -243,7 +244,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
                      "Name=Value conditions joined by |, each matched exactly "
-                     "(also Name!=Value, and Name<Value, >, <=, >= on numbers); Altium "
+                     "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
+                     "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
                      f"not understood.{hint} Nothing was sent.", **extra}
 
@@ -434,7 +436,10 @@ def register_generic_tools(mcp):
                 "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
                 length matches as a number in mils ('.' or ',' decimal).
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
-                (a value that is not a number matches no < > <= >=).
+                (a value that is not a number matches no < > <= >=);
+                "Name~POUR_*" matches a wildcard pattern (* any run, ? one
+                character, case ignored), "Net!~VCC*" excludes by one. The
+                same grammar holds for obj_modify, obj_delete and obj_select.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:

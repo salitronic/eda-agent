@@ -2645,7 +2645,11 @@ Begin
         Expected := Copy(Condition, EqPos + Length(Op), Length(Condition));
 
         { An unreadable property is not an empty value. In particular,
-          TextColor= must never match power objects in a delete/filter. }
+          TextColor= must never match power objects in a delete/filter.
+          The guard reads Name=Value: Text!=x reached it as the name
+          'Text!', and Text~x or Width>3 with no name at all, so it was
+          skipped and the matcher read a property the object lacks. }
+        Condition := PropName + '=' + Expected;
         If UnsupportedSchProperty(Obj, Condition) <> '' Then
         Begin
             NotePropertyDiag('unreadable', PropName);
