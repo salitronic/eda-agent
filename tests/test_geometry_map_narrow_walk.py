@@ -133,8 +133,7 @@ def test_the_dump_reads_kinds_and_a_layer_and_refuses_what_it_cannot_walk():
     body = _routine("PCB_DumpFreePrimitives")
     assert "ExtractJsonValue(Params, 'kinds')" in body
     assert "GmKindsBad(Kinds)" in body and "'BAD_KINDS'" in body
-    assert "ResolveLayerId(Board, LayerStr)" in body and "'UNKNOWN_LAYER'" in body
-    assert "Walk := GmWalkSet(OnLayer);" in body
+    assert "Walk := GmWalkSet(Board, LayerStr, Bad);" in body and "'UNKNOWN_LAYER'" in body
 
 
 def test_every_kind_is_walked_only_when_asked_and_on_the_narrowed_set():
@@ -155,16 +154,64 @@ def test_the_dump_writes_its_walk_only_when_narrowed():
 def test_the_apply_walks_the_dumps_set():
     body = _routine("PCB_ApplyFreePrimitives")
     w = body.index("If Copy(Lines[I], 1, 2) = 'W' + #9 Then")
-    walk = body.index("Walk := GmWalkSet(OnLayer);", w)
+    walk = body.index("Walk := GmWalkSet(Board, LayerStr, Bad);", w)
     assert walk < body.index("PcbBeginEdit(0);")
     # both walks: the kinds' and the polygons' own
     assert body.count("Iter.AddFilter_IPCB_LayerSet(Walk);") == 2
 
 
-def test_one_layer_is_a_v7_set_of_its_own():
+def _fn(head):
     code = _PCB.read_text(encoding="ascii")
-    fn = code[code.index("Function GmWalkSet(OnLayer : TLayer) : IPCB_LayerSet;"):]
-    fn = fn[:fn.index("End;") + 4]
-    assert "If OnLayer = eNoLayer Then Exit;" in fn
+    fn = code[code.index(head):]
+    return fn[:re.search(r"(?m)^End;", fn).end()]
+
+
+def test_the_listed_layers_are_one_v7_set():
+    fn = _fn("Function GmWalkSet(Board : IPCB_Board; Layers : String; Var Bad : String)")
+    assert "If Rest = '' Then Exit;" in fn            # no layer: every layer
     assert "Result := LayerSet.CreateLayerSet;" in fn
+    assert "OnLayer := ResolveLayerId(Board, Name);" in fn
     assert "Result.Include(OnLayer);" in fn
+    assert "Bad := Name;" in fn                        # an unknown one is named
+
+
+def test_every_kind_writes_through_the_filters_but_counts_every_walked_object():
+    body = _routine("PCB_DumpFreePrimitives")
+    assert body.count("GmKeep(") == 7
+    assert "GmNameOk(PName, NameMask)" in body
+    # the ordinal counts every object of the walk, written or not
+    for n in ("NT", "NA", "NV", "NX", "NF", "NR", "NP"):
+        assert re.search(r"Inc\(%s\);\s*End;\s*Inc\(Idx\);" % n, body), n
+
+
+def test_the_write_filters_are_read_and_bad_bounds_refused():
+    body = _routine("PCB_DumpFreePrimitives")
+    for key in ("'nets'", "'selected'", "'name'", "'bounds'"):
+        assert "ExtractJsonValue(Params, %s)" % key in body, key
+    assert "'BAD_BOUNDS'" in body and "If BoxV.Count <> 4 Then" in body
+
+
+def test_the_write_filters_say_what_they_keep():
+    keep = _fn("Function GmKeep(")
+    assert "If NName = '' Then Exit;" in keep          # no net: not on a listed net
+    assert "Pos(',' + UpperCase(NName) + ',', ',' + UpperCase(Nets) + ',') = 0" in keep
+    assert "If Not Sel Then Exit;" in keep
+    assert "(BR.Right < BX1) Or (BR.Left > BX2) Or (BR.Top < BY1) Or (BR.Bottom > BY2)" in keep
+    name = _fn("Function GmNameOk(")
+    assert "If Copy(Mask, Length(Mask), 1) = '*' Then" in name
+
+
+@pytest.mark.asyncio
+async def test_the_tool_passes_every_write_filter(tmp_path, monkeypatch):
+    bridge = _Bridge(tmp_path, f"T\t0\t1\t{10 * C}\t0\t0\t{50 * C}\t0\nL\t1\tTopLayer\n")
+    tools = _tools(monkeypatch, bridge)
+    mp = tmp_path / "map.json"
+    mp.write_text(json.dumps({"tracks": []}))
+    await tools["pcb_apply_geometry_map"](str(mp), board_path="b", dry_run=True,
+                                          kinds="polygon", layer="Mechanical21,Mechanical22",
+                                          nets="GND,VCC", selected=True,
+                                          name="FLUIDGON*", bounds="0,0,100,100")
+    params = bridge.sent[0][1]
+    assert params["layer"] == "Mechanical21,Mechanical22"
+    assert params["nets"] == "GND,VCC" and params["selected"] == "true"
+    assert params["name"] == "FLUIDGON*" and params["bounds"] == "0,0,100,100"

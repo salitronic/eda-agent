@@ -24530,12 +24530,17 @@ End;
 {..............................................................................}
 
 {..............................................................................}
-{ The geometry map's walk, narrowed (dump_free_primitives kinds / layer).      }
+{ The geometry map's walk, narrowed (dump_free_primitives).                    }
+{ Two sorts of filter. KINDS and LAYERS narrow the WALK itself: the apply pass }
+{ finds objects by their ordinal in that walk, so it reads the dump's W line   }
+{ and walks the same set. NETS, SELECTED, NAME and BOUNDS only decide which    }
+{ walked objects are written: the ordinals still count every walked object,   }
+{ so the apply needs nothing for them.                                         }
 { GmKindsBad names the first kind the dump does not know; GmWants says whether }
 { a kind is in the list (an empty list is every kind); GmWalkSet is the layer  }
-{ set of one layer, a V7 set of its own so Mechanical17 and up are walked      }
-{ alone too (issue #155), or Nil for every layer. The apply pass reads the     }
-{ dump's W line and walks the same set, so the ordinals agree.                 }
+{ set of the listed layers, a V7 set so Mechanical17 and up are walked alone   }
+{ too (issue #155), or Nil for every layer; GmKeep and GmNameOk are the        }
+{ write filters.                                                               }
 {..............................................................................}
 
 Function GmKindsBad(Kinds : String) : String;
@@ -24573,12 +24578,87 @@ Begin
     Result := (Kinds = '') Or (Pos(',' + Kind + ',', ',' + Kinds + ',') > 0);
 End;
 
-Function GmWalkSet(OnLayer : TLayer) : IPCB_LayerSet;
+Function GmWalkSet(Board : IPCB_Board; Layers : String; Var Bad : String) : IPCB_LayerSet;
+Var
+    Rest, Name : String;
+    Cut : Integer;
+    OnLayer : TLayer;
 Begin
     Result := Nil;
-    If OnLayer = eNoLayer Then Exit;
+    Bad := '';
+    Rest := Trim(Layers);
+    If Rest = '' Then Exit;
     Result := LayerSet.CreateLayerSet;
-    Result.Include(OnLayer);
+    While Rest <> '' Do
+    Begin
+        Cut := Pos(',', Rest);
+        If Cut > 0 Then
+        Begin
+            Name := Trim(Copy(Rest, 1, Cut - 1));
+            Rest := Copy(Rest, Cut + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Name := Trim(Rest);
+            Rest := '';
+        End;
+        If Name <> '' Then
+        Begin
+            OnLayer := ResolveLayerId(Board, Name);
+            If OnLayer = eNoLayer Then
+            Begin
+                Bad := Name;
+                Result := Nil;
+                Exit;
+            End;
+            Result.Include(OnLayer);
+        End;
+    End;
+End;
+
+Function GmNameOk(Name : String; Mask : String) : Boolean;
+Begin
+    Result := True;
+    If Mask = '' Then Exit;
+    If Copy(Mask, Length(Mask), 1) = '*' Then
+        Result := UpperCase(Copy(Name, 1, Length(Mask) - 1))
+            = UpperCase(Copy(Mask, 1, Length(Mask) - 1))
+    Else
+        Result := UpperCase(Name) = UpperCase(Mask);
+End;
+
+Function GmKeep(Prim : IPCB_Primitive; Nets : String; SelOnly : Boolean;
+    HasBox : Boolean; BX1, BY1, BX2, BY2 : TCoord) : Boolean;
+Var
+    NName : String;
+    Sel : Boolean;
+    BR : TCoordRect;
+Begin
+    Result := False;
+    If Nets <> '' Then
+    Begin
+        NName := '';
+        Try If Prim.Net <> Nil Then NName := Prim.Net.Name; Except NName := ''; End;
+        If NName = '' Then Exit;
+        If Pos(',' + UpperCase(NName) + ',', ',' + UpperCase(Nets) + ',') = 0 Then Exit;
+    End;
+    If SelOnly Then
+    Begin
+        Sel := False;
+        Try Sel := Prim.Selected; Except Sel := False; End;
+        If Not Sel Then Exit;
+    End;
+    If HasBox Then
+    Begin
+        Try
+            BR := Prim.BoundingRectangle;
+            If (BR.Right < BX1) Or (BR.Left > BX2) Or (BR.Top < BY1) Or (BR.Bottom > BY2) Then
+                Exit;
+        Except
+            Exit;
+        End;
+    End;
+    Result := True;
 End;
 
 Function PCB_DumpFreePrimitives(Params : String; RequestId : String) : String;
@@ -24598,9 +24678,11 @@ Var
     Idx, Lyr, N, Holes, Cut, I, SC : Integer;
     NT, NA, NV, NX, NF, NR, NP, NO : Integer;
     BR : TCoordRect;
-    Kinds, LayerStr, Bad : String;
-    OnLayer : TLayer;
+    Kinds, LayerStr, Bad, Nets, NameMask, BoxStr, PName : String;
     Walk : IPCB_LayerSet;
+    SelOnly, HasBox : Boolean;
+    BX1, BY1, BX2, BY2 : TCoord;
+    BoxV : TStringList;
 Begin
     OutPath := ExtractJsonValue(Params, 'out_path');
     If OutPath = '' Then
@@ -24628,20 +24710,53 @@ Begin
         Result := Response;
         Exit;
     End;
+    { One layer or several, comma-separated. }
     LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
-    OnLayer := eNoLayer;
-    If LayerStr <> '' Then
+    Walk := GmWalkSet(Board, LayerStr, Bad);
+    If Bad <> '' Then
     Begin
-        OnLayer := ResolveLayerId(Board, LayerStr);
-        If OnLayer = eNoLayer Then
-        Begin
-            Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-                'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
-            Result := Response;
-            Exit;
-        End;
+        Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + Bad + '. ' + BoardLayerNamesHint(Board));
+        Result := Response;
+        Exit;
     End;
-    Walk := GmWalkSet(OnLayer);
+    { What is written of the walk: nets (comma-separated, an object with no }
+    { net is left out), the selection only, a polygon name (exact, or a     }
+    { prefix ending in *), and an area: x1,y1,x2,y2 in mils, objects whose  }
+    { box touches it.                                                       }
+    Nets := Trim(ExtractJsonValue(Params, 'nets'));
+    SelOnly := LowerCase(Trim(ExtractJsonValue(Params, 'selected'))) = 'true';
+    NameMask := Trim(ExtractJsonValue(Params, 'name'));
+    BoxStr := Trim(ExtractJsonValue(Params, 'bounds'));
+    HasBox := BoxStr <> '';
+    BX1 := 0; BY1 := 0; BX2 := 0; BY2 := 0;
+    If HasBox Then
+    Begin
+        BoxV := TStringList.Create;
+        Try
+            PName := BoxStr + ',';
+            While PName <> '' Do
+            Begin
+                BoxV.Add(Trim(Copy(PName, 1, Pos(',', PName) - 1)));
+                PName := Copy(PName, Pos(',', PName) + 1, Length(PName));
+            End;
+            If BoxV.Count <> 4 Then
+            Begin
+                Response := BuildErrorResponse(RequestId, 'BAD_BOUNDS',
+                    'bounds is x1,y1,x2,y2 in mils: ' + BoxStr);
+                Result := Response;
+                Exit;
+            End;
+            BX1 := MilsToCoordF(StrToFloatDef(BoxV[0], 0));
+            BY1 := MilsToCoordF(StrToFloatDef(BoxV[1], 0));
+            BX2 := MilsToCoordF(StrToFloatDef(BoxV[2], 0));
+            BY2 := MilsToCoordF(StrToFloatDef(BoxV[3], 0));
+        Finally
+            BoxV.Free;
+        End;
+        If BX1 > BX2 Then Begin N := BX1; BX1 := BX2; BX2 := N; End;
+        If BY1 > BY2 Then Begin N := BY1; BY1 := BY2; BY2 := N; End;
+    End;
 
     NT := 0; NA := 0; NV := 0; NX := 0; NF := 0; NR := 0; NP := 0; NO := 0;
     Dump := TStringList.Create;
@@ -24664,7 +24779,8 @@ Begin
                 Track := Iter.FirstPCBObject;
                 While Track <> Nil Do
                 Begin
-                    If Not (Track.InComponent Or Track.InPolygon Or Track.InDimension) Then
+                    If Not (Track.InComponent Or Track.InPolygon Or Track.InDimension)
+                    And GmKeep(Track, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Lyr := Track.Layer;
                         Dump.Add('T' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
@@ -24696,7 +24812,8 @@ Begin
                 Arc := Iter.FirstPCBObject;
                 While Arc <> Nil Do
                 Begin
-                    If Not (Arc.InComponent Or Arc.InPolygon Or Arc.InDimension) Then
+                    If Not (Arc.InComponent Or Arc.InPolygon Or Arc.InDimension)
+                    And GmKeep(Arc, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Lyr := Arc.Layer;
                         Dump.Add('A' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
@@ -24728,7 +24845,8 @@ Begin
                 Via := Iter.FirstPCBObject;
                 While Via <> Nil Do
                 Begin
-                    If Not (Via.InComponent Or Via.InPolygon Or Via.InDimension) Then
+                    If Not (Via.InComponent Or Via.InPolygon Or Via.InDimension)
+                    And GmKeep(Via, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Dump.Add('V' + #9 + IntToStr(Idx) + #9 + IntToStr(Via.X) + #9
                             + IntToStr(Via.Y));
@@ -24756,7 +24874,8 @@ Begin
                 Txt := Iter.FirstPCBObject;
                 While Txt <> Nil Do
                 Begin
-                    If Not (Txt.InComponent Or Txt.InPolygon Or Txt.InDimension) Then
+                    If Not (Txt.InComponent Or Txt.InPolygon Or Txt.InDimension)
+                    And GmKeep(Txt, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Lyr := Txt.Layer;
                         TxtStr := '';
@@ -24793,7 +24912,8 @@ Begin
                 Fil := Iter.FirstPCBObject;
                 While Fil <> Nil Do
                 Begin
-                    If Not (Fil.InComponent Or Fil.InPolygon Or Fil.InDimension) Then
+                    If Not (Fil.InComponent Or Fil.InPolygon Or Fil.InDimension)
+                    And GmKeep(Fil, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Lyr := Fil.Layer;
                         Dump.Add('F' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
@@ -24824,7 +24944,8 @@ Begin
                 Region := Iter.FirstPCBObject;
                 While Region <> Nil Do
                 Begin
-                    If Not (Region.InComponent Or Region.InPolygon Or Region.InDimension) Then
+                    If Not (Region.InComponent Or Region.InPolygon Or Region.InDimension)
+                    And GmKeep(Region, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2) Then
                     Begin
                         Lyr := Region.Layer;
                         N := 0;
@@ -24873,19 +24994,25 @@ Begin
                 Poly := Iter.FirstPCBObject;
                 While Poly <> Nil Do
                 Begin
-                    Lyr := Poly.Layer;
-                    N := 0;
-                    Try N := Poly.PointCount; Except N := 0; End;
-                    X0 := ''; Y0 := '';
-                    If N > 0 Then
+                    PName := '';
+                    Try PName := Poly.Name; Except PName := ''; End;
+                    If GmKeep(Poly, Nets, SelOnly, HasBox, BX1, BY1, BX2, BY2)
+                        And GmNameOk(PName, NameMask) Then
                     Begin
-                        Try X0 := IntToStr(Poly.Segments[0].vx); Except X0 := ''; End;
-                        Try Y0 := IntToStr(Poly.Segments[0].vy); Except Y0 := ''; End;
+                        Lyr := Poly.Layer;
+                        N := 0;
+                        Try N := Poly.PointCount; Except N := 0; End;
+                        X0 := ''; Y0 := '';
+                        If N > 0 Then
+                        Begin
+                            Try X0 := IntToStr(Poly.Segments[0].vx); Except X0 := ''; End;
+                            Try Y0 := IntToStr(Poly.Segments[0].vy); Except Y0 := ''; End;
+                        End;
+                        Dump.Add('P' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
+                            + IntToStr(N) + #9 + X0 + #9 + Y0);
+                        If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
+                        Inc(NP);
                     End;
-                    Dump.Add('P' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
-                        + IntToStr(N) + #9 + X0 + #9 + Y0);
-                    If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
-                    Inc(NP);
                     Inc(Idx);
                     Poly := Iter.NextPCBObject;
                 End;
@@ -24915,7 +25042,11 @@ Begin
         + ',"fills":' + IntToStr(NF) + ',"regions":' + IntToStr(NR)
         + ',"polygons":' + IntToStr(NP) + ',"outline_segments":' + IntToStr(NO)
         + ',"kinds":"' + EscapeJsonString(Kinds) + '"'
-        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
+        + ',"nets":"' + EscapeJsonString(Nets) + '"'
+        + ',"selected":' + BoolToJsonStr(SelOnly)
+        + ',"name":"' + EscapeJsonString(NameMask) + '"'
+        + ',"bounds":"' + EscapeJsonString(BoxStr) + '"}');
     Result := Response;
 End;
 
@@ -24983,8 +25114,7 @@ Var
     BR : TCoordRect;
     ShapeMode : String;
     IsFree, Ok, HoleOk, DoRepour : Boolean;
-    LayerStr : String;
-    OnLayer : TLayer;
+    LayerStr, Bad : String;
     Walk : IPCB_LayerSet;
 Begin
     InPath := ExtractJsonValue(Params, 'in_path');
@@ -25037,19 +25167,15 @@ Begin
             SplitNextTab(Rest);
             SplitNextTab(Rest);
             LayerStr := Trim(SplitNextTab(Rest));
-            If LayerStr <> '' Then
+            Walk := GmWalkSet(Board, LayerStr, Bad);
+            If Bad <> '' Then
             Begin
-                OnLayer := ResolveLayerId(Board, LayerStr);
-                If OnLayer = eNoLayer Then
-                Begin
-                    Lines.Free;
-                    Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-                        'The edit file walks layer ' + LayerStr
-                        + ', which this board does not have');
-                    Result := Response;
-                    Exit;
-                End;
-                Walk := GmWalkSet(OnLayer);
+                Lines.Free;
+                Response := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                    'The edit file walks layer ' + Bad
+                    + ', which this board does not have');
+                Result := Response;
+                Exit;
             End;
             Break;
         End;

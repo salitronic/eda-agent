@@ -4860,6 +4860,10 @@ def register_pcb_tools(mcp):
         region_shape: str = "rebuild",
         kinds: str = "",
         layer: str = "",
+        nets: str = "",
+        selected: bool = False,
+        name: str = "",
+        bounds: str = "",
     ) -> dict[str, Any]:
         """Move and reshape thousands of free primitives in ONE pass, from a
         JSON map of each object's CURRENT geometry and its new one.
@@ -4938,10 +4942,21 @@ def register_pcb_tools(mcp):
                 via, text, fill, region, polygon); empty is every kind.
                 A map that edits one layer's tracks need not have the
                 whole board dumped first.
-            layer: Dump only this layer (any layer name, Mechanical17 and
-                up included); empty is every layer. The apply pass walks
-                the same kinds and layer, so entries outside them are
-                unmatched, never applied elsewhere.
+            layer: Dump only these layers, comma-separated (any layer
+                name, Mechanical17 and up included); empty is every layer.
+                The apply pass walks the same kinds and layers, so
+                entries outside them are unmatched, never applied
+                elsewhere.
+            nets: Dump only objects on these nets, comma-separated (an
+                object with no net is left out).
+            selected: Dump only selected objects.
+            name: Dump only polygons of this name (exact, or a prefix
+                ending in ``*``); other kinds are not affected.
+            bounds: Dump only objects whose box touches this area,
+                ``"x1,y1,x2,y2"`` in mils.
+            nets, selected, name and bounds only decide what is written
+            of the walk: the ordinals still count every walked object, so
+            the apply pass needs nothing for them.
 
         Returns:
             {"board", "dry_run", "match": {kind: {entries, matched,
@@ -4977,6 +4992,14 @@ def register_pcb_tools(mcp):
             dump_params["kinds"] = kinds.strip()
         if layer.strip():
             dump_params["layer"] = layer.strip()
+        if nets.strip():
+            dump_params["nets"] = nets.strip()
+        if selected:
+            dump_params["selected"] = "true"
+        if name.strip():
+            dump_params["name"] = name.strip()
+        if bounds.strip():
+            dump_params["bounds"] = bounds.strip()
         dumped = await bridge.send_command_async(
             "pcb.dump_free_primitives", dump_params,
             timeout=_GEOMETRY_MAP_TIMEOUT)
