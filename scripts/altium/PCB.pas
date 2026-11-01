@@ -8948,13 +8948,67 @@ End;
 {         stroke (mils, optional; Altium's default when empty)              }
 {..............................................................................}
 
+{ A text justification by name -> Altium's TTextAutoposition ordinal, the    }
+{ anchor of a multiline text inside its frame: 1 top left, 2 centre left,    }
+{ 3 bottom left, 4 top centre, 5 centre, 6 bottom centre, 7 top right,       }
+{ 8 centre right, 9 bottom right. -1 for a name that is not one of them.     }
+Function TextJustifyCode(Name : String) : Integer;
+Begin
+    Name := LowerCase(Name);
+    If Name = 'top_left' Then Result := 1
+    Else If Name = 'center_left' Then Result := 2
+    Else If Name = 'bottom_left' Then Result := 3
+    Else If Name = 'top_center' Then Result := 4
+    Else If Name = 'center' Then Result := 5
+    Else If Name = 'bottom_center' Then Result := 6
+    Else If Name = 'top_right' Then Result := 7
+    Else If Name = 'center_right' Then Result := 8
+    Else If Name = 'bottom_right' Then Result := 9
+    Else Result := -1;
+End;
+
+{ Where on its frame a justification sits, as a fraction of the frame:     }
+{ 0 left / bottom, 0.5 centre, 1 right / top.                              }
+Function TextJustifyFracX(Code : Integer) : Double;
+Begin
+    If Code >= 7 Then Result := 1
+    Else If Code >= 4 Then Result := 0.5
+    Else Result := 0;
+End;
+
+Function TextJustifyFracY(Code : Integer) : Double;
+Var
+    Row : Integer;
+Begin
+    Row := (Code - 1) Mod 3;
+    If Row = 0 Then Result := 1
+    Else If Row = 1 Then Result := 0.5
+    Else Result := 0;
+End;
+
+{ 1 true, 0 false, -1 not given, -2 neither. }
+Function TextFlag(S : String) : Integer;
+Begin
+    S := LowerCase(S);
+    If S = '' Then Result := -1
+    Else If S = 'true' Then Result := 1
+    Else If S = 'false' Then Result := 0
+    Else Result := -2;
+End;
+
 Function PCB_PlaceText(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     TextObj : IPCB_Text;
     TextStr, XStr, YStr, LayerStr, HeightStr, RotStr, StrokeStr : String;
+    KindStr, StrokeFontStr, FontNameStr, JustStr, FrameWStr, FrameHStr : String;
+    MarginStr, Extra : String;
     TX, TY : Double;
     TRot, THeight, TStroke : Double;
+    FrameW, FrameH, Margin, FX, FY, Ang : Double;
+    Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF : Integer;
+    Box : TCoordRect;
+    BoxW, BoxH : TCoord;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -8996,6 +9050,79 @@ Begin
         Exit;
     End;
 
+    { The text's own style, all optional (issue: text properties on create). }
+    { A justification makes the text MULTILINE: Altium justifies a text only }
+    { inside its frame, and a single-line text ignores the setting. x / y is }
+    { then the point the justification names, e.g. the centre for center.   }
+    KindStr := LowerCase(ExtractJsonValue(Params, 'kind'));
+    StrokeFontStr := LowerCase(ExtractJsonValue(Params, 'stroke_font'));
+    FontNameStr := ExtractJsonValue(Params, 'font_name');
+    BoldF := TextFlag(ExtractJsonValue(Params, 'bold'));
+    ItalicF := TextFlag(ExtractJsonValue(Params, 'italic'));
+    InvF := TextFlag(ExtractJsonValue(Params, 'inverted'));
+    JustStr := ExtractJsonValue(Params, 'justification');
+    FrameWStr := ExtractJsonValue(Params, 'frame_width');
+    FrameHStr := ExtractJsonValue(Params, 'frame_height');
+    MarginStr := ExtractJsonValue(Params, 'margin');
+
+    If KindStr = '' Then Kind := -1
+    Else If KindStr = 'stroke' Then Kind := 0
+    Else If KindStr = 'truetype' Then Kind := 1
+    Else Kind := -2;
+    { A TrueType-only setting asks for a TrueType text. }
+    If (Kind = -1) And ((FontNameStr <> '') Or (BoldF = 1) Or (ItalicF = 1) Or
+       (InvF = 1)) Then Kind := 1;
+    If StrokeFontStr = '' Then StrokeFontNo := 0
+    Else If StrokeFontStr = 'default' Then StrokeFontNo := 1
+    Else If StrokeFontStr = 'sans_serif' Then StrokeFontNo := 2
+    Else If StrokeFontStr = 'serif' Then StrokeFontNo := 3
+    Else StrokeFontNo := -1;
+    If JustStr = '' Then Just := 0 Else Just := TextJustifyCode(JustStr);
+    FrameW := StrToFloatDef(FrameWStr, 0);
+    FrameH := StrToFloatDef(FrameHStr, 0);
+    Margin := StrToFloatDef(MarginStr, 0);
+
+    If (Kind = -2) Or (StrokeFontNo < 0) Or (Just < 0) Or (BoldF = -2) Or
+       (ItalicF = -2) Or (InvF = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'kind is stroke or truetype; stroke_font default, sans_serif or serif; '
+            + 'justification top_left, top_center, top_right, center_left, center, '
+            + 'center_right, bottom_left, bottom_center or bottom_right; bold, italic '
+            + 'and inverted true or false');
+        Exit;
+    End;
+    If ((FrameWStr <> '') And (Not IsFloatStr(FrameWStr))) Or
+       ((FrameHStr <> '') And (Not IsFloatStr(FrameHStr))) Or
+       ((MarginStr <> '') And (Not IsFloatStr(MarginStr))) Or
+       (FrameW < 0) Or (FrameH < 0) Or (Margin < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'frame_width, frame_height and margin are mils, not below zero');
+        Exit;
+    End;
+    If ((FrameWStr <> '') Or (FrameHStr <> '')) And (Just = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'a frame needs a justification: it is where the text sits in it');
+        Exit;
+    End;
+    { Bold, italic and inverted are TrueType only: refused on a stroke text  }
+    { rather than written and silently ignored by Altium.                    }
+    If (Kind = 0) And ((BoldF = 1) Or (ItalicF = 1) Or (InvF = 1) Or
+       (FontNameStr <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'bold, italic, inverted and font_name are TrueType only (kind truetype)');
+        Exit;
+    End;
+    If (Kind = 1) And (StrokeFontNo > 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'stroke_font is for a stroke text, not kind truetype');
+        Exit;
+    End;
+
     If LayerStr = '' Then TargetLayer := eTopOverlay
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
     If TargetLayer = eNoLayer Then
@@ -9019,7 +9146,17 @@ Begin
         TextObj.Text := TextStr;
         TextObj.Size := MilsToCoordF(THeight);
         If TStroke > 0 Then TextObj.Width := MilsToCoordF(TStroke);
-        TextObj.Rotation := TRot;
+        If Kind >= 0 Then
+        Begin
+            TextObj.TextKind := Kind;
+            TextObj.UseTTFonts := Kind = 1;
+        End;
+        If StrokeFontNo > 0 Then TextObj.FontID := StrokeFontNo;
+        If FontNameStr <> '' Then TextObj.FontName := FontNameStr;
+        If BoldF >= 0 Then TextObj.Bold := BoldF = 1;
+        If ItalicF >= 0 Then TextObj.Italic := ItalicF = 1;
+        If InvF >= 0 Then TextObj.Inverted := InvF = 1;
+        If MarginStr <> '' Then TextObj.InvertedTTTextBorder := MilsToCoordF(Margin);
 
         TextObj.Layer := TargetLayer;
 
@@ -9027,11 +9164,79 @@ Begin
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, TextObj.I_ObjectAddress);
+
+        { Justified: measured at rotation 0, framed, then the frame moved so  }
+        { the justification point lands on x / y, and turned about it. With  }
+        { no frame size given the frame is the text's own box. Altium grows  }
+        { a frame smaller than the text (plus the margin of an inverted      }
+        { text, whose filled box IS the frame) only when the edit is closed, }
+        { so the frame is read again after EndModify and the text moved      }
+        { once more when it grew. MEASURED: a 60 x 20 frame became 209.8 x   }
+        { 52.6 at EndModify and, placed from the asked size, sat 75 mil off. }
+        If Just > 0 Then
+        Begin
+            TextObj.BeginModify;
+            Box := TextObj.BoundingRectangle;
+            BoxW := Box.Right - Box.Left;
+            BoxH := Box.Top - Box.Bottom;
+            If FrameW <= 0 Then FrameW := CoordToMilsF(BoxW);
+            If FrameH <= 0 Then FrameH := CoordToMilsF(BoxH);
+            TextObj.Multiline := True;
+            TextObj.MultilineTextWidth := MilsToCoordF(FrameW);
+            TextObj.MultilineTextHeight := MilsToCoordF(FrameH);
+            TextObj.MultilineTextAutoPosition := Just;
+            Ang := TRot * 3.14159265358979 / 180.0;
+            FX := TextJustifyFracX(Just) * FrameW;
+            FY := TextJustifyFracY(Just) * FrameH;
+            TextObj.XLocation := MilsToCoordF(TX - (FX * Cos(Ang) - FY * Sin(Ang)));
+            TextObj.YLocation := MilsToCoordF(TY - (FX * Sin(Ang) + FY * Cos(Ang)));
+            TextObj.Rotation := TRot;
+            TextObj.EndModify;
+            If (TextObj.MultilineTextWidth <> MilsToCoordF(FrameW)) Or
+               (TextObj.MultilineTextHeight <> MilsToCoordF(FrameH)) Then
+            Begin
+                FrameW := CoordToMilsF(TextObj.MultilineTextWidth);
+                FrameH := CoordToMilsF(TextObj.MultilineTextHeight);
+                FX := TextJustifyFracX(Just) * FrameW;
+                FY := TextJustifyFracY(Just) * FrameH;
+                TextObj.BeginModify;
+                TextObj.XLocation := MilsToCoordF(TX - (FX * Cos(Ang) - FY * Sin(Ang)));
+                TextObj.YLocation := MilsToCoordF(TY - (FX * Sin(Ang) + FY * Cos(Ang)));
+                TextObj.EndModify;
+            End;
+            TextObj.GraphicallyInvalidate;
+        End
+        Else
+        Begin
+            TextObj.BeginModify;
+            TextObj.Rotation := TRot;
+            TextObj.EndModify;
+        End;
     Finally
         PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+
+    { Everything read back off the placed text. }
+    Box := TextObj.BoundingRectangle;
+    Extra := ',"kind":' + IntToStr(TextObj.TextKind)
+        + ',"font_id":' + IntToStr(TextObj.FontID)
+        + ',"font_name":"' + EscapeJsonString(TextObj.FontName) + '"'
+        + ',"bold":' + BoolToJsonStr(TextObj.Bold)
+        + ',"italic":' + BoolToJsonStr(TextObj.Italic)
+        + ',"multiline":' + BoolToJsonStr(TextObj.Multiline)
+        + ',"justification":' + IntToStr(TextObj.MultilineTextAutoPosition)
+        + ',"frame_width":' + FloatToJsonStr(CoordToMilsF(TextObj.MultilineTextWidth))
+        + ',"frame_height":' + FloatToJsonStr(CoordToMilsF(TextObj.MultilineTextHeight))
+        + ',"inverted":' + BoolToJsonStr(TextObj.Inverted)
+        + ',"margin":' + FloatToJsonStr(CoordToMilsF(TextObj.InvertedTTTextBorder))
+        + ',"location":[' + FloatToJsonStr(CoordToMilsF(TextObj.XLocation)) + ','
+        + FloatToJsonStr(CoordToMilsF(TextObj.YLocation)) + ']'
+        + ',"bounds":[' + FloatToJsonStr(CoordToMilsF(Box.Left)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Bottom)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Right)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Top)) + ']';
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -9040,8 +9245,9 @@ Begin
         + '"y":' + FloatToJsonStr(TY) + ','
         + '"height":' + FloatToJsonStr(CoordToMilsF(TextObj.Size)) + ','
         + '"stroke":' + FloatToJsonStr(CoordToMilsF(TextObj.Width)) + ','
-        + '"rotation":' + FloatToJsonStr(TRot) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"}');
+        + '"rotation":' + FloatToJsonStr(TextObj.Rotation) + ','
+        + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"'
+        + Extra + '}');
 End;
 
 {..............................................................................}

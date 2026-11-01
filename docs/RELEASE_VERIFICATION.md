@@ -133,7 +133,8 @@ works elsewhere cannot be an undeclared identifier:
 | 42, drill pairs | `IsBackdrill`, `PlotDrillGuide`, `PlotDrillDrawing` on a drill pair | no, nowhere | low, ran live and restored |
 | 42, part 3D | `SaveModelToFile` on a placed part | no, nowhere | low, writes a file only; ran live |
 | 42, fast lookup | `GetPcbComponentByRefDes` on the board | no, nowhere | medium, every designator lookup runs it first; ran live, with the walk behind it |
-| 42, generic board properties | `HolePositiveTolerance`, `MitreCorners`, `BorderWidth`, `EnablePinSwapping`, `BarCodeShowText`, `Multiline` | no, nowhere | low, ran live and read back |
+| 42, generic board properties | `HolePositiveTolerance`, `MitreCorners`, `BorderWidth`, `EnablePinSwapping`, `BarCodeShowText` | no, nowhere | low, ran live and read back |
+| 42, multiline text | `Multiline` on a board text | yes, `PCB_PlaceText` (a justified text is framed) | low, ran live and read back |
 | 42, pin swapping | `SetState_SwapIdPart`, `SetState_SwapIdPin` on a symbol pin | no, nowhere | low, ran live and read back |
 | 42, symbol aliases | `Alias_Add`, `Alias_Remove` on a symbol | no, nowhere | low, ran live and read back |
 | 42, sheet options | `SetState_ReferenceZonesOn`, `SetState_CustomXZones`, `SetState_ShowTemplateGraphics` on a sheet | no, nowhere | low, ran live and restored |
@@ -160,7 +161,8 @@ works elsewhere cannot be an undeclared identifier:
 | 45, project options | `DM_SetAppendSheetNumberToLocalNets`, `DM_SetPinSwapBy_Netlabel`, `DM_SetPinSwapBy_Pin` | no, nowhere | low, ran live, read back and restored |
 | 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline` on a pour | no, nowhere | low, ran live and restored |
 | 45, pour switches | `AutoGenerateName` on a pour | yes, `PCBSetPoly` clears it when a polygon Name is written (#150) | low, ran live and restored; `AutoGenerateName` renames the pour |
-| 45, inverted text | `InvertedTTTextBorder`, `TTFInvertedTextJustify`, `TTFOffsetFromInvertedRect` on board text | no, nowhere | low, ran live, read back and restored |
+| 45, inverted text | `TTFInvertedTextJustify`, `TTFOffsetFromInvertedRect` on board text | no, nowhere | low, ran live, read back and restored |
+| 45, inverted margin | `InvertedTTTextBorder` on board text | yes, `PCB_PlaceText` (the margin on create) | low, ran live, read back and restored |
 | 45, text inversion | `Inverted`, `UseInvertedRectangle` on board text | yes, `Lib_ConvertDesignatorsToStroke` | low, ran live, read back and restored |
 | 45, parameters and ports | `ReadOnlyState`, `ParamType`, synchronize switches; port `AutoSize`, `OverrideDisplayString`, `HarnessColor` | no, nowhere | low, ran live, read back and restored |
 | 45, pin label positions | `Name_PositionMode`, `Name_CustomPosition_Margin`, `Designator_PositionMode`, `Designator_CustomPosition_Margin` and their rotations on a pin | no, nowhere | low, ran live, read back and cleared |

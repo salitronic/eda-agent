@@ -256,7 +256,10 @@ def test_extra_properties_fit_only_their_owner():
     assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
             "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or\n"
             "       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or\n"
-            "       (PropName = 'FontName') Then Exit;") in body
+            "       (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;") in body
+    # A text's TrueType font is writable; an empty name is refused.
+    assert "(PropName = 'FontName') Then Exit;" not in body
+    assert "If Trim(Value) = '' Then Exit;" in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")

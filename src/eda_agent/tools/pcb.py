@@ -7560,24 +7560,55 @@ def register_pcb_tools(mcp):
         height: float = 60,
         rotation: float = 0,
         stroke: float = 0,
+        kind: str = "",
+        stroke_font: str = "",
+        font_name: str = "",
+        bold: bool | None = None,
+        italic: bool | None = None,
+        justification: str = "",
+        frame_width: float = 0,
+        frame_height: float = 0,
+        inverted: bool | None = None,
+        margin: float | None = None,
     ) -> dict[str, Any]:
         """Place a text string on the active PCB.
 
         Args:
             text: Text content to place
-            x: Text X position in mils
-            y: Text Y position in mils
+            x: Text X position in mils. With a justification, the point
+                the justification names (the centre for "center").
+            y: Text Y position in mils, as x.
             layer: PCB layer name (default "TopOverlay"). Common choices:
                 "TopOverlay", "BottomOverlay", "TopLayer", "BottomLayer",
                 "Mechanical1"-"Mechanical16"
             height: Text height in mils (default 60), decimals allowed
-            rotation: Rotation angle in degrees (default 0)
+            rotation: Rotation angle in degrees (default 0); a justified
+                text turns about its justification point.
             stroke: Stroke width in mils; 0 keeps Altium's default.
                 To resize existing designators use ``pcb_set_text_style``.
+            kind: "stroke" or "truetype"; empty keeps Altium's default.
+                font_name, bold, italic or inverted alone ask for truetype.
+            stroke_font: "default", "sans_serif" or "serif" (stroke only).
+            font_name: TrueType font name, e.g. "Arial".
+            bold: TrueType bold.
+            italic: TrueType italic.
+            justification: top_left, top_center, top_right, center_left,
+                center, center_right, bottom_left, bottom_center or
+                bottom_right. Makes the text multiline: Altium justifies a
+                text only inside its frame, a single-line text ignores it.
+            frame_width: Frame width in mils; 0 = the text's own width.
+                Altium grows a frame smaller than the text (plus margin).
+            frame_height: Frame height in mils; 0 = the text's own height.
+            inverted: TrueType text cut out of a filled box (silkscreen
+                labels). On a justified text the filled box is the frame,
+                so frame_width / frame_height make the label larger.
+            margin: Inverted margin in mils, the minimum fill round the text.
 
         Returns:
-            Dictionary with placed text properties, height and stroke as
-            read back from the placed text
+            Dictionary with placed text properties as read back from the
+            placed text: height, stroke, kind, font_id, font_name, bold,
+            italic, multiline, justification, frame, inverted, margin,
+            location (the frame's corner) and bounds.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -7590,6 +7621,21 @@ def register_pcb_tools(mcp):
         }
         if stroke:
             params["stroke"] = str(stroke)
+        for name, value in (("kind", kind), ("stroke_font", stroke_font),
+                            ("font_name", font_name),
+                            ("justification", justification)):
+            if value:
+                params[name] = value
+        for name, flag in (("bold", bold), ("italic", italic),
+                           ("inverted", inverted)):
+            if flag is not None:
+                params[name] = "true" if flag else "false"
+        for name, mils in (("frame_width", frame_width),
+                           ("frame_height", frame_height)):
+            if mils:
+                params[name] = str(mils)
+        if margin is not None:
+            params["margin"] = str(margin)
         result = await bridge.send_command_async("pcb.place_text", params)
         return result
 

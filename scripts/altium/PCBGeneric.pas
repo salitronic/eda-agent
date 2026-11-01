@@ -45,7 +45,13 @@ End;
 { punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
 { (its "flip on layer" option, not its side) are read only. A text's       }
 { BorderSpaceType is Altium's number for how its inverted border is sized. }
-{ A text's FontName (its TrueType font) is read only here.                  }
+{ A text's TextKind is 0 stroke, 1 TrueType, 2 barcode; FontID picks the   }
+{ stroke font (1 Default, 2 Sans Serif, 3 Serif); FontName is the TrueType }
+{ font and Bold / Italic are TrueType only. InvRectWidth / InvRectHeight   }
+{ are read only: Altium sizes the inverted box itself (text + margin) and  }
+{ ignores a written size; on a multiline text the box is the frame, so    }
+{ the frame (MultilineTextWidth / Height) is what makes a label larger.   }
+{ InvertedTTTextBorder is the margin, a minimum the box never goes below. }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -67,7 +73,10 @@ Begin
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
             (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Or
-            (PropName = 'FontName') Then Result := 3
+            (PropName = 'FontName') Or (PropName = 'TextKind') Or
+            (PropName = 'FontID') Or (PropName = 'Bold') Or
+            (PropName = 'Italic') Or (PropName = 'InvRectWidth') Or
+            (PropName = 'InvRectHeight') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -207,7 +216,13 @@ Begin
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
         Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
         Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType)
-        Else If PropName = 'FontName' Then Result := Txt.FontName;
+        Else If PropName = 'FontName' Then Result := Txt.FontName
+        Else If PropName = 'TextKind' Then Result := IntToStr(Txt.TextKind)
+        Else If PropName = 'FontID' Then Result := IntToStr(Txt.FontID)
+        Else If PropName = 'Bold' Then Result := BoolToJsonStr(Txt.Bold)
+        Else If PropName = 'Italic' Then Result := BoolToJsonStr(Txt.Italic)
+        Else If PropName = 'InvRectWidth' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvRectWidth))
+        Else If PropName = 'InvRectHeight' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvRectHeight));
     End
     Else If Oid = eDimensionObject Then
     Begin
@@ -307,7 +322,7 @@ Begin
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
        (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or
-       (PropName = 'FontName') Then Exit;
+       (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -338,8 +353,9 @@ Begin
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
         (PropName = 'JumpersVisible') Or (PropName = 'OverrideColor') Or
         (PropName = 'PasteMaskUsePercent') Or (PropName = 'PasteMaskEnabled') Or
-        (PropName = 'IsPreRoute') Or (PropName = 'UserRouted');
-    IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
+        (PropName = 'IsPreRoute') Or (PropName = 'UserRouted') Or
+        (PropName = 'Bold') Or (PropName = 'Italic');
+    IsText := (PropName = 'BarCodeFontName') Or (PropName = 'FontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
         (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
         (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part') Or
@@ -354,7 +370,8 @@ Begin
         (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
         (PropName = 'OwnerPart_ID') Or (PropName = 'PasteMaskExpansionMode') Or
         (PropName = 'SolderMaskExpansionMode') Or (PropName = 'DrillType') Or
-        (PropName = 'BorderSpaceType');
+        (PropName = 'BorderSpaceType') Or (PropName = 'TextKind') Or
+        (PropName = 'FontID');
     B := False;
     F := 0;
     N := 0;
@@ -445,7 +462,28 @@ Begin
         Else If PropName = 'InvertedTTTextBorder' Then Txt.InvertedTTTextBorder := MilsToCoordF(F)
         Else If PropName = 'TTFInvertedTextJustify' Then Txt.TTFInvertedTextJustify := N
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F)
-        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N;
+        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N
+        { An empty font name or a kind / stroke font Altium does not have is }
+        { refused rather than written. A TrueType kind keeps the legacy       }
+        { UseTTFonts flag in step, as Altium's own dialog does.               }
+        Else If PropName = 'FontName' Then
+        Begin
+            If Trim(Value) = '' Then Exit;
+            Txt.FontName := Value;
+        End
+        Else If PropName = 'TextKind' Then
+        Begin
+            If N > 2 Then Exit;
+            Txt.TextKind := N;
+            Txt.UseTTFonts := N = 1;
+        End
+        Else If PropName = 'FontID' Then
+        Begin
+            If (N < 1) Or (N > 3) Then Exit;
+            Txt.FontID := N;
+        End
+        Else If PropName = 'Bold' Then Txt.Bold := B
+        Else If PropName = 'Italic' Then Txt.Italic := B;
     End
     Else If Owner = 4 Then
     Begin
@@ -2302,6 +2340,7 @@ Begin
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
         + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, FontName, '
+        + 'TextKind, FontID, Bold, Italic, InvRectWidth, InvRectHeight, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
