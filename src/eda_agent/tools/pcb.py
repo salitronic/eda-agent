@@ -7596,9 +7596,10 @@ def register_pcb_tools(mcp):
                 center, center_right, bottom_left, bottom_center or
                 bottom_right. Makes the text multiline: Altium justifies a
                 text only inside its frame, a single-line text ignores it.
-            frame_width: Frame width in mils; 0 = fitted to the text (its
-                longest line). Altium grows a frame smaller than the text
-                (plus margin).
+            frame_width: Frame width in mils; 0 = as wide as the text's
+                longest line, measured on the placed text. A frame narrower
+                than a line wraps it at its spaces: Altium grows a frame
+                only to the longest word (plus margin).
             frame_height: Frame height in mils; 0 = fitted to the text (all
                 its lines).
             inverted: TrueType text cut out of a filled box (silkscreen

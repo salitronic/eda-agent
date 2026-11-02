@@ -104,6 +104,19 @@ def test_justification_names_map_to_altiums_order():
     assert "Else Result := -1;" in body
 
 
+def test_the_longest_line_is_measured_line_by_line():
+    body = load(_PCB)["TextLongestLineMils"]
+    # one line at a time: a single-line text draws CR LF on one row
+    assert "P := Pos(#10, Rest);" in body
+    assert "If Copy(Line, Length(Line), 1) = #13 Then" in body
+    one = body.index("TextObj.Text := Line;")
+    assert one < body.index("Box := TextObj.BoundingRectangle;")
+    assert "W := CoordToMilsF(Box.Right - Box.Left);" in body
+    assert "If W > Result Then Result := W;" in body
+    # the full text put back after the walk
+    assert body.index("TextObj.Text := S;") > body.index("If W > Result Then Result := W;")
+
+
 def test_justification_fractions():
     fx = load(_PCB)["TextJustifyFracX"]
     assert "If Code >= 7 Then Result := 1" in fx and "Else If Code >= 4 Then Result := 0.5" in fx
@@ -115,8 +128,11 @@ def test_justification_fractions():
 def test_a_justified_text_is_framed_and_placed_from_the_frame_it_got():
     body = _place()
     frame = body.index("TextObj.Multiline := True;")
-    # no size given: a 1 mil frame Altium fits to the text, every line
-    assert body.index("If FrameW <= 0 Then FrameW := 1;") < frame
+    # no width given: as wide as the longest line, measured (+ 1 mil); a
+    # 1 mil frame made Altium wrap every line at its spaces
+    measure = body.index("FrameW := TextLongestLineMils(TextObj, TextStr);")
+    assert body.index("If FrameW <= 0 Then", 0, measure) < measure < frame
+    assert body.index("If FrameW > 0 Then FrameW := FrameW + 1 Else FrameW := 1;") < frame
     assert body.index("If FrameH <= 0 Then FrameH := 1;") < frame
     assert "BoxW" not in body
     assert body.index("TextObj.MultilineTextAutoPosition := Just;") > frame

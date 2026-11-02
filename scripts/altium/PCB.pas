@@ -8986,6 +8986,49 @@ Begin
     Else Result := 0;
 End;
 
+{ The width of the text's longest line, in mils, measured on the placed }
+{ text itself: each line set as its text in turn (a single-line text      }
+{ draws CR LF on one row, so the whole text cannot be measured at once),   }
+{ its box read, the full text put back. 0 when no box reads.               }
+Function TextLongestLineMils(TextObj : IPCB_Text; S : String) : Double;
+Var
+    Rest, Line : String;
+    P : Integer;
+    Box : TCoordRect;
+    W : Double;
+Begin
+    Result := 0;
+    Rest := S;
+    While Rest <> '' Do
+    Begin
+        P := Pos(#10, Rest);
+        If P > 0 Then
+        Begin
+            Line := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Line := Rest;
+            Rest := '';
+        End;
+        If Copy(Line, Length(Line), 1) = #13 Then
+            Line := Copy(Line, 1, Length(Line) - 1);
+        If Line <> '' Then
+        Begin
+            TextObj.BeginModify;
+            TextObj.Text := Line;
+            TextObj.EndModify;
+            Box := TextObj.BoundingRectangle;
+            W := CoordToMilsF(Box.Right - Box.Left);
+            If W > Result Then Result := W;
+        End;
+    End;
+    TextObj.BeginModify;
+    TextObj.Text := S;
+    TextObj.EndModify;
+End;
+
 { 1 true, 0 false, -1 not given, -2 neither. }
 Function TextFlag(S : String) : Integer;
 Begin
@@ -9171,13 +9214,20 @@ Begin
         { frame is read again after EndModify and the text moved once more  }
         { when it grew. MEASURED: a 60 x 20 frame became 209.8 x 52.6 at     }
         { EndModify and, placed from the asked size, sat 75 mil off. With no }
-        { frame size given the frame starts at 1 mil and Altium fits it to   }
-        { the text: the longest LINE, every line counted (measured from the  }
-        { single-line box it was 1545 mil wide for three short lines).       }
+        { frame WIDTH given the frame is as wide as the longest line,        }
+        { measured on the text (+ 1 mil): Altium wraps a line at its spaces  }
+        { when the frame is narrower, and grows a narrower frame only to the }
+        { longest WORD (a 1 mil frame put every word on its own line).       }
+        { MEASURED: a frame from that width up keeps every line whole.       }
+        { No frame height: 1 mil, grown by Altium to the lines.              }
         If Just > 0 Then
         Begin
+            If FrameW <= 0 Then
+            Begin
+                FrameW := TextLongestLineMils(TextObj, TextStr);
+                If FrameW > 0 Then FrameW := FrameW + 1 Else FrameW := 1;
+            End;
             TextObj.BeginModify;
-            If FrameW <= 0 Then FrameW := 1;
             If FrameH <= 0 Then FrameH := 1;
             TextObj.Multiline := True;
             TextObj.MultilineTextWidth := MilsToCoordF(FrameW);
