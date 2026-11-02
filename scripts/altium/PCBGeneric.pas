@@ -2406,6 +2406,67 @@ End;
 { PCB Board iteration, query/modify/delete on active PCB                    }
 {..............................................................................}
 
+{ WHICH PART OF THE BOARD THE WALK BELOW NEEDS TO SEE. Every query, modify }
+{ and delete walked every object of its type on every layer and asked the  }
+{ filter of each one, so a filter naming one layer cost the same as none:  }
+{ MEASURED, a track delete matching nothing took 5.3 s on a board of 8719  }
+{ tracks, almost all of them footprints' and on other layers. An exact    }
+{ Layer=<name> now narrows the iterator to that layer, but only when the   }
+{ name is the one the getter answers for it (LayerDisplayName), so the     }
+{ filter would match nothing outside it anyway. InComponent=false is NOT   }
+{ narrowed: eProcessFree also leaves out the copper a polygon pour owns    }
+{ (MEASURED: 654 of 794 free regions handed out, none of a pour's).        }
+{ MatchesFilterPCB still checks every object the narrowed walk hands out,  }
+{ so a narrowing can only drop what the filter would reject. Anything else }
+{ (another operator, a name that does not resolve) walks as before.        }
+Procedure NarrowPCBWalk(Board : IPCB_Board; Iter : IPCB_BoardIterator;
+    FilterStr : String);
+Var
+    Remaining, Condition, PropName, Expected : String;
+    PipePos, EqPos : Integer;
+    OnLayer, Got : TLayer;
+    OneLayer : IPCB_LayerSet;
+Begin
+    OnLayer := eNoLayer;
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else Begin Condition := Remaining; Remaining := ''; End;
+        EqPos := FilterOpPos(Condition);
+        If (EqPos > 1) And (FilterOpText(Condition) = '=') Then
+        Begin
+            PropName := Copy(Condition, 1, EqPos - 1);
+            Expected := Copy(Condition, EqPos + 1, Length(Condition));
+            If (PropName = 'Layer') And (OnLayer = eNoLayer) Then
+            Begin
+                Got := eNoLayer;
+                Try Got := ResolveLayerId(Board, Expected); Except Got := eNoLayer; End;
+                If (Got <> eNoLayer) And (LayerDisplayName(Got) = Expected) Then
+                    OnLayer := Got;
+            End;
+        End;
+    End;
+    { The legacy set stops at Mechanical16: a layer past it gets a V7 set  }
+    { of its own, as the layout model's copper read does (issue #155).     }
+    If OnLayer = eNoLayer Then
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+    Else If GetLayerString(OnLayer) = 'Unknown' Then
+    Begin
+        OneLayer := LayerSet.CreateLayerSet;
+        OneLayer.Include(OnLayer);
+        Iter.AddFilter_IPCB_LayerSet(OneLayer);
+    End
+    Else
+        Iter.AddFilter_LayerSet(MkSet(OnLayer));
+    Iter.AddFilter_Method(eProcessAll);
+End;
+
 Function ProcessPCBBoardObjects(Board : IPCB_Board; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
     Mode : String; Var TotalMatched : Integer; Limit : Integer) : String;
@@ -2453,8 +2514,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iterator.AddFilter_Method(eProcessAll);
+            NarrowPCBWalk(Board, Iterator, FilterStr);
             Obj := Iterator.FirstPCBObject;
             While Obj <> Nil Do
             Begin
@@ -2502,8 +2562,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-            Iterator.AddFilter_Method(eProcessAll);
+            NarrowPCBWalk(Board, Iterator, FilterStr);
             Obj := Iterator.FirstPCBObject;
             While Obj <> Nil Do
             Begin
@@ -2545,8 +2604,7 @@ Begin
         Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
         { The V7 layer set: the legacy AllLayers stops at Mechanical16, and }
         { MEASURED, 6390 outline primitives on Mechanical17 counted 0.      }
-        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iterator.AddFilter_Method(eProcessAll);
+        NarrowPCBWalk(Board, Iterator, FilterStr);
 
         Obj := Iterator.FirstPCBObject;
         While Obj <> Nil Do
@@ -2805,7 +2863,10 @@ Begin
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
         FilterStr, PropsStr, SetStr, Mode, TotalMatched, Limit);
 
-    If (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create') Then
+    { Nothing matched, nothing changed: no redraw of the whole board and no }
+    { dirty mark on a document the call did not touch.                     }
+    If ((Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create'))
+        And (TotalMatched > 0) Then
     Begin
         Board.GraphicalView_ZoomRedraw;
         MarkDocDirtyByPath(Board.FileName);
