@@ -23,7 +23,9 @@ from pathlib import Path
 from tests.pascal_source import load
 
 _ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
-_UNITS = sorted(_ALTIUM.glob("*.pas"))
+# Altium_MCP.pas is the built bundle (build.py), not a source module: it
+# repeats Utils and SelfTest, whose legacy-range calls are kept on purpose
+_UNITS = sorted(u for u in _ALTIUM.glob("*.pas") if u.name != "Altium_MCP.pas")
 # a GetLayerString kept on purpose: the legacy-range test ('Unknown' = the
 # legacy table has no name for it), compared on the same line
 _LEGACY_TEST = re.compile(r"GetLayerString\([^()]*(\([^()]*\))?[^()]*\)\s*(=|<>)\s*'Unknown'")
