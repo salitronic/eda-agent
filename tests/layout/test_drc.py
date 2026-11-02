@@ -256,3 +256,38 @@ def test_copper_either_side_of_a_hash_cell_boundary_is_still_compared():
     b.tracks = [Track("TopLayer", 100, 200, 900, 200, 8.0, "A")]
     v = run_drc(b).violations
     assert len(v) == 1 and abs(v[0].gap - 22.7) < 0.01
+
+
+def _holes_board(gap: float) -> LayoutBoard:
+    b = _board()
+    b.rules.append(Rule("HoleToHoleClearance", "9", "All", "All", 1, True, {},
+                        f"Hole To Hole Clearance (Allow Stacked Micro Vias=No) (Gap={gap}mil) "
+                        "(All),(All)"))
+    return b
+
+
+def test_two_vias_of_one_net_closer_than_the_hole_rule_are_a_violation():
+    from eda_agent.layout.drc import hole_gaps, verdict
+    b = _holes_board(10.0)
+    # Copper touching (one net), holes 8 mil apart edge to edge.
+    b.vias = [Via(100, 100, 20, 10, "TopLayer", "BottomLayer", "A"),
+              Via(118, 100, 20, 10, "TopLayer", "BottomLayer", "A")]
+    found = hole_gaps(b)
+    assert len(found) == 1 and abs(found[0].gap - 8.0) < 1e-6 and found[0].required == 10.0
+    v = verdict(b)
+    assert v["status"] == "fail" and v["counts"]["hole_to_hole"] == 1
+    assert "hole_to_hole" not in v["not_checked"]
+    b.vias[1] = Via(121, 100, 20, 10, "TopLayer", "BottomLayer", "A")
+    assert hole_gaps(b) == []
+
+
+def test_a_slot_is_judged_on_its_whole_length():
+    from eda_agent.layout.drc import hole_gaps
+    b = _holes_board(10.0)
+    slot = Pad("J1", "1", 100, 100, net="A", hole=20, hole_type="slot", hole_width=80,
+               copper=[PadCopper(l, "round", 40, 40) for l in ("TopLayer", "BottomLayer")])
+    b.pads = [slot]
+    # 50 mil off the slot's centre along its length: 35 mil clear of a round
+    # hole there, 5 mil from the slot's end.
+    b.vias = [Via(150, 100, 20, 10, "TopLayer", "BottomLayer", "B")]
+    assert len(hole_gaps(b)) == 1

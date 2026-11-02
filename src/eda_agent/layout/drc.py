@@ -576,13 +576,62 @@ def mask_slivers(board: LayoutBoard, rules: RuleSet | None = None,
     return out
 
 
+def drill_holes(board: LayoutBoard) -> list[Item]:
+    """Every drilled hole: each via's and each pad's, a slot as the capsule
+    it is cut as. Layer "MultiLayer": a hole goes through the board."""
+    out: list[Item] = []
+    for i, v in enumerate(board.vias):
+        if v.hole > 0:
+            out.append(Item("via", i, v.net, "MultiLayer", geom.circle(v.x, v.y, v.hole), v.comp))
+    for i, p in enumerate(board.pads):
+        if p.hole <= 0:
+            continue
+        if p.hole_type == "slot" and p.hole_width > p.hole:
+            half = (p.hole_width - p.hole) / 2
+            a = math.radians(p.rotation + p.hole_rotation)
+            dx, dy = half * math.cos(a), half * math.sin(a)
+            s = geom.capsule(p.x - dx, p.y - dy, p.x + dx, p.y + dy, p.hole)
+        else:
+            s = geom.circle(p.x, p.y, p.hole)
+        out.append(Item("pad", i, p.net, "MultiLayer", s, p.comp))
+    return out
+
+
+def hole_gaps(board: LayoutBoard, rules: RuleSet | None = None,
+              limit: int = 500) -> list[Violation]:
+    """Holes closer than the board's Hole To Hole Clearance rule, edge to
+    edge, whatever their nets: a drill breaks through between two holes too
+    close together, same net or not."""
+    rules = rules or RuleSet.from_board(board)
+    if not rules.of_type("hole_to_hole"):
+        return []
+    items = drill_holes(board)
+    reach = max(rr.values.get("gap", 0.0) for rr in rules.of_type("hole_to_hole"))
+    grid = _Grid(items, _cell_size(items, reach), reach)
+    out: list[Violation] = []
+    for a, b in grid.candidate_pairs():
+        ia, ib = items[a], items[b]
+        rr = rules.binary("hole_to_hole", rules.facts(ia, board), rules.facts(ib, board))
+        required = rr.values.get("gap", 0.0) if rr else 0.0
+        if required <= 0:
+            continue
+        gap = geom.clearance(ia.shape, ib.shape)
+        if gap < required - TOLERANCE:
+            bx = ia.shape.bbox
+            out.append(Violation("hole_to_hole", "MultiLayer", ia.label, ib.label, gap,
+                                 required, ((bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2)))
+            if len(out) >= limit:
+                break
+    return out
+
+
 #: The rule kinds ``verdict`` applies. An unevaluated rule of one of these
 #: makes the verdict incomplete; the others are listed as not checked.
-CHECKED_KINDS = ("clearance", "mask_sliver", "soldermask")
+CHECKED_KINDS = ("clearance", "mask_sliver", "soldermask", "hole_to_hole")
 
 #: Board rules this DRC does not apply at all, named so a pass is not read
 #: as covering them. Altium's batch DRC is the referee for these.
-UNCHECKED_KINDS = ("silk_to_silk", "silk_to_mask", "hole_to_hole", "board_outline",
+UNCHECKED_KINDS = ("silk_to_silk", "silk_to_mask", "board_outline",
                    "annular_ring", "hole_size", "width", "component_clearance")
 
 
@@ -610,7 +659,8 @@ def verdict(board: LayoutBoard, rules: RuleSet | None = None, limit: int = 500,
     if unknown:
         notes.append(f"{len(unknown)} rule(s) this check applies use a scope it cannot "
                      "evaluate and were not applied")
-    violations = list(report.violations) + list(slivers or [])
+    holes = hole_gaps(board, rules, limit=limit)
+    violations = list(report.violations) + list(slivers or []) + holes
     if violations:
         status = "fail"
     elif unknown or (slivers is None and "mask_sliver" in present):
@@ -623,6 +673,7 @@ def verdict(board: LayoutBoard, rules: RuleSet | None = None, limit: int = 500,
         "counts": {"violations": len(violations),
                    "clearance": len(report.violations),
                    "mask_sliver": len(slivers or []),
+                   "hole_to_hole": len(holes),
                    "checked_pairs": report.checked_pairs,
                    "unevaluated_rules": len(unknown)},
         "unevaluated_rules": unknown,
