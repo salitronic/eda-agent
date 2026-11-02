@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from eda_agent.bridge import altium_bridge
-from eda_agent.tools import application, generic, library, pcb
+from eda_agent.tools import application, generic, library, pcb, project
 
 ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -519,3 +519,22 @@ def test_the_library_and_text_fixes_are_in_the_pascal():
         "Generic.pas")
     assert "(PropName = 'FontName')" in _unit("PCBGeneric.pas")
     assert "bbox_no_name_comment" in _routine("PCB.pas", "PCB_GetComponents")
+
+
+def test_a_netlist_drops_the_other_parts_question_marks_and_writes_its_own_line_ends(
+        monkeypatch, tmp_path):
+    rows = [{"component": "U1", "pin": "A1", "pin_name": "VDD", "net": "3V3"},
+            {"component": "U1", "pin": "A1", "pin_name": "VDD", "net": "?"},
+            {"component": "U1", "pin": "B2", "pin_name": "NC", "net": "?"},
+            {"component": "U1", "pin": "B2", "pin_name": "NC", "net": "?"},
+            {"component": "R1", "pin": "1", "pin_name": "1", "net": "3V3"}]
+    tools, _ = _registered(project, "register_project_tools", monkeypatch,
+                           {"project.get_nets": {"pins": rows}})
+    pads = asyncio.run(tools["proj_export_netlist"](output_path=str(tmp_path / "n.net")))
+    assert pads["no_net_rows_dropped"] == 1 and pads["node_count"] == 3
+    raw = (tmp_path / "n.net").read_bytes()
+    assert b"\r\r\n" not in raw and raw.count(b"\r\n") == raw.count(b"\n")
+    assert b"*SIGNAL* ?\r\nU1.B2\r\n" in raw and b"R1.1 U1.A1" in raw
+    asyncio.run(tools["proj_export_netlist"](output_path=str(tmp_path / "n.csv"),
+                                             net_format="tabular"))
+    assert b"\r" not in (tmp_path / "n.csv").read_bytes()

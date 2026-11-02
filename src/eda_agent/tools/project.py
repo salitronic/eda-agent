@@ -111,6 +111,32 @@ def _step_option_params(options: Optional[dict]) -> dict[str, str]:
     return out
 
 
+def _netlist_nodes(pins: list) -> tuple[list[tuple[str, str, str, str]], int]:
+    """(component, pin, pin_name, net) rows for a netlist file, and how many
+    "?" rows were dropped.
+
+    project.get_nets lists a multi-part component once per placed part,
+    and the other parts' pins come back on the net "?". Such a row is
+    dropped when the same pin is on a real net; a pin seen only as "?"
+    stays under "?". Repeated rows are written once.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+    for p in pins:
+        row = tuple(str(p.get(k, "")).strip()
+                    for k in ("component", "pin", "pin_name", "net"))
+        if row[0] and row[1] and row[3]:
+            rows.append(row)
+    named = {(c, p) for c, p, _n, net in rows if net != "?"}
+    nodes, seen, dropped = [], set(), 0
+    for row in rows:
+        if row[3] == "?" and (row[0], row[1]) in named:
+            dropped += 1
+        elif row not in seen:
+            seen.add(row)
+            nodes.append(row)
+    return nodes, dropped
+
+
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
 
@@ -641,15 +667,7 @@ def register_project_tools(mcp):
         data = await bridge.send_command_async("project.get_nets", params)
         pins = data.get("pins", []) if isinstance(data, dict) else []
 
-        nodes: list[tuple[str, str, str, str]] = []
-        for p in pins:
-            comp = str(p.get("component", "")).strip()
-            pin = str(p.get("pin", "")).strip()
-            pin_name = str(p.get("pin_name", "")).strip()
-            net = str(p.get("net", "")).strip()
-            if not comp or not pin or not net:
-                continue
-            nodes.append((comp, pin, pin_name, net))
+        nodes, dropped = _netlist_nodes(pins)
 
         by_net: dict[str, list[tuple[str, str, str, str]]] = {}
         for n in nodes:
@@ -676,7 +694,9 @@ def register_project_tools(mcp):
         else:
             out = get_config().workspace_dir / default_name
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, encoding="utf-8")
+        # newline="" writes the line ends as built: text mode on Windows
+        # turned the PADS CRLF into CR CR LF.
+        out.write_text(text, encoding="utf-8", newline="")
 
         return {
             "success": True,
@@ -684,6 +704,7 @@ def register_project_tools(mcp):
             "net_format": fmt,
             "net_count": len(by_net),
             "node_count": len(nodes),
+            "no_net_rows_dropped": dropped,
         }
 
     @mcp.tool()
