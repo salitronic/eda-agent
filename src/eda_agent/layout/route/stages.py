@@ -121,6 +121,15 @@ class StageOptions:
     # completion on all 160; on the public boards bunny_brain_D 99.57% in
     # 920 s became 100% in 378 s.
     quick_release: bool = True
+    # Reach a surface pad only along one of its axes, from cells outside it
+    # far enough for the track to clear the pad before it turns: straight
+    # out of the centre, never slantwise across the pad's copper or its
+    # corner. An IC's elongated pin is left only through its short ends.
+    axis_entry: bool = False
+    # Route a net at its rule's width even where one of its pads is
+    # narrower, necking down to that pad's width only on the stub into it.
+    # Off: a net is routed at what its narrowest pad takes, all the way.
+    neck_pads: bool = False
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -131,7 +140,7 @@ class StageOptions:
         return not (self.any() or self.class_order or self.stall_stop or self.bends
                     or self.straight or self.global_stall or self.repair_clean
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
-                    or self.pad_vias != "any")
+                    or self.axis_entry or self.neck_pads or self.pad_vias != "any")
 
     @classmethod
     def coerce(cls, value) -> "StageOptions":

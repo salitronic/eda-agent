@@ -56,6 +56,12 @@ class Terminal:
     # Cells outside the pad reached by a stub out along one of its axes,
     # where the grid has no way out of it: cell -> the stub's points.
     stubs: dict = field(default_factory=dict)
+    # With axis_entry: the cells on the pad's copper, (k, 3), which its own
+    # net's routes may not cross; the pad is reached only at its entries.
+    inside: np.ndarray = None
+    # With neck_pads, a pad narrower than its net's track: the width its
+    # stubs are laid at.
+    neck: float | None = None
 
 
 @dataclass
@@ -186,6 +192,10 @@ class Router:
         self.w_def = float(np.median(widths))
         self.c = self.rr.default_clearance
         self.pitch = pitch or self._pitch_for(min(widths), self.c)
+        if self.options.neck_pads:
+            # The grid is cut for the narrow widths a net may fall back to;
+            # the fields and their reach are kept for the full ones.
+            widths = [self.rr.width(n, pads_of.get(n, []), cap=False) for n in nets] or [6.0]
         vmax = max((v.diameter for n in nets for v in self.rr.vias(n)), default=20.0)
         self._clearance_groups(nets, net_id)
         # The distance fields reach as far as the largest clearance any
@@ -203,6 +213,8 @@ class Router:
                               field_of=self.field_of, n_fields=self.n_fields).build()
         self._fixed: dict | None = None       # fixed shapes per layer, for exact checks
         self._routed: dict | None = None      # routed copper per layer, likewise
+        # Net id -> the necked stubs' segments and their widths (neck_pads).
+        self._necks: dict = {}
         assert self.grid.net_id == net_id
         L, ny, nx = self.grid.d1.shape
         self.L, self.ny, self.nx = L, ny, nx
@@ -504,9 +516,15 @@ class Router:
                 continue
             plane = planes.get(net)
             nid = self.grid.net_id[net]
-            width = self.rr.width(net, pads)
+            width = self.rr.width(net, pads, cap=not self.options.neck_pads)
             vias = self.rr.vias(net)
             terms = [self._terminal(index[id(p)], p, nid, width) for p in pads]
+            if any(t.neck is not None and not len(t.cells) for t in terms):
+                # A pad too narrow for the track that no stub reaches: the
+                # net is routed at what its narrowest pad takes, as without
+                # neck_pads.
+                width = self.rr.width(net, pads)
+                terms = [self._terminal(index[id(p)], p, nid, width) for p in pads]
             terms = [t for t in terms if len(t.cells)]
             if plane is not None:
                 # Through-hole pads in the plane already meet it; each
@@ -719,6 +737,23 @@ class Router:
             for y, x in zip(ys, xs):
                 cells.append((li, int(y + j0), int(x + i0)))
                 deep.append(bool(is_deep[y, x]))
+        neck = self._neck_width(nid, pad, width)
+        if neck is not None:
+            # Reached only along an axis, by a stub at the pad's width; with
+            # no such entry the net is routed at that width all the way
+            # (_jobs), so no cells here.
+            entries = self._axis_entries(idx, pad, nid, width, cells, stub_width=neck)
+            return Terminal(idx, np.array(list(entries), dtype=np.int64).reshape(-1, 3),
+                            (pad.x, pad.y), np.zeros(len(entries), dtype=bool), entries,
+                            self._pad_keepout(pad, width, entries), neck)
+        if self.options.axis_entry:
+            entries = self._axis_entries(idx, pad, nid, width, cells)
+            if entries:
+                # Reached only at these cells, by a stub straight out of
+                # the centre; a pad no entry reaches keeps its own cells.
+                return Terminal(idx, np.array(list(entries), dtype=np.int64).reshape(-1, 3),
+                                (pad.x, pad.y), np.zeros(len(entries), dtype=bool), entries,
+                                self._pad_keepout(pad, width, entries))
         stubs = self._escapes(pad, nid, width, cells)
         for c in stubs:
             cells.append(c)
@@ -729,6 +764,119 @@ class Router:
     #: How far past a pad's edge an escape along its axis may reach: the
     #: track's half-width and largest clearance, and this many cells more.
     ESCAPE_CELLS = 3
+    #: How far past half the track's width an axis entry's turn is kept
+    #: clear of the pad, in mils.
+    ENTRY_MARGIN = 0.5
+    #: A part with this many pins or more is an IC: its elongated pins are
+    #: left only through their short ends.
+    IC_PINS = 4
+
+    def _width_of(self, job: NetJob, a, b) -> float:
+        """The width of the track from ``a`` to ``b``: a necked stub's own
+        width (neck_pads), else the net's."""
+        return self._necks.get(job.id, {}).get(_seg_key(a, b), job.width)
+
+    def _holds_stubs(self) -> bool:
+        """Whether stubs are laid as planned, never straightened or cut:
+        an axis entry turns only clear of its pad, a necked stub is the
+        only copper at the pad's width."""
+        return self.options.axis_entry or self.options.neck_pads
+
+    def _entry_turns(self, pre, post) -> list:
+        """With stubs held, the points where a line's stubs turn off their
+        pad's axis, clear of the pad: corners a cut would pull back onto
+        the pad's copper, so they stay as laid."""
+        if not self._holds_stubs():
+            return []
+        return ([tuple(pre[-1])] if pre else []) + ([tuple(post[0])] if post else [])
+
+    def _over_own_pads(self, job: NetJob, li: int, pts) -> bool:
+        """Whether the polyline's track touches the copper of one of the
+        net's axis-entry pads on routing layer ``li``: a straightened piece
+        cutting across a pad the grid route went round."""
+        layer = self.grid.layers[li]
+        shapes = [self.board.pads[t.pad].shape_on(layer) for t in job.terminals
+                  if t.inside is not None]
+        shapes = [s for s in shapes if s is not None]
+        if not shapes:
+            return False
+        for a, b in zip(pts, pts[1:]):
+            seg = geom.capsule(a[0], a[1], b[0], b[1], job.width)
+            if any(geom.clearance(seg, s) < -EPS for s in shapes):
+                return True
+        return False
+
+    def _pad_keepout(self, pad: Pad, width: float, entries: dict) -> np.ndarray:
+        """The cells, (k, 3), where a track of this width centred there
+        would touch the pad's copper, on each of its routing layers, less
+        its entries: the pad's own net keeps off them, so it never runs over
+        the pad or along its side, and reaches it only at an entry."""
+        g = self.grid
+        out = []
+        for c in pad.copper:
+            li = g.layer_index.get(c.layer)
+            if li is None:
+                continue
+            s = pad.shape_on(c.layer)
+            # A step between two cells passes a corner closer than either
+            # cell centre: kept off by that much more (see _bow).
+            reach = width / 2 + self._bow_at(width / 2)
+            x0, y0, x1, y1 = s.bbox
+            i0, j0, i1, j1 = g.spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = g.spec.x(np.arange(i0, i1))[None, :]
+            Y = g.spec.y(np.arange(j0, j1))[:, None]
+            near = shape_distance(s, X, Y) < reach
+            for y, x in zip(*np.nonzero(near)):
+                cell = (li, int(y + j0), int(x + i0))
+                if cell not in entries:
+                    out.append(cell)
+        return np.array(out, dtype=np.int64).reshape(-1, 3)
+
+    def _neck_width(self, nid: int, pad: Pad, width: float) -> float | None:
+        """With neck_pads, the width a stub into this surface pad is laid
+        at when the pad is narrower than the net's track: the pad's width,
+        never under the rule's minimum. None otherwise."""
+        if not self.options.neck_pads or not pad.is_smd:
+            return None
+        sizes = [min(c.w, c.h) for c in pad.copper if min(c.w, c.h) > 0]
+        if not sizes or min(sizes) >= width - EPS:
+            return None
+        return max(self.rr.min_width(self.rr.names[nid]), min(sizes))
+
+    def _axis_entries(self, idx: int, pad: Pad, nid: int, width: float, cells,
+                      stub_width: float | None = None) -> dict:
+        """The cells outside a surface pad a route reaches it at with
+        ``axis_entry``: on each of its axis lines that it may be left
+        along, the first cells past where the track clears the pad, with
+        the stub from the centre to each. Empty for a pad with no axis (a
+        round one), a via pad (a BGA's ball, an exposed pad), or no room."""
+        if not pad.is_smd or idx in self.via_pads:
+            return {}
+        out: dict = {}
+        if not hasattr(self, "_pins"):
+            self._pins: dict = {}
+            for p in self.board.pads:
+                if p.comp:
+                    self._pins[p.comp] = self._pins.get(p.comp, 0) + 1
+        a = math.radians(pad.rotation)
+        ux, uy = (math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))
+        for c in pad.copper:
+            li = self.grid.layer_index.get(c.layer)
+            if li is None or (c.shape == "round" and abs(c.w - c.h) < EPS):
+                continue
+            longest = ux if c.w >= c.h else uy
+            elongated = max(c.w, c.h) >= 1.3 * min(c.w, c.h)
+            if elongated and self._pins.get(pad.comp, 0) >= self.IC_PINS:
+                dirs = (longest, (-longest[0], -longest[1]))
+            else:
+                dirs = (ux, (-ux[0], -ux[1]), uy, (-uy[0], -uy[1]))
+            own = {(y, x) for l, y, x in cells if l == li}
+            for u in dirs:
+                out.update(self._ray_cells(pad, li, c.layer, nid, width, u, own,
+                                           width / 2 + self.ENTRY_MARGIN, stub_width))
+        return out
 
     def _escapes(self, pad: Pad, nid: int, width: float, cells) -> dict:
         """Cells outside a pad that a straight stub out along one of its
@@ -747,7 +895,6 @@ class Router:
         half = width / 2
         need = half + self._bow_at(half + self.c) - EPS
         row = self.rr.clearance_row(nid)
-        centre = (float(pad.x), float(pad.y))
         out: dict = {}
         for c in pad.copper:
             li = g.layer_index.get(c.layer)
@@ -763,35 +910,56 @@ class Router:
                 rx = np.array([x for _, x in ring])
                 if (self._slack(nid, li, (ry, rx), row) >= need).any():
                     continue
-            sh = pad.shape_on(c.layer)
             a = math.radians(pad.rotation)
             ux, uy = math.cos(a), math.sin(a)
-            limit_extra = half + float(row.max()) + self.ESCAPE_CELLS * self.pitch
             for u in ((ux, uy), (-ux, -uy), (-uy, ux), (uy, -ux)):
-                edge = max((px - centre[0]) * u[0] + (py - centre[1]) * u[1] for px, py in sh.pts) + sh.r
-                d = edge
-                found = False
-                while d <= edge + limit_extra and not found:
-                    p = (centre[0] + d * u[0], centre[1] + d * u[1])
-                    ci, cj = g.spec.cell(*p)
-                    for dj in (-1, 0, 1):
-                        for di in (-1, 0, 1):
-                            qi, qj = ci + di, cj + dj
-                            if not (0 <= qi < g.spec.nx and 0 <= qj < g.spec.ny) or (qj, qi) in own:
-                                continue
-                            q = (float(g.spec.x(qi)), float(g.spec.y(qj)))
-                            if math.hypot(q[0] - p[0], q[1] - p[1]) > self.pitch:
-                                continue
-                            room = self._slack(nid, li, (np.array([qj]), np.array([qi])), row)[0]
-                            if room < need:
-                                continue
-                            pts = [centre, p, q] if math.hypot(q[0] - p[0], q[1] - p[1]) > EPS \
-                                else [centre, q]
-                            if all(self._static_clears(nid, width, li, a_, b_)
-                                   for a_, b_ in zip(pts, pts[1:])):
-                                out[(li, qj, qi)] = pts
-                                found = True
-                    d += self.pitch / 2
+                out.update(self._ray_cells(pad, li, c.layer, nid, width, u, own, 0.0))
+        return out
+
+    def _ray_cells(self, pad: Pad, li: int, layer: str, nid: int, width: float, u,
+                   own: set, beyond: float, stub_width: float | None = None) -> dict:
+        """Walking out of the pad's centre along the unit direction ``u``,
+        from ``beyond`` past the pad's edge, the cells next to the first
+        point with a cell the track fits on and a stub to it that clears
+        every fixed shape (at ``stub_width`` when given): cell -> the stub's
+        points (the centre, the point on the ray, the cell). Empty when
+        none is found within ESCAPE_CELLS cells and the largest clearance
+        past the edge."""
+        g = self.grid
+        half = width / 2
+        need = half + self._bow_at(half + self.c) - EPS
+        row = self.rr.clearance_row(nid)
+        centre = (float(pad.x), float(pad.y))
+        sh = pad.shape_on(layer)
+        out: dict = {}
+        if sh is None:
+            return out
+        edge = max((px - centre[0]) * u[0] + (py - centre[1]) * u[1] for px, py in sh.pts) + sh.r
+        limit = edge + beyond + half + float(row.max()) + self.ESCAPE_CELLS * self.pitch
+        d = edge + beyond
+        while d <= limit and not out:
+            p = (centre[0] + d * u[0], centre[1] + d * u[1])
+            ci, cj = g.spec.cell(*p)
+            for dj in (-1, 0, 1):
+                for di in (-1, 0, 1):
+                    qi, qj = ci + di, cj + dj
+                    if not (0 <= qi < g.spec.nx and 0 <= qj < g.spec.ny) or (qj, qi) in own:
+                        continue
+                    q = (float(g.spec.x(qi)), float(g.spec.y(qj)))
+                    if math.hypot(q[0] - p[0], q[1] - p[1]) > self.pitch:
+                        continue
+                    if beyond > 0 and (q[0] - centre[0]) * u[0] + (q[1] - centre[1]) * u[1] \
+                            < d - EPS:
+                        continue        # an axis entry's cell is never back toward the pad
+                    room = self._slack(nid, li, (np.array([qj]), np.array([qi])), row)[0]
+                    if room < need:
+                        continue
+                    pts = [centre, p, q] if math.hypot(q[0] - p[0], q[1] - p[1]) > EPS \
+                        else [centre, q]
+                    if all(self._static_clears(nid, stub_width or width, li, a_, b_)
+                           for a_, b_ in zip(pts, pts[1:])):
+                        out[(li, qj, qi)] = pts
+            d += self.pitch / 2
         return out
 
     # -- costs ---------------------------------------------------------------
@@ -880,6 +1048,14 @@ class Router:
                 ruled = shallow & (occ_t[wq, c[:, 0], gy, gx] > 0)
                 cost = np.where(ruled, np.inf, cost)
             cell[c[:, 0], r] = cost
+        # An axis-entry pad's own copper is closed to its own net: a route
+        # crossing it on the way to an entry runs over the pad.
+        for t in job.terminals:
+            if t.inside is None or not len(t.inside):
+                continue
+            c = t.inside[win.contains(t.inside[:, 1], t.inside[:, 2])]
+            if len(c):
+                cell[c[:, 0], win.rank[c[:, 1] - win.j0, c[:, 2] - win.i0]] = np.inf
         return cell, via
 
     def _bow(self, job: NetJob) -> float:
@@ -1908,11 +2084,13 @@ class Router:
                 pts = [p for i, p in enumerate(pts)
                        if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > EPS]
                 if len(pts) >= 2 and self.options.bends:
-                    pts = self._legalise(job, l, pts, (junctions or {}).get(l, ()))
+                    pts = self._legalise(job, l, pts, list((junctions or {}).get(l, ()))
+                                         + self._entry_turns(pre, post))
                 if len(pts) < 2 or not self._line_holds(job, l, pts, first):
                     pts = first
                 for a, b in zip(pts, pts[1:]):
-                    tracks.append(Track(layers[l], a[0], a[1], b[0], b[1], job.width, job.name))
+                    tracks.append(Track(layers[l], a[0], a[1], b[0], b[1],
+                                        self._width_of(job, a, b), job.name))
             self._index_job(index, job, tracks, vias)
             new.append(tracks)
         first, last = laid[0][1], laid[-1][2]
@@ -1992,6 +2170,10 @@ class Router:
                 pts = t.stubs.get(tuple(end)) or self._stub(job, t, layers[end[0]], q) or []
                 if len(pts) >= 2:
                     stubs[side] = [tuple(p) for p in pts]
+                    if t.neck is not None:
+                        necks = self._necks.setdefault(job.id, {})
+                        for a, b in zip(stubs[side], stubs[side][1:]):
+                            necks[_seg_key(a, b)] = t.neck
         lines: list[tuple] = []
         for k, (l, cells) in enumerate(runs):
             if l < 0:
@@ -2008,13 +2190,15 @@ class Router:
                 lines.append((l, pts, pre, cells, post))
         for l, pts, pre, cells, post in lines:
             if self.options.bends:
-                pts = self._legalise(job, l, pts, (junctions or {}).get(l, ()))
+                pts = self._legalise(job, l, pts, list((junctions or {}).get(l, ()))
+                                     + self._entry_turns(pre, post))
             if lines_out is not None:
                 # What the second pass lays again, and what it falls back
                 # on (_straighten_all).
                 lines_out.append((l, pre, list(cells), post, number, pts))
             for a, b in zip(pts, pts[1:]):
-                out.tracks.append(Track(layers[l], a[0], a[1], b[0], b[1], job.width, job.name))
+                out.tracks.append(Track(layers[l], a[0], a[1], b[0], b[1],
+                                        self._width_of(job, a, b), job.name))
 
     # -- bends ---------------------------------------------------------------
 
@@ -2192,6 +2376,11 @@ class Router:
         turn at a pad's centre is under the pad."""
         from .exact import BEND_TOL, turn
 
+        if self._holds_stubs() and (pre or post):
+            # The stubs are the pad entries: straight out along an axis and
+            # clear of the pad. Only the run between them is laid again.
+            mid = self._straighten(job, li, cells, meets, (), (), number)
+            return [tuple(p) for p in pre] + mid + [tuple(p) for p in post]
         spec = self.grid.spec
         meets = meets or {}
         pre = [tuple(p) for p in pre]
@@ -2301,6 +2490,8 @@ class Router:
                 ranked.append((round(t_in, 6), i, v, pts))
             for _, _, v, pts in sorted(ranked):
                 if in_lane(pts):
+                    continue
+                if self._over_own_pads(job, li, pts):
                     continue
                 if all(self._piece_clears(job, li, p, q) for p, q in zip(pts, pts[1:])):
                     return v
@@ -2649,6 +2840,13 @@ class Router:
             elif gap < self.rr.pair_clearance(nid, owner) - EPS:
                 return False
         return True
+
+
+def _seg_key(a, b) -> tuple:
+    """A segment's ends, rounded and in order, so the same segment found
+    twice matches."""
+    a, b = (round(a[0], 4), round(a[1], 4)), (round(b[0], 4), round(b[1], 4))
+    return (a, b) if a <= b else (b, a)
 
 
 def _at(via):
