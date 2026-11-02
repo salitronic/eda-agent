@@ -823,7 +823,8 @@ Begin
                 Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj)))
                 Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
                 Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj)))
-                Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
+                Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap')
+                    Or (PropName = 'ComponentKind'))
                     And (Obj.ObjectId <> eSchComponent))
                 Or (((PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin')
                     Or (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin'))
@@ -1698,6 +1699,35 @@ Begin
     Try Result := Impl.MapAsString; Except Result := ''; End;
 End;
 
+{ A component's Component Type by the name obj_modify takes, '' if unknown. }
+Function ComponentKindName(Kind : Integer) : String;
+Begin
+    Result := '';
+    If Kind = eComponentKind_Standard Then Result := 'standard'
+    Else If Kind = eComponentKind_Mechanical Then Result := 'mechanical'
+    Else If Kind = eComponentKind_Graphical Then Result := 'graphical'
+    Else If Kind = eComponentKind_NetTie_BOM Then Result := 'net_tie_bom'
+    Else If Kind = eComponentKind_NetTie_NoBOM Then Result := 'net_tie_no_bom'
+    Else If Kind = eComponentKind_Standard_NoBOM Then Result := 'standard_no_bom'
+    Else If Kind = eComponentKind_Jumper Then Result := 'jumper';
+End;
+
+{ The Component Type a name stands for, -1 for a name that is none. }
+Function ComponentKindOf(Name : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(Name));
+    Result := -1;
+    If N = 'standard' Then Result := eComponentKind_Standard
+    Else If N = 'mechanical' Then Result := eComponentKind_Mechanical
+    Else If N = 'graphical' Then Result := eComponentKind_Graphical
+    Else If N = 'net_tie_bom' Then Result := eComponentKind_NetTie_BOM
+    Else If N = 'net_tie_no_bom' Then Result := eComponentKind_NetTie_NoBOM
+    Else If N = 'standard_no_bom' Then Result := eComponentKind_Standard_NoBOM
+    Else If N = 'jumper' Then Result := eComponentKind_Jumper;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
@@ -1843,15 +1873,18 @@ Begin
         Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
         { A placed part's display mode (0 = normal, then the alternates)  }
         { and how many it has, and its current footprint model's pin map  }
-        { as Altium writes it, "(G:1),(D:2),(S:3)". Components only.       }
+        { as Altium writes it, "(G:1),(D:2),(S:3)", and its Component Type  }
+        { by name (ComponentKindName). Components only.                     }
         Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
-             Or (PropName = 'FootprintPinMap') Then
+             Or (PropName = 'FootprintPinMap') Or (PropName = 'ComponentKind') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
             Begin
                 Comp := Obj;
                 If PropName = 'DisplayMode' Then Result := IntToStr(Comp.DisplayMode)
                 Else If PropName = 'DisplayModeCount' Then Result := IntToStr(Comp.DisplayModeCount)
+                Else If PropName = 'ComponentKind' Then
+                    Result := ComponentKindName(Comp.ComponentKind)
                 Else Result := ReadFootprintPinMap(Comp);
             End
             Else
@@ -2369,11 +2402,24 @@ Begin
         End
         { A placed part's display mode, refused outside 0 .. count - 1 and  }
         { read back; its current footprint model's pin map, which Altium    }
-        { merges by schematic pin (WriteFootprintPinMap). Components only.  }
-        Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap') Then
+        { merges by schematic pin (WriteFootprintPinMap); its Component     }
+        { Type by name (ComponentKindOf), read back. Components only.       }
+        Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap')
+             Or (PropName = 'ComponentKind') Then
         Begin
             If Obj.ObjectId <> eSchComponent Then
                 Matched := False
+            Else If PropName = 'ComponentKind' Then
+            Begin
+                Comp := Obj;
+                If ComponentKindOf(Value) < 0 Then
+                    WroteOK := False
+                Else
+                Begin
+                    Comp.ComponentKind := ComponentKindOf(Value);
+                    If Comp.ComponentKind <> ComponentKindOf(Value) Then WroteOK := False;
+                End;
+            End
             Else If PropName = 'DisplayMode' Then
             Begin
                 Comp := Obj;

@@ -399,6 +399,10 @@ def register_generic_tools(mcp):
                 "FootprintPinMap" (the current footprint model's pin map,
                 "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
                 merges by schematic pin, so a map cannot be cleared).
+                "ComponentKind" is its Component Type, read and set by
+                name: standard, mechanical, graphical, net_tie_bom,
+                net_tie_no_bom, standard_no_bom or jumper; with scope
+                "lib_component:NAME" it sets a library symbol's.
                 "TextFontId" is a sheet or harness entry's label font. A
                 managed component also reads
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"

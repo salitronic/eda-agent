@@ -67,7 +67,9 @@ def test_the_component_properties_are_gated_to_components():
             if "Else If PropName = 'FontId'" in branch else branch[:1500]
         assert "eSchComponent" in branch
     pre = _body("UnsupportedSchProperty")
-    assert "(PropName = 'FootprintPinMap'))" in pre and "eSchComponent" in pre
+    gate = pre[pre.index("(PropName = 'FootprintPinMap')"):]
+    assert gate.index("(PropName = 'ComponentKind'))") < gate.index(
+        "And (Obj.ObjectId <> eSchComponent)") < 120
     setter = _body("SetSchProperty")
     mode = setter[setter.index("Else If PropName = 'DisplayMode' Then"):]
     assert mode.index("Comp.DisplayModeCount") < mode.index("Comp.DisplayMode :=")
