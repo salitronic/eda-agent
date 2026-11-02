@@ -188,3 +188,49 @@ async def test_apply_does_not_repour_a_board_with_no_pour_or_plane(monkeypatch, 
     tool = _apply_tool(monkeypatch, tmp_path, bridge)
     out = await tool(job_id=_finished_job(), expect_file=BOARD_FILE, checkpoint=False)
     assert out["repoured"] is False and "pcb.repour_polygons" not in [c for c, _ in bridge.calls]
+
+
+def _autoroute(monkeypatch, tmp_path, board):
+    from eda_agent.layout import read_altium
+    install_bridge_fake(monkeypatch, tmp_path, object())
+    monkeypatch.setattr(read_altium, "read_live_board", lambda path: board)
+    sent = {}
+
+    class Store:
+        def submit(self, kind, fn, params):
+            sent.update(params)
+            return "job-1"
+
+    from eda_agent.tools import route as route_module
+    monkeypatch.setattr("eda_agent.design.jobs.get_job_store", lambda: Store())
+    captured = {}
+
+    class DummyMcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+    route_module.register_route_tools(DummyMcp())
+    return captured["pcb_autoroute"], sent
+
+
+@pytest.mark.asyncio
+async def test_autoroute_passes_the_entry_and_join_options_to_the_job(monkeypatch, tmp_path):
+    tool, sent = _autoroute(monkeypatch, tmp_path, _board())
+    out = await tool(expect_file=BOARD_FILE, axis_entry=True, neck_pads=True,
+                     join_existing=True, exclude_layers=["BottomLayer"])
+    assert out["job_id"] == "job-1"
+    st = sent["stages"]
+    assert st["axis_entry"] and st["neck_pads"] and st["join_existing"]
+    assert st["exclude_layers"] == ("BottomLayer",)
+
+
+@pytest.mark.asyncio
+async def test_autoroute_refuses_to_exclude_a_layer_pads_are_on(monkeypatch, tmp_path):
+    tool, sent = _autoroute(monkeypatch, tmp_path, _board())
+    out = await tool(expect_file=BOARD_FILE, exclude_layers=["TopLayer"])
+    assert "surface pad" in out["error"] and not sent
+    out = await tool(expect_file=BOARD_FILE, exclude_layers=["Nope"])
+    assert "no copper layer" in out["error"] and not sent
