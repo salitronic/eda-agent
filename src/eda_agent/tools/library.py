@@ -1581,6 +1581,7 @@ def register_library_tools(mcp):
         description: str = "",
         pin_length: int = 200,
         pin_pitch: int = 100,
+        shared_pins: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Create a multi-part IC symbol, each part with its own body, in ONE call.
 
@@ -1589,7 +1590,7 @@ def register_library_tools(mcp):
         lib_create_ic_symbol lays out one (pins left and right, origin at
         the top-left pin's wire end, 100-mil grid), gets its own body
         rectangle and its own pins. Put supply pins on a part of their
-        own.
+        own, or in ``shared_pins``.
 
         Args:
             name: Component name in the active SchLib.
@@ -1600,30 +1601,71 @@ def register_library_tools(mcp):
             designator_prefix: e.g. "U".
             description: Component description.
             pin_length, pin_pitch: mils, multiples of 100.
+            shared_pins: ``{"left_pins": [...], "right_pins": [...]}`` on
+                Part Zero, which Altium draws on every part: the supply
+                pins of a quad op-amp. They sit below every part's own
+                pins, at the same place on each, and every body is made
+                as wide and tall as needed to hold them.
 
         Returns:
             ``symbol``, ``part_count``, ``parts`` (pins and body per part),
-            and the Altium replies; ``ok`` false with ``stage`` when a step
-            did not take.
+            ``shared`` (Part Zero pins), and the Altium replies; ``ok``
+            false with ``stage`` when a step did not take.
         """
         from ..design.symbol_gen import generate_ic_symbol
 
         if not isinstance(parts, list) or len(parts) < 2:
             return {"ok": False, "reason": "give two parts or more; one part is "
                     "lib_create_ic_symbol"}
-        geoms = []
-        for number, spec in enumerate(parts, 1):
-            try:
-                if not isinstance(spec, dict):
-                    raise ValueError("not an object with left_pins and right_pins")
-                geoms.append(generate_ic_symbol(
-                    list(spec.get("left_pins") or []), list(spec.get("right_pins") or []),
-                    pin_length=pin_length, pin_pitch=pin_pitch))
-            except ValueError as exc:
-                return {"ok": False, "reason": f"part {number}: {exc}"}
+        if shared_pins is not None and not isinstance(shared_pins, dict):
+            return {"ok": False, "reason": "shared_pins is an object with "
+                    "left_pins and right_pins"}
+        shared_left = list((shared_pins or {}).get("left_pins") or [])
+        shared_right = list((shared_pins or {}).get("right_pins") or [])
+        shared_ids = [str(p.get("designator", "")).strip().upper()
+                      for p in (*shared_left, *shared_right) if isinstance(p, dict)]
+        twice = sorted({d for d in shared_ids if shared_ids.count(d) > 1})
+        if twice:
+            return {"ok": False, "reason": "shared pin given twice: " + ", ".join(twice)}
+
+        def lay_out(min_inner: Optional[int]) -> list:
+            # Shared rows go under the tallest part's pins on every part,
+            # so each Part Zero pin has one place whatever part is shown.
+            rows = max(max(len(s.get("left_pins") or []), len(s.get("right_pins") or []))
+                       for s in parts)
+            out = []
+            for number, spec in enumerate(parts, 1):
+                try:
+                    if not isinstance(spec, dict):
+                        raise ValueError("not an object with left_pins and right_pins")
+                    left = list(spec.get("left_pins") or [])
+                    right = list(spec.get("right_pins") or [])
+                    for pin in (*left, *right):
+                        if isinstance(pin, dict) and str(pin.get(
+                                "designator", "")).strip().upper() in shared_ids:
+                            raise ValueError(f"pin {pin['designator']} is also shared")
+                    if shared_ids:
+                        left += [None] * (rows - len(left)) + [None] + shared_left
+                        right += [None] * (rows - len(right)) + [None] + shared_right
+                    extra = {} if min_inner is None else {"min_inner_width": min_inner}
+                    out.append(generate_ic_symbol(left, right, pin_length=pin_length,
+                                                  pin_pitch=pin_pitch, **extra))
+                except ValueError as exc:
+                    return [f"part {number}: {exc}"]
+            return out
+
+        geoms = lay_out(None)
+        if geoms and isinstance(geoms[0], str):
+            return {"ok": False, "reason": geoms[0]}
+        if shared_ids:
+            # One width for every part, so a right-hand shared pin lines up too.
+            geoms = lay_out(max(g.width_mils - 2 * pin_length for g in geoms))
+        shared = [p for p in geoms[0].pins if p["designator"].upper() in shared_ids]
+        geom_pins = [[p for p in g.pins if p["designator"].upper() not in shared_ids]
+                     for g in geoms]
         where: dict[str, int] = {}
-        for number, geom in enumerate(geoms, 1):
-            for pin in geom.pins:
+        for number, pins in enumerate(geom_pins, 1):
+            for pin in pins:
                 first = where.setdefault(pin["designator"].upper(), number)
                 if first != number:
                     return {"ok": False, "reason": f"pin {pin['designator']} is on "
@@ -1645,14 +1687,16 @@ def register_library_tools(mcp):
             "fill_color": 8454143, "border_color": 0, "owner_part_id": str(number)})
             for number, geom in enumerate(geoms, 1)]
         placed = [{**pin, "owner_part_id": number}
-                  for number, geom in enumerate(geoms, 1) for pin in geom.pins]
+                  for number, pins in enumerate(geom_pins, 1) for pin in pins]
+        placed += [{**pin, "owner_part_id": 0} for pin in shared]
         pins_reply = await bridge.send_command_async(
             "library.add_pins", {"pins": _pins_payload(placed)[0]})
         done = isinstance(pins_reply, dict) and pins_reply.get("added") == len(placed)
         result = {"ok": done, "symbol": name, "part_count": len(parts),
-                  "parts": [{"part": number, "pins": len(geom.pins), "body": geom.body,
+                  "parts": [{"part": number, "pins": len(pins), "body": geom.body,
                              "width_mils": geom.width_mils, "height_mils": geom.height_mils}
-                            for number, geom in enumerate(geoms, 1)],
+                            for number, (geom, pins) in enumerate(zip(geoms, geom_pins), 1)],
+                  "shared": [p["designator"] for p in shared],
                   "create": created, "bodies": bodies, "pins_result": pins_reply}
         return result if done else {**result, "stage": "add_pins"}
 
