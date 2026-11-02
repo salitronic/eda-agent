@@ -104,10 +104,12 @@ class ToolRegistry:
     def tool(self, *args: Any, **kwargs: Any):
         """Stand in for ``@mcp.tool()``."""
         def deco(fn: Callable) -> Callable:
+            # The tool as an advertised one runs: with ``items`` (bulk.py).
+            from .bulk import with_items
             self._tools[fn.__name__] = ToolSpec(
                 name=fn.__name__,
                 description=inspect.getdoc(fn) or "",
-                fn=fn,
+                fn=with_items(fn, fn.__name__),
             )
             if self._delegate is not None:
                 self._delegate.tool(*args, **kwargs)(fn)

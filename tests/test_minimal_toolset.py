@@ -407,3 +407,21 @@ def test_a_narrow_query_returns_the_schema_needed_to_invoke(stub=None):
         f"{sorted(by_name)}")
     assert "net" in entry["parameters"], (
         "the schema is missing, so a caller must guess the argument name")
+
+
+def test_a_tool_reached_through_the_registry_takes_items():
+    import asyncio
+    registry = ToolRegistry()
+
+    @registry.tool()
+    async def demo_close(file_path: str, discard_changes: bool = False) -> dict:
+        return {"closed": file_path, "discarded": discard_changes}
+
+    spec = {t.name: t for t in asyncio.run(registry.list_tools())}["demo_close"]
+    assert "items" in spec.inputSchema["properties"]
+    single = asyncio.run(registry.call_tool("demo_close", {"file_path": "a"}))
+    assert single == {"closed": "a", "discarded": False}
+    many = asyncio.run(registry.call_tool("demo_close", {
+        "items": [{"file_path": "a"}, {"file_path": "b"}], "discard_changes": True}))
+    assert many["succeeded"] == 2 and [r["closed"] for r in many["items"]] == ["a", "b"]
+    assert all(r["discarded"] for r in many["items"])
