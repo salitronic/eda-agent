@@ -1194,11 +1194,11 @@ Begin
         End
         Else If PropName = 'Layer1' Then
         Begin
-            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer1); End;
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := LayerDisplayName(Conn.Layer1); End;
         End
         Else If PropName = 'Layer2' Then
         Begin
-            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer2); End;
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := LayerDisplayName(Conn.Layer2); End;
         End
         Else If PropName = 'IsRedundant' Then
         Begin

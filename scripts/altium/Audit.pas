@@ -483,7 +483,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -793,7 +793,7 @@ Begin
                 NetName := '';
                 Try NetName := Prim1.Net.Name; Except End;
                 LayerStr := '';
-                Try LayerStr := GetLayerString(Prim1.Layer); Except End;
+                Try LayerStr := LayerDisplayName(Prim1.Layer); Except End;
 
                 { Check both endpoints, EndIdx 1..2.                         }
                 For EndIdx := 1 To 2 Do
@@ -985,7 +985,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(eViaObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj1 := BIter.FirstPCBObject;
         While Obj1 <> Nil Do
@@ -1003,7 +1003,7 @@ Begin
                         SpatIter := Board.SpatialIterator_Create;
                         Try
                             SpatIter.AddFilter_ObjectSet(MkSet(eViaObject));
-                            SpatIter.AddFilter_LayerSet(AllLayers);
+                            SpatIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                             SpatIter.AddFilter_Area(Via1.x - Radius, Via1.y - Radius,
                                                      Via1.x + Radius, Via1.y + Radius);
                             Obj2 := SpatIter.FirstPCBObject;
@@ -1120,7 +1120,7 @@ Begin
                     Begin
                         Inc(Violations);
                         LayerStr := '';
-                        Try LayerStr := GetLayerString(Obj.Layer); Except End;
+                        Try LayerStr := LayerDisplayName(Obj.Layer); Except End;
                         BBox.X1 := 0; BBox.Y1 := 0;
                         Try BBox := Obj.BoundingRectangle; Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
@@ -1468,7 +1468,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(eViaObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj := BIter.FirstPCBObject;
         While Obj <> Nil Do
@@ -1775,7 +1775,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -1818,7 +1818,7 @@ Begin
                         Begin
                             Inc(Violations);
                             LayerStr := '';
-                            Try LayerStr := GetLayerString(LayerId); Except End;
+                            Try LayerStr := LayerDisplayName(LayerId); Except End;
                             If Not First Then ItemsJson := ItemsJson + ',';
                             First := False;
                             EntryJson :=
@@ -2029,7 +2029,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -2045,7 +2045,7 @@ Begin
                     Designator := '';
                     Try Designator := Comp.Name.Text; Except End;
                     LayerStr := '';
-                    Try LayerStr := GetLayerString(Comp.Layer); Except End;
+                    Try LayerStr := LayerDisplayName(Comp.Layer); Except End;
                     If Not First Then ItemsJson := ItemsJson + ',';
                     First := False;
                     EntryJson :=
@@ -2239,7 +2239,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -2798,7 +2798,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
 
         Comp := Iter.FirstPCBObject;
@@ -2810,7 +2810,7 @@ Begin
                 If DesigText <> Nil Then
                 Begin
                     Inc(Checked);
-                    DesigLayer := GetLayerString(DesigText.Layer);
+                    DesigLayer := LayerDisplayName(DesigText.Layer);
                     Rot := DesigText.Rotation;
                     OnTop := DesigLayer = 'TopOverlay';
                     { Treat the rotation as discrete 0/90/180/270 even if  }
@@ -2858,7 +2858,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Comp := Iter.FirstPCBObject;
             While Comp <> Nil Do
@@ -2868,7 +2868,7 @@ Begin
                     Try DesigText := Comp.Name; Except End;
                     If DesigText <> Nil Then
                     Begin
-                        DesigLayer := GetLayerString(DesigText.Layer);
+                        DesigLayer := LayerDisplayName(DesigText.Layer);
                         Rot := DesigText.Rotation;
                         OnTop := DesigLayer = 'TopOverlay';
                         CompName := '';
@@ -3066,7 +3066,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Comp := Iter.FirstPCBObject;
         While Comp <> Nil Do
@@ -3136,7 +3136,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTextObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -3156,7 +3156,7 @@ Begin
                     Inc(Violations);
                     TextStr := '';
                     Try TextStr := Obj.Text; Except End;
-                    LayerName := GetLayerString(LayerVal);
+                    LayerName := LayerDisplayName(LayerVal);
                     If Not First Then ItemsJson := ItemsJson + ',';
                     First := False;
                     EntryJson :=
@@ -3823,7 +3823,7 @@ Begin
                                         Inc(Bad);
                                         NetName := '';
                                         Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                                        LayerName := GetLayerString(Track.Layer);
+                                        LayerName := LayerDisplayName(Track.Layer);
                                         If Not First Then ItemsJson := ItemsJson + ',';
                                         First := False;
                                         EntryJson :=
@@ -3956,7 +3956,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Net := Iter.FirstPCBObject;
         While Net <> Nil Do
@@ -4071,7 +4071,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(ePadObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj := BIter.FirstPCBObject;
         While Obj <> Nil Do
@@ -4158,7 +4158,7 @@ Begin
                                 Begin
                                     Inc(Violations);
                                     LayerStr := '';
-                                    Try LayerStr := GetLayerString(LayerId); Except End;
+                                    Try LayerStr := LayerDisplayName(LayerId); Except End;
                                     If Not First Then ItemsJson := ItemsJson + ',';
                                     First := False;
                                     EntryJson :=
@@ -4220,7 +4220,7 @@ Begin
                     Begin
                         Inc(Violations);
                         LayerStr := '';
-                        Try LayerStr := GetLayerString(PadLayer); Except End;
+                        Try LayerStr := LayerDisplayName(PadLayer); Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
                         First := False;
                         EntryJson :=

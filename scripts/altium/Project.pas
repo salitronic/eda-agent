@@ -1747,7 +1747,7 @@ Begin
         BoardIter := Board.BoardIterator_Create;
         Try
             BoardIter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            BoardIter.AddFilter_LayerSet(AllLayers);
+            BoardIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             BoardIter.AddFilter_Method(eProcessAll);
             PcbComp := BoardIter.FirstPCBObject;
             While (PcbComp <> Nil) And (Not Found) Do
