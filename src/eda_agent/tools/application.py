@@ -5,6 +5,7 @@
 import functools
 import os
 import re
+import sys
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
@@ -86,6 +87,23 @@ def _reports_update(fn):
             reply["update"] = news
         return reply
     return wrapper
+
+
+def _screen_capture_warning() -> Optional[str]:
+    """Say which Python lacks the screen capture packages, when one does:
+    a server started from another Python than the one updated reads the
+    screen through nothing, and app_screenshot is the first to find out."""
+    if os.name != "nt":
+        return None
+    try:
+        from ..ui import ocr
+        if ocr.available():
+            return None
+    except Exception:  # noqa: BLE001  a warning never breaks a ping
+        pass
+    return (f"screen capture is off: pywin32 or Pillow is missing from the "
+            f"Python that runs this server ({sys.executable}). Install them "
+            f"with: \"{sys.executable}\" -m pip install pywin32 Pillow")
 
 
 def _bundled_script_version() -> Optional[str]:
@@ -941,6 +959,9 @@ def register_application_tools(mcp):
         script_path = _bundled_script_path()
         servers, duplicate = _other_servers()
         warnings: list[str] = [duplicate] if duplicate else []
+        capture = _screen_capture_warning()
+        if capture:
+            warnings.append(capture)
         if not bridge.is_altium_running():
             return {
                 "success": False,

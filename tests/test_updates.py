@@ -150,11 +150,132 @@ def test_local_work_is_never_touched(clones, local):
         assert out["local_changes"] == ["scripts/altium/Main.pas"]
 
 
-def test_a_package_install_is_told_how(monkeypatch):
+def test_a_package_install_is_told_how(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "repo_root", lambda: None)
+    monkeypatch.setattr(updates, "_cache_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.8.0")
+    monkeypatch.setattr(updates, "_published_version", lambda: "0.8.0")
     info = updates.check(force=True)
     assert info["kind"] == "package" and "pip install --upgrade" in info["how"]
+    assert info["update_available"] is False and updates.notice() is None
     assert updates.apply()["updated"] is False
+
+
+def test_a_package_install_hears_of_a_newer_version(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, "repo_root", lambda: None)
+    monkeypatch.setattr(updates, "_cache_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.8.1")
+    monkeypatch.setattr(updates, "_published_version", lambda: "0.10.0")
+    assert updates.check(force=True)["update_available"] is True
+    news = updates.notice()
+    assert news["latest"] == "0.10.0" and "pip install --upgrade" in news["next_step"]
+    # Upgraded since the check: nothing to say.
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.10.0")
+    assert updates.notice() is None
+
+
+@pytest.fixture()
+def fresh_delivery(monkeypatch):
+    monkeypatch.setattr(updates, "_delivered", set())
+    monkeypatch.setattr(updates, "_failure", None)
+
+
+def test_the_news_goes_on_one_reply_per_published_version(clones, fresh_delivery):
+    pub, _, _ = clones
+    _publish(pub, "README.md", "hi", "Say hello")
+    updates.check(force=True)
+    first = updates.notice_once()
+    assert first["commits_behind"] == 1 and "server_update" in first["next_step"]
+    assert updates.notice_once() is None
+    # ping and context still say it every time
+    assert updates.notice()["commits_behind"] == 1
+    _publish(pub, "README.md", "hi again", "Say it again")
+    updates.check(force=True)
+    assert updates.notice_once()["commits_behind"] == 2
+
+
+def test_a_failed_check_is_said_once(clones, fresh_delivery, monkeypatch):
+    _, user, _ = clones
+    _git(user, "remote", "set-url", "origin", str(user.parent / "gone.git"))
+    info = updates.check(force=True)
+    assert info["update_available"] is None and info["error"]
+    news = updates.notice_once()
+    assert news["update_check_failed"] == info["error"]
+    assert updates.notice_once() is None
+    # a check that works again clears it
+    _git(user, "remote", "set-url", "origin", str(user.parent / "upstream.git"))
+    updates.check(force=True)
+    assert updates._failure is None
+
+
+def test_git_never_waits_on_a_prompt(clones):
+    _, user, _ = clones
+    seen = updates._git(user, "-c", "alias.p=!echo $GIT_TERMINAL_PROMPT", "p")
+    assert seen == "0"
+
+
+def test_a_hung_git_is_ended_with_what_it_started(clones):
+    import time as _time
+    _, user, _ = clones
+    started = _time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        updates._git(user, "-c", "alias.h=!sleep 30", "h", timeout=1)
+    # the shell and its sleep went too: left running, they hold the pipes
+    # and the reader waits out its own 5 s grace
+    assert _time.monotonic() - started < 5
+
+
+def test_the_server_checks_again_while_it_runs(monkeypatch):
+    import threading
+    checks, stop = [], threading.Event()
+    monkeypatch.setattr(updates, "_checks_enabled", lambda: True)
+    monkeypatch.setattr(updates, "check", lambda: checks.append(1))
+
+    def sleep(_):
+        if len(checks) >= 3:
+            stop.set()
+            threading.Event().wait()         # park the thread for good
+    monkeypatch.setattr(updates.time, "sleep", sleep)
+    updates.start_background_check()
+    assert stop.wait(10) and len(checks) == 3
+
+
+def test_any_tool_reply_carries_the_news():
+    from mcp.types import TextContent
+    from eda_agent.server import add_update_notice
+    news = {"update_available": True}
+    blocks = [TextContent(type="text", text='{"ok": true}')]
+    out, structured = add_update_notice((blocks, {"ok": True}), news)
+    assert structured == {"ok": True, "update": news}
+    assert '"update"' in out[0].text and len(out) == 1
+    # a reply that is not an object gets a block of its own
+    out = add_update_notice([TextContent(type="text", text="plain")], news)
+    assert out[0].text == "plain" and '"update"' in out[1].text
+    # a reply that already says update keeps its own
+    _, structured = add_update_notice(([], {"update": "mine"}), news)
+    assert structured["update"] == "mine"
+
+
+def test_the_server_puts_the_news_on_a_real_tool_call(monkeypatch):
+    from eda_agent.server import mcp
+    sent = iter([{"update_available": True}, None])
+    monkeypatch.setattr(updates, "notice_once", lambda: next(sent))
+    first = asyncio.run(mcp.call_tool("tool_guide", {"task": "place a via"}))
+    second = asyncio.run(mcp.call_tool("tool_guide", {"task": "place a via"}))
+    assert first[1]["update"] == {"update_available": True}
+    assert '"update"' in first[0][0].text
+    assert "update" not in second[1]
+
+
+def test_ping_names_the_python_without_screen_capture(monkeypatch):
+    from eda_agent.tools import application
+    from eda_agent.ui import ocr
+    monkeypatch.setattr(application.os, "name", "nt")
+    monkeypatch.setattr(ocr, "available", lambda: False)
+    text = application._screen_capture_warning()
+    assert application.sys.executable in text and "Pillow" in text
+    monkeypatch.setattr(ocr, "available", lambda: True)
+    assert application._screen_capture_warning() is None
 
 
 def test_ping_and_context_carry_the_news(monkeypatch):

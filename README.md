@@ -149,7 +149,7 @@ The polling loop starts and your MCP client can drive Altium.
 
 ### Updating
 
-Once a day at most, the server checks this repository for new commits in the background. When there are some, `app_ping` and `app_context` say so and list them, and the assistant asks you before installing anything. If you agree, `server_update(apply=True)` fast-forwards your clone, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
+Once a day at most, for as long as it runs, the server checks this repository for new commits in the background. When there are some, the next tool reply says so and lists them, `app_ping` and `app_context` repeat it, and the assistant asks you before installing anything. A check that fails is reported once too. A copy installed with pip compares its version with the one here and says how to upgrade. If you agree, `server_update(apply=True)` fast-forwards your clone, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
 
 ```bash
 eda-agent update          # shows what is new, then asks

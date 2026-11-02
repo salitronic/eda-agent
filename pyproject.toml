@@ -31,6 +31,9 @@ dependencies = [
     "pydantic>=2.0,<3",
     "psutil>=5.9.0,<8",
     "pywin32>=306; sys_platform == 'win32'",
+    # Screen capture (ui/ocr.py, app_screenshot): window images through
+    # pywin32, saved and cropped through Pillow.
+    "Pillow>=10,<14; sys_platform == 'win32'",
     # MSAA and UI Automation, the two accessible layers the UI driving
     # rests on: ui/controls.py reads oleacc through it and ui/uia.py
     # reads UIAutomationCore. Both guard the import, so an absent

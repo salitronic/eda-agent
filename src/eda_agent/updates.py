@@ -6,10 +6,15 @@ eda-agent is installed from a git clone (``pip install -e .``), so an update
 is a fast-forward of that clone plus the steps that make the new code run:
 a reinstall when the dependencies changed, the Altium scripts copied again
 when they changed, and the Altium loop relaunched to compile them. Nothing
-here runs on its own. The server checks for new commits at most once a day
-and reports them through app_ping and app_context; the assistant tells the
-user what is new and calls ``server_update(apply=True)`` only after the user
-says yes, and the MCP client's own approval prompt is a second gate.
+here runs on its own. The server checks for new commits at most once a day,
+for as long as it runs, and reports them on the first tool reply after the
+check and on every app_ping and app_context; the assistant tells the user
+what is new and calls ``server_update(apply=True)`` only after the user says
+yes, and the MCP client's own approval prompt is a second gate. A check
+that fails is reported once too, so a missing notice means nothing new.
+
+A copy installed as a package compares its version with the one on GitHub
+and says how to upgrade it; it is never upgraded from here.
 
 A clone with local changes, or with commits of its own, is never touched:
 the update is refused and says why. EDA_AGENT_UPDATE_CHECK=0 stops the
@@ -23,6 +28,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,9 +38,14 @@ from .noconsole import no_window
 REMOTE = "origin"
 BRANCH = "main"
 REPO_URL = "https://github.com/salitronic/eda-agent"
+#: The version a package install is compared with.
+PYPROJECT_URL = ("https://raw.githubusercontent.com/salitronic/eda-agent/"
+                 f"{BRANCH}/pyproject.toml")
 
 #: How long a check is trusted before the next one reaches the network.
 CHECK_INTERVAL_S = 24 * 3600
+#: How often the running server looks whether a check is due.
+RECHECK_POLL_S = 3600
 #: Commit titles listed in a notice.
 MAX_TITLES = 15
 
@@ -42,6 +54,14 @@ _PIP_TIMEOUT_S = 900
 _STEP_TIMEOUT_S = 300
 
 _lock = threading.Lock()
+#: The last check's failure in this process, until a check succeeds.
+_failure: Optional[str] = None
+#: What this process has already put on a tool reply.
+_delivered: set[str] = set()
+
+#: Never wait on a credential prompt nobody can see: the repository is
+#: public, and a hidden prompt held a fetch open for days.
+_GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
 
 
 def repo_root() -> Optional[Path]:
@@ -52,14 +72,33 @@ def repo_root() -> Optional[Path]:
     return None
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """End ``proc`` and whatever it started (git runs a remote helper)."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True, **no_window())
+    proc.kill()
+
+
 def _git(root: Path, *args: str, timeout: float = _GIT_TIMEOUT_S) -> str:
-    done = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                          text=True, timeout=timeout, **no_window())
-    if done.returncode != 0:
-        raise RuntimeError((done.stderr or done.stdout).strip()
+    proc = subprocess.Popen(["git", "-C", str(root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, text=True,
+                            env={**os.environ, **_GIT_ENV}, **no_window())
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    if proc.returncode != 0:
+        raise RuntimeError((err or out).strip()
                            or f"git {' '.join(args)} failed")
     # rstrip only: a status line starts with a space (" M path").
-    return done.stdout.rstrip()
+    return out.rstrip()
 
 
 def _cache_path() -> Path:
@@ -92,43 +131,92 @@ def check(force: bool = False, root: Optional[Path] = None) -> dict[str, Any]:
     """What an update would bring. Fetches from the remote unless a check
     of the same checkout is less than a day old (``force`` always fetches).
     """
+    global _failure
     root = root if root is not None else repo_root()
-    if root is None:
-        return {"kind": "package", "update_available": None,
-                "how": (f"this copy was installed as a package, not from a "
-                        f"clone; update it with: python -m pip install "
-                        f"--upgrade git+{REPO_URL}")}
     with _lock:
-        try:
-            head = _git(root, "rev-parse", "HEAD")
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            return {"kind": "clone", "update_available": None,
-                    "error": f"git is not usable here: {exc}"}
-        cached = _read_cache()
-        if (not force and cached and cached.get("head") == head
-                and cached.get("root") == str(root)
-                and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S):
-            return cached
-        info: dict[str, Any] = {"kind": "clone", "root": str(root), "head": head,
-                                "checked_at": time.time()}
-        try:
-            _git(root, "fetch", "--quiet", REMOTE, BRANCH, timeout=60)
-            target = f"{REMOTE}/{BRANCH}"
-            info["latest"] = _git(root, "rev-parse", target)
-            info["branch"] = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
-            info["behind"] = int(_git(root, "rev-list", "--count", f"HEAD..{target}"))
-            info["ahead"] = int(_git(root, "rev-list", "--count", f"{target}..HEAD"))
-            titles = _git(root, "log", "--format=%s", f"-n{MAX_TITLES}", f"HEAD..{target}")
-            info["new_commits"] = [t for t in titles.splitlines() if t]
-            dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
-            info["local_changes"] = [ln[3:] for ln in dirty.splitlines() if ln.strip()]
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            info["error"] = f"could not reach {REMOTE}: {exc}"
-            info["update_available"] = None
-            return info
-        info["update_available"] = info["behind"] > 0
-        _write_cache(info)
+        info = _check_package(force) if root is None else _check_clone(force, root)
+        _failure = info.get("error") if info.get("update_available") is None else None
         return info
+
+
+def _check_clone(force: bool, root: Path) -> dict[str, Any]:
+    try:
+        head = _git(root, "rev-parse", "HEAD")
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return {"kind": "clone", "update_available": None,
+                "error": f"git is not usable here: {exc}"}
+    cached = _read_cache()
+    if (not force and cached and cached.get("head") == head
+            and cached.get("root") == str(root)
+            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S):
+        return cached
+    info: dict[str, Any] = {"kind": "clone", "root": str(root), "head": head,
+                            "checked_at": time.time()}
+    try:
+        _git(root, "fetch", "--quiet", REMOTE, BRANCH, timeout=60)
+        target = f"{REMOTE}/{BRANCH}"
+        info["latest"] = _git(root, "rev-parse", target)
+        info["branch"] = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        info["behind"] = int(_git(root, "rev-list", "--count", f"HEAD..{target}"))
+        info["ahead"] = int(_git(root, "rev-list", "--count", f"{target}..HEAD"))
+        titles = _git(root, "log", "--format=%s", f"-n{MAX_TITLES}", f"HEAD..{target}")
+        info["new_commits"] = [t for t in titles.splitlines() if t]
+        dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
+        info["local_changes"] = [ln[3:] for ln in dirty.splitlines() if ln.strip()]
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        info["error"] = f"could not reach {REMOTE}: {exc}"
+        info["update_available"] = None
+        return info
+    info["update_available"] = info["behind"] > 0
+    _write_cache(info)
+    return info
+
+
+def _installed_version() -> str:
+    try:
+        return metadata.version("eda-agent")
+    except metadata.PackageNotFoundError:
+        return ""
+
+
+def _version_key(text: str) -> tuple[int, ...]:
+    return tuple(int("".join(c for c in part if c.isdigit()) or 0)
+                 for part in text.strip().split("."))
+
+
+def _published_version() -> str:
+    """The version in pyproject.toml on GitHub's main branch."""
+    with urllib.request.urlopen(PYPROJECT_URL, timeout=15) as reply:
+        text = reply.read(256 * 1024).decode("utf-8", "replace")
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "version":
+            return value.strip().strip("'\"")
+    raise ValueError("no version in the published pyproject.toml")
+
+
+def _check_package(force: bool) -> dict[str, Any]:
+    installed = _installed_version()
+    cached = _read_cache()
+    if (not force and cached and cached.get("kind") == "package"
+            and cached.get("installed") == installed
+            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S):
+        return cached
+    info: dict[str, Any] = {
+        "kind": "package", "installed": installed, "checked_at": time.time(),
+        "how": (f"this copy was installed as a package, not from a clone; "
+                f"update it with: python -m pip install --upgrade "
+                f"git+{REPO_URL}")}
+    try:
+        info["latest"] = _published_version()
+    except (OSError, ValueError) as exc:
+        info["error"] = f"could not read {PYPROJECT_URL}: {exc}"
+        info["update_available"] = None
+        return info
+    info["update_available"] = (bool(installed) and _version_key(info["latest"])
+                                > _version_key(installed))
+    _write_cache(info)
+    return info
 
 
 def notice() -> Optional[dict[str, Any]]:
@@ -136,8 +224,20 @@ def notice() -> Optional[dict[str, Any]]:
     the network, so it costs nothing on every ping."""
     cached = _read_cache()
     root = repo_root()
-    if not cached or not cached.get("update_available") or root is None:
+    if not cached or not cached.get("update_available"):
         return None
+    if root is None:
+        if (cached.get("kind") != "package"
+                or cached.get("installed") != _installed_version()):
+            return None          # upgraded since the check
+        return {
+            "update_available": True,
+            "installed": cached.get("installed"),
+            "latest": cached.get("latest"),
+            "next_step": (f"eda-agent {cached.get('latest')} is out and this "
+                          f"copy is {cached.get('installed')}. Tell the user; "
+                          f"{cached.get('how')}."),
+        }
     if cached.get("root") != str(root):
         return None
     try:
@@ -157,17 +257,41 @@ def notice() -> Optional[dict[str, Any]]:
     }
 
 
+def notice_once() -> Optional[dict[str, Any]]:
+    """News this process has not yet put on a tool reply: an update, once
+    per published version, or a failed check, once per failure. Goes on
+    the reply of whichever tool runs next, so a session that never pings
+    still hears of it."""
+    news = notice()
+    if news:
+        key = "update:" + str((_read_cache() or {}).get("latest"))
+    elif _failure:
+        key = "failure:" + _failure
+        news = {"update_check_failed": _failure,
+                "next_step": ("Checking for a newer eda-agent failed; tell the "
+                              "user. server_update() checks again.")}
+    else:
+        return None
+    if key in _delivered:
+        return None
+    _delivered.add(key)
+    return news
+
+
 def start_background_check() -> None:
-    """Check once in the background when the server starts, so a new
+    """Check in the background when the server starts, and again whenever
+    the last check is a day old for as long as the server runs, so a
     session learns about an update without waiting on the network."""
-    if not _checks_enabled() or repo_root() is None:
+    if not _checks_enabled():
         return
 
     def run() -> None:
-        try:
-            check()
-        except Exception:  # noqa: BLE001  a check never disturbs the server
-            pass
+        while True:
+            try:
+                check()
+            except Exception:  # noqa: BLE001  a check never disturbs the server
+                pass
+            time.sleep(RECHECK_POLL_S)
 
     threading.Thread(target=run, name="eda-agent-update-check", daemon=True).start()
 
