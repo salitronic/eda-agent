@@ -350,6 +350,10 @@ def start_background_check() -> None:
         return
 
     def run() -> None:
+        try:
+            remove_old_launchers()
+        except Exception:  # noqa: BLE001  housekeeping never disturbs the server
+            pass
         while True:
             try:
                 check()
@@ -368,6 +372,76 @@ def _step(argv: list[str], cwd: Path, timeout: float) -> dict[str, Any]:
         return {"ok": False, "output": str(exc)}
     tail = (done.stdout + done.stderr).strip().splitlines()[-6:]
     return {"ok": done.returncode == 0, "output": "\n".join(tail)}
+
+
+def _launchers() -> list[Path]:
+    """This package's command launchers (eda-agent.exe and the like), as
+    pip recorded them at install."""
+    try:
+        dist = metadata.distribution("eda-agent")
+    except metadata.PackageNotFoundError:
+        return []
+    out = []
+    for f in dist.files or []:
+        if str(f).lower().endswith(".exe"):
+            path = Path(str(dist.locate_file(f))).resolve()
+            if path.is_file():
+                out.append(path)
+    return out
+
+
+def _set_launchers_aside() -> list[tuple[Path, Path]]:
+    """Rename the launchers out of pip's way: Windows will not overwrite or
+    remove one a running server holds open (WinError 32), but it will
+    rename it. (old, new) per launcher moved."""
+    if os.name != "nt":
+        return []
+    stamp = int(time.time())
+    moved = []
+    for exe in _launchers():
+        aside = exe.with_name(f"{exe.name}.old-{stamp}")
+        try:
+            exe.rename(aside)
+            moved.append((exe, aside))
+        except OSError:
+            pass
+    return moved
+
+
+def _put_launchers_back(moved: list[tuple[Path, Path]]) -> None:
+    """After a reinstall that failed: each launcher pip did not write again
+    goes back where it was."""
+    for exe, aside in moved:
+        if not exe.exists():
+            try:
+                aside.rename(exe)
+            except OSError:
+                pass
+
+
+def remove_old_launchers() -> int:
+    """Delete launchers set aside by an earlier update once nothing holds
+    them; one still in use stays for the next try. The number removed."""
+    removed = 0
+    for folder in {exe.parent for exe in _launchers()}:
+        for old in folder.glob("*.exe.old-*"):
+            try:
+                old.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _reinstall(root: Path) -> dict[str, Any]:
+    """pip install -e of the clone, with the running launchers set aside."""
+    moved = _set_launchers_aside()
+    result = _step([sys.executable, "-m", "pip", "install", "-e", str(root)],
+                   root, _PIP_TIMEOUT_S)
+    if not result["ok"]:
+        _put_launchers_back(moved)
+    result["python"] = sys.executable
+    return result
 
 
 def _altium_running() -> bool:
@@ -410,9 +484,7 @@ def apply(relaunch: bool = True, root: Optional[Path] = None) -> dict[str, Any]:
 
     steps: list[dict[str, Any]] = []
     if "pyproject.toml" in changed:
-        steps.append({"step": "reinstall (dependencies changed)",
-                      **_step([sys.executable, "-m", "pip", "install", "-e", str(root)],
-                              root, _PIP_TIMEOUT_S)})
+        steps.append({"step": "reinstall (dependencies changed)", **_reinstall(root)})
     scripts_changed = any(p.startswith("scripts/altium/") for p in changed)
     if scripts_changed:
         # Run as a new process: it reads the scripts just pulled, and its

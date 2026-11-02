@@ -10,8 +10,10 @@ than run.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -63,6 +65,8 @@ def clones(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updates, "_step", fake_step)
     monkeypatch.setattr(updates, "_altium_running", lambda: True)
+    # Never the real launchers of the eda-agent running these tests.
+    monkeypatch.setattr(updates, "_launchers", lambda: [])
     return pub, user, steps
 
 
@@ -268,6 +272,7 @@ def test_the_server_checks_again_while_it_runs(monkeypatch):
     checks, stop = [], threading.Event()
     monkeypatch.setattr(updates, "_checks_enabled", lambda: True)
     monkeypatch.setattr(updates, "check", lambda: checks.append(1))
+    monkeypatch.setattr(updates, "remove_old_launchers", lambda: 0)
 
     def sleep(_):
         if len(checks) >= 3:
@@ -365,3 +370,60 @@ def test_the_cli_shows_and_asks(clones, capsys, monkeypatch):
     assert (user / "README.md").exists() is False
     assert cli.cmd_update(assume_yes=True) == 0
     assert (user / "README.md").read_text() == "hi"
+
+
+@pytest.fixture()
+def running_launcher(tmp_path, monkeypatch):
+    """A launcher held open the way a running server holds eda-agent.exe."""
+    if os.name != "nt":
+        pytest.skip("the launcher lock is Windows'")
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    exe = scripts / "eda-agent.exe"
+    shutil.copy(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", exe)
+    proc = subprocess.Popen([str(exe), "-n", "30", "127.0.0.1"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.5)
+    monkeypatch.setattr(updates, "_launchers", lambda: [exe] if exe.exists() else [])
+    yield exe, proc
+    proc.kill()
+    proc.wait()
+
+
+def _fake_pip(exe: Path, ok: bool):
+    def step(argv, cwd, timeout):
+        if not ok:
+            return {"ok": False, "output": "pip failed"}
+        exe.write_bytes(b"new launcher")       # what pip writes
+        return {"ok": True, "output": ""}
+    return step
+
+
+def test_a_reinstall_writes_the_launcher_a_server_is_running(running_launcher, monkeypatch, tmp_path):
+    exe, _ = running_launcher
+    with pytest.raises(PermissionError):
+        exe.write_bytes(b"x")                   # the WinError 32 an update hit
+    monkeypatch.setattr(updates, "_step", _fake_pip(exe, ok=True))
+    assert updates._reinstall(tmp_path)["ok"] is True
+    assert exe.read_bytes() == b"new launcher"
+    assert len(list(exe.parent.glob("eda-agent.exe.old-*"))) == 1
+
+
+def test_a_failed_reinstall_puts_the_launcher_back(running_launcher, monkeypatch, tmp_path):
+    exe, _ = running_launcher
+    before = exe.read_bytes()
+    monkeypatch.setattr(updates, "_step", _fake_pip(exe, ok=False))
+    assert updates._reinstall(tmp_path)["ok"] is False
+    assert exe.read_bytes() == before
+    assert not list(exe.parent.glob("*.old-*"))
+
+
+def test_a_set_aside_launcher_goes_once_nothing_holds_it(running_launcher, monkeypatch, tmp_path):
+    exe, proc = running_launcher
+    monkeypatch.setattr(updates, "_step", _fake_pip(exe, ok=True))
+    updates._reinstall(tmp_path)
+    assert updates.remove_old_launchers() == 0          # the server still runs it
+    proc.kill()
+    proc.wait()
+    assert updates.remove_old_launchers() == 1
+    assert not list(exe.parent.glob("*.old-*")) and exe.exists()
