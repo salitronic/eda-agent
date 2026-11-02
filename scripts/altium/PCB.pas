@@ -3221,9 +3221,12 @@ Begin
     SrcList := TStringList.Create;
     DstList := TStringList.Create;
     SrcGroup := TStringList.Create;
-    GroupNets := TStringList.Create;       GroupNets.Duplicates := dupIgnore;
-    OutsideNets := TStringList.Create;     OutsideNets.Duplicates := dupIgnore;
-    InternalNets := TStringList.Create;    InternalNets.Duplicates := dupIgnore;
+    { Duplicates is honoured only by a SORTED list: unsorted, GroupNets took }
+    { one entry per pad, and every internal or shared net was counted once  }
+    { per pad in the reply (#171). Sorting also makes IndexOf a binary search. }
+    GroupNets := TStringList.Create;       GroupNets.Sorted := True;       GroupNets.Duplicates := dupIgnore;
+    OutsideNets := TStringList.Create;     OutsideNets.Sorted := True;     OutsideNets.Duplicates := dupIgnore;
+    InternalNets := TStringList.Create;    InternalNets.Sorted := True;    InternalNets.Duplicates := dupIgnore;
     NetMap := TStringList.Create;
     CopiedCount := 0;
     NetAssignedCount := 0;
