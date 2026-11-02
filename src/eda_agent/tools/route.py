@@ -109,6 +109,7 @@ def register_route_tools(mcp):
         plane_fanout: bool = False,
         pin_lanes: bool = True,
         bus_lanes: bool = True,
+        gloss: bool = True,
     ) -> dict[str, Any]:
         """Route the focused board with the in-house engine, as a job.
 
@@ -134,6 +135,9 @@ def register_route_tools(mcp):
                 or finer (default True).
             bus_lanes: Route 3+ nets between the same two parts as nested
                 lanes (default True).
+            gloss: Lay the routed tracks again as the shortest clean 45/90
+                runs, pad entries straight along a pad axis (default
+                True); the board's own tracks are left as they are.
 
         Returns:
             {"job_id", "board", "read": {pads, components, nets, layers}}
@@ -162,7 +166,7 @@ def register_route_tools(mcp):
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": list(nets) if nets else None, "planes": use_planes,
-             "stages": stages})
+             "stages": stages, "gloss": bool(gloss)})
         return {
             "job_id": job_id,
             "board": board.name,

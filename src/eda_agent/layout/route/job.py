@@ -39,6 +39,12 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                        stages=params.get("stages"),
                        log=live.progress_logger("route"))
     out = r.apply()
+    # The router's own tracks laid again as the shortest clean 45/90 runs;
+    # the board's tracks before it stay as they are (gloss.py).
+    glossed = None
+    if params.get("gloss", True):
+        from .gloss import gloss
+        glossed = gloss(out, tracks=out.tracks[len(board.tracks):]).as_dict()
     new_tracks = out.tracks[len(board.tracks):]
     new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
     mask_note = _mask_like_board(board, out.vias[len(board.vias):])
@@ -77,6 +83,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "sharp_bends": stages["sharp_bends"],
             "unreached_pads": len(stages["unreached"]),
             "vias_in_pads": len(stages["via_in_pad"]),
+            "gloss": glossed,
         },
         "unrouted": unrouted,
         # What the planned stages did (see stages.py): every via in a pad,
