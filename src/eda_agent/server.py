@@ -352,14 +352,30 @@ def add_update_notice(result, news):
 
 class _CompactFastMCP(FastMCP):
     """FastMCP whose tool results carry compact JSON text, and the news of
-    a newer eda-agent on the first reply after it is found.
+    a newer eda-agent on the first reply after it is found; requests are
+    read from a private copy of standard input (stdin_handle.py).
 
     structuredContent is left as FastMCP builds it apart from that news:
     Claude Code reads that copy, and only the text copy carried the
     indentation.
     """
 
+    async def run_stdio_async(self) -> None:
+        from io import TextIOWrapper
+
+        import anyio
+        from mcp.server.stdio import stdio_server
+
+        from .stdin_handle import private_stdin
+
+        stdin = anyio.wrap_file(TextIOWrapper(private_stdin(), encoding="utf-8",
+                                              errors="replace"))
+        async with stdio_server(stdin=stdin) as (read_stream, write_stream):
+            await self._mcp_server.run(read_stream, write_stream,
+                                       self._mcp_server.create_initialization_options())
+
     async def call_tool(self, name, arguments):
+        logger.info("Tool call: %s", name)
         result = await super().call_tool(name, arguments)
         try:
             from . import updates
