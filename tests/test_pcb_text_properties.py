@@ -115,7 +115,10 @@ def test_justification_fractions():
 def test_a_justified_text_is_framed_and_placed_from_the_frame_it_got():
     body = _place()
     frame = body.index("TextObj.Multiline := True;")
-    assert body.index("Box := TextObj.BoundingRectangle;") < frame
+    # no size given: a 1 mil frame Altium fits to the text, every line
+    assert body.index("If FrameW <= 0 Then FrameW := 1;") < frame
+    assert body.index("If FrameH <= 0 Then FrameH := 1;") < frame
+    assert "BoxW" not in body
     assert body.index("TextObj.MultilineTextAutoPosition := Just;") > frame
     end = body.index("TextObj.EndModify;", frame)
     regrow = body.index("If (TextObj.MultilineTextWidth <> MilsToCoordF(FrameW)) Or", end)

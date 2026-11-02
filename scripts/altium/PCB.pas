@@ -9008,7 +9008,6 @@ Var
     FrameW, FrameH, Margin, FX, FY, Ang : Double;
     Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF : Integer;
     Box : TCoordRect;
-    BoxW, BoxH : TCoord;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -9165,22 +9164,21 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, TextObj.I_ObjectAddress);
 
-        { Justified: measured at rotation 0, framed, then the frame moved so  }
-        { the justification point lands on x / y, and turned about it. With  }
-        { no frame size given the frame is the text's own box. Altium grows  }
-        { a frame smaller than the text (plus the margin of an inverted      }
-        { text, whose filled box IS the frame) only when the edit is closed, }
-        { so the frame is read again after EndModify and the text moved      }
-        { once more when it grew. MEASURED: a 60 x 20 frame became 209.8 x   }
-        { 52.6 at EndModify and, placed from the asked size, sat 75 mil off. }
+        { Justified: framed, then the frame moved so the justification     }
+        { point lands on x / y, and turned about it. Altium grows a frame    }
+        { smaller than the text (plus the margin of an inverted text, whose  }
+        { filled box IS the frame) only when the edit is closed, so the     }
+        { frame is read again after EndModify and the text moved once more  }
+        { when it grew. MEASURED: a 60 x 20 frame became 209.8 x 52.6 at     }
+        { EndModify and, placed from the asked size, sat 75 mil off. With no }
+        { frame size given the frame starts at 1 mil and Altium fits it to   }
+        { the text: the longest LINE, every line counted (measured from the  }
+        { single-line box it was 1545 mil wide for three short lines).       }
         If Just > 0 Then
         Begin
             TextObj.BeginModify;
-            Box := TextObj.BoundingRectangle;
-            BoxW := Box.Right - Box.Left;
-            BoxH := Box.Top - Box.Bottom;
-            If FrameW <= 0 Then FrameW := CoordToMilsF(BoxW);
-            If FrameH <= 0 Then FrameH := CoordToMilsF(BoxH);
+            If FrameW <= 0 Then FrameW := 1;
+            If FrameH <= 0 Then FrameH := 1;
             TextObj.Multiline := True;
             TextObj.MultilineTextWidth := MilsToCoordF(FrameW);
             TextObj.MultilineTextHeight := MilsToCoordF(FrameH);
