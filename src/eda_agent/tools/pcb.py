@@ -5054,6 +5054,68 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_tidy_tracks(
+        board_path: str,
+        nets: Optional[list[str]] = None,
+        layers: Optional[list[str]] = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Lay the board's free tracks again as the shortest clean 45/90 runs.
+
+        Each run between fixed points (pads, vias, arcs, junctions, width
+        changes) becomes the shortest octilinear path that turns 90 degrees
+        or less, leaves and enters a surface pad from its centre along a pad
+        axis, crosses no other pad of its net, keeps every join it had, and
+        clears every other net, the board edge and keep-outs by the board's
+        rules. A run is changed only when it gets shorter, or as short with
+        fewer bends. Footprint tracks and arcs are left as they are. Altium's
+        own Gloss is pcb_gloss.
+
+        Args:
+            board_path: The .PcbDoc; refused if another board is focused.
+            nets: Only these nets (default every net).
+            layers: Only these copper layers (default every signal layer).
+            dry_run: Work out and match the changes without writing them.
+
+        Returns:
+            ``gloss`` (runs, relaid, length and bends before and after,
+            nets), ``removed`` and ``added`` track counts, and the
+            geometry-map reply (``match``, and ``apply`` when written).
+        """
+        import asyncio
+        import json
+
+        from ..config import get_config
+        from ..layout.read_altium import WrongBoard, read_live_board
+        from ..layout.route.gloss import gloss
+
+        try:
+            board = await asyncio.to_thread(read_live_board, board_path)
+        except WrongBoard as exc:
+            return {"error": str(exc)}
+        before = list(board.tracks)
+        report = await asyncio.to_thread(gloss, board, None, nets, layers)
+        now = {id(t) for t in board.tracks}
+        was = {id(t) for t in before}
+        removed = [t for t in before if id(t) not in now]
+        added = [t for t in board.tracks if id(t) not in was]
+        out: dict[str, Any] = {"gloss": report.as_dict(), "removed": len(removed),
+                               "added": len(added)}
+        if not removed:
+            return {**out, "dry_run": dry_run}
+        geometry_map = {
+            "delete": [{"kind": "track", "layer": t.layer, "width": t.width,
+                        "key": [t.x1, t.y1, t.x2, t.y2]} for t in removed],
+            "create": [{"kind": "track", "layer": t.layer, "width": t.width,
+                        "geom": [t.x1, t.y1, t.x2, t.y2], "net": t.net} for t in added]}
+        map_path = get_config().workspace_dir / "tidy_tracks_map.json"
+        map_path.write_text(json.dumps(geometry_map), encoding="utf-8")
+        out["map"] = await pcb_apply_geometry_map(
+            map_path=str(map_path), board_path=board_path, kinds="track",
+            dry_run=dry_run, repour=False)
+        return out
+
+    @mcp.tool()
     async def pcb_place_stitching_vias(
         net: str,
         x1_mils: float = 0,

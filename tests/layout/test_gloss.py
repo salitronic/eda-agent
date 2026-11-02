@@ -86,7 +86,7 @@ def test_a_shortcut_through_another_nets_copper_is_not_taken():
     _path(b, "N", [(0, 0), (0, 200), (300, 200)])
     before = [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "N")]
     r = gloss(b)
-    assert r.relaid == 0
+    assert r.relaid == 0 and r.kept == {"clearance": 1} and r.blocked_by == {"pad of M": 1}
     assert [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "N")] == before
     m = b.pads[2].shape_on("TopLayer")
     assert all(geom.clearance(t.shape(), m) >= GAP for t in _tracks(b, "N"))
@@ -110,6 +110,7 @@ def test_a_clean_run_is_left_alone():
     _path(b, "N", [(0, 0), (400, 0)])
     r = gloss(b)
     assert r.relaid == 0 and len(_tracks(b, "N")) == 1
+    assert set(r.kept) <= {"already_shortest"}
 
 
 def test_a_hairpin_past_a_pad_is_cut_without_turning_back():

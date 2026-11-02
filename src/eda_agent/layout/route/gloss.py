@@ -44,6 +44,11 @@ GAIN = 0.5
 TURN_SLACK = 0.5
 
 
+#: Why a run was kept, by the furthest check a shorter path got past.
+KEPT_BECAUSE = ("already_shortest", "pad_entry", "end_angle", "clearance",
+                "would_lose_a_join", "would_cross_a_pad")
+
+
 @dataclass
 class GlossReport:
     runs: int = 0
@@ -53,9 +58,12 @@ class GlossReport:
     bends_before: int = 0
     bends_after: int = 0
     nets: list[str] = field(default_factory=list)
+    kept: dict = field(default_factory=dict)
+    blocked_by: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
-        return {"runs": self.runs, "relaid": self.relaid,
+        return {"runs": self.runs, "relaid": self.relaid, "kept": dict(self.kept),
+                "blocked_by": dict(self.blocked_by),
                 "length_before": round(self.length_before, 3),
                 "length_after": round(self.length_after, 3),
                 "bends_before": self.bends_before, "bends_after": self.bends_after,
@@ -233,6 +241,7 @@ class _Gloss:
         self.outline = board.outline_shape() if len(board.outline) >= 3 else None
         self.reach = max(rules.max_clearance(), self.edge_gap, 1.0) + 1.0
         self.report = GlossReport()
+        self.blocker = ""
 
     # -- runs ---------------------------------------------------------------
 
@@ -334,12 +343,15 @@ class _Gloss:
                 continue
             need = self.copper.required(cand, it)
             if need > 0 and self.copper.gap(s, k, need) < need - 1e-3:
+                self.blocker = f"{it.kind} of {it.net or 'no net'}"
                 return False
         for ko in self.copper.keepouts.get(layer, []):
             if geom.clearance(s, ko) < 0.0:
+                self.blocker = "keep-out"
                 return False
         if self.outline is not None and \
                 geom.shape_to_outline_clearance(s, self.outline) < self.edge_gap - 1e-3:
+            self.blocker = "board edge"
             return False
         return True
 
@@ -384,18 +396,24 @@ class _Gloss:
         old_a = self._end_angles(net, layer, pts[0], pts[1], mine)
         old_b = self._end_angles(net, layer, pts[-1], pts[-2], mine)
         best = None
+        # The furthest check any path got past: what kept the run as it is,
+        # and, kept for clearance, the last thing a path ran into.
+        furthest = -1
+        self.blocker = ""
         for form in _forms(p, q):
             form = [form[0]] + [x for x, y in zip(form[1:], form) if math.hypot(x[0] - y[0], x[1] - y[1]) > SNAP]
             if len(form) < 2:
-                continue
-            if a_pad and not _leaves_pad(a_pad, layer, form[0], form[1], width):
-                continue
-            if b_pad and not _leaves_pad(b_pad, layer, form[-1], form[-2], width):
                 continue
             new_len = _length(form)
             new_bends = _bends(form)
             if not (new_len < old_len - GAIN or (new_len <= old_len + SNAP and new_bends < old_bends)):
                 continue
+            furthest = max(furthest, 0)
+            if a_pad and not _leaves_pad(a_pad, layer, form[0], form[1], width):
+                continue
+            if b_pad and not _leaves_pad(b_pad, layer, form[-1], form[-2], width):
+                continue
+            furthest = max(furthest, 1)
             # The copper at each end: no sharper than the run met it, and
             # nowhere under 90 degrees where the run was not either.
             if not a_pad:
@@ -406,12 +424,15 @@ class _Gloss:
                 nb = self._end_angles(net, layer, form[-1], form[-2], mine)
                 if nb < min(old_b, 90.0) - TURN_SLACK:
                     continue
+            furthest = max(furthest, 2)
             shapes = [geom.capsule(a[0], a[1], b[0], b[1], width) for a, b in zip(form, form[1:])]
             if not all(self._clears(net, layer, s) for s in shapes):
                 continue
+            furthest = max(furthest, 3)
             touched = self._joins(net, layer, shapes, mine)
             if not joins <= touched:
                 continue
+            furthest = max(furthest, 4)
             if any(self.copper.items[k].kind == "pad" and k not in end_pads for k in touched):
                 continue
             score = (new_len, new_bends)
@@ -419,6 +440,11 @@ class _Gloss:
                 best = (score, form)
         self.report.runs += 1
         if best is None:
+            why = KEPT_BECAUSE[furthest + 1]
+            self.report.kept[why] = self.report.kept.get(why, 0) + 1
+            if why == "clearance" and self.blocker:
+                self.report.blocked_by[self.blocker] = \
+                    self.report.blocked_by.get(self.blocker, 0) + 1
             return False
         form = best[1]
         # By identity: two tracks can be equal, and only these go.
