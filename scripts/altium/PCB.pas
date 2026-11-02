@@ -11143,6 +11143,141 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_PourCopper - the copper one pour poured: each region it holds, as the   }
+{ region's own geometric polygon (its outline and every hole, in mils, with  }
+{ the area). Read through a typed IPCB_Region: the geometric polygon of a     }
+{ REGION is declared in this binding, the one of an IPCB_Polygon is not.      }
+{ Its contours count from 0 and say which are holes, so no index base has to }
+{ be guessed (cf. RegionCopperSqMils). A hatched pour's copper is tracks and  }
+{ arcs, which are counted, not drawn: pcb_get_copper reads those.             }
+{ Params: index (pcb_get_polygons' order), name (optional; refused when the  }
+{ pour at index has another, since positions shift as pours come and go).    }
+{..............................................................................}
+Function PourContourJson(Contour : Pgpc_vertex_list) : String;
+Var
+    J : Integer;
+Begin
+    Result := '';
+    For J := 0 To Contour.Count - 1 Do
+    Begin
+        If J > 0 Then Result := Result + ',';
+        Result := Result + '[' + FloatToJsonStr(CoordToMilsF(Contour.x(J))) + ','
+            + FloatToJsonStr(CoordToMilsF(Contour.y(J))) + ']';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+Function PCB_PourCopper(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pour : IPCB_Polygon;
+    Iter : IPCB_GroupIterator;
+    Region : IPCB_Region;
+    Stroke : IPCB_Primitive;
+    Shape : IPCB_GeometricPolygon;
+    Contour : Pgpc_vertex_list;
+    Wanted, Passed, I, Pieces, Holes, Vertices, Strokes : Integer;
+    Expected, Net, OnLayer, Rows, Outlines, HoleRows : String;
+    Area, PieceArea : Double;
+Begin
+    Wanted := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    If Wanted < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'index counts from 0');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Pour := PourAtPosition(Board, Wanted, Passed);
+    If Pour = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'The board has ' + IntToStr(Passed) + ' pours, none at ' + IntToStr(Wanted));
+        Exit;
+    End;
+    Expected := Trim(ExtractJsonValue(Params, 'name'));
+    If (Expected <> '') And (UpperCase(Expected) <> UpperCase(Pour.Name)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POUR_CHANGED',
+            'Pour ' + IntToStr(Wanted) + ' is now ' + Pour.Name + ', not ' + Expected
+            + '; read pcb_get_polygons again');
+        Exit;
+    End;
+    Net := '';
+    Try If Pour.Net <> Nil Then Net := Pour.Net.Name; Except Net := ''; End;
+    OnLayer := 'Unknown';
+    Try OnLayer := GetLayerString(Pour.Layer); Except End;
+
+    Rows := '';
+    Pieces := 0;
+    Holes := 0;
+    Vertices := 0;
+    Area := 0;
+    Iter := Pour.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Region := Iter.FirstPCBObject;
+        While Region <> Nil Do
+        Begin
+            Inc(Pieces);
+            Shape := Region.GeometricPolygon;
+            Outlines := '';
+            HoleRows := '';
+            PieceArea := 0;
+            For I := 0 To Shape.Count - 1 Do
+            Begin
+                Contour := Shape.Contour(I);
+                Vertices := Vertices + Contour.Count;
+                If Shape.IsHole(I) Then
+                Begin
+                    Inc(Holes);
+                    PieceArea := PieceArea - Contour.Area / 100000000.0;
+                    HoleRows := HoleRows + ',' + PourContourJson(Contour);
+                End
+                Else
+                Begin
+                    PieceArea := PieceArea + Contour.Area / 100000000.0;
+                    Outlines := Outlines + ',' + PourContourJson(Contour);
+                End;
+            End;
+            Area := Area + PieceArea;
+            Rows := Rows + ',' + JsonObj(
+                JsonRaw('outlines', '[' + Copy(Outlines, 2, Length(Outlines)) + ']')
+                + ',' + JsonRaw('holes', '[' + Copy(HoleRows, 2, Length(HoleRows)) + ']')
+                + ',' + JsonFloat('area_sqmils', PieceArea));
+            Region := Iter.NextPCBObject;
+        End;
+    Finally
+        Pour.GroupIterator_Destroy(Iter);
+    End;
+
+    Strokes := 0;
+    Iter := Pour.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+        Stroke := Iter.FirstPCBObject;
+        While Stroke <> Nil Do
+        Begin
+            Inc(Strokes);
+            Stroke := Iter.NextPCBObject;
+        End;
+    Finally
+        Pour.GroupIterator_Destroy(Iter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonInt('index', Wanted)
+        + ',' + JsonStr('name', Pour.Name) + ',' + JsonStr('net', Net)
+        + ',' + JsonStr('layer', OnLayer) + ',' + JsonInt('pieces', Pieces)
+        + ',' + JsonInt('holes', Holes) + ',' + JsonInt('vertices', Vertices)
+        + ',' + JsonFloat('area_sqmils', Area) + ',' + JsonInt('strokes', Strokes)
+        + ',' + JsonRaw('copper', '[' + Copy(Rows, 2, Length(Rows)) + ']')));
+End;
+
+{..............................................................................}
 { PCB_GetPolygons - Get all polygon pours with layer, net, hatching, etc.    }
 {..............................................................................}
 
@@ -27352,6 +27487,7 @@ Begin
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
+        'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

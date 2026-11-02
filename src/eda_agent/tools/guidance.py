@@ -963,6 +963,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "not the copper it poured."),
     },
     {
+        "task": "Read the copper one pour poured, holes included",
+        "keywords": ("poured", "holes", "pieces"),
+        "when": (("poured", "copper"), ("pour", "holes"), ("pour", "pieces"),
+                 ("poured", "pieces")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_pour_copper", "pcb_get_polygons"],
+        "avoid": [],
+        "note": ("Index and name from pcb_get_polygons; each poured piece with its "
+                 "outline and holes. A hatched pour's tracks are read by pcb_get_copper."),
+    },
+    {
         "task": "Rename or swap designators across a whole project",
         "keywords": ("swap", "designator", "designators"),
         "when": (("swap", "designator"), ("rename", "designator"),

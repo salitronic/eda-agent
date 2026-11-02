@@ -459,10 +459,6 @@ KNOWN_WRONG_METHOD_NAMES = {
     # .HatchStyle raises Undeclared identifier at runtime. (.PolyHatchStyle has
     # the dot before "Poly", so this pattern does not false-match it.)
     "HatchStyle":           "use .PolyHatchStyle (IPCB_Polygon)",
-    # IPCB_Polygon.GeometricPolygon is undeclared in this Altium script binding
-    # (raises at runtime) despite being in the API docs. Use AreaSize (outline
-    # area) + BoundingRectangle instead of GeometricPolygon.GetState_Area.
-    "GeometricPolygon":     "undeclared here; use .AreaSize + .BoundingRectangle",
     # IPCB_Board has no GetNetByName; iterate eNetObject. The FindNetByName /
     # EnsureNet helpers in PCB.pas do this. Raised "Undeclared identifier:
     # GetNetByName" at runtime in PCB_PlacePad and five sibling handlers.
@@ -492,6 +488,15 @@ KNOWN_WRONG_PROPERTY_ACCESSES = {
     # use MidXSize / MidYSize, for bottom BotXSize / BotYSize.
     "Pad.XSize": "Pad.TopXSize (top layer) or per-layer Mid/Bot variant",
     "Pad.YSize": "Pad.TopYSize (top layer) or per-layer Mid/Bot variant",
+    # IPCB_Polygon.GeometricPolygon is undeclared in this Altium script
+    # binding (raises at runtime) despite being in the API docs: use
+    # AreaSize (outline area) + BoundingRectangle, or the geometric polygon
+    # of each REGION the pour holds. IPCB_Region.GeometricPolygon IS
+    # declared (read and written through a typed IPCB_Region local,
+    # measured on AD 25.8), so only the polygon names are listed here.
+    "Polygon.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
+    "Poly.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
+    "Pour.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
 }
 RULE_KNOWN_WRONG_PROPERTY = LineRule(
     name="known-wrong-altium-property",

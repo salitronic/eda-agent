@@ -8465,6 +8465,32 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.pour_outline", ask)
 
     @mcp.tool()
+    async def pcb_get_pour_copper(index: int, name: str = "") -> dict[str, Any]:
+        """The copper one pour poured: every piece with its outline and holes.
+
+        Args:
+            index: The pour's ``index`` from pcb_get_polygons.
+            name: Its ``name`` there. Positions shift as pours are added or
+                removed, so a pour at ``index`` with another name is refused
+                (POUR_CHANGED). Names repeat on many boards, so the index
+                is what picks the pour.
+
+        Returns:
+            ``index``, ``name``, ``net``, ``layer``, ``pieces``, ``holes``,
+            ``vertices``, ``area_sqmils`` (copper less its holes) and
+            ``copper``: one entry per poured region with ``outlines`` and
+            ``holes`` (each a list of [x, y] in mils, arcs as Altium
+            flattened them) and its ``area_sqmils``. ``strokes`` counts the
+            tracks and arcs of a hatched pour, which pcb_get_copper reads.
+        """
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return {"ok": False, "reason": "index counts from 0"}
+        ask = {"index": str(index)}
+        if name.strip():
+            ask["name"] = name.strip()
+        return await get_bridge().send_command_async("pcb.pour_copper", ask)
+
+    @mcp.tool()
     async def pcb_get_copper(
         kinds: str = "",
         layer: str = "",
