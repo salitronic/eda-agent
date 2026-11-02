@@ -63,11 +63,16 @@ def test_a_family_tool_runs_its_member_with_converted_arguments(altium):
     ({"kind": "warp_drive"}, "unknown kind"),
     ({"kind": "wavelength", "args": {"freq": 1}}, "wavelength:"),
     ({"kind": "wavelength", "args": {"frequency_hz": "fast"}}, "bad arguments"),
-    ({"kind": "wavelength", "args": [1]}, "args must be a dict"),
 ])
 def test_a_family_tool_refuses_before_calling_the_member(altium, call, reason):
     out = _run(altium.call_tool("pcb_calc", call))
     assert out["ok"] is False and reason in out["reason"]
+
+
+def test_args_that_are_not_a_dict_are_refused_by_type_as_on_the_advertised_tool(altium):
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        _run(altium.call_tool("pcb_calc", {"kind": "wavelength", "args": [1]}))
 
 
 def test_the_unknown_kind_reply_lists_the_kinds(altium):

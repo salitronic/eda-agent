@@ -425,3 +425,31 @@ def test_a_tool_reached_through_the_registry_takes_items():
         "items": [{"file_path": "a"}, {"file_path": "b"}], "discard_changes": True}))
     assert many["succeeded"] == 2 and [r["closed"] for r in many["items"]] == ["a", "b"]
     assert all(r["discarded"] for r in many["items"])
+
+
+def test_a_list_argument_is_advertised_as_an_array_not_a_string():
+    import asyncio
+    from typing import Optional
+    registry = ToolRegistry()
+
+    @registry.tool()
+    async def demo_nets(nets: list[str], label: Optional[str] = None) -> dict:
+        return {}
+
+    props = {t.name: t for t in asyncio.run(registry.list_tools())}["demo_nets"].inputSchema["properties"]
+    assert props["nets"]["type"] == "array" and props["items"]["type"] == "array"
+    assert props["label"]["type"] == "string"
+
+
+def test_tool_invoke_checks_arguments_as_the_advertised_tool_does():
+    import asyncio
+    import pydantic
+    registry = ToolRegistry()
+
+    @registry.tool()
+    async def demo_nets(nets: list[str]) -> dict:
+        return {"nets": nets}
+
+    assert asyncio.run(registry.call_tool("demo_nets", {"nets": ["A", "B"]})) == {"nets": ["A", "B"]}
+    with pytest.raises(pydantic.ValidationError):
+        asyncio.run(registry.call_tool("demo_nets", {"nets": "TIDY"}))
