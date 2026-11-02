@@ -5093,6 +5093,8 @@ def register_pcb_tools(mcp):
             board = await asyncio.to_thread(read_live_board, board_path)
         except WrongBoard as exc:
             return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"error": f"board read failed: {exc}"}
         before = list(board.tracks)
         report = await asyncio.to_thread(gloss, board, None, nets, layers)
         now = {id(t) for t in board.tracks}
