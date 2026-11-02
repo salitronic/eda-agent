@@ -6,15 +6,17 @@ eda-agent is installed from a git clone (``pip install -e .``), so an update
 is a fast-forward of that clone plus the steps that make the new code run:
 a reinstall when the dependencies changed, the Altium scripts copied again
 when they changed, and the Altium loop relaunched to compile them. Nothing
-here runs on its own. The server checks for new commits at most once a day,
-for as long as it runs, and reports them on the first tool reply after the
+here runs on its own. The server looks every hour, for as long as it runs,
+whether the branch has moved (one ls-remote; a fetch only when it has, or
+when the last fetch is a day old), and reports new commits on the first tool reply after the
 check and on every app_ping and app_context; the assistant tells the user
 what is new and calls ``server_update(apply=True)`` only after the user says
 yes, and the MCP client's own approval prompt is a second gate. A check
 that fails is reported once too, so a missing notice means nothing new.
 
-A copy installed as a package compares its version with the one on GitHub
-and says how to upgrade it; it is never upgraded from here.
+A copy installed as a package compares its version with the one on GitHub,
+and a copy installed from git the commit pip recorded with the branch's
+head, and says how to upgrade it; it is never upgraded from here.
 
 A clone with local changes, or with commits of its own, is never touched:
 the update is refused and says why. EDA_AGENT_UPDATE_CHECK=0 stops the
@@ -41,6 +43,8 @@ REPO_URL = "https://github.com/salitronic/eda-agent"
 #: The version a package install is compared with.
 PYPROJECT_URL = ("https://raw.githubusercontent.com/salitronic/eda-agent/"
                  f"{BRANCH}/pyproject.toml")
+#: The head a package installed from git is compared with.
+COMMIT_URL = f"https://api.github.com/repos/salitronic/eda-agent/commits/{BRANCH}"
 
 #: How long a check is trusted before the next one reaches the network.
 CHECK_INTERVAL_S = 24 * 3600
@@ -148,7 +152,8 @@ def _check_clone(force: bool, root: Path) -> dict[str, Any]:
     cached = _read_cache()
     if (not force and cached and cached.get("head") == head
             and cached.get("root") == str(root)
-            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S):
+            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S
+            and not _remote_moved(root, cached.get("latest"))):
         return cached
     info: dict[str, Any] = {"kind": "clone", "root": str(root), "head": head,
                             "checked_at": time.time()}
@@ -170,6 +175,47 @@ def _check_clone(force: bool, root: Path) -> dict[str, Any]:
     info["update_available"] = info["behind"] > 0
     _write_cache(info)
     return info
+
+
+def _remote_moved(root: Path, latest: Optional[str]) -> bool:
+    """The remote branch's head is not the one the last check saw. One
+    ls-remote, no objects fetched; unreachable counts as not moved, so the
+    last check stands."""
+    try:
+        out = _git(root, "ls-remote", REMOTE, f"refs/heads/{BRANCH}", timeout=30)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+    sha = out.split()[0] if out.split() else ""
+    return bool(sha) and sha != latest
+
+
+def _installed_commit() -> str:
+    """The commit a package was installed from, as pip recorded it for a
+    ``git+`` install; "" for any other install."""
+    try:
+        text = metadata.distribution("eda-agent").read_text("direct_url.json") or ""
+        return str(json.loads(text).get("vcs_info", {}).get("commit_id", ""))
+    except (metadata.PackageNotFoundError, ValueError, AttributeError):
+        return ""
+
+
+def _published_commit() -> str:
+    """The head of the main branch on GitHub."""
+    request = urllib.request.Request(COMMIT_URL,
+                                     headers={"Accept": "application/vnd.github.sha"})
+    with urllib.request.urlopen(request, timeout=15) as reply:
+        return reply.read(100).decode("ascii", "replace").strip()
+
+
+def _published_moved(cached: dict) -> bool:
+    """For a copy installed from git, the branch's head is not the one the
+    last check saw; unreachable counts as not moved."""
+    if not cached.get("installed_commit"):
+        return False
+    try:
+        return _published_commit() not in ("", cached.get("latest_commit"))
+    except OSError:
+        return False
 
 
 def _installed_version() -> str:
@@ -200,7 +246,9 @@ def _check_package(force: bool) -> dict[str, Any]:
     cached = _read_cache()
     if (not force and cached and cached.get("kind") == "package"
             and cached.get("installed") == installed
-            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S):
+            and cached.get("installed_commit", "") == _installed_commit()
+            and time.time() - cached.get("checked_at", 0) < CHECK_INTERVAL_S
+            and not _published_moved(cached)):
         return cached
     info: dict[str, Any] = {
         "kind": "package", "installed": installed, "checked_at": time.time(),
@@ -213,8 +261,18 @@ def _check_package(force: bool) -> dict[str, Any]:
         info["error"] = f"could not read {PYPROJECT_URL}: {exc}"
         info["update_available"] = None
         return info
-    info["update_available"] = (bool(installed) and _version_key(info["latest"])
-                                > _version_key(installed))
+    newer = bool(installed) and _version_key(info["latest"]) > _version_key(installed)
+    # Installed from git: the commit pip recorded against the branch's head,
+    # since commits land without a version bump.
+    commit = _installed_commit()
+    if commit and not newer:
+        info["installed_commit"] = commit
+        try:
+            info["latest_commit"] = _published_commit()
+            newer = info["latest_commit"] not in ("", commit)
+        except OSError:
+            pass
+    info["update_available"] = newer
     _write_cache(info)
     return info
 
@@ -228,15 +286,20 @@ def notice() -> Optional[dict[str, Any]]:
         return None
     if root is None:
         if (cached.get("kind") != "package"
-                or cached.get("installed") != _installed_version()):
+                or cached.get("installed") != _installed_version()
+                or cached.get("installed_commit", "") != _installed_commit()):
             return None          # upgraded since the check
+        if cached.get("latest") == cached.get("installed"):
+            news = (f"eda-agent {cached.get('installed')} has newer commits on "
+                    f"{BRANCH} than the one this copy was installed from")
+        else:
+            news = (f"eda-agent {cached.get('latest')} is out and this copy is "
+                    f"{cached.get('installed')}")
         return {
             "update_available": True,
             "installed": cached.get("installed"),
             "latest": cached.get("latest"),
-            "next_step": (f"eda-agent {cached.get('latest')} is out and this "
-                          f"copy is {cached.get('installed')}. Tell the user; "
-                          f"{cached.get('how')}."),
+            "next_step": f"{news}. Tell the user; {cached.get('how')}.",
         }
     if cached.get("root") != str(root):
         return None
@@ -264,7 +327,8 @@ def notice_once() -> Optional[dict[str, Any]]:
     still hears of it."""
     news = notice()
     if news:
-        key = "update:" + str((_read_cache() or {}).get("latest"))
+        cached = _read_cache() or {}
+        key = "update:" + str(cached.get("latest_commit") or cached.get("latest"))
     elif _failure:
         key = "failure:" + _failure
         news = {"update_check_failed": _failure,

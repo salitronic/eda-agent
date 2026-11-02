@@ -104,6 +104,15 @@ def test_a_recent_check_is_reused_without_the_network(clones, monkeypatch):
     assert "fetch" not in fetched
 
 
+
+def test_a_push_after_a_recent_check_is_found_within_the_day(clones):
+    pub, _, _ = clones
+    assert updates.check(force=True)["update_available"] is False
+    _publish(pub, "README.md", "hi", "Say hello")
+    # The last check is minutes old, but the branch has moved since.
+    info = updates.check()
+    assert info["update_available"] is True and info["new_commits"] == ["Say hello"]
+
 def test_apply_fast_forwards_and_runs_only_the_needed_steps(clones):
     pub, user, steps = clones
     _publish(pub, "scripts/altium/Main.pas", "v2", "Fix the bridge")
@@ -173,6 +182,35 @@ def test_a_package_install_hears_of_a_newer_version(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "_installed_version", lambda: "0.10.0")
     assert updates.notice() is None
 
+
+
+def _git_package(monkeypatch, tmp_path, installed_commit, head):
+    monkeypatch.setattr(updates, "repo_root", lambda: None)
+    monkeypatch.setattr(updates, "_cache_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.8.1")
+    monkeypatch.setattr(updates, "_published_version", lambda: "0.8.1")
+    monkeypatch.setattr(updates, "_installed_commit", lambda: installed_commit)
+    monkeypatch.setattr(updates, "_published_commit", lambda: head[0])
+
+
+def test_a_package_installed_from_git_hears_of_new_commits(monkeypatch, tmp_path):
+    head = ["bbb"]
+    _git_package(monkeypatch, tmp_path, "aaa", head)
+    assert updates.check(force=True)["update_available"] is True
+    news = updates.notice()
+    assert "newer commits" in news["next_step"] and "pip install --upgrade" in news["next_step"]
+    # Reinstalled at the head: nothing to say.
+    monkeypatch.setattr(updates, "_installed_commit", lambda: "bbb")
+    assert updates.notice() is None
+    assert updates.check()["update_available"] is False
+
+
+def test_a_package_check_looks_again_when_the_branch_moves(monkeypatch, tmp_path):
+    head = ["aaa"]
+    _git_package(monkeypatch, tmp_path, "aaa", head)
+    assert updates.check(force=True)["update_available"] is False
+    head[0] = "ccc"
+    assert updates.check()["update_available"] is True
 
 @pytest.fixture()
 def fresh_delivery(monkeypatch):
