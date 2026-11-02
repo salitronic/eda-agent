@@ -7500,7 +7500,8 @@ def register_pcb_tools(mcp):
                 x1, y1, x2, y2 (required, mils; decimals are kept)
                 width (default 10, mils; decimals are kept, so a 0.1 mm
                 rule stays 3.937), layer (default "TopLayer"),
-                net_name (optional, empty = no net)
+                net_name (optional, empty = no net; a net the board does
+                not have skips the track)
 
             Example:
                 [
@@ -7511,7 +7512,8 @@ def register_pcb_tools(mcp):
                 ]
 
         Returns:
-            Dictionary with "placed" and "failed" counts
+            Dictionary with "placed" and "failed" counts, "unknown_layers"
+            and "unknown_nets" naming what did not resolve.
         """
         parts = []
         for t in tracks:
@@ -7546,8 +7548,9 @@ def register_pcb_tools(mcp):
                 size_mm and hole_size_mm in place of size and hole_size
 
         Returns:
-            Dictionary with "placed" and "failed" counts and
-            "unknown_layers" naming any layer pair that did not resolve.
+            Dictionary with "placed" and "failed" counts, "unknown_layers"
+            naming any layer pair and "unknown_nets" any net that did not
+            resolve; a via on an unknown net is not placed.
         """
         parts = []
         for v in vias:
@@ -9026,7 +9029,8 @@ def register_pcb_tools(mcp):
         Args:
             x, y: Position in mils
             name: Pad designator / label (optional)
-            net: Net to connect to (optional)
+            net: Net to connect to (optional); one the board does not
+                have is refused and nothing is placed
             shape: "round" (default) / "rect" / "oct", or spelled out as
                 the library tools take them ("rectangular", "octagonal").
                 Any other word is refused.

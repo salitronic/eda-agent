@@ -61,6 +61,16 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 End;
 
+{ The refusal for copper asked onto a net the board does not have: placed  }
+{ anyway, it would carry no net while the call reported success.           }
+Function NetNotFoundError(RequestId : String; NetName : String) : String;
+Begin
+    Result := BuildErrorResponse(RequestId, 'NET_NOT_FOUND',
+        'No net named "' + NetName + '" exists on this board, so nothing was '
+        + 'placed. Create it first (pcb_create_nets_from_list), or read '
+        + 'pcb_get_nets for the names it carries.');
+End;
+
 { Find a net by name, or create it if missing (used to wire up pad nets when  }
 { populating a board without an ECO). Net creation is the standard            }
 { PCBObjectFactory(eNetObject) + AddPCBObject pattern.                        }
@@ -8390,6 +8400,12 @@ Begin
         Exit;
     End;
 
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
+        Exit;
+    End;
+
     PcbBeginEdit(0);
     Try
         Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
@@ -8487,9 +8503,15 @@ Begin
         Exit;
     End;
 
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
+        Exit;
+    End;
+
     PcbBeginEdit(0);
     Try
-        Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+        Track :=PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
         If Track = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create track object');
@@ -8552,7 +8574,7 @@ Var
     PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
-    LayerStr, NetStr, BadLayers : String;
+    LayerStr, NetStr, BadLayers, BadNets : String;
     FoundNet : IPCB_Net;
     TrackLayer : TLayer;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
@@ -8577,6 +8599,7 @@ Begin
     Placed := 0;
     Failed := 0;
     BadLayers := '';
+    BadNets := '';
     Remaining := TracksStr;
 
     PcbBeginEdit(0);
@@ -8652,6 +8675,21 @@ Begin
                 Continue;
             End;
 
+            { A net the board does not have: skipped and named, as a layer is. }
+            FoundNet := Nil;
+            If NetStr <> '' Then
+            Begin
+                FoundNet := FindNetByName(Board, NetStr);
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := NetStr
+                    Else If Pos(NetStr, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + NetStr;
+                    Continue;
+                End;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -8667,11 +8705,8 @@ Begin
 
             Track.Layer := TrackLayer;
 
-            If NetStr <> '' Then
-            Begin
-                FoundNet := FindNetByName(Board, NetStr);
+            If FoundNet <> Nil Then
                 BindPrimitiveToNet(FoundNet, Track);
-            End;
 
             Board.AddPCBObject(Track);
             Inc(Placed);
@@ -8691,7 +8726,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ','
         + '"failed":' + IntToStr(Failed) + ','
-        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+        + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
 End;
 
 {..............................................................................}
@@ -8706,7 +8742,7 @@ Function PCB_PlaceVias(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Via : IPCB_Via;
-    ViasStr, ViaStr, Remaining, Token, BadLayers : String;
+    ViasStr, ViaStr, Remaining, Token, BadLayers, BadNets : String;
     PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
     VX, VY, VSize, VHole : Double;
     LowLayer, HighLayer : TLayer;
@@ -8730,6 +8766,7 @@ Begin
     Placed := 0;
     Failed := 0;
     BadLayers := '';
+    BadNets := '';
     Remaining := ViasStr;
 
     PcbBeginEdit(0);
@@ -8807,6 +8844,21 @@ Begin
                 Continue;
             End;
 
+            { A net the board does not have: skipped and named, as a layer is. }
+            FoundNet := Nil;
+            If F6 <> '' Then
+            Begin
+                FoundNet := FindNetByName(Board, F6);
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := F6
+                    Else If Pos(F6, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + F6;
+                    Continue;
+                End;
+            End;
+
             Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
             If Via = Nil Then
             Begin
@@ -8821,12 +8873,8 @@ Begin
             Via.LowLayer := LowLayer;
             Via.HighLayer := HighLayer;
 
-            If F6 <> '' Then
-            Begin
-                FoundNet := FindNetByName(Board, F6);
-                If FoundNet <> Nil Then
-                    BindPrimitiveToNet(FoundNet, Via);
-            End;
+            If FoundNet <> Nil Then
+                BindPrimitiveToNet(FoundNet, Via);
 
             Board.AddPCBObject(Via);
             Inc(Placed);
@@ -8842,7 +8890,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ','
         + '"failed":' + IntToStr(Failed) + ','
-        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+        + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
 End;
 
 {..............................................................................}
@@ -9343,6 +9392,12 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
         Exit;
     End;
 
@@ -12240,6 +12295,12 @@ Begin
         Exit;
     End;
 
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
+        Exit;
+    End;
+
     PcbBeginEdit(0);
     Try
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
@@ -12659,6 +12720,12 @@ Begin
         Exit;
     End;
 
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
+        Exit;
+    End;
+
     PlacedCount := 0;
     PcbBeginEdit(0);
     Try
@@ -12875,6 +12942,12 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
         Exit;
     End;
 
@@ -13291,6 +13364,12 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_SHAPE',
             'Unknown pad shape: ' + Shape + '. Use round, rect (rectangular) or oct (octagonal).');
+        Exit;
+    End;
+
+    If (NetStr <> '') And (FindNetByName(Board, NetStr) = Nil) Then
+    Begin
+        Result := NetNotFoundError(RequestId, NetStr);
         Exit;
     End;
 
