@@ -987,6 +987,68 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_reload_document(file_path: str, save: bool = True) -> dict[str, Any]:
+        """Save, close and reopen one schematic sheet, then recompile its
+        project, so nets and ERC are compiled from the sheet as it is.
+
+        A recompile alone can keep what the sheet no longer holds: a
+        deleted net label still naming its net, a changed sub-part still
+        compiled as the old one.
+
+        Args:
+            file_path: The open .SchDoc.
+            save: Write it first; ``saved`` is measured on disk. False
+                closes without writing, and a sheet Altium reads as
+                modified is refused untouched; an edit Altium did not flag
+                is lost.
+
+        Returns:
+            ``file_path``, ``saved``, ``closed``, ``reopened`` and
+            ``recompile`` (its compile ticks); ``ok`` false with ``stage``
+            and ``reason`` at the first step that did not take, the sheet
+            left open when it fails before the close.
+        """
+        import os
+        from ..bridge.exceptions import AltiumError
+
+        path = file_path.strip()
+        if not path.lower().endswith(".schdoc"):
+            return {"ok": False, "reason": "file_path is a .SchDoc"}
+        bridge = get_bridge()
+        out: dict[str, Any] = {"file_path": path, "saved": False}
+        if save:
+            saved = await bridge.send_command_async(
+                "application.save_document", {"file_path": path}, timeout=60.0)
+            if not (isinstance(saved, dict) and saved.get("saved")):
+                return {"ok": False, "stage": "save", **out,
+                        "reason": (saved or {}).get("reason", "the save did not reach "
+                                   "the file") if isinstance(saved, dict) else str(saved)}
+            out["saved"] = True
+        try:
+            closed = await bridge.send_command_async(
+                "application.close_document", {"file_path": path}, timeout=120.0)
+        except AltiumError as exc:
+            return {"ok": False, "stage": "close", **out, "reason": str(exc)}
+        out["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
+        if not out["closed"]:
+            return {"ok": False, "stage": "close", **out, "close": closed}
+        if not os.path.isfile(path):
+            return {"ok": False, "stage": "reopen", **out,
+                    "reason": "the sheet is not on disk to reopen"}
+        await bridge.send_command_async("application.run_process", {
+            "process_name": "WorkspaceManager:OpenObject",
+            "parameters": f"ObjectKind=Document|FileName={path}"})
+        try:
+            await bridge.send_command_async(
+                "application.set_active_document", {"file_path": path})
+        except AltiumError as exc:
+            return {"ok": False, "stage": "reopen", **out, "reason": str(exc)}
+        out["reopened"] = True
+        out["recompile"] = await bridge.send_command_async(
+            "project.force_recompile", {}, timeout=120.0)
+        return {"ok": True, **out}
+
+    @mcp.tool()
     async def sch_place_comment(text: str, x: float, y: float,
                                 document: str = "") -> dict[str, Any]:
         """Post an Altium 365 review comment at a point on a schematic.
