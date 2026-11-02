@@ -109,6 +109,8 @@ _SIMULATOR_TOOLS = frozenset({
     "app_checkpoint", "app_context", "app_detach", "app_get_active_document",
     "app_get_version",
     "app_list_documents", "app_set_active_document",
+    # Asks the bridge only whether the board is open, then edits the file.
+    "pcb_reset_stack_manager_model",
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
@@ -155,7 +157,8 @@ _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
 # the package checks compute over a package description and never reach an
 # editor, so they work with nothing running.
 _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
-                              "footprint_render_package"})
+                              "footprint_render_package",
+                              "pcb_stack_from_file"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query

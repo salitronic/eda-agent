@@ -2200,8 +2200,14 @@ def register_pcb_tools(mcp):
         fewer than wanted is refused: plan one per gap.
 
         The board must be saved first. Any failure closes it unsaved and
-        reopens it, which restores it. Save after a run that matches; the
-        Layer Stack Manager may show old values until a save and reopen.
+        reopens it, which restores it. Save after a run that matches.
+
+        The Layer Stack Manager keeps its own copy of the stack in the
+        file, which no script call reaches: it goes on showing the old
+        values of every layer this kept, through a save, a reopen and on
+        a fresh copy of the file (seen on AD 25.8.1). After saving, run
+        pcb_stack_from_file; when it warns stack_manager_model_stale,
+        close the board and run pcb_reset_stack_manager_model.
 
         Args:
             layers: Top to bottom: ``{"kind": "copper", "name",
@@ -2310,6 +2316,10 @@ def register_pcb_tools(mcp):
         result["mismatches"] = None if trouble else mismatches(await rows(), wanted)
         result["failed"] = trouble
         result["done"] = trouble is None and not result["mismatches"]
+        if result["done"]:
+            result["next"] = ("save the board, then run pcb_stack_from_file on it: "
+                              "the Layer Stack Manager's own model still holds the "
+                              "old values (stack_manager_model_stale)")
         if not result["done"]:
             await bridge.send_command_async(
                 "application.close_document", {"file_path": board, "discard": "true"})
@@ -2318,6 +2328,106 @@ def register_pcb_tools(mcp):
                 "params": f"ObjectKind=Document|FileName={board}"})
             result["restored"] = True
         return result
+
+    @mcp.tool()
+    async def pcb_reset_stack_manager_model(pcbdoc_path: str,
+                                            dry_run: bool = True) -> dict[str, Any]:
+        """Make Altium rebuild the Layer Stack Manager's model from the real stack.
+
+        The Layer Stack Manager keeps its own copy of the stack in the file
+        (V9_STACKCUSTOMDATA). pcb_make_layer_stack, and any script, changes the
+        real stack but cannot reach that copy, so the manager goes on
+        showing the old values for every layer that was kept;
+        pcb_stack_from_file reports this as stack_manager_model_stale. This
+        renames the key in the saved file, the same length, so Altium
+        rebuilds the manager's model from the stack on the next load and
+        drops the old one on the next save (AD 25.8.1, 2026-10-27).
+
+        The board must be CLOSED in Altium: it is refused while Altium has
+        it open. Afterwards open it and save it.
+
+        Args:
+            pcbdoc_path: the saved .PcbDoc.
+            dry_run: True (default) only says whether there is a model.
+
+        Returns:
+            ``found`` (models in the file), and when applied ``renamed``.
+        """
+        import os
+
+        from ..fileio import altium_pcb_stack
+
+        if not os.path.isfile(pcbdoc_path):
+            return {"ok": False, "reason": f"no such file: {pcbdoc_path}"}
+        if not dry_run:
+            try:
+                docs = await get_bridge().send_command_async(
+                    "application.get_open_documents") or []
+            except Exception:                           # noqa: BLE001
+                docs = []
+            if isinstance(docs, dict):
+                docs = docs.get("documents", [])
+            target = os.path.normcase(os.path.abspath(pcbdoc_path))
+            for d in docs:
+                path = str((d or {}).get("file_path", ""))
+                same = os.path.normcase(os.path.abspath(path)) == target
+                if not same and path and os.path.exists(path):
+                    try:
+                        same = os.path.samefile(path, pcbdoc_path)
+                    except OSError:
+                        same = False
+                if same and d.get("loaded", True):
+                    return {"ok": False, "reason": (
+                        "the board is open in Altium; close it first, or "
+                        "Altium writes its own model back over the change"),
+                        "open_as": path}
+        try:
+            out = altium_pcb_stack.reset_manager_model(pcbdoc_path, dry_run=dry_run)
+        except Exception as exc:                        # noqa: BLE001
+            return {"ok": False, "reason": f"could not edit the file: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool()
+    async def pcb_stack_from_file(
+        pcbdoc_path: str,
+        expected: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Read a SAVED PcbDoc's layer stack from the file, no Altium needed.
+
+        Reads the AD19+ physical stack the Layer Stack Manager and the
+        fab outputs use (every copper and dielectric layer, top down,
+        with thickness, type, material and Dk) and the pre-AD19 copper
+        chain that pcb_get_layer_stackup reads, and reports where they
+        disagree. Use it after any stack change, on the saved file.
+
+        Args:
+            pcbdoc_path: the .PcbDoc on disk (save the board first).
+            expected: optional copper and dielectric layers top down, each
+                ``{"kind": "copper"|"dielectric", "name"?,
+                "thickness_mils"?, "dielectric_type"?,
+                "dielectric_constant"?}``; differences go in ``mismatches``.
+
+        Returns:
+            ``{"ok", "layers", "legacy_chain", "summary", "findings"}``
+            and, with ``expected``, ``mismatches``. ``ok`` is false on any
+            error finding or mismatch: a non-positive thickness, copper
+            against copper, or the two views disagreeing.
+        """
+        import os
+
+        from ..fileio import altium_pcb_stack
+
+        if not os.path.isfile(pcbdoc_path):
+            return {"ok": False, "reason": f"no such file: {pcbdoc_path}"}
+        try:
+            out = altium_pcb_stack.read_stack(pcbdoc_path)
+        except Exception as exc:                    # noqa: BLE001
+            return {"ok": False, "reason": f"could not read the stack: {exc}"}
+        if expected is not None:
+            out["mismatches"] = altium_pcb_stack.compare_expected(
+                out["layers"], expected)
+            out["ok"] = out["ok"] and not out["mismatches"]
+        return out
 
     @mcp.tool()
     async def pcb_set_dielectric(
