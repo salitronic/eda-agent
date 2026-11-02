@@ -172,21 +172,23 @@ def register_route_tools(mcp):
             return {"error": f"board read failed: {exc}"}
         stages = {"diff_pairs": bool(diff_pairs), "plane_fanout": bool(plane_fanout),
                   "pin_lanes": bool(pin_lanes), "bus_lanes": bool(bus_lanes)}
-        extra = {"axis_entry": bool(axis_entry), "neck_pads": bool(neck_pads),
-                 "join_existing": bool(join_existing),
-                 "exclude_layers": tuple(exclude_layers or ())}
+        # Only what was asked for: the rest keep the router's own defaults.
+        extra = {k: v for k, v in (("axis_entry", bool(axis_entry)),
+                                   ("neck_pads", bool(neck_pads)),
+                                   ("join_existing", bool(join_existing)),
+                                   ("exclude_layers", tuple(exclude_layers or ()))) if v}
         # All four off is the router before the stages (StageOptions.coerce
         # False), not the stages' other defaults with four switches flipped.
         if not any(stages.values()) and not any(extra.values()):
             stages = False
         else:
             stages.update(extra)
-        bad = set(extra["exclude_layers"]) - set(board.copper_layers())
+        bad = set(extra.get("exclude_layers", ())) - set(board.copper_layers())
         if bad:
             return {"error": f"exclude_layers names no copper layer: {sorted(bad)}",
                     "layers": board.copper_layers()}
         padded = {c.layer for p in board.pads if p.net and p.is_smd for c in p.copper}
-        if set(extra["exclude_layers"]) & padded:
+        if set(extra.get("exclude_layers", ())) & padded:
             return {"error": "exclude_layers takes a layer no net's surface pad is on: "
                              f"{sorted(set(extra['exclude_layers']) & padded)} carry some"}
         job_id = get_job_store().submit(
