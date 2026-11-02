@@ -106,6 +106,13 @@ class Proxy:
                 self.client_init_id = message.get("id")
             elif method == "notifications/initialized":
                 self.initialized_line = line
+            elif method == "notifications/cancelled":
+                # The client no longer waits for it, so neither may a restart.
+                request_id = (message.get("params") or {}).get("requestId")
+                if request_id is not None:
+                    with self.state:
+                        self.pending.discard(_key(request_id))
+                        self.state.notify_all()
             self._forward(line, message)
         self.stop()
 
@@ -222,17 +229,28 @@ class Proxy:
             # New calls wait in the queue from here; those already sent
             # finish on the old child first.
             self.ready = False
+            if self.pending:
+                _log(f"source changed; restarting once {len(self.pending)} "
+                     f"call(s) in flight finish (at most {MAX_WAIT_FOR_CALLS_S:g} s)")
             deadline = time.monotonic() + MAX_WAIT_FOR_CALLS_S
             while self.pending and time.monotonic() < deadline:
                 self.state.wait(1.0)
             self.restarting = True
             old = self.child
+            # Calls the old server never answered: the client hears so
+            # rather than waiting on a reply that cannot come.
+            unanswered, self.pending = list(self.pending), set()
         if old is not None and old.poll() is None:
             old.terminate()
             try:
                 old.wait(10)
             except subprocess.TimeoutExpired:
                 old.kill()
+        for key in unanswered:
+            self.to_client({"jsonrpc": "2.0", "id": _unkey(key),
+                            "error": {"code": -32603, "message": (
+                                "the eda-agent server restarted for a code change "
+                                "before answering; run the call again")}})
         _log("source changed; restarting the server")
         self.start_child()
         if self.initialized_line is not None:
