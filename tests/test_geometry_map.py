@@ -153,12 +153,28 @@ def test_a_region_is_found_by_its_first_vertex_at_either_contour_index(first):
     assert lines[5] == "h\t3" and len(lines) == 9
 
 
-def test_a_region_whose_new_holes_do_not_match_its_old_count_is_refused():
+def test_a_region_may_take_another_number_of_holes():
     d = _dump(f"R\t3\t1\t4\t\t\t{5 * C}\t{6 * C}\t2")
     e = {"layer": "TopLayer", "key": {"n": 4, "first": [5, 6], "holes": 2},
-         "contour": [[0, 0], [1, 0], [1, 1]], "holes": [[[0, 0], [1, 0], [0, 1]]]}
+         "contour": [[0, 0], [1, 0], [1, 1]],
+         "holes": [[[0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.4], [0.1, 0.3]]]}
+    lines, rep = build_edits({"regions": [e]}, d)
+    assert rep["regions"]["matched"] == 1
+    # The old count keys the match; the new counts go to the apply pass.
+    assert lines[0] == f"R\t3\t1\t4\t{5 * C}\t{6 * C}\t2\t3\t1\t1"
+    assert lines[4] == "h\t5" and len(lines) == 10
+    lines, rep = build_edits({"regions": [dict(e, holes=[])]}, d)
+    assert rep["regions"]["matched"] == 1 and lines[0].endswith("\t3\t0\t1")
+
+
+def test_a_hole_of_fewer_than_three_points_is_refused():
+    d = _dump(f"R\t3\t1\t4\t\t\t{5 * C}\t{6 * C}\t2")
+    e = {"layer": "TopLayer", "key": {"n": 4, "first": [5, 6], "holes": 2},
+         "contour": [[0, 0], [1, 0], [1, 1]], "holes": [[[0, 0], [1, 0]]]}
     lines, rep = build_edits({"regions": [e]}, d)
     assert rep["regions"]["refused"] == 1 and not lines
+
+
 
 
 def test_a_text_must_say_what_the_key_says_and_its_new_string_is_written():
@@ -487,18 +503,42 @@ def test_polygons_are_changed_only_through_a_polygon_typed_walk():
                          r"\w+\.EndModify;", edit), routine
 
 
-def test_regions_are_rewritten_without_the_undeclared_geometric_polygon():
+def test_a_region_without_holes_is_rewritten_through_its_outline():
     body = _routine("PCB_ApplyFreePrimitives")
-    assert "GeometricPolygon" not in body
     assert "Region.SetOutlineContour(Contour);" in body
-    assert "Hole := Region.Holes[HN];" in body
     # MEASURED: 1..n written into a contour counting from 0 shifted every
     # vertex of 124 regions. Every index runs from the dumped base.
     assert "Base := StrToIntDef(SplitNextTab(Rest), 1);" in body
     writes = re.findall(r"(?:Contour|Hole)\.[XY]\[([^\]]+)\] :=", body)
     assert writes and all(w == "Base + K - 1" for w in writes)
-    assert "HoleOk := (Hole.Count = N);" in body
     assert "Region.MainContour.X[Base]" in body
+
+
+def test_a_region_with_holes_is_rebuilt_with_the_holes_it_is_given():
+    # SetOutlineContour drops every hole, and holes written in place could
+    # neither be added, removed nor change their vertex count. A region with
+    # holes before or after gets a new geometric polygon instead: its
+    # outline and every hole, each as many points as the map gives.
+    body = _routine("PCB_ApplyFreePrimitives")
+    assert "Holed := (NHoles > 0) Or (OldHoles > 0);" in body
+    assert "NewShape := PCBServer.PCBGeometricPolygonFactory;" in body
+    assert "Contour.AddPoint(PX, PY);" in body
+    assert "NewShape.AddContour(Contour);" in body
+    assert "Hole := PCBServer.PCBContourFactory;" in body
+    assert "Hole.AddPoint(PX, PY);" in body
+    assert "NewShape.AddContourIsHole(Hole, True);" in body
+    assert re.search(r"If Holed Then\s+Region\.GeometricPolygon := NewShape\s+Else\s+"
+                     r"Region\.SetOutlineContour\(Contour\);", body)
+    assert "Region.Holes[" not in body
+    # Read back by its copper, since a new polygon need not start its
+    # contours where the map did: outline less holes, and the hole count.
+    assert "GotShape := Region.GeometricPolygon;" in body
+    assert "If GotShape.IsHole(K) Then" in body
+    assert "If Abs(GotArea - WantArea) > WantArea * 0.0001 + 1 Then" in body
+    assert "WantArea := WantArea - Abs(Ring) / 2.0;" in body
+    assert "If N <> NHoles Then Inc(ReadbackOff);" in body
+
+
 
 
 def test_a_shape_based_region_does_not_keep_its_old_shape():

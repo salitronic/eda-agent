@@ -26395,9 +26395,13 @@ Var
     NewLayer : TLayer;
     BR : TCoordRect;
     ShapeMode : String;
-    IsFree, Ok, HoleOk, DoRepour : Boolean;
     LayerStr, Bad : String;
     Walk : IPCB_LayerSet;
+    IsFree, Ok, DoRepour, Holed : Boolean;
+    OldHoles : Integer;
+    NewShape, GotShape : IPCB_GeometricPolygon;
+    GotContour : Pgpc_vertex_list;
+    WantArea, GotArea, Ring, FirstMX, FirstMY, PrevMX, PrevMY, CurMX, CurMY : Double;
 Begin
     InPath := ExtractJsonValue(Params, 'in_path');
     If InPath = '' Then
@@ -26789,20 +26793,26 @@ Begin
                             { MEASURED: points written 1..n into one counting    }
                             { from 0 shifted every vertex of 124 regions.        }
                             Base := StrToIntDef(SplitNextTab(Rest), 1);
-                            { Each contour is rewritten point for point: the      }
-                            { outline through a replica and SetOutlineContour,    }
-                            { each hole in place. GeometricPolygon is undeclared  }
-                            { in this binding, so a hole cannot be added or       }
-                            { rebuilt, and one whose count differs is skipped.    }
-                            { MEASURED: SetOutlineContour drops every hole, so a  }
-                            { region with holes has its outline written in place  }
-                            { as its holes are, and only a region without holes   }
-                            { goes through a replica and SetOutlineContour.       }
+                            { A region with no holes, before or after, is        }
+                            { rewritten through a replica of its outline and     }
+                            { SetOutlineContour, which drops every hole          }
+                            { (MEASURED). Any other gets a new geometric polygon }
+                            { of its own: the outline and every hole, each as    }
+                            { many points as the map gives, so a hole can be     }
+                            { added, removed or reshaped (#173). The polygon     }
+                            { of an IPCB_Region is declared in this binding (of  }
+                            { an IPCB_Polygon it is not), read and written, and  }
+                            { AddPoint counts its points itself, so no index     }
+                            { base is involved.                                  }
+                            OldHoles := 0;
+                            Try OldHoles := Region.HoleCount; Except OldHoles := 0; End;
+                            Holed := (NHoles > 0) Or (OldHoles > 0);
+                            WantArea := 0;
                             Region.BeginModify;
-                            If NHoles > 0 Then
+                            If Holed Then
                             Begin
-                                Contour := Region.MainContour;
-                                If Contour.Count <> NMain Then Inc(ReadbackOff);
+                                NewShape := PCBServer.PCBGeometricPolygonFactory;
+                                Contour := PCBServer.PCBContourFactory;
                             End
                             Else
                             Begin
@@ -26825,11 +26835,33 @@ Begin
                                 If (K = 1) Or (PX > MaxX) Then MaxX := PX;
                                 If (K = 1) Or (PY < MinY) Then MinY := PY;
                                 If (K = 1) Or (PY > MaxY) Then MaxY := PY;
-                                If Contour.Count = NMain Then
+                                If Holed Then
+                                Begin
+                                    Contour.AddPoint(PX, PY);
+                                    { The area the map asks for, in mils, to   }
+                                    { read the result back by.                 }
+                                    CurMX := PX / 10000.0;
+                                    CurMY := PY / 10000.0;
+                                    If K = 1 Then
+                                    Begin
+                                        Ring := 0;
+                                        FirstMX := CurMX; FirstMY := CurMY;
+                                    End
+                                    Else
+                                        Ring := Ring + PrevMX * CurMY - CurMX * PrevMY;
+                                    PrevMX := CurMX; PrevMY := CurMY;
+                                End
+                                Else If Contour.Count = NMain Then
                                 Begin
                                     Contour.X[Base + K - 1] := StrToIntDef(A1, 0);
                                     Contour.Y[Base + K - 1] := StrToIntDef(A2, 0);
                                 End;
+                            End;
+                            If Holed Then
+                            Begin
+                                Ring := Ring + PrevMX * FirstMY - FirstMX * PrevMY;
+                                WantArea := Abs(Ring) / 2.0;
+                                NewShape.AddContour(Contour);
                             End;
                             A6 := '';
                             For HN := 0 To NHoles - 1 Do
@@ -26838,9 +26870,7 @@ Begin
                                 Rest := Lines[J];
                                 SplitNextTab(Rest);
                                 N := StrToIntDef(SplitNextTab(Rest), 0);
-                                Hole := Region.Holes[HN];
-                                HoleOk := (Hole.Count = N);
-                                If Not HoleOk Then Inc(ReadbackOff);
+                                Hole := PCBServer.PCBContourFactory;
                                 For K := 1 To N Do
                                 Begin
                                     Inc(J);
@@ -26849,14 +26879,28 @@ Begin
                                     A1 := SplitNextTab(Rest);
                                     A2 := SplitNextTab(Rest);
                                     If (HN = 0) And (K = 1) Then A6 := A1;
-                                    If HoleOk Then
+                                    PX := StrToIntDef(A1, 0);
+                                    PY := StrToIntDef(A2, 0);
+                                    Hole.AddPoint(PX, PY);
+                                    CurMX := PX / 10000.0;
+                                    CurMY := PY / 10000.0;
+                                    If K = 1 Then
                                     Begin
-                                        Hole.X[Base + K - 1] := StrToIntDef(A1, 0);
-                                        Hole.Y[Base + K - 1] := StrToIntDef(A2, 0);
-                                    End;
+                                        Ring := 0;
+                                        FirstMX := CurMX; FirstMY := CurMY;
+                                    End
+                                    Else
+                                        Ring := Ring + PrevMX * CurMY - CurMX * PrevMY;
+                                    PrevMX := CurMX; PrevMY := CurMY;
                                 End;
+                                Ring := Ring + PrevMX * FirstMY - FirstMX * PrevMY;
+                                WantArea := WantArea - Abs(Ring) / 2.0;
+                                NewShape.AddContourIsHole(Hole, True);
                             End;
-                            If NHoles = 0 Then Region.SetOutlineContour(Contour);
+                            If Holed Then
+                                Region.GeometricPolygon := NewShape
+                            Else
+                                Region.SetOutlineContour(Contour);
                             Region.EndModify;
                             { MEASURED: a region that also carries shape        }
                             { segments (a shape-based region) kept them, and     }
@@ -26901,19 +26945,39 @@ Begin
                             { Read back: the outline must hold its new count and  }
                             { first point, the holes must still be there, and the }
                             { first hole must hold its new first point.           }
-                            A7 := '';
-                            Try A7 := IntToStr(Region.MainContour.X[Base]); Except A7 := ''; End;
-                            N := -1;
-                            Try N := Region.MainContour.Count; Except N := -1; End;
-                            If (A7 <> A5) Or (N <> NMain) Then Inc(ReadbackOff);
                             N := -1;
                             Try N := Region.HoleCount; Except N := -1; End;
                             If N <> NHoles Then Inc(ReadbackOff);
-                            If (N = NHoles) And (NHoles > 0) Then
+                            If Holed Then
+                            Begin
+                                { A new polygon need not start its contours  }
+                                { where the map did, so it is read back by   }
+                                { its copper: the outline less every hole.   }
+                                GotArea := -1;
+                                Try
+                                    GotShape := Region.GeometricPolygon;
+                                    GotArea := 0;
+                                    For K := 0 To GotShape.Count - 1 Do
+                                    Begin
+                                        GotContour := GotShape.Contour(K);
+                                        If GotShape.IsHole(K) Then
+                                            GotArea := GotArea - GotContour.Area / 100000000.0
+                                        Else
+                                            GotArea := GotArea + GotContour.Area / 100000000.0;
+                                    End;
+                                Except
+                                    GotArea := -1;
+                                End;
+                                If Abs(GotArea - WantArea) > WantArea * 0.0001 + 1 Then
+                                    Inc(ReadbackOff);
+                            End
+                            Else
                             Begin
                                 A7 := '';
-                                Try A7 := IntToStr(Region.Holes[0].X[Base]); Except A7 := ''; End;
-                                If A7 <> A6 Then Inc(ReadbackOff);
+                                Try A7 := IntToStr(Region.MainContour.X[Base]); Except A7 := ''; End;
+                                N := -1;
+                                Try N := Region.MainContour.Count; Except N := -1; End;
+                                If (A7 <> A5) Or (N <> NMain) Then Inc(ReadbackOff);
                             End;
                         End;
                         If KindNo < 7 Then Inc(Applied);

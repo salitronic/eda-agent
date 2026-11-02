@@ -545,12 +545,13 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             fx, fy = (float(v) * COORD_PER_MIL for v in key["first"][:2])
             if not e.get(_DELETE):
                 contour = e["contour"]
-                new_holes = e.get("holes") or []
-                assert len(contour) >= 3 and len(new_holes) == holes
+                # Any number of holes: the region is rebuilt with them.
+                assert len(contour) >= 3
+                assert all(len(h) >= 3 for h in e.get("holes") or [])
         except (KeyError, TypeError, ValueError, IndexError, AssertionError):
             rep.refused += 1
             rep.note("refused", i, "needs layer, key {n, first, holes}, contour "
-                     "(3+ points) and one new hole per old hole")
+                     "(3+ points) and holes of 3+ points each")
             continue
         if lyr is None:
             bad_layer(rep, i, e.get("layer"))

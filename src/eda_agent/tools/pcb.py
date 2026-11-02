@@ -5119,8 +5119,8 @@ def register_pcb_tools(mcp):
 
         A seg is {"kind": 0, "vx", "vy"} (line) or {"kind": 1, "vx", "vy",
         "cx", "cy", "r", "sa", "ea"} (arc). Track ends match in either
-        order. A region keeps its hole count and each hole its vertex
-        count. The outline is replaced whole. Polygons match by layer and
+        order. A region's outline and holes are replaced whole: any
+        number of holes, each of any vertex count. Polygons match by layer and
         first vertex. A repour also deletes free regions lying in the pour,
         teardrops included, so create those after the last repour. ``components`` entries
         are counted and ignored. A delete is matched like a move (an
