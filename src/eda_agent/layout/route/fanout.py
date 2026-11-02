@@ -162,6 +162,8 @@ def _choose(router, job, bga: BGA, pad, placed):
             if any(math.hypot(x - px, y - py) < r + pr + router.c - EPS
                    for px, py, pr, net in placed if net != job.name):
                 continue
+            if router.via_leaves_web(style, x, y):
+                continue
             if not stub or _stub_clear(router, job, pad, x, y):
                 return x, y, style, stub
     return None
@@ -368,7 +370,7 @@ def _dogbone(ctx, i: int) -> bool:
         edge = _extent(sh, c, d)
         for s, v in enumerate(ctx.vias(net)):
             rv = v.diameter / 2
-            base = edge + ctx.web + rv + (lane if k == 0 else 0.0)
+            base = edge + max(ctx.web + rv, r.pad_web(v, i)) + (lane if k == 0 else 0.0)
             for step in range(3):
                 dist = base + step * r.pitch
                 x, y = c[0] + dist * d[0], c[1] + dist * d[1]

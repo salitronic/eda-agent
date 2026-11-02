@@ -356,6 +356,10 @@ class StageContext:
                 if geom.bboxes_near(disc, s, self.web) and \
                         geom.clearance(disc, s) < self.web - EPS:
                     return False
+        # Its solder mask opening leaves the board's web to every other.
+        if not r.options.legacy() and r.via_leaves_web(via, via.x, via.y,
+                                                       pad if in_pad else None):
+            return False
         return True
 
     # -- laying copper -------------------------------------------------------

@@ -661,6 +661,9 @@ class Router:
                 off = self._off_grid_copper(job, v.diameter / 2)
                 if len(off):
                     out[k].append(off)
+                webs = self._mask_webs(v)
+                if len(webs):
+                    out[k].append(webs)
         for i in ([] if mode == "any" else pads):
             pad = self.board.pads[i]
             if not pad.is_smd or i in self.via_pads:
@@ -714,6 +717,99 @@ class Router:
         cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
         cache[key] = cells
         return cells
+
+    def _web_rings(self, v) -> list:
+        """Round each pad's and via's solder mask opening, where a new via
+        of style ``v`` may not stand: (opening item, merge, reach, takes).
+        A via whose centre lies within ``reach`` of the opening leaves a
+        web narrower than the board's sliver rule, unless it is within
+        ``merge`` and ``takes`` (the openings meet and leave none, which a
+        pad that may not take a via does not allow). The new via is masked
+        like most of the board's vias (drc.usual_via_mask); no rings when
+        it is tented on both sides or the mask was not read."""
+        cache = self.__dict__.setdefault("_web_rings_cache", {})
+        key = (round(v.diameter, 4), round(v.hole, 4))
+        if key in cache:
+            return cache[key]
+        from ..drc import Item, mask_openings, usual_via_mask
+        rings: list = []
+        cache[key] = rings
+        usual = usual_via_mask(self.board)
+        if usual is None or not self.rules.of_type("mask_sliver"):
+            return rings
+        tents, from_hole, manual = usual[:2], usual[2], usual[3]
+        order = self.board.copper_layers()
+        span = set(self.board.layers_between(self.grid.layers[0], self.grid.layers[-1]))
+        sides = {order[0]: 0, order[-1]: 1}
+        r_open = v.hole / 2 if from_hole and v.hole > 0 else v.diameter / 2
+        mode = self.options.pad_vias
+        for it, grow in mask_openings(self.board, self.rules):
+            side = sides.get(it.layer)
+            if side is None or it.layer not in span or tents[side]:
+                continue
+            via = Item("via", -1, "", it.layer, geom.circle(0.0, 0.0, 2 * r_open))
+            fv = self.rules.facts(via, self.board)
+            ev = float(manual[side]) if manual else self.rules.mask_expansion(fv)
+            web = self.rules.mask_sliver(fv, self.rules.facts(it, self.board))
+            if web <= 0:
+                continue
+            merge = r_open + ev + grow
+            takes = it.kind != "pad" or mode == "any" or it.idx in self.via_pads
+            if not takes:
+                pad = self.board.pads[it.idx]
+                takes = not pad.is_smd or (mode == "ic" and not self._is_passive(pad))
+            rings.append((it, merge, merge + web, takes))
+        return rings
+
+    def _mask_webs(self, v) -> np.ndarray:
+        """The cells (y, x) where a new via of style ``v`` would stand in
+        one of the rings of _web_rings."""
+        cache = self.__dict__.setdefault("_mask_webs_cache", {})
+        key = (round(v.diameter, 4), round(v.hole, 4))
+        if key in cache:
+            return cache[key]
+        spec = self.grid.spec
+        cells = np.zeros((0, 2), dtype=np.int64)
+        out = []
+        for it, merge, reach, takes in self._web_rings(v):
+            x0, y0, x1, y1 = it.shape.bbox
+            i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = spec.x(np.arange(i0, i1))[None, :]
+            Y = spec.y(np.arange(j0, j1))[:, None]
+            d = shape_distance(it.shape, X, Y)
+            near = d < reach - EPS
+            if takes:
+                # Openings that meet merge into one and leave no web.
+                near &= d > merge + EPS
+            ys, xs = np.nonzero(near)
+            out.append(np.stack([ys + j0, xs + i0], axis=1))
+        if out:
+            cells = np.unique(np.concatenate(out), axis=0)
+        cache[key] = cells
+        return cells
+
+    def via_leaves_web(self, v, x: float, y: float, pad: int | None = None) -> bool:
+        """A via of style ``v`` at (x, y) stands in one of the rings of
+        _web_rings; ``pad``, a pad its array is meant to be in, takes it."""
+        at_x, at_y = np.array([[x]]), np.array([[y]])
+        for it, merge, reach, takes in self._web_rings(v):
+            x0, y0, x1, y1 = it.shape.bbox
+            if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
+                continue
+            d = float(shape_distance(it.shape, at_x, at_y)[0, 0])
+            if d < reach - EPS and not ((takes or (it.kind == "pad" and it.idx == pad))
+                                        and d <= merge + EPS):
+                return True
+        return False
+
+    def pad_web(self, v, pad: int) -> float:
+        """How far past a pad's copper the centre of a via of style ``v``
+        must stand to leave the mask web round the pad's opening; 0 when
+        the via needs none."""
+        return max((reach for it, _m, reach, _t in self._web_rings(v)
+                    if it.kind == "pad" and it.idx == pad), default=0.0)
 
     def _off_grid_copper(self, job: NetJob, radius: float) -> np.ndarray:
         """The cells (y, x) where a via of this radius would come within

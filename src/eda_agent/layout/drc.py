@@ -538,6 +538,24 @@ def mask_openings(board: LayoutBoard, rules: RuleSet) -> list[tuple[Item, float]
     return out
 
 
+def usual_via_mask(board: LayoutBoard) -> tuple | None:
+    """The solder mask a via added to the board gets: (tent_top,
+    tent_bottom, mask_from_hole, mask_manual) of most of the board's own
+    vias, open on both sides when it has none. None when the board was
+    read without its mask data.
+    """
+    if not board.meta.get("mask_read"):
+        return None
+    from collections import Counter
+    old = [x for x in board.vias if not x.comp]
+    if not old:
+        return (False, False, False, None)
+    tt, tb, fh, manual = Counter(
+        (x.tent_top, x.tent_bottom, x.mask_from_hole, tuple(x.mask_manual or ()))
+        for x in old).most_common(1)[0][0]
+    return (tt, tb, fh, list(manual) or None)
+
+
 def mask_slivers(board: LayoutBoard, rules: RuleSet | None = None,
                  limit: int = 500) -> list[Violation] | None:
     """Mask webs narrower than the board's Minimum Solder Mask Sliver rule.

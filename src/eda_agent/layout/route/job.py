@@ -11,11 +11,10 @@ DRC's verdict on the routed board. Nothing is applied here.
 from __future__ import annotations
 
 import time
-from collections import Counter
 from typing import Any
 
 from ..bench import copy_board
-from ..drc import verdict
+from ..drc import usual_via_mask, verdict
 from ..model import LayoutBoard
 from .router import route_adaptive
 from .stages import finish_report
@@ -134,18 +133,16 @@ def _mask_like_board(board: LayoutBoard, new) -> list[str]:
     own. With no vias to go by they stay open, which can only find more
     slivers, never fewer.
     """
-    old = [x for x in board.vias if not x.comp]
-    if not new or not board.meta.get("mask_read"):
+    usual = usual_via_mask(board)
+    if not new or usual is None:
         return []
-    if not old:
+    if not [x for x in board.vias if not x.comp]:
         return ["New vias were judged with open solder mask on both sides: the board "
                 "has no vias of its own to say whether vias are tented."]
-    tt, tb, fh, manual = Counter(
-        (x.tent_top, x.tent_bottom, x.mask_from_hole, tuple(x.mask_manual or ()))
-        for x in old).most_common(1)[0][0]
+    tt, tb, fh, manual = usual
     for x in new:
         x.tent_top, x.tent_bottom, x.mask_from_hole = tt, tb, fh
-        x.mask_manual = list(manual) or None
+        x.mask_manual = list(manual) if manual else None
     sides = {(True, True): "tented on both sides", (False, False): "open on both sides",
              (True, False): "tented on top only", (False, True): "tented on the bottom only"}
     return [f"New vias were judged {sides[(tt, tb)]}, like most of the board's vias; check "
