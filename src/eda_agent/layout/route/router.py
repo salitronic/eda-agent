@@ -93,6 +93,9 @@ class NetJob:
     # in one of the net's own pads that may not take one (see
     # Router._no_via_cells).
     no_via: list | None = None
+    # With reuse_vias: the cells (y, x) a through via of the net already on
+    # the board covers; a layer change there costs nothing and lays no via.
+    reuse: set = field(default_factory=set)
     # Where the net stands in the routing order: 0 high current, 1 rails,
     # 2 the rest (see Router._rank).
     rank: int = 2
@@ -602,6 +605,7 @@ class Router:
                 continue
             job = NetJob(nid, net, width, vias, terms, plane)
             job.rank = self._rank(job)
+            job.reuse = self._reuse_cells(net)
             job.no_via = self._no_via_cells(job, [index[id(p)] for p in pads])
             self._pad_vias(job)
             jobs.append(job)
@@ -641,11 +645,23 @@ class Router:
         pad by the clearance already.
         """
         mode = self.options.pad_vias
-        if mode == "any":
-            return None
         spec = self.grid.spec
         out = [[] for _ in job.vias]
-        for i in pads:
+        # A new via's hole keeps the board's hole to hole gap from every
+        # hole already drilled, whatever its net; where the net's own via
+        # is reused (reuse_vias) none is laid, so none is kept out.
+        if not self.options.legacy():
+            for k, v in enumerate(job.vias):
+                cells = self._near_holes(v.hole)
+                if len(cells) and job.reuse:
+                    cells = np.array([c for c in cells.tolist() if tuple(c) not in job.reuse],
+                                     dtype=np.int64).reshape(-1, 2)
+                if len(cells):
+                    out[k].append(cells)
+                off = self._off_grid_copper(job, v.diameter / 2)
+                if len(off):
+                    out[k].append(off)
+        for i in ([] if mode == "any" else pads):
             pad = self.board.pads[i]
             if not pad.is_smd or i in self.via_pads:
                 continue
@@ -671,6 +687,84 @@ class Router:
             return None
         return [np.unique(np.concatenate(o), axis=0) if o else np.zeros((0, 2), dtype=np.int64)
                 for o in out]
+
+    def _near_holes(self, hole: float) -> np.ndarray:
+        """The cells (y, x) where a via with a hole of this size would come
+        within the board's hole to hole clearance of a hole already drilled
+        (any net), or overlap one where the board sets no such rule."""
+        cache = self.__dict__.setdefault("_near_holes_cache", {})
+        key = round(hole, 4)
+        if key in cache:
+            return cache[key]
+        from ..drc import drill_holes
+        gap = max((rr.values.get("gap", 0.0) for rr in self.rules.of_type("hole_to_hole")),
+                  default=0.0)
+        spec = self.grid.spec
+        out = []
+        for it in drill_holes(self.board):
+            reach = hole / 2 + gap
+            x0, y0, x1, y1 = it.shape.bbox
+            i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = spec.x(np.arange(i0, i1))[None, :]
+            Y = spec.y(np.arange(j0, j1))[:, None]
+            ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
+            out.append(np.stack([ys + j0, xs + i0], axis=1))
+        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cache[key] = cells
+        return cells
+
+    def _off_grid_copper(self, job: NetJob, radius: float) -> np.ndarray:
+        """The cells (y, x) where a via of this radius would come within
+        the clearance of another net's copper on a signal layer it passes
+        through but the router does not route on (a pour turned plane, an
+        excluded layer): the grid knows nothing of that copper, and a via
+        was laid 1.1 mil from such a track where 5 were required."""
+        from ..drc import Item, conductive_items
+        off = [l for l in self.board.signal_layers() if l not in self.grid.layer_index]
+        if not off:
+            return np.zeros((0, 2), dtype=np.int64)
+        if not hasattr(self, "_off_items"):
+            self._off_items = [it for it in conductive_items(self.board)
+                               if it.layer in off and it.kind != "plane"]
+        spec = self.grid.spec
+        out = []
+        for it in self._off_items:
+            if it.net and it.net == job.name:
+                continue
+            via = Item("via", -1, job.name, it.layer, geom.circle(0.0, 0.0, 2 * radius))
+            reach = radius + self.rules.clearance(via, it, self.board)
+            x0, y0, x1, y1 = it.shape.bbox
+            i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = spec.x(np.arange(i0, i1))[None, :]
+            Y = spec.y(np.arange(j0, j1))[:, None]
+            ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
+            out.append(np.stack([ys + j0, xs + i0], axis=1))
+        return np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+
+    def _reuse_cells(self, net: str) -> set:
+        """With reuse_vias, the cells (y, x) a through via of ``net`` already
+        on the board covers, as far as a track ending there lies on it."""
+        if not self.options.reuse_vias:
+            return set()
+        spec = self.grid.spec
+        out: set = set()
+        for v in self.board.vias:
+            if v.net != net or v.comp:
+                continue
+            span = self.board.layers_between(v.low_layer, v.high_layer)
+            if not all(l in span for l in self.grid.layers):
+                continue            # not through every routing layer
+            ci, cj = spec.cell(v.x, v.y)
+            for dj in (-1, 0, 1):
+                for di in (-1, 0, 1):
+                    x, y = float(spec.x(ci + di)), float(spec.y(cj + dj))
+                    if math.hypot(x - v.x, y - v.y) <= v.diameter / 2 - EPS:
+                        out.add((cj + dj, ci + di))
+        return out
 
     def _is_passive(self, pad: Pad) -> bool:
         if not hasattr(self, "_pads_per_comp"):
@@ -826,6 +920,10 @@ class Router:
     #: How far past a pad's edge an escape along its axis may reach: the
     #: track's half-width and largest clearance, and this many cells more.
     ESCAPE_CELLS = 3
+    #: What a layer change through the net's own via already on the board
+    #: costs (reuse_vias): next to nothing, so a route takes it over laying
+    #: a via of its own.
+    REUSE_COST = 0.01
     #: How far past half the track's width an axis entry's turn is kept
     #: clear of the pad, in mils.
     ENTRY_MARGIN = 0.5
@@ -1081,6 +1179,13 @@ class Router:
             better = fits & (cost < via)
             via = np.where(better, cost, via)
             style = np.where(better, k, style)
+        if job.reuse:
+            # The net's own via already stands here: a layer change for free.
+            rc = np.array(sorted(job.reuse), dtype=np.int64)
+            inside = win.contains(rc[:, 0], rc[:, 1])
+            r = win.rank[rc[inside, 0] - win.j0, rc[inside, 1] - win.i0]
+            via[r] = self.REUSE_COST
+            style[r] = 0
         if job.plane_mask is not None:
             # A via into its own plane is what a plane net is FOR.
             via = np.where(job.plane_mask[at], via * 0.5, via)
@@ -2212,7 +2317,9 @@ class Router:
                 if (y, x) in job.pad_via:
                     vx, vy = job.pad_via[(y, x)][:2]
                 key = (round(vx, 4), round(vy, 4))
-                if key not in vias_done:
+                if (y, x) in job.reuse:
+                    pass            # the net's own via already stands here
+                elif key not in vias_done:
                     vias_done.add(key)
                     style = job.vias[job.via_at.get((y, x), 0)]
                     out.vias.append(Via(vx, vy, style.diameter, style.hole,

@@ -139,6 +139,9 @@ class StageOptions:
     # for a pour or a sensitive signal). A layer a net's surface pad is on
     # is refused: its pads could not be reached.
     exclude_layers: tuple = ()
+    # A through via of a net already on the board is a free layer change
+    # for the net's routes, where no second via is laid.
+    reuse_vias: bool = False
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -150,7 +153,8 @@ class StageOptions:
                     or self.straight or self.global_stall or self.repair_clean
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
                     or self.axis_entry or self.neck_pads or self.join_existing
-                    or bool(self.exclude_layers) or self.pad_vias != "any")
+                    or bool(self.exclude_layers) or self.reuse_vias
+                    or self.pad_vias != "any")
 
     @classmethod
     def coerce(cls, value) -> "StageOptions":

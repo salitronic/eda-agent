@@ -85,3 +85,59 @@ def test_an_excluded_layer_carries_no_track():
         Router(_four_layers(), stages=StageOptions(exclude_layers=("TopLayer",)))
     with pytest.raises(ValueError, match="no copper layer"):
         Router(_four_layers(), stages=StageOptions(exclude_layers=("Nope",)))
+
+
+def _through(top_x, bottom_x, y=250):
+    """Net A from a pad on top to one on the bottom: one layer change."""
+    b = _four_layers()
+    b.pads = [Pad("P1", "1", top_x, y, net="A", copper=[PadCopper("TopLayer", "rect", 20, 20)]),
+              Pad("P2", "1", bottom_x, y, net="A",
+                  copper=[PadCopper("BottomLayer", "rect", 20, 20)])]
+    return b
+
+
+def _verdict(out):
+    from eda_agent.layout.drc import verdict
+    return verdict(out)
+
+
+def test_a_via_clears_copper_on_a_layer_no_route_uses():
+    from eda_agent.layout.model import Region
+    b = _through(150, 550)
+    # MidLayer1, not routed on, is another net's copper but for a window.
+    b.regions = [Region("MidLayer1", [(20, 20), (680, 20), (680, 480), (20, 480)],
+                        holes=[[(320, 200), (380, 200), (380, 300), (320, 300)]], net="Z")]
+    r = Router(b, stages=StageOptions(exclude_layers=("MidLayer1",)))
+    r.run()
+    out = r.apply()
+    v = _verdict(out)
+    assert v["report"].completion == 1.0 and not v["violations"], v["violations"][:2]
+    assert out.vias and all(320 < x.x < 380 for x in out.vias)
+
+
+def test_a_new_via_keeps_the_hole_to_hole_gap_from_another_nets_via():
+    from eda_agent.layout.drc import hole_gaps
+    from eda_agent.layout.model import Via
+    b = _through(150, 550)
+    b.rules.append(Rule("HoleToHole", "9", "All", "All", 1, True, {},
+                        "Hole To Hole Clearance (Allow Stacked Micro Vias=No) (Gap=40mil) "
+                        "(All),(All)"))
+    # Another net's vias in a row 30 mil off the straight path: copper
+    # clearance allows a via on the path, the hole gap allows none there.
+    b.vias = [Via(x, 280, 16, 8, "TopLayer", "BottomLayer", "Z") for x in range(110, 600, 60)]
+    r = Router(b)
+    r.run()
+    out = r.apply()
+    assert run_drc(out).completion == 1.0
+    assert not hole_gaps(out)
+
+
+def test_a_route_changes_layer_through_its_own_via_already_there():
+    from eda_agent.layout.model import Via
+    b = _through(150, 550)
+    b.vias = [Via(350, 250, 20, 10, "TopLayer", "BottomLayer", "A")]
+    r = Router(b, stages=StageOptions(reuse_vias=True))
+    r.run()
+    out = r.apply()
+    assert run_drc(out).completion == 1.0
+    assert len(out.vias) == 1            # the one that was there

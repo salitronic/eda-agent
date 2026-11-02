@@ -48,6 +48,9 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     new_tracks = out.tracks[len(board.tracks):]
     new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
     mask_note = _mask_like_board(board, out.vias[len(board.vias):])
+    # Judged as written: a via on one already there is never sent, and
+    # counted it is a hole drilled twice that no board will have.
+    out.vias = out.vias[:len(board.vias)] + new_vias
     v = verdict(out)
     drc = v["report"]
     stages = finish_report(r, out)
