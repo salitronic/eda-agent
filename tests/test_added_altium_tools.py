@@ -1320,8 +1320,11 @@ def test_footprint_bodies_go_by_identifier_prefix(monkeypatch):
     assert "Copy(Ident, 1, Length(Prefix)) = Prefix" in match
     assert "Prim.ObjectId <> eComponentBodyObject" in match
     delete = _body("Library.pas", "Lib_DeleteFootprintPrimitives")
-    assert delete.count("BodyIdentifierMatches(Prim, IdentStr)") == 1
-    assert "CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr)" in delete
+    assert delete.count("FootprintPrimPicked(Prim, IdentStr, PadName)") == 1
+    assert "If IdentStr <> '' Then Result := BodyIdentifierMatches(Prim, IdentStr);" in _body(
+        "Library.pas", "FootprintPrimPicked")
+    assert delete.count(
+        "CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr, PadName)") == 2
     # The footprint is fetched by name once the walk is over, and footprints
     # are compared and messaged without reading their I_ObjectAddress: both
     # faulted on AD 26.11.

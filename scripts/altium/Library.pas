@@ -1516,7 +1516,11 @@ Begin
         Problem := 'Could not make ' + Name + ' the current footprint (the editor shows '
             + CurName + '), so nothing was written';
         Result := Nil;
-    End;
+    End
+    Else
+        { The editor's own reference: I_ObjectAddress read off the one     }
+        { GetComponentByName returned faulted (access violation, AD 26.11). }
+        Result := Cur;
 End;
 
 { A rounded-rectangle pad. A through-hole pad sits on MultiLayer, which the
@@ -11163,6 +11167,92 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
+{ Lib_SetFootprintDescription - write a PcbLib footprint's Description and   }
+{ read it back. Params: footprint_name, description ('' clears it),          }
+{ library_path (optional, default the focused library).                      }
+Function Lib_SetFootprintDescription(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, FpName, Wanted, Was, Got, CurName : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint, Target : IPCB_LibComponent;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpName := ExtractJsonValue(Params, 'footprint_name');
+    Wanted := ExtractJsonValue(Params, 'description');
+    If FpName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'footprint_name is required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If LibPath = '' Then LibPath := FocusedPath;
+    If LibPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY', 'No library is active and library_path was not supplied');
+        Exit;
+    End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Failed to focus PCB library at ' + LibPath);
+        Exit;
+    End;
+
+    Target := Nil;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Footprint := Iter.FirstPCBObject;
+        While (Footprint <> Nil) And (Target = Nil) Do
+        Begin
+            CurName := '';
+            Try CurName := Footprint.Name; Except End;
+            If CurName = FpName Then Target := Footprint;
+            Footprint := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+    If Target = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOOTPRINT_NOT_FOUND', 'Footprint not found in ' + LibPath + ': ' + FpName);
+        Exit;
+    End;
+
+    Was := '';
+    Try Was := Target.Description; Except End;
+    PcbBeginEdit(0);
+    Try Target.Description := Wanted; Except End;
+    PcbEndEdit(0);
+    Got := '';
+    Try Got := Target.Description; Except End;
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr(Got = Wanted)
+        + ',"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"footprint":"' + EscapeJsonString(FpName) + '"'
+        + ',"was":"' + EscapeJsonString(Was) + '"'
+        + ',"description":"' + EscapeJsonString(Got) + '"}');
+End;
+
 { Look up a rename in a ';'-separated 'old=new' map string; Default if absent.  }
 Function LookupRename(MapStr, OldName, Default : String) : String;
 Var
@@ -12573,8 +12663,9 @@ Var
     LibPath, FocusedPath, FpWanted, FpName, PadWanted, UnitsStr, Shape : String;
     Str, PadsJson, Notes, PlatedStr, HoleTypeStr : String;
     StackStr, EdgeStr, MaskManualStr, PasteManualStr, CornerStr, ModeName : String;
+    NewName, XStr, YStr : String;
     CornerPct : Integer;
-    BySelection : Boolean;
+    BySelection, MovedOne : Boolean;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -12659,6 +12750,16 @@ Begin
             + 'nothing was changed');
         Exit;
     End;
+    NewName := Trim(ExtractJsonValue(Params, 'new_name'));
+    XStr := ExtractJsonValue(Params, 'x');
+    YStr := ExtractJsonValue(Params, 'y');
+    If ((XStr <> '') And (Not IsFloatStr(XStr))) Or ((YStr <> '') And (Not IsFloatStr(YStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'x and y are numbers from the footprint origin; nothing was changed');
+        Exit;
+    End;
+    MovedOne := False;
     EdgeStr := LowerCase(ExtractJsonValue(Params, 'mask_from_hole_edge'));
     MaskManualStr := LowerCase(ExtractJsonValue(Params, 'mask_manual'));
     PasteManualStr := LowerCase(ExtractJsonValue(Params, 'paste_manual'));
@@ -12822,6 +12923,35 @@ Begin
                     Str := ExtractJsonValue(Params, 'rotation');
                     If Str <> '' Then
                         Try Pad.Rotation := StrToFloatDef(Str, 0); Except Ok := False; End;
+                    { A move takes one pad: two pads named alike would land  }
+                    { on one spot. x and y are from the footprint origin.    }
+                    If (XStr <> '') Or (YStr <> '') Then
+                    Begin
+                        If MovedOne Then
+                        Begin
+                            Ok := False;
+                            If Pos('one pad', Notes) = 0 Then
+                                Notes := Notes + 'move: more than one pad matched and only '
+                                    + 'the first was moved; select one pad to move it;';
+                        End
+                        Else
+                        Begin
+                            MovedOne := True;
+                            Try
+                                If XStr <> '' Then
+                                    Pad.X := XOrg + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);
+                                If YStr <> '' Then
+                                    Pad.Y := YOrg + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);
+                            Except Ok := False; End;
+                        End;
+                    End;
+                    If NewName <> '' Then
+                    Begin
+                        Try
+                            Pad.Name := NewName;
+                            If Pad.Name <> NewName Then Ok := False;
+                        Except Ok := False; End;
+                    End;
                     If HoleTypeStr <> '' Then
                     Begin
                         Try
@@ -14931,8 +15061,28 @@ End;
 
 { How many primitives of Target match the delete's filters, each counted    }
 { once by address (a footprint can list one twice).                         }
+{ Whether a primitive is one the delete names: a 3D body by Identifier      }
+{ prefix, a pad by its designator, or anything when neither is given.       }
+Function FootprintPrimPicked(Prim : IPCB_Primitive; IdentStr, PadName : String) : Boolean;
+Var
+    Name : String;
+Begin
+    Result := True;
+    If IdentStr <> '' Then Result := BodyIdentifierMatches(Prim, IdentStr);
+    If Result And (PadName <> '') Then
+    Begin
+        Result := False;
+        If Prim.ObjectId = ePadObject Then
+        Begin
+            Name := '';
+            Try Name := Prim.Name; Except End;
+            Result := UpperCase(Name) = UpperCase(PadName);
+        End;
+    End;
+End;
+
 Function CountFootprintMatches(Target : IPCB_LibComponent; ObjFilter : Integer;
-    WantLayer : TLayer; IncludePads : Boolean; IdentStr : String) : Integer;
+    WantLayer : TLayer; IncludePads : Boolean; IdentStr, PadName : String) : Integer;
 Var
     GrpIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
@@ -14948,7 +15098,7 @@ Begin
         Begin
             If ((WantLayer = eNoLayer) Or (Prim.Layer = WantLayer))
                And (IncludePads Or (Prim.ObjectId <> ePadObject))
-               And ((IdentStr = '') Or BodyIdentifierMatches(Prim, IdentStr)) Then
+               And FootprintPrimPicked(Prim, IdentStr, PadName) Then
             Begin
                 Addr := IntToStr(Prim.I_ObjectAddress);
                 If Pos(#9 + Addr + #9, Seen) = 0 Then
@@ -14967,7 +15117,7 @@ End;
 Function Lib_DeleteFootprintPrimitives(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpWanted, FpName, ObjTypeStr, LayerStr : String;
-    ConfirmStr, RemovedJson, Hint, IdentStr, FoundName : String;
+    ConfirmStr, RemovedJson, Hint, IdentStr, FoundName, PadName : String;
     Matched, Leftover : Integer;
     Workspace : IWorkspace;
     Doc : IDocument;
@@ -14994,6 +15144,13 @@ Begin
     { 3D bodies whose Identifier starts with this; implies object_type body. }
     IdentStr := ExtractJsonValue(Params, 'identifier');
     If (IdentStr <> '') And (ObjTypeStr = '') Then ObjTypeStr := 'body';
+    { Pads with this designator; implies object_type pad and include_pads. }
+    PadName := Trim(ExtractJsonValue(Params, 'pad_name'));
+    If PadName <> '' Then
+    Begin
+        If ObjTypeStr = '' Then ObjTypeStr := 'pad';
+        IncludePads := True;
+    End;
 
     If FpWanted = '' Then
     Begin
@@ -15110,6 +15267,12 @@ Begin
             'identifier picks 3D bodies; object_type ' + ObjTypeStr + ' has none');
         Exit;
     End;
+    If (PadName <> '') And (ObjFilter <> ePadObject) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE',
+            'pad_name picks pads; object_type ' + ObjTypeStr + ' has none');
+        Exit;
+    End;
 
     { Resolved against the library's own stack. GetLayerFromString       }
     { answers eTopLayer for any name it does not know, so "Top Assembly"  }
@@ -15167,7 +15330,7 @@ Begin
 
     { Counted here, once Target is off screen, so a primitive the board view }
     { also lists is counted once.                                              }
-    Matched := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr);
+    Matched := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr, PadName);
     GrpIter := Target.GroupIterator_Create;
     Try
         FilterFootprintWalk(GrpIter, -1);
@@ -15202,7 +15365,7 @@ Begin
                     If ((ObjFilter = -1) Or (Prim.ObjectId = ObjFilter))
                        And ((WantLayer = eNoLayer) Or (Prim.Layer = WantLayer))
                        And (IncludePads Or (Prim.ObjectId <> ePadObject))
-                       And ((IdentStr = '') Or BodyIdentifierMatches(Prim, IdentStr)) Then
+                       And FootprintPrimPicked(Prim, IdentStr, PadName) Then
                     Begin
                         MatchLayer := Prim.Layer;
                         Found := True;
@@ -15273,7 +15436,7 @@ Begin
 
     { Counted again: "nothing matched" and "matched and would not go" must  }
     { not read alike. RemovePCBObject can refuse without an error.          }
-    Leftover := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr);
+    Leftover := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr, PadName);
     Hint := '';
     If Leftover > 0 Then
         Hint := IntToStr(Leftover) + ' matching primitive(s) are still in the '
@@ -20764,6 +20927,7 @@ Begin
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);
         'rename_footprint':     Result := Lib_RenameFootprint(Params, RequestId);
+        'set_footprint_description': Result := Lib_SetFootprintDescription(Params, RequestId);
         'set_model_name':       Result := Lib_SetModelName(Params, RequestId);
         'set_model_source':     Result := Lib_SetModelSource(Params, RequestId);
         'probe_footprint':      Result := Lib_ProbeFootprint(Params, RequestId);

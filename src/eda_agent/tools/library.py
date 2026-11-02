@@ -6000,6 +6000,7 @@ def register_library_tools(mcp):
         include_pads: bool = False,
         confirm: bool = False,
         identifier: str = "",
+        pad_name: str = "",
     ) -> dict[str, Any]:
         """Delete primitives inside ONE footprint of a PCB library.
 
@@ -6025,6 +6026,9 @@ def register_library_tools(mcp):
                 object_type "body". Bodies built by a tool can be taken
                 away without the footprint's own STEP model, which sits
                 on the same layer.
+            pad_name: The pads with this designator (every one of them;
+                ``layer`` narrows to one side); implies object_type "pad"
+                and include_pads.
 
         Returns:
             ``library``, ``footprint``, ``matched``, ``removed``,
@@ -6035,12 +6039,16 @@ def register_library_tools(mcp):
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
-        if not object_type.strip() and not layer.strip() and not identifier.strip():
+        if not (object_type.strip() or layer.strip() or identifier.strip()
+                or pad_name.strip()):
             return {"ok": False, "reason": (
-                "give object_type, layer or identifier. Emptying a whole "
-                "footprint is not something to reach by leaving them off")}
+                "give object_type, layer, identifier or pad_name. Emptying a "
+                "whole footprint is not something to reach by leaving them off")}
         if identifier.strip() and object_type.strip() not in ("", "body"):
             return {"ok": False, "reason": "identifier picks 3D bodies; object_type is body"}
+        if pad_name.strip() and (object_type.strip() not in ("", "pad")
+                                 or identifier.strip()):
+            return {"ok": False, "reason": "pad_name picks pads; object_type is pad"}
 
         params: dict[str, Any] = {"footprint_name": footprint_name}
         if object_type.strip():
@@ -6055,6 +6063,8 @@ def register_library_tools(mcp):
             params["confirm"] = "true"
         if identifier.strip():
             params["identifier"] = identifier.strip()
+        if pad_name.strip():
+            params["pad_name"] = pad_name.strip()
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -7016,6 +7026,32 @@ def register_library_tools(mcp):
         )
 
     @mcp.tool()
+    async def lib_set_footprint_description(
+        footprint_name: str,
+        description: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Set the Description of a footprint in a PCB library (.PcbLib).
+
+        The footprint twin of lib_set_component_description. The text is
+        read back; ``success`` is false when Altium holds something else.
+        Marks the library modified; app_save_document writes it.
+
+        Args:
+            footprint_name: The footprint.
+            description: The new text; "" clears it.
+            library_path: Optional .PcbLib path; defaults to the focused one.
+
+        Returns:
+            ``success``, ``footprint``, ``was`` and ``description`` (as read
+            back).
+        """
+        return await get_bridge().send_command_async(
+            "library.set_footprint_description",
+            {"footprint_name": footprint_name, "description": description,
+             "library_path": library_path})
+
+    @mcp.tool()
     async def lib_probe_footprint(
         footprint_name: str,
         library_path: str = "",
@@ -7108,6 +7144,9 @@ def register_library_tools(mcp):
         mask_manual: Optional[bool] = None,
         mask_from_hole_edge: Optional[bool] = None,
         paste_top_enabled: Optional[bool] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        new_name: str = "",
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint: every pad named
         ``pad_name``, or with ``selected=True`` every pad selected in the
@@ -7160,6 +7199,9 @@ def register_library_tools(mcp):
                 (not its size). It holds only on a manual paste expansion,
                 so a rule-driven one is made manual first (``note``).
                 Before Altium Designer 25 the flag does not exist.
+            x, y: Move the pad, from the footprint origin. One pad only:
+                when several match, the first moves and the rest fail.
+            new_name: Renumber the pad (its designator).
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
@@ -7213,9 +7255,12 @@ def register_library_tools(mcp):
                            ("hole_size", hole_size), ("hole_width", hole_width),
                            ("paste_expansion", paste_expansion),
                            ("mask_expansion", mask_expansion),
-                           ("mask_bottom_expansion", mask_bottom_expansion)):
+                           ("mask_bottom_expansion", mask_bottom_expansion),
+                           ("x", x), ("y", y)):
             if value is not None:
                 params[key] = format_length(value)
+        if new_name.strip():
+            params["new_name"] = new_name.strip()
         for key, value in (("rotation", rotation),
                            ("hole_rotation", hole_rotation)):
             if value is not None:
