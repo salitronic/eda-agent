@@ -2467,15 +2467,268 @@ Begin
     Iter.AddFilter_Method(eProcessAll);
 End;
 
+{ The value of the first exact Prop=Value condition in a filter. }
+Function FilterExactValue(FilterStr : String; Prop : String; Var Value : String) : Boolean;
+Var
+    Remaining, Condition : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := False;
+    Value := '';
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else Begin Condition := Remaining; Remaining := ''; End;
+        EqPos := FilterOpPos(Condition);
+        If (EqPos > 1) And (FilterOpText(Condition) = '=') Then
+            If Copy(Condition, 1, EqPos - 1) = Prop Then
+            Begin
+                Value := Copy(Condition, EqPos + 1, Length(Condition));
+                Result := True;
+                Exit;
+            End;
+    End;
+End;
+
+{ Whether the walk is still collecting: a limit of 0 takes everything. }
+Function PCBStillCollecting(Matches : TInterfaceList; Limit : Integer) : Boolean;
+Begin
+    Result := (Limit <= 0) Or (Matches.Count < Limit);
+End;
+
+{ One object into the matches, once: the net route meets a poured track both }
+{ in its net and in its pour. Seen is sorted, so the check is a binary search. }
+Procedure PCBKeepMatch(Obj : IPCB_Primitive; FilterStr : String;
+    Matches : TInterfaceList; Seen : TStringList);
+Var
+    Key : String;
+Begin
+    If Not MatchesFilterPCB(Obj, FilterStr) Then Exit;
+    Key := IntToStr(Obj.I_ObjectAddress);
+    If Seen.IndexOf(Key) >= 0 Then Exit;
+    Seen.Add(Key);
+    Matches.Add(Obj);
+End;
+
+{ WHERE A MATCH CAN BE, BEFORE ASKING THE FILTER. The walk went through every }
+{ object of the type on the board and asked the filter of each one. Some      }
+{ filters name a place that holds every possible match, and walking only that }
+{ place hands the filter far fewer objects:                                   }
+{   Net=<name>        the net's own primitives, and the copper of every pour  }
+{                     on that net (poured copper is not in the net's group,   }
+{                     and the Net getter answers the pour's net for it);      }
+{   Component=<name>  the primitives of every component of that designator;   }
+{   BoundsLeft / BoundsRight / X1 / X2 and BoundsBottom / BoundsTop / Y1 / Y2 }
+{                     a point every match's bounding box holds, so a spatial  }
+{                     search of a small area round it (primitives only: a     }
+{                     spatial iterator does not hand out group objects);      }
+{ else the board walk, narrowed by Layer= (NarrowPCBWalk). MatchesFilterPCB   }
+{ still decides every object any route hands out, so a route can only leave  }
+{ out what the filter would reject.                                           }
+Procedure CollectPCBMatches(Board : IPCB_Board; ObjTypeInt : Integer;
+    FilterStr : String; Limit : Integer; Matches : TInterfaceList);
+Var
+    Iterator : IPCB_BoardIterator;
+    Spatial : IPCB_SpatialIterator;
+    Group : IPCB_GroupIterator;
+    Obj : IPCB_Primitive;
+    Owner : IPCB_Polygon;
+    Net : IPCB_Net;
+    Comp : IPCB_Component;
+    Seen : TStringList;
+    Wanted, Value : String;
+    HasX, HasY, IsPrimitive : Boolean;
+    X, Y, Lo, Hi : TCoord;
+Begin
+    Seen := TStringList.Create;
+    Try
+        Seen.Sorted := True;
+        IsPrimitive := (ObjTypeInt = eTrackObject) Or (ObjTypeInt = eArcObject)
+            Or (ObjTypeInt = eViaObject) Or (ObjTypeInt = ePadObject)
+            Or (ObjTypeInt = eFillObject) Or (ObjTypeInt = eRegionObject)
+            Or (ObjTypeInt = eTextObject);
+
+        If (FilterExactValue(FilterStr, 'Net', Wanted) Or FilterExactValue(FilterStr, 'Net.Name', Wanted))
+            And (Wanted <> '') And IsPrimitive And (ObjTypeInt <> eTextObject) Then
+        Begin
+            Iterator := Board.BoardIterator_Create;
+            Try
+                Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+                Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+                Net := Iterator.FirstPCBObject;
+                While (Net <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                Begin
+                    If Net.Name = Wanted Then
+                    Begin
+                        Group := Net.GroupIterator_Create;
+                        Try
+                            Group.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                            Group.AddFilter_AllLayers;
+                            Obj := Group.FirstPCBObject;
+                            While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                            Begin
+                                PCBKeepMatch(Obj, FilterStr, Matches, Seen);
+                                Obj := Group.NextPCBObject;
+                            End;
+                        Finally
+                            Net.GroupIterator_Destroy(Group);
+                        End;
+                    End;
+                    Net := Iterator.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iterator);
+            End;
+            Iterator := Board.BoardIterator_Create;
+            Try
+                Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+                Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+                Owner := Iterator.FirstPCBObject;
+                While (Owner <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                Begin
+                    Value := '';
+                    Net := Owner.Net;
+                    If Net <> Nil Then Value := Net.Name;
+                    If Value = Wanted Then
+                    Begin
+                        Group := Owner.GroupIterator_Create;
+                        Try
+                            Group.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                            Obj := Group.FirstPCBObject;
+                            While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                            Begin
+                                PCBKeepMatch(Obj, FilterStr, Matches, Seen);
+                                Obj := Group.NextPCBObject;
+                            End;
+                        Finally
+                            Owner.GroupIterator_Destroy(Group);
+                        End;
+                    End;
+                    Owner := Iterator.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iterator);
+            End;
+            Exit;
+        End;
+
+        { Not for texts: a component's designator and comment are not in   }
+        { its group, while the Component getter names their component      }
+        { (MEASURED: U4 3 texts, its group 1).                               }
+        If FilterExactValue(FilterStr, 'Component', Wanted) And (Wanted <> '')
+            And (ObjTypeInt <> eComponentObject) And (ObjTypeInt <> eTextObject) Then
+        Begin
+            Iterator := Board.BoardIterator_Create;
+            Try
+                Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
+                Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+                Comp := Iterator.FirstPCBObject;
+                While (Comp <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                Begin
+                    If Comp.Name.Text = Wanted Then
+                    Begin
+                        Group := Comp.GroupIterator_Create;
+                        Try
+                            Group.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                            Obj := Group.FirstPCBObject;
+                            While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                            Begin
+                                PCBKeepMatch(Obj, FilterStr, Matches, Seen);
+                                Obj := Group.NextPCBObject;
+                            End;
+                        Finally
+                            Comp.GroupIterator_Destroy(Group);
+                        End;
+                    End;
+                    Comp := Iterator.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iterator);
+            End;
+            Exit;
+        End;
+
+        HasX := False; HasY := False; X := 0; Y := 0;
+        If IsPrimitive Then
+        Begin
+            If FilterExactValue(FilterStr, 'BoundsLeft', Value) Or FilterExactValue(FilterStr, 'BoundsRight', Value)
+                Or FilterExactValue(FilterStr, 'X1', Value) Or FilterExactValue(FilterStr, 'X2', Value) Then
+            Begin
+                HasX := True;
+                X := MilsToCoordF(StrToFloatDef(Value, 0));
+            End;
+            If FilterExactValue(FilterStr, 'BoundsBottom', Value) Or FilterExactValue(FilterStr, 'BoundsTop', Value)
+                Or FilterExactValue(FilterStr, 'Y1', Value) Or FilterExactValue(FilterStr, 'Y2', Value) Then
+            Begin
+                HasY := True;
+                Y := MilsToCoordF(StrToFloatDef(Value, 0));
+            End;
+        End;
+        If HasX Or HasY Then
+        Begin
+            { One mil round the point: the filter compares printed values. }
+            Lo := MilsToCoordF(-200000);
+            Hi := MilsToCoordF(200000);
+            { Every layer: a spatial search narrowed to TopLayer left out    }
+            { the SMD pads on it (MEASURED); the filter checks Layer anyway. }
+            Spatial := Board.SpatialIterator_Create;
+            Try
+                Spatial.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                If HasX And HasY Then
+                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Y - MilsToCoordF(1),
+                        X + MilsToCoordF(1), Y + MilsToCoordF(1))
+                Else If HasX Then
+                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Lo, X + MilsToCoordF(1), Hi)
+                Else
+                    Spatial.AddFilter_Area(Lo, Y - MilsToCoordF(1), Hi, Y + MilsToCoordF(1));
+                Obj := Spatial.FirstPCBObject;
+                While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
+                Begin
+                    PCBKeepMatch(Obj, FilterStr, Matches, Seen);
+                    Obj := Spatial.NextPCBObject;
+                End;
+            Finally
+                Board.SpatialIterator_Destroy(Spatial);
+            End;
+            Exit;
+        End;
+
+        Iterator := Board.BoardIterator_Create;
+        Try
+            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+            NarrowPCBWalk(Board, Iterator, FilterStr);
+            Obj := Iterator.FirstPCBObject;
+            While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
+            Begin
+                If MatchesFilterPCB(Obj, FilterStr) Then Matches.Add(Obj);
+                Obj := Iterator.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iterator);
+        End;
+    Finally
+        Seen.Free;
+    End;
+End;
+
 Function ProcessPCBBoardObjects(Board : IPCB_Board; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
     Mode : String; Var TotalMatched : Integer; Limit : Integer) : String;
 Var
-    Iterator : IPCB_BoardIterator;
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
     First, Removed : Boolean;
-    I : Integer;
+    I, Remaining : Integer;
     Victims : TInterfaceList;
 Begin
     Result := '';
@@ -2511,19 +2764,7 @@ Begin
     If Mode = 'delete' Then
     Begin
         Victims := TInterfaceList.Create;
-        Iterator := Board.BoardIterator_Create;
-        Try
-            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            NarrowPCBWalk(Board, Iterator, FilterStr);
-            Obj := Iterator.FirstPCBObject;
-            While Obj <> Nil Do
-            Begin
-                If MatchesFilterPCB(Obj, FilterStr) Then Victims.Add(Obj);
-                Obj := Iterator.NextPCBObject;
-            End;
-        Finally
-            Board.BoardIterator_Destroy(Iterator);
-        End;
+        CollectPCBMatches(Board, ObjTypeInt, FilterStr, 0, Victims);
         PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
@@ -2559,20 +2800,7 @@ Begin
     If Mode = 'modify' Then
     Begin
         Victims := TInterfaceList.Create;
-        Iterator := Board.BoardIterator_Create;
-        Try
-            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            NarrowPCBWalk(Board, Iterator, FilterStr);
-            Obj := Iterator.FirstPCBObject;
-            While Obj <> Nil Do
-            Begin
-                If (Limit > 0) And (Victims.Count >= Limit) Then Break;
-                If MatchesFilterPCB(Obj, FilterStr) Then Victims.Add(Obj);
-                Obj := Iterator.NextPCBObject;
-            End;
-        Finally
-            Board.BoardIterator_Destroy(Iterator);
-        End;
+        CollectPCBMatches(Board, ObjTypeInt, FilterStr, Limit, Victims);
         PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
@@ -2599,29 +2827,20 @@ Begin
         Exit;
     End;
 
-    Iterator := Board.BoardIterator_Create;
-    Try
-        Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-        { The V7 layer set: the legacy AllLayers stops at Mechanical16, and }
-        { MEASURED, 6390 outline primitives on Mechanical17 counted 0.      }
-        NarrowPCBWalk(Board, Iterator, FilterStr);
-
-        Obj := Iterator.FirstPCBObject;
-        While Obj <> Nil Do
-        Begin
-            If (Limit > 0) And (TotalMatched >= Limit) Then Break;
-            If MatchesFilterPCB(Obj, FilterStr) Then
-            Begin
-                ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
-                If Not First Then Result := Result + ',';
-                First := False;
-                Result := Result + ObjJson;
-                Inc(TotalMatched);
-            End;
-            Obj := Iterator.NextPCBObject;
-        End;
-    Finally
-        Board.BoardIterator_Destroy(Iterator);
+    { What is left of the limit: the count carries over from earlier calls. }
+    If (Limit > 0) And (TotalMatched >= Limit) Then Exit;
+    Remaining := 0;
+    If Limit > 0 Then Remaining := Limit - TotalMatched;
+    Victims := TInterfaceList.Create;
+    CollectPCBMatches(Board, ObjTypeInt, FilterStr, Remaining, Victims);
+    For I := 0 To Victims.Count - 1 Do
+    Begin
+        Obj := Victims.Items[I];
+        ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
+        If Not First Then Result := Result + ',';
+        First := False;
+        Result := Result + ObjJson;
+        Inc(TotalMatched);
     End;
 End;
 

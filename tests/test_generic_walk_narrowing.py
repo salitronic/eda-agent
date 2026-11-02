@@ -25,29 +25,31 @@ def _generic(name):
     return load(_ALTIUM / "PCBGeneric.pas", minimum=20)[name]
 
 
-def _walks(body):
-    """Each iterator walk: from its creation to its first object."""
-    out = []
-    for m in re.finditer(r"Iterator := Board\.BoardIterator_Create;", body):
-        out.append(body[m.end():body.index("Iterator.FirstPCBObject", m.end())])
-    return out
+def _board_walk(body):
+    """The last walk of CollectPCBMatches: the board, of the asked type."""
+    start = body.rindex("Iterator := Board.BoardIterator_Create;")
+    return body[start:body.index("Iterator.FirstPCBObject", start)]
 
 
-def test_query_modify_and_delete_all_narrow_their_walk():
+def test_query_modify_and_delete_all_collect_through_one_walk():
     body = _generic("ProcessPCBBoardObjects")
-    walks = _walks(body)
-    assert len(walks) == 3
-    for walk in walks:
-        obj = walk.index("Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));")
-        narrow = walk.index("NarrowPCBWalk(Board, Iterator, FilterStr);")
-        assert obj < narrow
-        assert "AddFilter_Method" not in walk
-        assert "AddFilter_IPCB_LayerSet" not in walk
+    assert "BoardIterator_Create" not in body
+    assert body.count("CollectPCBMatches(Board, ObjTypeInt, FilterStr, ") == 3
+
+
+def test_the_board_walk_is_narrowed_by_the_filter():
+    walk = _board_walk(_generic("CollectPCBMatches"))
+    obj = walk.index("Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));")
+    narrow = walk.index("NarrowPCBWalk(Board, Iterator, FilterStr);")
+    assert obj < narrow
+    assert "AddFilter_Method" not in walk
+    assert "AddFilter_IPCB_LayerSet" not in walk
 
 
 def test_the_filter_still_checks_every_object_the_walk_hands_out():
-    body = _generic("ProcessPCBBoardObjects")
-    assert body.count("MatchesFilterPCB(Obj, FilterStr)") == 3
+    body = _generic("CollectPCBMatches")
+    last = body[body.rindex("Iterator := Board.BoardIterator_Create;"):]
+    assert "If MatchesFilterPCB(Obj, FilterStr) Then Matches.Add(Obj);" in last
 
 
 def test_only_an_exact_condition_narrows():

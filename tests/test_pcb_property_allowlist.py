@@ -85,5 +85,10 @@ def test_modify_collects_before_it_changes():
     start = walk.index("If Mode = 'modify' Then")
     arm = walk[start:walk.index("Exit;", start)]
     first_apply = arm.index("ApplySetPropertiesPCB(")
-    destroy = arm.index("BoardIterator_Destroy(")
-    assert destroy < first_apply, "a property is applied before the walk ends"
+    # The walk is CollectPCBMatches, which hands back the whole list with
+    # every iterator it used destroyed; nothing is applied inside it.
+    collect = arm.index("CollectPCBMatches(")
+    assert collect < first_apply, "a property is applied before the walk ends"
+    routes = _body(text, "Procedure CollectPCBMatches(")
+    assert "ApplySetPropertiesPCB(" not in routes
+    assert routes.count("_Create;") == routes.count("_Destroy(")
