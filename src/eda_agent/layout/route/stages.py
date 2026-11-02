@@ -130,6 +130,15 @@ class StageOptions:
     # narrower, necking down to that pad's width only on the stub into it.
     # Off: a net is routed at what its narrowest pad takes, all the way.
     neck_pads: bool = False
+    # Route only what the board's own copper leaves apart: a net its
+    # tracks already join whole is not routed, and one partly joined is
+    # routed by joining its pieces, each reachable anywhere along its
+    # copper. Off: every net's pads are joined afresh.
+    join_existing: bool = False
+    # Copper layers routed on by no net, by name (an inner layer kept clear
+    # for a pour or a sensitive signal). A layer a net's surface pad is on
+    # is refused: its pads could not be reached.
+    exclude_layers: tuple = ()
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -140,7 +149,8 @@ class StageOptions:
         return not (self.any() or self.class_order or self.stall_stop or self.bends
                     or self.straight or self.global_stall or self.repair_clean
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
-                    or self.axis_entry or self.neck_pads or self.pad_vias != "any")
+                    or self.axis_entry or self.neck_pads or self.join_existing
+                    or bool(self.exclude_layers) or self.pad_vias != "any")
 
     @classmethod
     def coerce(cls, value) -> "StageOptions":

@@ -208,7 +208,15 @@ class Router:
         self.pour_planes = [p for p in self._pour_planes() if p.layer not in self.released] \
             if planes else []
         on_planes = {p.layer for p in self.pour_planes}
-        routing = [l for l in board.signal_layers() if l not in on_planes]
+        excluded = set(self.options.exclude_layers)
+        unknown = excluded - set(board.copper_layers())
+        if unknown:
+            raise ValueError(f"exclude_layers names no copper layer: {sorted(unknown)}")
+        padded = {c.layer for p in board.pads if p.net and p.is_smd for c in p.copper}
+        if excluded & padded:
+            raise ValueError("exclude_layers takes a layer no net's surface pad is on; "
+                             f"these carry some: {sorted(excluded & padded)}")
+        routing = [l for l in board.signal_layers() if l not in on_planes and l not in excluded]
         self.grid = RouteGrid(board, self.pitch, reach, layers=routing, grow=self.object_grow,
                               field_of=self.field_of, n_fields=self.n_fields).build()
         self._fixed: dict | None = None       # fixed shapes per layer, for exact checks
@@ -275,8 +283,62 @@ class Router:
         # taken up (see pour.py).
         self.pours = find_pours(self) if pours else []
         self.pour_nets = {pr.net for pr in self.pours}
+        if self.options.join_existing:
+            self._join_existing()
         self.use_global = global_routing
         self.gr: GlobalRouter | None = None
+
+    def _join_existing(self) -> None:
+        """Bring the jobs into line with the board's own copper: a net it
+        joins whole is not routed; a net it joins in part is routed by
+        joining its pieces (as a pour's are, pour.stitch), each piece its
+        pads' cells and the cells its copper covers, so a route may meet
+        the copper anywhere along it. Poured and plane nets are left to
+        their own stages."""
+        from ..drc import _joined, conductive_items
+
+        items = conductive_items(self.board)
+        uf = _joined(self.board, items)
+        spec = self.grid.spec
+        pad_root: dict[int, int] = {}
+        copper: dict[int, list] = {}
+        for n, it in enumerate(items):
+            if not it.net:
+                continue
+            root = uf.find(n)
+            if it.kind == "pad":
+                pad_root[it.idx] = root
+                continue
+            li = self.grid.layer_index.get(it.layer)
+            if li is None:
+                continue
+            i0, j0, i1, j1 = spec.window(*it.shape.bbox)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = spec.x(np.arange(i0, i1))[None, :]
+            Y = spec.y(np.arange(j0, j1))[:, None]
+            ys, xs = np.nonzero(shape_distance(it.shape, X, Y) <= EPS)
+            if len(ys):
+                copper.setdefault(root, []).append(
+                    np.column_stack([np.full(len(ys), li), ys + j0, xs + i0]))
+        keep = []
+        for job in self.jobs:
+            if job.name in self.pour_nets or job.plane_mask is not None:
+                keep.append(job)
+                continue
+            parts: dict = {}
+            for i, t in enumerate(job.terminals):
+                parts.setdefault(pad_root.get(t.pad, ("alone", i)), []).append(i)
+            if len(parts) == 1:
+                continue            # joined whole already
+            if len(parts) < len(job.terminals):
+                job.groups = [
+                    {"terminals": idxs,
+                     "cells": np.concatenate([job.terminals[i].cells for i in idxs]
+                                             + copper.get(root, [])).astype(np.int64)}
+                    for root, idxs in parts.items()]
+            keep.append(job)
+        self.jobs = keep
 
     # -- set-up --------------------------------------------------------------
 
