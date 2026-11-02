@@ -46,7 +46,7 @@ Begin
     Result := Nil;
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     Net := Iterator.FirstPCBObject;
     While Net <> Nil Do
@@ -150,7 +150,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Net := Iterator.FirstPCBObject;
@@ -228,7 +228,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, ePadObject,
         eArcObject, eFillObject, ePolyObject, eRegionObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Prim := Iter.FirstPCBObject;
     While Prim <> Nil Do
@@ -247,7 +247,7 @@ Begin
     { Decide which nets to delete. }
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Net := Iter.FirstPCBObject;
     While Net <> Nil Do
@@ -353,7 +353,7 @@ Begin
                 NetIter := Board.BoardIterator_Create;
                 Try
                     NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-                    NetIter.AddFilter_LayerSet(AllLayers);
+                    NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                     NetIter.AddFilter_Method(eProcessAll);
                     Net := NetIter.FirstPCBObject;
                     While Net <> Nil Do
@@ -508,7 +508,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         ClearRule := Iter.FirstPCBObject;
         While ClearRule <> Nil Do
@@ -556,7 +556,7 @@ Begin
     GapIter := Board.BoardIterator_Create;
     Try
         GapIter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        GapIter.AddFilter_LayerSet(AllLayers);
+        GapIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         GapIter.AddFilter_Method(eProcessAll);
         ClearRule := GapIter.FirstPCBObject;
         While ClearRule <> Nil Do
@@ -585,7 +585,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Rule := Iterator.FirstPCBObject;
@@ -641,7 +641,7 @@ Begin
     Result := Nil;
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     Rule := Iterator.FirstPCBObject;
     While Rule <> Nil Do
@@ -724,7 +724,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Rule := Iter.FirstPCBObject;
             While Rule <> Nil Do
@@ -892,7 +892,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -947,7 +947,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -990,7 +990,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -1033,7 +1033,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -1070,7 +1070,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -1101,7 +1101,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -1213,7 +1213,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         R := Iter.FirstPCBObject;
         While R <> Nil Do
@@ -1328,7 +1328,7 @@ Begin
 
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Found := False;
     Try
@@ -1670,7 +1670,7 @@ Begin
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -1722,7 +1722,7 @@ Begin
         Else GapWanted := MilsToCoordF(StrToFloatDef(GapStr, 0));
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -1784,7 +1784,7 @@ Begin
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -1838,7 +1838,7 @@ Begin
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -1887,7 +1887,7 @@ Begin
             ViaProblem := 'via sizes apply to a Routing Via rule; this is kind ' + IntToStr(Kind);
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -1965,7 +1965,7 @@ Begin
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -2099,7 +2099,7 @@ Begin
         ImpMissed := '';
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Found := False;
         Try
@@ -2186,7 +2186,7 @@ Begin
         Begin
             Iter := Board.BoardIterator_Create;
             Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Found := False;
             Try
@@ -2378,7 +2378,7 @@ Begin
         VX := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
         VY := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
     Except End;
-    Try VLayer := GetLayerString(Violation.Layer); Except End;
+    Try VLayer := LayerDisplayName(Violation.Layer); Except End;
     Result := Result + ',"x_mils":' + FloatToJsonStr(VX);
     Result := Result + ',"y_mils":' + FloatToJsonStr(VY);
     Result := Result + ',"layer":"' + EscapeJsonString(VLayer) + '"';
@@ -2396,7 +2396,7 @@ Begin
                 P1X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
                 P1Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
-            Try P1Layer := GetLayerString(Prim.Layer); Except End;
+            Try P1Layer := LayerDisplayName(Prim.Layer); Except End;
         End;
     Except End;
     Result := Result + ',"primitive1":' + JsonObj(
@@ -2421,7 +2421,7 @@ Begin
                 P2X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
                 P2Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
-            Try P2Layer := GetLayerString(Prim.Layer); Except End;
+            Try P2Layer := LayerDisplayName(Prim.Layer); Except End;
         End;
     Except End;
     Result := Result + ',"primitive2":' + JsonObj(
@@ -2448,7 +2448,7 @@ Begin
     JsonItems := '';
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     Violation := Iterator.FirstPCBObject;
     While Violation <> Nil Do
@@ -2644,7 +2644,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Comp := Iterator.FirstPCBObject;
@@ -2656,7 +2656,7 @@ Begin
         Try Designator := Comp.Name.Text; Except Designator := ''; End;
         Try CommentStr := Comp.Comment.Text; Except CommentStr := ''; End;
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
-        Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
+        Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
         Try HeightMils := CoordToMilsF(Comp.Height); Except HeightMils := 0; End;
 
@@ -2819,7 +2819,7 @@ Begin
     NewBBoxX2 := NewX + OffsetX + (NewW Div 2) + MarginCoord;
     NewBBoxY2 := NewY + OffsetY + (NewH Div 2) + MarginCoord;
 
-    Try TargetLayer := GetLayerString(Comp.Layer); Except TargetLayer := ''; End;
+    Try TargetLayer := LayerDisplayName(Comp.Layer); Except TargetLayer := ''; End;
 
     JsonItems := '';
     First := True;
@@ -2827,7 +2827,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     Try
         Other := Iterator.FirstPCBObject;
@@ -2845,7 +2845,7 @@ Begin
 
             { Cross-side components do not collide in plane. }
             Try
-                If GetLayerString(Other.Layer) <> TargetLayer Then
+                If LayerDisplayName(Other.Layer) <> TargetLayer Then
                 Begin
                     Other := Iterator.NextPCBObject;
                     Continue;
@@ -3742,7 +3742,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(ObjectSet);
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Prim := Iter.FirstPCBObject;
         While Prim <> Nil Do
@@ -4295,7 +4295,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Prim := Iter.FirstPCBObject;
             While Prim <> Nil Do
@@ -4333,7 +4333,7 @@ Begin
             CompIter := Board.BoardIterator_Create;
             Try
                 CompIter.AddFilter_ObjectSet(MkSet(eComponentObject));
-                CompIter.AddFilter_LayerSet(AllLayers);
+                CompIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 CompIter.AddFilter_Method(eProcessAll);
                 Obj := CompIter.FirstPCBObject;
                 While Obj <> Nil Do
@@ -4592,7 +4592,7 @@ Begin
                 Else
                     SIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
                         ePadObject, eViaObject));
-                SIter.AddFilter_LayerSet(AllLayers);
+                SIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 SIter.AddFilter_Area(PX - ViaSize Div 2 - Clearance,
                                      PY - ViaSize Div 2 - Clearance,
                                      PX + ViaSize Div 2 + Clearance,
@@ -4736,7 +4736,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Obj := Iter.FirstPCBObject;
             While Obj <> Nil Do
@@ -4869,7 +4869,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -5224,7 +5224,7 @@ Begin
     Try
         Iterator := Board.BoardIterator_Create;
         Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
 
         Obj := Iterator.FirstPCBObject;
@@ -6397,7 +6397,7 @@ Begin
         Walk := LayerStack.NextLayer(Walk);
     End;
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"'
+        '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '"'
         + ',"stack_order":[' + Order + ']}');
 End;
 
@@ -6462,7 +6462,7 @@ Begin
 
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -6771,7 +6771,7 @@ Begin
     If (TargetLayer < eInternalPlane1) Or (TargetLayer > eInternalPlane16) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_A_PLANE',
-            'Layer ' + GetLayerString(TargetLayer) + ' is not an internal plane. '
+            'Layer ' + LayerDisplayName(TargetLayer) + ' is not an internal plane. '
             + 'Only InternalPlane1..InternalPlane16 carry a net on the layer. '
             + 'For a signal layer, pour copper with pcb_place_polygon_rect '
             + 'instead.');
@@ -6791,7 +6791,7 @@ Begin
     If LayerObj = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
-            'Layer ' + GetLayerString(TargetLayer) + ' is not present in the '
+            'Layer ' + LayerDisplayName(TargetLayer) + ' is not present in the '
             + 'current stack. Add it with pcb_add_layer first.');
         Exit;
     End;
@@ -6808,7 +6808,7 @@ Begin
 
     { The name the stack knows this plane by, so the response names the layer }
     { that was written rather than the string the caller happened to pass.    }
-    ResolvedName := GetLayerString(TargetLayer);
+    ResolvedName := LayerDisplayName(TargetLayer);
     Try ResolvedName := LayerObj.Name; Except End;
 
     Route := '';
@@ -6914,7 +6914,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":' + BoolToJsonStr(Applied) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
         + '"layer_name":"' + EscapeJsonString(ResolvedName) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '",'
         + '"net_readback":"' + EscapeJsonString(NetBack) + '",'
@@ -7123,6 +7123,23 @@ End;
 { ordinals that are not real layers.                                          }
 {..............................................................................}
 
+{ Whether mechanical layer Lyr is enabled on this board. The legacy layer }
+{ range stops at Mechanical16; readers add Mechanical17 and up with this.  }
+Function MechLayerEnabled(Board : IPCB_Board; Lyr : TLayer) : Boolean;
+Var
+    Stack : IPCB_LayerStack_V7;
+    Mech : IPCB_MechanicalLayer;
+Begin
+    Result := False;
+    Stack := Nil;
+    Try Stack := Board.LayerStack_V7; Except Stack := Nil; End;
+    If Stack = Nil Then Exit;
+    Mech := Nil;
+    Try Mech := Stack.LayerObject_V7[Lyr]; Except Mech := Nil; End;
+    If Mech = Nil Then Exit;
+    Try Result := Mech.MechanicalLayerEnabled; Except Result := False; End;
+End;
+
 Function PCB_GetLayerDisplay(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -7132,7 +7149,8 @@ Var
     Lyr : TLayer;
     JsonItems, LyrNm, UserName : String;
     First, Visible, Stacked : Boolean;
-    Color, Count, Shown : Integer;
+    Color, Count, Shown, N, I : Integer;
+    Ids : TStringList;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -7160,9 +7178,22 @@ Begin
     Count := 0;
     Shown := 0;
 
+    { The legacy range, then every enabled mechanical layer above 16, }
+    { which the legacy range cannot name.                            }
+    Ids := TStringList.Create;
     For Lyr := eTopLayer To eMultiLayer Do
+        If GetLayerString(Lyr) <> 'Unknown' Then Ids.Add(IntToStr(Lyr));
+    For N := 17 To 1024 Do
     Begin
-        LyrNm := GetLayerString(Lyr);
+        Lyr := MechLayerFromNumber(N);
+        If Lyr = eNoLayer Then Break;
+        If MechLayerEnabled(Board, Lyr) Then Ids.Add(IntToStr(Lyr));
+    End;
+
+    For I := 0 To Ids.Count - 1 Do
+    Begin
+        Lyr := StrToInt(Ids[I]);
+        LyrNm := LayerDisplayName(Lyr);
         If LyrNm <> 'Unknown' Then
         Begin
             Color := 0;
@@ -7200,6 +7231,7 @@ Begin
             If Visible Then Inc(Shown);
         End;
     End;
+    Ids.Free;
 
     Result := BuildSuccessResponse(RequestId,
         '{"layers":[' + JsonItems + '],"count":' + IntToStr(Count)
@@ -7572,7 +7604,7 @@ Begin
     Try Board.ViewManager_FullUpdate; Except End;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
+        '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(LayerID)) + '",'
         + '"color":' + IntToStr(Wanted) + ','
         + '"color_hex":"' + ColorToHexRgb(Wanted) + '"}');
 End;
@@ -7620,7 +7652,7 @@ Begin
     // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
 
     Result := BuildSuccessResponse(RequestId,
-        '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
+        '{"layer":"' + EscapeJsonString(LayerDisplayName(LayerID)) + '",'
         + '"visible":' + BoolToJsonStr(Visible) + '}');
 End;
 
@@ -7872,7 +7904,7 @@ Begin
     Idx := 0;
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Poly := Iter.FirstPCBObject;
     While Poly <> Nil Do
@@ -7962,7 +7994,7 @@ Begin
             Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
             If Items <> '' Then Items := Items + ',';
             Items := Items + '{"name":"' + EscapeJsonString(Poly.Name) + '"'
-                + ',"layer":"' + EscapeJsonString(GetLayerString(Poly.Layer)) + '"'
+                + ',"layer":"' + EscapeJsonString(LayerDisplayName(Poly.Layer)) + '"'
                 + ',"net":"' + EscapeJsonString(NetName) + '"'
                 + ',"pour_index":' + IntToStr(Poly.PourIndex);
             If Not Poly.Poured Then
@@ -8448,8 +8480,8 @@ Begin
         + '"y":' + FloatToJsonStr(ViaY) + ','
         + '"size":' + FloatToJsonStr(ViaSize) + ','
         + '"hole_size":' + FloatToJsonStr(ViaHole) + ','
-        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
-        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '"}');
+        + '"low_layer":"' + EscapeJsonString(LayerDisplayName(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(LayerDisplayName(HighLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -8555,7 +8587,7 @@ Begin
         + '"y2":' + FloatToJsonStr(TY2) + ','
         + '"width":' + FloatToJsonStr(TWidth) + ','
         + '"keepout":' + BoolToJsonStr(Track.IsKeepout) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}');
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Track.Layer)) + '"}');
 End;
 
 {..............................................................................}
@@ -8988,7 +9020,7 @@ Begin
         + '"end_angle":' + FloatToJsonStr(ArcEA) + ','
         + '"width":' + FloatToJsonStr(ArcWidth) + ','
         + '"keepout":' + BoolToJsonStr(Arc.IsKeepout) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}');
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Arc.Layer)) + '"}');
 End;
 
 {..............................................................................}
@@ -9343,7 +9375,7 @@ Begin
         + '"height":' + FloatToJsonStr(CoordToMilsF(TextObj.Size)) + ','
         + '"stroke":' + FloatToJsonStr(CoordToMilsF(TextObj.Width)) + ','
         + '"rotation":' + FloatToJsonStr(TextObj.Rotation) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(TextObj.Layer)) + '"'
         + Extra + '}');
 End;
 
@@ -9441,7 +9473,7 @@ Begin
         + '"y1":' + FloatToJsonStr(FY1) + ','
         + '"x2":' + FloatToJsonStr(FX2) + ','
         + '"y2":' + FloatToJsonStr(FY2) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(Fill.Layer)) + '"}');
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Fill.Layer)) + '"}');
 End;
 
 {..............................................................................}
@@ -9819,7 +9851,7 @@ Begin
     Found := False;
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Rule := Iterator.FirstPCBObject;
@@ -9909,7 +9941,7 @@ Begin
             If Pad.Net <> Nil Then NetName := Pad.Net.Name
             Else NetName := '';
         Except NetName := ''; End;
-        Try LayerStr := GetLayerString(Pad.Layer); Except LayerStr := 'Unknown'; End;
+        Try LayerStr := LayerDisplayName(Pad.Layer); Except LayerStr := 'Unknown'; End;
 
         JsonItems := JsonItems + '{"name":"' + EscapeJsonString(PadName) + '",'
             + '"x":' + FloatToJsonStr(CoordToMilsF(Pad.x)) + ','
@@ -9962,7 +9994,7 @@ Begin
         Exit;
     End;
 
-    Try OldLayer := GetLayerString(Comp.Layer); Except OldLayer := 'Unknown'; End;
+    Try OldLayer := LayerDisplayName(Comp.Layer); Except OldLayer := 'Unknown'; End;
 
     PcbBeginEdit(0);
     Try
@@ -9981,7 +10013,7 @@ Begin
         PcbEndEdit(0);
     End;
 
-    Try NewLayer := GetLayerString(Comp.Layer); Except NewLayer := 'Unknown'; End;
+    Try NewLayer := LayerDisplayName(Comp.Layer); Except NewLayer := 'Unknown'; End;
     MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
@@ -10180,7 +10212,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Violation := Iterator.FirstPCBObject;
@@ -10318,7 +10350,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Rule := Iterator.FirstPCBObject;
@@ -10377,7 +10409,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Via := Iterator.FirstPCBObject;
@@ -10406,8 +10438,8 @@ Begin
             + '"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) + ','
             + '"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) + ','
             + '"net":"' + EscapeJsonString(NetName) + '",'
-            + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
-            + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
+            + '"low_layer":"' + EscapeJsonString(LayerDisplayName(Via.LowLayer)) + '",'
+            + '"high_layer":"' + EscapeJsonString(LayerDisplayName(Via.HighLayer)) + '"}';
         Inc(Returned);
         Via := Iterator.NextPCBObject;
     End;
@@ -10513,6 +10545,7 @@ Var
     XStr, YStr, LayerStr, ObjTypeStr : String;
     TargetX, TargetY : Double;
     TargetLayer : TLayer;
+    OneLayer : IPCB_LayerSet;
     ObjFilter : TObjectId;
     Found : Boolean;
     FoundObj : IPCB_Primitive;
@@ -10597,6 +10630,13 @@ Begin
     Iterator.AddFilter_ObjectSet(MkSet(ObjFilter));
     If LayerStr = '' Then
         Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+    Else If ParseMechLayerNumber(LayerDisplayName(TargetLayer)) > 16 Then
+    Begin
+        { a legacy set cannot hold Mechanical17 and up }
+        OneLayer := LayerSet.CreateLayerSet;
+        OneLayer.Include(TargetLayer);
+        Iterator.AddFilter_IPCB_LayerSet(OneLayer);
+    End
     Else
         Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
     Iterator.AddFilter_Method(eProcessAll);
@@ -10726,7 +10766,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Pad := Iterator.FirstPCBObject;
@@ -10760,7 +10800,7 @@ Begin
         First := False;
 
         Try PadName := Pad.Name; Except PadName := ''; End;
-        Try LayerStr := GetLayerString(Pad.Layer); Except LayerStr := 'Unknown'; End;
+        Try LayerStr := LayerDisplayName(Pad.Layer); Except LayerStr := 'Unknown'; End;
 
         // Get pad shape as string
         Try
@@ -10865,7 +10905,7 @@ Begin
     Iterator := Board.BoardIterator_Create;
     Try
         Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
         { Walk + collect as the BASE IPCB_Primitive, exactly like the proven
           PCB_Scale / CollectSelectedPCBPrims path. A TInterfaceList stores
@@ -10942,7 +10982,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eConnectionObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Conn := Iter.FirstPCBObject;
         While Conn <> Nil Do
@@ -11000,7 +11040,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, ePadObject,
             eComponentObject, eFillObject, eTextObject, ePolyObject, eConnectionObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
 
         Obj := Iterator.FirstPCBObject;
@@ -11104,7 +11144,7 @@ Begin
     Walk := Board.BoardIterator_Create;
     Try
         Walk.AddFilter_ObjectSet(MkSet(ePolyObject));
-        Walk.AddFilter_LayerSet(AllLayers);
+        Walk.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Walk.AddFilter_Method(eProcessAll);
         Result := Walk.FirstPCBObject;
         While (Result <> Nil) And (Count < Wanted) Do
@@ -11180,7 +11220,7 @@ Begin
     Net := '';
     Try If Pour.Net <> Nil Then Net := Pour.Net.Name; Except Net := ''; End;
     OnLayer := 'Unknown';
-    Try OnLayer := GetLayerString(Pour.Layer); Except End;
+    Try OnLayer := LayerDisplayName(Pour.Layer); Except End;
     Corners := Pour.PointCount;
     Rows := '';
     For I := 0 To Corners - 1 Do
@@ -11265,7 +11305,7 @@ Begin
     Net := '';
     Try If Pour.Net <> Nil Then Net := Pour.Net.Name; Except Net := ''; End;
     OnLayer := 'Unknown';
-    Try OnLayer := GetLayerString(Pour.Layer); Except End;
+    Try OnLayer := LayerDisplayName(Pour.Layer); Except End;
 
     Rows := '';
     Pieces := 0;
@@ -11362,7 +11402,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Polygon := Iterator.FirstPCBObject;
@@ -11375,7 +11415,7 @@ Begin
         Try
             If Polygon.Net <> Nil Then NetName := Polygon.Net.Name;
         Except End;
-        Try LayerStr := GetLayerString(Polygon.Layer); Except LayerStr := 'Unknown'; End;
+        Try LayerStr := LayerDisplayName(Polygon.Layer); Except LayerStr := 'Unknown'; End;
 
         // Get hatching style
         HatchStr := 'Unknown';
@@ -11499,7 +11539,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Polygon := Iterator.FirstPCBObject;
@@ -11644,7 +11684,7 @@ Begin
             JsonBool('success', Failed = '') + ',' +
             JsonInt('index', TargetIdx) + ',' +
             JsonStr('name', FoundPoly.Name) + ',' +
-            JsonStr('layer', GetLayerString(FoundPoly.Layer)) + ',' +
+            JsonStr('layer', LayerDisplayName(FoundPoly.Layer)) + ',' +
             JsonRaw('changed', '[' + Changed + ']') + ',' +
             JsonRaw('not_applied', '[' + Failed + ']') + ',' +
             JsonBool('repour_needed', Changed <> '') + ',' +
@@ -11682,7 +11722,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Rule := Iterator.FirstPCBObject;
@@ -11882,7 +11922,7 @@ Begin
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, ePadObject,
         eComponentObject, eFillObject, eTextObject, ePolyObject, eConnectionObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Obj := Iterator.FirstPCBObject;
@@ -11983,7 +12023,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
 
     Comp := Iterator.FirstPCBObject;
@@ -11994,7 +12034,7 @@ Begin
 
         Try Designator := Comp.Name.Text; Except Designator := ''; End;
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
-        Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
+        Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try Comment := Comp.Comment.Text; Except Comment := ''; End;
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
@@ -12655,7 +12695,7 @@ Begin
         + ',"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0)
         + ',"repour_mode":"' + RepourModeName(0) + '"'
         + ',"name":"' + EscapeJsonString(Polygon.Name) + '"'
-        + ',"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '"'
+        + ',"layer":"' + EscapeJsonString(LayerDisplayName(Polygon.Layer)) + '"'
         + ',"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -12772,8 +12812,8 @@ Begin
         + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"pitch":' + FloatToJsonStr(Pitch) + ','
-        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
-        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '",'
+        + '"low_layer":"' + EscapeJsonString(LayerDisplayName(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(LayerDisplayName(HighLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -13063,7 +13103,7 @@ Begin
             '{"placed":true,"vertices":' + IntToStr(NPts) + ','
             + ShapeJson
             + '"points":[' + PtsJson + '],'
-            + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+            + '"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
             + '"net":"' + EscapeJsonString(NetStr) + '",'
             + '"name":"' + EscapeJsonString(Region.Name) + '"}');
         Exit;
@@ -13073,7 +13113,7 @@ Begin
         '{"placed":true,'
         + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '",'
         + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
@@ -13128,7 +13168,7 @@ Begin
     Remaining := DesStr;
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     While Remaining <> '' Do
     Begin
@@ -13416,7 +13456,7 @@ Begin
         + '"hole_size":' + FloatToJsonStr(HoleSize) + ','
         + '"units":"' + UnitsStr + '",'
         + '"shape":"' + EscapeJsonString(Shape) + '",'
-        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
         + '"name":"' + EscapeJsonString(NameStr) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -14567,7 +14607,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"child_path":"' + EscapeJsonString(ChildPath) + '",'
-        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
         + '"rows":' + IntToStr(Rows) + ',"cols":' + IntToStr(Cols)
         + ',"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + '}');
 End;
@@ -14647,7 +14687,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eClassObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         NetClassObj := Iter.FirstPCBObject;
         While NetClassObj <> Nil Do
@@ -14694,7 +14734,7 @@ Begin
         NetIter := Board.BoardIterator_Create;
         Try
             NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-            NetIter.AddFilter_LayerSet(AllLayers);
+            NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             NetIter.AddFilter_Method(eProcessAll);
             Net := NetIter.FirstPCBObject;
             While Net <> Nil Do
@@ -14876,7 +14916,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Comp := Iter.FirstPCBObject;
         While (Comp <> Nil) And (Not Found) Do
@@ -15114,7 +15154,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
             Comp := Iterator.FirstPCBObject;
             While Comp <> Nil Do
@@ -15279,7 +15319,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Pair := Iter.FirstPCBObject;
         While Pair <> Nil Do
@@ -15508,7 +15548,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -15556,7 +15596,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -15991,7 +16031,7 @@ Begin
 
                                     NetName := '';
                                     Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                                    LayerName := GetLayerString(Track.Layer);
+                                    LayerName := LayerDisplayName(Track.Layer);
 
                                     { Apply the mutation when not in dry_run.  }
                                     { Defensive: bail the whole pair out on    }
@@ -16161,7 +16201,7 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iterator.AddFilter_Method(eProcessAll);
     Poly := Iterator.FirstPCBObject;
     While Poly <> Nil Do
@@ -16169,7 +16209,7 @@ Begin
         NetName := '';
         Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
         LayerName := '';
-        Try LayerName := GetLayerString(Poly.Layer); Except End;
+        Try LayerName := LayerDisplayName(Poly.Layer); Except End;
         NameStr := '';
         Try NameStr := Poly.Name; Except End;
 
@@ -16260,7 +16300,7 @@ Begin
     Iterator := Board.BoardIterator_Create;
     Try
         Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
         Via := Iterator.FirstPCBObject;
         While Via <> Nil Do
@@ -16378,7 +16418,7 @@ Begin
     Iterator := Board.BoardIterator_Create;
     Try
         Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
         Via := Iterator.FirstPCBObject;
         While Via <> Nil Do
@@ -16519,7 +16559,7 @@ Var
     LayerName, KindStr, ClearedJson, PartnerName : String;
     PairKindJson, PartnerJson : String;
     TargetLayer, Lyr, PartnerLayer, TopL, BotL : TLayer;
-    KindId, Readback, OtherKind : Integer;
+    KindId, Readback, OtherKind, N : Integer;
     PartnerKind, PairKind, PairIdx, PairKindBack : Integer;
     MechPairs : IPCB_MechanicalLayerPairs;
     First, Paired, PairApplied : Boolean;
@@ -16564,7 +16604,8 @@ Begin
         Exit;
     End;
 
-    If (TargetLayer < eMechanical1) Or (TargetLayer > eMechanical16) Then
+    { By name, so Mechanical17 and up count: their ids lie past eMechanical16. }
+    If Not LvIsMech(TargetLayer) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_MECHANICAL',
             'Layer ' + LayerName + ' is not a mechanical layer. Only '
@@ -16646,8 +16687,10 @@ Begin
         { displaces anything. Nor does a paired kind, which no layer holds.   }
         If (KindId > 0) And (PartnerKind < 0) Then
         Begin
-            For Lyr := eMechanical1 To eMechanical16 Do
+            For N := 1 To 1024 Do
             Begin
+                Lyr := MechLayerFromNumber(N);
+                If Lyr = eNoLayer Then Break;
                 If Lyr <> TargetLayer Then
                 Begin
                     OtherObj := Nil;
@@ -16661,7 +16704,7 @@ Begin
                             If Not First Then ClearedJson := ClearedJson + ',';
                             First := False;
                             ClearedJson := ClearedJson
-                                + '"' + EscapeJsonString(GetLayerString(Lyr)) + '"';
+                                + '"' + EscapeJsonString(LayerDisplayName(Lyr)) + '"';
                         End;
                     End;
                 End;
@@ -16743,8 +16786,8 @@ Begin
             Result := BuildErrorResponse(RequestId, 'KIND_NOT_APPLIED',
                 '"' + MechKindToString(KindId) + '" was refused as pair kind "'
                 + MechPairKindToString(PairKind) + '" on the pair of '
-                + GetLayerString(TargetLayer) + ' and '
-                + GetLayerString(PartnerLayer) + '. The kind was NOT changed.')
+                + LayerDisplayName(TargetLayer) + ' and '
+                + LayerDisplayName(PartnerLayer) + '. The kind was NOT changed.')
         Else
             Result := BuildErrorResponse(RequestId, 'KIND_NOT_APPLIED',
                 'The write was accepted but the layer still reads as "'
@@ -16759,11 +16802,11 @@ Begin
     If PairApplied Then
         PairKindJson := '"' + EscapeJsonString(MechPairKindToString(PairKind)) + '"';
     If PartnerLayer <> eNoLayer Then
-        PartnerJson := '"' + EscapeJsonString(GetLayerString(PartnerLayer)) + '"';
+        PartnerJson := '"' + EscapeJsonString(LayerDisplayName(PartnerLayer)) + '"';
 
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '",'
         + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
         + '"kind_id":' + IntToStr(KindId) + ','
         + '"paired":' + BoolToJsonStr(PairApplied) + ','
@@ -16826,6 +16869,8 @@ Function PCB_CountPrimitivesOnLayer(Board : IPCB_Board; Lyr : TLayer) : Integer;
 Var
     Iterator : IPCB_BoardIterator;
     Prim : IPCB_Primitive;
+    OneLayer : IPCB_LayerSet;
+    Wide : Boolean;
 Begin
     Result := 0;
     Iterator := Nil;
@@ -16835,12 +16880,23 @@ Begin
         { miss the strings, arcs, fills and regions that assembly and         }
         { fabrication layers are mostly made of, and report a populated       }
         { layer as empty.                                                     }
-        Iterator.AddFilter_LayerSet(MkSet(Lyr));
+        { A legacy MkSet stops at Mechanical16: a layer past it came back as }
+        { an empty set and every such layer counted 0. The V7 layer set      }
+        { holds any layer (#149); the layer test stays as a guard.           }
+        Wide := ParseMechLayerNumber(LayerDisplayName(Lyr)) > 16;
+        If Wide Then
+        Begin
+            OneLayer := LayerSet.CreateLayerSet;
+            OneLayer.Include(Lyr);
+            Iterator.AddFilter_IPCB_LayerSet(OneLayer);
+        End
+        Else
+            Iterator.AddFilter_LayerSet(MkSet(Lyr));
         Iterator.AddFilter_Method(eProcessAll);
         Prim := Iterator.FirstPCBObject;
         While Prim <> Nil Do
         Begin
-            Result := Result + 1;
+            If (Not Wide) Or (Prim.Layer = Lyr) Then Result := Result + 1;
             Prim := Iterator.NextPCBObject;
         End;
     Except
@@ -17000,7 +17056,7 @@ Begin
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject, eTrackObject,
             eArcObject, eFillObject, eRegionObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Area(SBB.Left - Reach, SBB.Bottom - Reach, SBB.Right + Reach, SBB.Top + Reach);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -17246,7 +17302,7 @@ Begin
                     + ',"x_mils":' + FloatToJsonStr(CoordToMilsF(Comp.x))
                     + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Comp.y))
                     + ',"rotation":' + FloatToJsonStr(Comp.Rotation)
-                    + ',"layer":"' + EscapeJsonString(GetLayerString(Comp.Layer)) + '"}';
+                    + ',"layer":"' + EscapeJsonString(LayerDisplayName(Comp.Layer)) + '"}';
             End;
         End;
     End;
@@ -17373,7 +17429,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Rule := Iter.FirstPCBObject;
             While Rule <> Nil Do
@@ -17423,7 +17479,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -17806,7 +17862,7 @@ Begin
             Iter := Board.BoardIterator_Create;
             Try
                 Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eRegionObject));
-                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 Iter.AddFilter_Method(eProcessAll);
                 Obj := Iter.FirstPCBObject;
                 While Obj <> Nil Do
@@ -17888,7 +17944,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Pad := Iter.FirstPCBObject;
         While Pad <> Nil Do
@@ -17902,7 +17958,7 @@ Begin
                 SIter := Board.SpatialIterator_Create;
                 Try
                     SIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
-                    SIter.AddFilter_LayerSet(AllLayers);
+                    SIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                     SIter.AddFilter_Area(PX - Tol, PY - Tol, PX + Tol, PY + Tol);
                     Obj := SIter.FirstPCBObject;
                     While Obj <> Nil Do
@@ -17975,7 +18031,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eEmbeddedBoardObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -18182,7 +18238,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -18386,7 +18442,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -18555,7 +18611,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Obj := Iter.FirstPCBObject;
             While Obj <> Nil Do
@@ -18582,7 +18638,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"copied":' + IntToStr(Copied) + ',"layer":"'
-        + EscapeJsonString(GetLayerString(MechL)) + '"}');
+        + EscapeJsonString(LayerDisplayName(MechL)) + '"}');
 End;
 
 {..............................................................................}
@@ -18633,7 +18689,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Track := Iter.FirstPCBObject;
         While Track <> Nil Do
@@ -18702,7 +18758,7 @@ Begin
         '{"moved_end":' + IntToStr(MoveEnd)
         + ',"old_x":' + FloatToJsonStr(OldMxMils) + ',"old_y":' + FloatToJsonStr(OldMyMils)
         + ',"new_x":' + FloatToJsonStr(CoordToMilsF(NewMx)) + ',"new_y":' + FloatToJsonStr(CoordToMilsF(NewMy))
-        + ',"layer":"' + EscapeJsonString(GetLayerString(Best.Layer)) + '"}');
+        + ',"layer":"' + EscapeJsonString(LayerDisplayName(Best.Layer)) + '"}');
 End;
 
 { Squared-distance proximity test in internal coords, computed in Double to     }
@@ -18797,7 +18853,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Net := Iter.FirstPCBObject;
             While Net <> Nil Do
@@ -18848,7 +18904,7 @@ Begin
             Else
             Begin
                 Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             End;
             Iter.AddFilter_Method(eProcessAll);
             Prim := Iter.FirstPCBObject;
@@ -18981,7 +19037,7 @@ Begin
             Iter := Board.BoardIterator_Create;
             Try
                 Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 Iter.AddFilter_Method(eProcessAll);
                 B := Iter.FirstPCBObject;
                 While (B <> Nil) And (A = Nil) Do
@@ -19031,7 +19087,7 @@ Begin
             Iter := Board.BoardIterator_Create;
             Try
                 Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 Iter.AddFilter_Method(eProcessAll);
                 A := Iter.FirstPCBObject;
                 While (A <> Nil) And (MergeA = Nil) Do
@@ -19039,7 +19095,7 @@ Begin
                     Iter2 := Board.BoardIterator_Create;
                     Try
                         Iter2.AddFilter_ObjectSet(MkSet(eTrackObject));
-                        Iter2.AddFilter_LayerSet(AllLayers);
+                        Iter2.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                         Iter2.AddFilter_Method(eProcessAll);
                         B := Iter2.FirstPCBObject;
                         While (B <> Nil) And (MergeA = Nil) Do
@@ -19085,7 +19141,7 @@ Begin
                                             SIter := Board.SpatialIterator_Create;
                                             Try
                                                 SIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject));
-                                                SIter.AddFilter_LayerSet(AllLayers);
+                                                SIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                                                 SIter.AddFilter_Area(Sx - JTolC, Sy - JTolC, Sx + JTolC, Sy + JTolC);
                                                 SObj := SIter.FirstPCBObject;
                                                 While SObj <> Nil Do
@@ -19224,7 +19280,7 @@ Begin
                 Try
                     SIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
                         ePadObject, eFillObject, eRegionObject, ePolyObject, eComponentObject));
-                    SIter.AddFilter_LayerSet(AllLayers);
+                    SIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                     SIter.AddFilter_Area(Gx - HalfClr, Gy - HalfClr, Gx + HalfClr, Gy + HalfClr);
                     SObj := SIter.FirstPCBObject;
                     If SObj <> Nil Then Blocked := True;
@@ -19257,7 +19313,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"scanned":' + IntToStr(Scanned)
-        + ',"layer":"' + EscapeJsonString(GetLayerString(Lyr)) + '"}');
+        + ',"layer":"' + EscapeJsonString(LayerDisplayName(Lyr)) + '"}');
 End;
 
 {..............................................................................}
@@ -19321,7 +19377,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             { COLLECT FIRST. A layer change re-indexes the track in the
               board's own structures, so making it mid-walk corrupts the
@@ -19360,7 +19416,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Pad := Iter.FirstPCBObject;
             While Pad <> Nil Do
@@ -19394,7 +19450,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(NetStr) + '","target_layer":"'
-        + EscapeJsonString(GetLayerString(TargetLayer)) + '","moved":'
+        + EscapeJsonString(LayerDisplayName(TargetLayer)) + '","moved":'
         + IntToStr(Moved) + ',"vias_added":' + IntToStr(ViasAdded) + '}');
 End;
 
@@ -19437,7 +19493,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Poly := Iter.FirstPCBObject;
         While (Poly <> Nil) And (Target = Nil) Do
@@ -19583,7 +19639,7 @@ Begin
     Existing := TStringList.Create;
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Net := Iter.FirstPCBObject;
     While Net <> Nil Do
@@ -19674,7 +19730,7 @@ Begin
     End;
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Comp := Iter.FirstPCBObject;
     While Comp <> Nil Do
@@ -19943,7 +19999,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Prim := Iter.FirstPCBObject;
         While Prim <> Nil Do
@@ -20470,7 +20526,7 @@ Begin
     Comps := TInterfaceList.Create;
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Comp := Iter.FirstPCBObject;
     While Comp <> Nil Do
@@ -20650,7 +20706,7 @@ Begin
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Comp := Iter.FirstPCBObject;
         While Comp <> Nil Do
@@ -20964,7 +21020,7 @@ Begin
             Iter := Board.BoardIterator_Create;
             Try
                 Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 Iter.AddFilter_Method(eProcessAll);
                 Net := Iter.FirstPCBObject;
                 While Net <> Nil Do
@@ -23253,7 +23309,7 @@ Begin
             { split plane objects below, the way Altium's own HyperLynx    }
             { exporter reads it.                                          }
             If LayersJson <> '' Then LayersJson := LayersJson + ',';
-            LayersJson := LayersJson + '{"id":"' + EscapeJsonString(GetLayerString(Lyr))
+            LayersJson := LayersJson + '{"id":"' + EscapeJsonString(LayerDisplayName(Lyr))
                 + '","name":"' + EscapeJsonString(LayerObj.Name)
                 + '","kind":"' + Kind
                 + '","order":' + IntToStr(Order)
@@ -23280,7 +23336,7 @@ Begin
             If Not Enabled Then Continue;
             KindId := ReadMechKind(LayerObj);
             If MechJson <> '' Then MechJson := MechJson + ',';
-            MechJson := MechJson + '{"id":"' + EscapeJsonString(GetLayerString(Lyr))
+            MechJson := MechJson + '{"id":"' + EscapeJsonString(LayerDisplayName(Lyr))
                 + '","name":"' + EscapeJsonString(LayerObj.Name)
                 + '","kind":"' + EscapeJsonString(MechKindToString(KindId)) + '"}';
         End;
@@ -23294,7 +23350,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eSplitPlaneObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Split := Iter.FirstPCBObject;
         While Split <> Nil Do
@@ -23316,7 +23372,7 @@ Begin
                 Split.GroupIterator_Destroy(GIter);
             End;
             If SplitsJson <> '' Then SplitsJson := SplitsJson + ',';
-            SplitsJson := SplitsJson + '{"layer":"' + GetLayerString(Split.Layer)
+            SplitsJson := SplitsJson + '{"layer":"' + LayerDisplayName(Split.Layer)
                 + '","net":"' + EscapeJsonString(SplitNet)
                 + '","regions":[' + Regions + ']}';
             Split := Iter.NextPCBObject;
@@ -23353,7 +23409,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Comp := Iter.FirstPCBObject;
         While Comp <> Nil Do
@@ -23375,7 +23431,7 @@ Begin
                 While Body <> Nil Do
                 Begin
                     LayerName := '';
-                    Try LayerName := GetLayerString(Body.Layer); Except LayerName := ''; End;
+                    Try LayerName := LayerDisplayName(Body.Layer); Except LayerName := ''; End;
                     Overall := 0;
                     Standoff := 0;
                     Try Overall := Body.OverallHeight; Except Overall := 0; End;
@@ -23402,7 +23458,7 @@ Begin
                 While Child <> Nil Do
                 Begin
                     LayerName := '';
-                    Try LayerName := GetLayerString(Child.Layer); Except LayerName := ''; End;
+                    Try LayerName := LayerDisplayName(Child.Layer); Except LayerName := ''; End;
                     If Copy(LayerName, 1, 10) = 'Mechanical' Then
                     Begin
                         Entry := '';
@@ -23444,7 +23500,7 @@ Begin
                 + '","comment":"' + EscapeJsonString(Comp.Comment.Text)
                 + '","x":' + IntToStr(Comp.X) + ',"y":' + IntToStr(Comp.Y)
                 + ',"rotation":' + FloatToJsonStr(Comp.Rotation)
-                + ',"layer":"' + EscapeJsonString(GetLayerString(Comp.Layer))
+                + ',"layer":"' + EscapeJsonString(LayerDisplayName(Comp.Layer))
                 + '","locked":' + BoolToJsonStr(Locked)
                 + ',"height":' + IntToStr(Comp.Height)
                 + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
@@ -23528,7 +23584,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Pad := Iter.FirstPCBObject;
             While Pad <> Nil Do
@@ -23553,7 +23609,7 @@ Begin
                             If Copper <> '' Then Copper := Copper + ',';
                             { The last flag: Altium removed this layer's    }
                             { unconnected pad, leaving only the barrel.     }
-                            Copper := Copper + '["' + GetLayerString(Lyr) + '","'
+                            Copper := Copper + '["' + LayerDisplayName(Lyr) + '","'
                                 + LmShapeName(Pad.StackShapeOnLayer[Lyr]) + '",'
                                 + IntToStr(Pad.XStackSizeOnLayer[Lyr]) + ','
                                 + IntToStr(Pad.YStackSizeOnLayer[Lyr]) + ','
@@ -23566,7 +23622,7 @@ Begin
                     Else
                     Begin
                         Lyr := Pad.Layer;
-                        Copper := '["' + GetLayerString(Lyr) + '","'
+                        Copper := '["' + LayerDisplayName(Lyr) + '","'
                             + LmShapeName(Pad.StackShapeOnLayer[Lyr]) + '",'
                             + IntToStr(Pad.XStackSizeOnLayer[Lyr]) + ','
                             + IntToStr(Pad.YStackSizeOnLayer[Lyr]) + ','
@@ -23586,7 +23642,7 @@ Begin
                         + '","name":"' + EscapeJsonString(Pad.Name)
                         + '","x":' + IntToStr(Pad.X) + ',"y":' + IntToStr(Pad.Y)
                         + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
-                        + ',"layer":"' + GetLayerString(Pad.Layer)
+                        + ',"layer":"' + LayerDisplayName(Pad.Layer)
                         + '","net":"' + EscapeJsonString(LmNetName(Pad))
                         + '","mode":' + Mode + ',"simple":' + BoolToJsonStr(Simple)
                         + ',"top":["' + LmShapeName(Pad.TopShape) + '",'
@@ -23838,14 +23894,14 @@ Begin
                                 If Via.IntersectLayer(Lyr) Then
                                 Begin
                                     If Sizes <> '' Then Sizes := Sizes + ',';
-                                    Sizes := Sizes + '["' + GetLayerString(Lyr) + '",'
+                                    Sizes := Sizes + '["' + LayerDisplayName(Lyr) + '",'
                                         + IntToStr(Via.SizeOnLayer(Lyr)) + ']';
                                 End;
                             End;
                             Entry := '{"k":"via","v":[' + IntToStr(Via.X) + ',' + IntToStr(Via.Y)
                                 + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
-                                + ',"low":"' + GetLayerString(Via.LowLayer)
-                                + '","high":"' + GetLayerString(Via.HighLayer)
+                                + ',"low":"' + LayerDisplayName(Via.LowLayer)
+                                + '","high":"' + LayerDisplayName(Via.HighLayer)
                                 + '","sizes":[' + Sizes + ']' + LmMaskJson(Via) + Common;
                         End;
                         If Obj.ObjectId = eRegionObject Then
@@ -23930,7 +23986,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Rule := Iter.FirstPCBObject;
         While Rule <> Nil Do
@@ -23957,7 +24013,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         ClearRule := Iter.FirstPCBObject;
         While ClearRule <> Nil Do
@@ -23979,7 +24035,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         WidthRule := Iter.FirstPCBObject;
         While WidthRule <> Nil Do
@@ -24001,7 +24057,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         HoleRule := Iter.FirstPCBObject;
         While HoleRule <> Nil Do
@@ -24023,7 +24079,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Room := Iter.FirstPCBObject;
         While Room <> Nil Do
@@ -24062,7 +24118,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eClassObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         NetClassObj := Iter.FirstPCBObject;
         While NetClassObj <> Nil Do
@@ -24073,7 +24129,7 @@ Begin
                 NetIter := Board.BoardIterator_Create;
                 Try
                     NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-                    NetIter.AddFilter_LayerSet(AllLayers);
+                    NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                     NetIter.AddFilter_Method(eProcessAll);
                     Net := NetIter.FirstPCBObject;
                     While Net <> Nil Do
@@ -24104,7 +24160,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Pair := Iter.FirstPCBObject;
         While Pair <> Nil Do
@@ -24650,7 +24706,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Obj := Iter.FirstPCBObject;
             While Obj <> Nil Do
@@ -24806,7 +24862,7 @@ Begin
         Exit;
     End;
     Box := DesText.BoundingRectangle;
-    Result := JsonRaw('label', JsonObj(JsonStr('layer', GetLayerString(DesText.Layer))
+    Result := JsonRaw('label', JsonObj(JsonStr('layer', LayerDisplayName(DesText.Layer))
         + ',' + JsonRaw('height_mils', FloatToJsonStr(CoordToMilsF(DesText.Size)))
         + ',' + JsonRaw('stroke_mils', FloatToJsonStr(CoordToMilsF(DesText.Width)))
         + ',' + JsonRaw('angle', FloatToJsonStr(DesText.Rotation))
@@ -24842,7 +24898,7 @@ Begin
     Walk := Board.BoardIterator_Create;
     Try
         Walk.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Walk.AddFilter_LayerSet(AllLayers);
+        Walk.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Walk.AddFilter_Method(eProcessAll);
         Comp := Walk.FirstPCBObject;
         While Comp <> Nil Do
@@ -26711,7 +26767,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Net := Iter.FirstPCBObject;
         While Net <> Nil Do

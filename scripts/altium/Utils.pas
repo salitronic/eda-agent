@@ -1874,7 +1874,7 @@ Var
     Obj : IPCB_LayerObject_V7;
     Stripped, Wanted, ThisName : String;
     Candidate, Lyr, Hit : TLayer;
-    MechNum : Integer;
+    MechNum, MechN : Integer;
 Begin
     Result := eNoLayer;
     Stripped := StripChar(Trim(LayerName), ' ');
@@ -1902,8 +1902,12 @@ Begin
             Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
         End;
 
-        For Lyr := eMechanical1 To eMechanical16 Do
+        { Every mechanical layer, not just the first 16: a user name on }
+        { Mechanical17 or up resolved to nothing.                      }
+        For MechN := 1 To 1024 Do
         Begin
+            Lyr := MechLayerFromNumber(MechN);
+            If Lyr = eNoLayer Then Break;
             Obj := Nil;
             Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
             If Obj <> Nil Then

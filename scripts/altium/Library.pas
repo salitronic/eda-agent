@@ -4252,7 +4252,7 @@ Begin
                 Else If Prim.ObjectId = eRegionObject Then KindStr := 'region'
                 Else If Prim.ObjectId = eFillObject Then KindStr := 'fill';
                 LayerStr := '';
-                Try LayerStr := GetLayerString(Prim.Layer); Except End;
+                Try LayerStr := LayerDisplayName(Prim.Layer); Except End;
                 If PCount > 0 Then PrimsJson := PrimsJson + ',';
                 PrimsJson := PrimsJson +
                     '{"kind":"' + KindStr + '"' +
@@ -13493,7 +13493,7 @@ Begin
                     Prim.Selected := True;
                     Picked := Picked + 1;
                     If PickedJson <> '' Then PickedJson := PickedJson + ',';
-                    PickedJson := PickedJson + '"' + EscapeJsonString(GetLayerString(Prim.Layer)) + '"';
+                    PickedJson := PickedJson + '"' + EscapeJsonString(LayerDisplayName(Prim.Layer)) + '"';
                 End
                 Else If ClearFirst Then
                     Prim.Selected := False;
@@ -16135,7 +16135,7 @@ Begin
                                     FpMoved := FpMoved + 1;
                                     If FromJson <> '' Then FromJson := FromJson + ',';
                                     FromJson := FromJson + '"'
-                                        + EscapeJsonString(GetLayerString(Was)) + '"';
+                                        + EscapeJsonString(LayerDisplayName(Was)) + '"';
                                 End;
                             End;
                             Body := GrpIter.NextPCBObject;
@@ -16244,7 +16244,7 @@ Begin
     Standoff := 0;
     Overall := 0;
     Opacity := 1;
-    Try LayerName := GetLayerString(Body.Layer); Except End;
+    Try LayerName := LayerDisplayName(Body.Layer); Except End;
     Try Standoff := Body.StandoffHeight; Except End;
     Try Overall := Body.OverallHeight; Except End;
     Try Opacity := Body.BodyOpacity3D; Except End;
