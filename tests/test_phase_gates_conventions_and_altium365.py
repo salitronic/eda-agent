@@ -455,3 +455,18 @@ def test_a_pkce_challenge_is_the_unpadded_base64url_sha256_of_its_verifier():
     expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     assert altium365.code_challenge(verifier) == expected
     assert "=" not in expected and len(expected) == 43
+
+
+def test_logout_removes_the_saved_login_and_says_when_there_was_none(tmp_path, monkeypatch,
+                                                                    capsys):
+    import sys
+    from eda_agent import server
+    saved = tmp_path / "nexar_login.bin"
+    saved.write_bytes(b"sealed")
+    monkeypatch.setattr(altium365, "read_environment",
+                        lambda env=None: altium365.Altium365Config(saved_login=saved))
+    monkeypatch.setattr(sys, "argv", ["eda-agent", "altium365-logout"])
+    assert server.main() == 0
+    assert not saved.exists() and "Signed out" in capsys.readouterr().out
+    assert server.main() == 0
+    assert "No saved Nexar login" in capsys.readouterr().out

@@ -937,6 +937,10 @@ def main() -> int:
               "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
+    subparsers.add_parser(
+        "altium365-logout",
+        help="Forget the saved Nexar login of altium365-login.",
+    )
 
     # sdk-reach -- how much of Altium's SDK the property tools reach
     sdk_p = subparsers.add_parser(
@@ -1136,6 +1140,16 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
+    if args.command == "altium365-logout":
+        from .altium365 import forget_login, read_environment
+        path = read_environment().saved_login
+        try:
+            gone = forget_login(path)
+        except OSError as exc:
+            print(f"Could not remove {path}: {exc}")
+            return 1
+        print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
+        return 0
     if args.command == "sdk-reach":
         import json
         from .diag import sdk_reach

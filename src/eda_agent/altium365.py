@@ -225,6 +225,15 @@ def fetch_login(path: Path) -> Optional[dict]:
     return json.loads(_windows_crypt(path.read_bytes(), False))
 
 
+def forget_login(path: Path) -> bool:
+    """Remove the saved Nexar login; False when there was none."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def code_challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
