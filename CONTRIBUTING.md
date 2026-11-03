@@ -16,6 +16,10 @@ APIs are unlikely to land without prior agreement.
   [`SECURITY.md`](SECURITY.md).
 - By contributing you agree your contribution is licensed under
   Apache-2.0 (the project licence).
+- Every edit to a design or library file goes through the Delphi bridge and
+  Altium. Modifying a file directly is not accepted unless it is strictly
+  unavoidable or well constrained, and reading design files directly is
+  discouraged too; the few exceptions are agreed in an issue first.
 
 ## Development environment
 
