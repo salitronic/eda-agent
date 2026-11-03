@@ -9190,6 +9190,61 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.embedded_data", ask)
 
     @mcp.tool()
+    async def pcb_special_strings(
+        action: str = "list", names: str = "",
+    ) -> dict[str, Any]:
+        """List Altium's special strings on the active board, or resolve some.
+
+        A special string is a text such as ``.Layer_Count`` that Altium
+        draws as a value (``8``). Read only: nothing is left on the board.
+
+        Args:
+            action: ``list`` (default): every special string name Altium
+                offers on a board, plus the names that belong to this board
+                (for example ``.Total_Thickness(Board Layer Stack)``).
+                ``resolve``: the value of each text in ``names``.
+            names: For resolve, a ``|`` separated list of up to 200 texts,
+                each a name (``.Layer_Count|.Total_Thickness|.Via_Count``)
+                or mixed text (``Rev .Layer_Count/.Via_Count``).
+
+        Each text is resolved the only way found to work from a script:
+        placed as a temporary free text on the top overlay at the board
+        origin, its converted string read, and removed again in the same
+        call (one edit). Altium may still mark the board modified and keep
+        an undo step that changes nothing.
+
+        Only strings that a free text on a board can show resolve. Part
+        strings (``.Designator``, ``.Comment``, a part parameter such as
+        ``.Tolerance``) resolve only on a part's own text, and project
+        parameters (``.Designer``) only on a board inside a project; on a
+        free text they come back unresolved. Layer strings answer for the
+        top overlay, where the text sits.
+
+        Returns:
+            list: ``count``, ``capped`` (the walk stopped at 2000),
+            ``names`` and ``board_names``. resolve: ``count``, ``placed``,
+            ``removed`` and ``strings``: per text ``name``, ``value`` (as
+            Altium draws it), ``resolved`` (value present and different
+            from the name) and ``underlying`` (the text as written, read
+            back).
+        """
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "resolve"):
+            return {"ok": False, "reason": "action is list or resolve"}
+        if act == "list":
+            return await get_bridge().send_command_async(
+                "pcb.special_strings", {"action": "list"})
+        items = [n for n in names.split("|") if n.strip()] if isinstance(names, str) else []
+        if not items:
+            return {"ok": False, "reason": (
+                "names is required for resolve: a '|' list such as "
+                ".Layer_Count|.Via_Count")}
+        if len(items) > 200:
+            return {"ok": False, "reason": f"at most 200 names in one call, got {len(items)}"}
+        return await get_bridge().send_command_async(
+            "pcb.special_strings", {"action": "resolve", "names": "|".join(items)})
+
+    @mcp.tool()
     async def pcb_connected_copper(
         object_type: str = "",
         filter: str = "",
