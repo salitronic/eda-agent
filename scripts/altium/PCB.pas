@@ -7366,9 +7366,9 @@ End;
 {..............................................................................}
 { pcb.view: read or set the area of the board the editor shows, in mils.    }
 { A caller saves the user's view, zooms elsewhere for its own work, and     }
-{ puts the view back exactly. Altium fits a set rectangle to the window's   }
-{ aspect, so the reply is the rectangle read back, larger on one axis than  }
-{ the one asked for. View state only; the board is not marked modified.    }
+{ puts the view back. Altium fits a set rectangle to the window's aspect,  }
+{ so the reply is the rectangle read back, larger on one axis than the one }
+{ asked for. View state only; the board is not marked modified.            }
 {..............................................................................}
 
 Function PvRectJson(Board : IPCB_Board) : String;
@@ -7387,11 +7387,27 @@ Begin
         + JsonFloat('width', Rt - L) + ',' + JsonFloat('height', T - B);
 End;
 
+Procedure PvZoom(Board : IPCB_Board; L, B, Rt, T : Double);
+Begin
+    Board.GraphicalView_ZoomOnRect(MilsToCoordF(L), MilsToCoordF(B),
+        MilsToCoordF(Rt), MilsToCoordF(T));
+End;
+
+{ How far the centre shown is from Cx, Cy (mils): asked minus shown. }
+Procedure PvCentreOff(Board : IPCB_Board; Cx, Cy : Double; Var Ex, Ey : Double);
+Var
+    R : TCoordRect;
+Begin
+    R := Board.GraphicalView_ViewportRect;
+    Ex := Cx - (R.Left + R.Right) / 20000.0;
+    Ey := Cy - (R.Bottom + R.Top) / 20000.0;
+End;
+
 Function PCB_View(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Action, LStr, BStr, RStr, TStr : String;
-    L, B, Rt, T : Double;
+    L, B, Rt, T, Cx, Cy, Ex1, Ey1, Ex2, Ey2 : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -7439,9 +7455,23 @@ Begin
         Exit;
     End;
 
-    Board.GraphicalView_ZoomOnRect(MilsToCoordF(L), MilsToCoordF(B),
-        MilsToCoordF(Rt), MilsToCoordF(T));
-    Result := BuildSuccessResponse(RequestId, '{' + PvRectJson(Board) + '}');
+    { The view moves in fixed steps (8.9 mil at a whole-board zoom on one   }
+    { window), and the first zoom can land a whole step off the centre      }
+    { asked for. One more zoom shifted by that error lands on the nearest   }
+    { step, at most half a step away; the closer of the two is kept.        }
+    Cx := (L + Rt) / 2;
+    Cy := (B + T) / 2;
+    PvZoom(Board, L, B, Rt, T);
+    PvCentreOff(Board, Cx, Cy, Ex1, Ey1);
+    If (Abs(Ex1) > 0.01) Or (Abs(Ey1) > 0.01) Then
+    Begin
+        PvZoom(Board, L + Ex1, B + Ey1, Rt + Ex1, T + Ey1);
+        PvCentreOff(Board, Cx, Cy, Ex2, Ey2);
+        If Abs(Ex2) + Abs(Ey2) > Abs(Ex1) + Abs(Ey1) Then PvZoom(Board, L, B, Rt, T);
+    End;
+    PvCentreOff(Board, Cx, Cy, Ex1, Ey1);
+    Result := BuildSuccessResponse(RequestId, '{' + PvRectJson(Board) + ','
+        + JsonFloat('centre_error_mils', Sqrt(Ex1 * Ex1 + Ey1 * Ey1)) + '}');
 End;
 
 Function LvIsMech(Lyr : TLayer) : Boolean;

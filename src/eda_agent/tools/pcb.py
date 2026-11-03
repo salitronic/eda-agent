@@ -8615,10 +8615,13 @@ def register_pcb_tools(mcp):
             ``height`` of the view in mils. After "set" these are read back
             from the editor: Altium fits the rectangle to the window's
             shape, so the view shown is larger than the one asked for on
-            one axis. Setting a rectangle read by "get" puts that view back
-            to within a few mils. A missing side, right <= left or top <= bottom is
-            refused (BAD_RECT). View state only; the board is not marked
-            modified.
+            one axis. The view moves in fixed steps; "set" also returns
+            ``centre_error_mils``, at most half a step. A rectangle
+            read by "get" after any zoom puts that view back exactly. On a
+            board just opened, "get" reads the view saved in the file, which
+            Altium refits to the window on the first zoom. A missing side,
+            right <= left or top <= bottom is refused (BAD_RECT). View state
+            only; the board is not marked modified.
         """
         act = (action or "get").strip().lower()
         if act == "get":

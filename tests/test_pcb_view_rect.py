@@ -56,7 +56,7 @@ def test_no_board_is_refused():
 
 def test_set_validates_every_side_before_zooming():
     body = _fn("PCB_View")
-    zoom = body.index("Board.GraphicalView_ZoomOnRect(")
+    zoom = body.index("PvZoom(Board, L, B, Rt, T);")
     for s in ("LStr", "BStr", "RStr", "TStr"):
         assert f"Not IsFloatStr({s})" in body[:zoom]
     order = body.index("If (Rt <= L) Or (T <= B) Then")
@@ -65,10 +65,29 @@ def test_set_validates_every_side_before_zooming():
 
 
 def test_set_zooms_in_decimal_mils_and_replies_the_rectangle_read_back():
+    zoom_fn = _fn("PvZoom")
+    assert "Board.GraphicalView_ZoomOnRect(MilsToCoordF(L), MilsToCoordF(B)," in zoom_fn
+    assert "MilsToCoordF(Rt), MilsToCoordF(T));" in zoom_fn
     body = _fn("PCB_View")
-    zoom = body.index("Board.GraphicalView_ZoomOnRect(MilsToCoordF(L), MilsToCoordF(B),")
-    assert "MilsToCoordF(Rt), MilsToCoordF(T));" in body
+    zoom = body.index("PvZoom(Board, L, B, Rt, T);")
     assert body.index("PvRectJson(Board)", zoom) > zoom
+
+
+def test_set_corrects_the_centre_by_one_more_zoom_and_keeps_the_closer():
+    # The view moves in fixed steps (8.9 mil at a whole-board zoom on
+    # AD 26.11): the first zoom's centre was 3.45 mil off, one shifted zoom
+    # brought it to 1.24.
+    off = _fn("PvCentreOff")
+    assert "R := Board.GraphicalView_ViewportRect;" in off
+    assert "Ex := Cx - (R.Left + R.Right) / 20000.0;" in off
+    assert "Ey := Cy - (R.Bottom + R.Top) / 20000.0;" in off
+    body = _fn("PCB_View")
+    first = body.index("PvZoom(Board, L, B, Rt, T);")
+    assert "PvCentreOff(Board, Cx, Cy, Ex1, Ey1);" in body[first:]
+    assert "PvZoom(Board, L + Ex1, B + Ey1, Rt + Ex1, T + Ey1);" in body
+    assert ("If Abs(Ex2) + Abs(Ey2) > Abs(Ex1) + Abs(Ey1) Then "
+            "PvZoom(Board, L, B, Rt, T);") in body
+    assert "JsonFloat('centre_error_mils', Sqrt(Ex1 * Ex1 + Ey1 * Ey1))" in body
 
 
 def test_view_state_does_not_mark_the_board_modified():
