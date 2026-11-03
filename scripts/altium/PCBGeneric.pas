@@ -2730,6 +2730,7 @@ Var
     First, Removed : Boolean;
     I, Remaining : Integer;
     Victims : TInterfaceList;
+    FilterWas : Boolean;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -2801,6 +2802,9 @@ Begin
     Begin
         Victims := TInterfaceList.Create;
         CollectPCBMatches(Board, ObjTypeInt, FilterStr, Limit, Victims);
+        { A Selected=true in the set string must not be vetoed by the       }
+        { editor's Selection Filter (see PcbSelectFilterOff).               }
+        FilterWas := PcbSelectFilterOff(Board);
         PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
@@ -2823,6 +2827,7 @@ Begin
             End;
         Finally
             PcbEndEdit(0);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Exit;
     End;

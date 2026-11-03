@@ -13402,6 +13402,7 @@ Var
     BIter : IPCB_BoardIterator;
     Prim : IPCB_Primitive;
     Picked, Total, NSpecs : Integer;
+    FilterWas : Boolean;
 Begin
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
@@ -13461,6 +13462,9 @@ Begin
     Picked := 0;
     Total := 0;
     PickedJson := '';
+    { The editor's Selection Filter would otherwise veto the types it has  }
+    { switched off, silently (see PcbSelectFilterOff).                     }
+    FilterWas := PcbSelectFilterOff(PcbLib.Board);
     Try PcbLib.Board.SelectedObjects_BeginUpdate; Except End;
     Try
         If ClearFirst Then Try PcbLib.Board.SelectedObjects_Clear; Except End;
@@ -13511,6 +13515,7 @@ Begin
         End;
     Finally
         Try PcbLib.Board.SelectedObjects_EndUpdate; Except End;
+        PcbSelectFilterRestore(PcbLib.Board, FilterWas);
     End;
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
 

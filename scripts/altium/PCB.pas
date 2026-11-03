@@ -3589,6 +3589,7 @@ Var
     I, VarIdx, NVar, Matched, W : Integer;
     Matches : TStringList;
     Include, First : Boolean;
+    FilterWas : Boolean;
 Begin
     VariantName := ExtractJsonValue(Params, 'variant_name');
     SelMode := LowerCase(ExtractJsonValue(Params, 'select'));
@@ -3683,7 +3684,10 @@ Begin
             End;
         End;
 
-        { Deselect every board component, then select the matched ones. }
+        { Deselect every board component, then select the matched ones.  }
+        { Components switched off in the Selection Filter would otherwise }
+        { stay unselected, silently (see PcbSelectFilterOff).             }
+        FilterWas := PcbSelectFilterOff(Board);
         PcbBeginEdit(0);
         Try
             Iter := Board.BoardIterator_Create;
@@ -3699,6 +3703,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         Finally
             PcbEndEdit(0);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Try Board.ViewManager_FullUpdate; Except End;
 
@@ -17729,6 +17734,7 @@ Var
     PanW, PanH, Inset : Double;
     MechL : TLayer;
     AddFid, AddTool : Boolean;
+    FilterWas : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -17769,6 +17775,9 @@ Begin
     ToolC := MilsToCoord(118);
     Inset := Border / 2;
 
+    { The rails are selected for PCB:PlaceBoardOutline; with Tracks off in  }
+    { the Selection Filter they would not be (see PcbSelectFilterOff).      }
+    FilterWas := PcbSelectFilterOff(Board);
     PcbBeginEdit(0);
     Try
         { Embedded-board array (the panel core). Emb is the subtype so the    }
@@ -17813,6 +17822,7 @@ Begin
         End;
     Finally
         PcbEndEdit(0);
+        PcbSelectFilterRestore(Board, FilterWas);
     End;
 
     { Convert the selected rail tracks into the actual board outline. }
@@ -18017,6 +18027,7 @@ Var
     MinX, MinY, MaxX, MaxY : Integer;
     MechL : TLayer;
     Found : Boolean;
+    FilterWas : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -18063,6 +18074,8 @@ Begin
     MinX := MinX - Margin; MinY := MinY - Margin;
     MaxX := MaxX + Margin; MaxY := MaxY + Margin;
 
+    { Selected for PCB:PlaceBoardOutline, past the Selection Filter. }
+    FilterWas := PcbSelectFilterOff(Board);
     PcbBeginEdit(0);
     Try
         Trk := NewTrack(MinX, MinY, MaxX, MinY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
@@ -18072,6 +18085,7 @@ Begin
         Try Board.LayerIsDisplayed[MechL] := True; Except End;
     Finally
         PcbEndEdit(0);
+        PcbSelectFilterRestore(Board, FilterWas);
     End;
 
     ResetParameters;
@@ -22958,6 +22972,7 @@ Var
     Names : TStringList;
     I : Integer;
     Befores, Lens : TStringList;
+    FilterWas : Boolean;
 Begin
     NetsStr := ExtractJsonValue(Params, 'nets');
     Mode := LowerCase(ExtractJsonValue(Params, 'mode'));
@@ -22997,6 +23012,9 @@ Begin
     Wanted := Chr(9);
     For I := 0 To Names.Count - 1 Do Wanted := Wanted + UpperCase(Names.Strings[I]) + Chr(9);
     Selected := 0;
+    { Tracks or arcs switched off in the Selection Filter would otherwise }
+    { be left out, silently (see PcbSelectFilterOff).                     }
+    FilterWas := PcbSelectFilterOff(Board);
     Try Board.SelectedObjects_BeginUpdate; Except End;
     Try
         Try Board.SelectedObjects_Clear; Except End;
@@ -23023,6 +23041,7 @@ Begin
         End;
     Finally
         Try Board.SelectedObjects_EndUpdate; Except End;
+        PcbSelectFilterRestore(Board, FilterWas);
     End;
     If Mode = 'gloss' Then Process := 'PCB:Gloss' Else Process := 'PCB:Retrace';
     If Selected > 0 Then

@@ -1952,6 +1952,32 @@ Begin
     Result := ResolveLayerIdInStack(LayerStack, LayerName);
 End;
 
+{ A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
+{                                                                            }
+{ The Selection Filter (the per-type toggles in the Properties panel) also   }
+{ applies to Prim.Selected := True: for a type switched off there the        }
+{ assignment is silently refused. Every caller that selects and then acts on }
+{ the selection (a process such as PCB:Clear, or a count of what is now     }
+{ selected) then did nothing for that type and still reported success.      }
+{ Measured: with Tracks off in the filter a track was not selected, with     }
+{ SelectedObjects_FilterDisabled True it was. A PcbLib passes its Board.     }
+{ Off returns the previous value; Restore puts it back, always from a        }
+{ Finally, so the user's filter is left as it was found.                     }
+
+Function PcbSelectFilterOff(Board : IPCB_Board) : Boolean;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try Result := Board.SelectedObjects_FilterDisabled; Except Result := False; End;
+    Try Board.SelectedObjects_FilterDisabled := True; Except End;
+End;
+
+Procedure PcbSelectFilterRestore(Board : IPCB_Board; Was : Boolean);
+Begin
+    If Board = Nil Then Exit;
+    Try Board.SelectedObjects_FilterDisabled := Was; Except End;
+End;
+
 { The names this board actually answers to, appended to an UNKNOWN_LAYER       }
 { message so the caller can correct the call without a second round trip.      }
 { Bounded: the stack's own names, then the mechanical layers' names.           }
