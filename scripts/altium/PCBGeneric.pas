@@ -1703,6 +1703,9 @@ Begin
         End
         Else If PropName = 'Layer'    Then SetPrimitiveLayerByName(Obj, Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
+        { Locked is read as Not Moveable, so it is written the same way;   }
+        { PCB_LockNetRouting writes Moveable on any primitive already.      }
+        Else If PropName = 'Locked' Then Obj.Moveable := Not StrToBool(Value)
         { Subtype members: narrow to a typed local via ObjectId first. }
         Else If PropName = 'X1' Then
         Begin
@@ -1764,6 +1767,9 @@ Begin
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Comp.Rotation := StrToFloatDef(Value, 0); End
             Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
+            { A free text, or a component's designator / comment text: the   }
+            { same member PCB_PlaceText and the layout copy already write.    }
+            Else If Oid = eTextObject Then Begin Txt := Obj; Txt.Rotation := StrToFloatDef(Value, 0); End
             Else Matched := False;
         End
         { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }
