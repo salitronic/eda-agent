@@ -52,6 +52,32 @@ def test_handler_measures_finds_the_clearance_rule_and_checks_it():
     assert "GapStr := ClearanceGapMM(Board, RuleName);" in body
 
 
+def test_with_no_rule_the_rule_whose_scopes_take_the_pair_is_named():
+    # Altium finds no rule for two objects with no net under a rule on
+    # different nets only; the reply names that rule and its net scope
+    # instead of a bare null.
+    body = _pcb("PCB_MeasureClearance")
+    fallback = body[body.index("If Rule = Nil Then"):]
+    assert "If ClearanceRuleByScope(Board, P1, P2, ScopedJson, ScopedGap, NetOk) Then" in fallback
+    for field in ("JsonRaw('scoped_rule', ScopedJson)",
+                  "JsonFloat('scoped_gap_mm', CoordToMM(ScopedGap))",
+                  "JsonBool('net_scope_matches', NetOk)",
+                  "JsonBool('below_scoped_gap', D < ScopedGap)"):
+        assert field in fallback
+    assert "JsonBool('violation', Violated) + Extra" in body
+
+    scope = _pcb("ClearanceRuleByScope")
+    # a clearance-typed iterator return, so Gap reads (no local narrowing)
+    assert "ClearRule : IPCB_ClearanceConstraint;" in scope
+    assert "ClearRule := Iter.FirstPCBObject;" in scope
+    assert "(Kind = eRule_Clearance) And ClearRule.Enabled" in scope
+    assert "(ClearRule.Scope1Includes(P1) And ClearRule.Scope2Includes(P2))" in scope
+    assert "Or (ClearRule.Scope1Includes(P2) And ClearRule.Scope2Includes(P1))" in scope
+    assert "If Takes And (Pri < Best) Then" in scope
+    assert "NetOk := ClearRule.NetScopeMatches(P1, P2);" in scope
+    assert "Board.BoardIterator_Destroy(Iter);" in scope
+
+
 def test_both_objects_go_through_the_primitive_resolver():
     body = _pcb("PCB_MeasureClearance")
     assert "P1 := ResolveClearanceObject(Board, Spec1, Problem);" in body

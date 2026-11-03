@@ -20624,6 +20624,62 @@ Begin
 End;
 
 {..............................................................................}
+{ ClearanceRuleByScope - the clearance rule whose two scopes take the pair,   }
+{ for when FindDominantRuleForObjectPair finds none. Altium answers none when }
+{ the rule's NET scope leaves the pair out (two objects with no net, for a    }
+{ rule on different nets only), though its object scopes take both. Enabled   }
+{ rules only; the highest priority (lowest number) wins. The rule comes from  }
+{ the iterator as a clearance constraint, so its Gap reads. RuleJson is the  }
+{ rule's summary, Gap its gap and NetOk Altium's NetScopeMatches.            }
+{..............................................................................}
+Function ClearanceRuleByScope(Board : IPCB_Board; P1, P2 : IPCB_Primitive;
+    Var RuleJson : String; Var Gap : TCoord; Var NetOk : Boolean) : Boolean;
+Var
+    Iter : IPCB_BoardIterator;
+    ClearRule : IPCB_ClearanceConstraint;
+    Kind, Best, Pri : Integer;
+    Takes : Boolean;
+Begin
+    Result := False;
+    Best := MAX_INT;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        ClearRule := Iter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+            If (Kind = eRule_Clearance) And ClearRule.Enabled Then
+            Begin
+                Takes := False;
+                Try
+                    Takes := (ClearRule.Scope1Includes(P1) And ClearRule.Scope2Includes(P2))
+                        Or (ClearRule.Scope1Includes(P2) And ClearRule.Scope2Includes(P1));
+                Except
+                    Takes := False;
+                End;
+                Pri := ClearRule.Priority;
+                If Takes And (Pri < Best) Then
+                Begin
+                    Best := Pri;
+                    Result := True;
+                    RuleJson := RuleSummaryJson(ClearRule);
+                    Gap := ClearRule.Gap;
+                    NetOk := False;
+                    Try NetOk := ClearRule.NetScopeMatches(P1, P2); Except NetOk := False; End;
+                End;
+            End;
+            ClearRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{..............................................................................}
 { PCB_MeasureClearance - for two board primitives: the edge-to-edge distance  }
 { (Board.PrimPrimDistance, 0 = touching), the clearance rule Altium applies   }
 { to the pair (FindDominantRuleForObjectPair with eRule_Clearance) and        }
@@ -20638,8 +20694,9 @@ Var
     P1, P2 : IPCB_Primitive;
     Rule : IPCB_Rule;
     Violation : IPCB_Violation;
-    D : TCoord;
-    Violated : Boolean;
+    D, ScopedGap : TCoord;
+    Violated, NetOk : Boolean;
+    ScopedJson, Extra : String;
 Begin
     Spec1 := ExtractJsonValue(Params, 'object1');
     Spec2 := ExtractJsonValue(Params, 'object2');
@@ -20679,6 +20736,20 @@ Begin
         Try Violation := Rule.ActualCheck(P1, P2); Except Violation := Nil; End;
         Violated := Violation <> Nil;
     End;
+    { No rule from Altium: say which rule's scopes take the pair anyway, and }
+    { that its net scope is what leaves the pair out.                        }
+    Extra := '';
+    If Rule = Nil Then
+    Begin
+        ScopedJson := '';
+        ScopedGap := 0;
+        NetOk := False;
+        If ClearanceRuleByScope(Board, P1, P2, ScopedJson, ScopedGap, NetOk) Then
+            Extra := ',' + JsonRaw('scoped_rule', ScopedJson) + ','
+                + JsonFloat('scoped_gap_mm', CoordToMM(ScopedGap)) + ','
+                + JsonBool('net_scope_matches', NetOk) + ','
+                + JsonBool('below_scoped_gap', D < ScopedGap);
+    End;
     If GapStr = '' Then GapStr := 'null';
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonFloat('distance_mils', D / 10000.0) + ','
@@ -20686,7 +20757,7 @@ Begin
         + JsonBool('touching', D = 0) + ','
         + JsonRaw('rule', RuleJson) + ','
         + JsonRaw('gap_mm', GapStr) + ','
-        + JsonBool('violation', Violated)));
+        + JsonBool('violation', Violated) + Extra));
 End;
 
 {..............................................................................}

@@ -1276,9 +1276,12 @@ def register_pcb_tools(mcp):
             ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
             ``rule`` (``name``, ``kind``, ``priority``, ``enabled``,
             ``scope1``, ``scope2``, ``descriptor``; null when no clearance
-            rule applies, which Altium answers for two objects with no
-            net), ``gap_mm`` (the rule's gap, null when unknown)
-            and ``violation`` (false when no rule applies).
+            rule applies), ``gap_mm`` (the rule's gap, null when unknown)
+            and ``violation`` (false when no rule applies). With no rule,
+            ``scoped_rule`` is the clearance rule whose two scopes take the
+            pair anyway, with ``scoped_gap_mm``, ``net_scope_matches`` (false
+            when its net scope leaves the pair out, as for two objects with
+            no net on a different-nets rule) and ``below_scoped_gap``.
         """
         if not object1.strip() or not object2.strip():
             return {"ok": False, "reason": "object1 and object2 are required"}
