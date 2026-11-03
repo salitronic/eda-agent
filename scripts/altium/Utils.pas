@@ -2357,6 +2357,791 @@ Begin
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
+{..............................................................................}
+{ Component values without a decimal point: the RKM code of IEC 60062.       }
+{                                                                              }
+{ A decimal point vanishes in a scaled font, a print or a scan ("4.7K" reads  }
+{ "47K"), and a comma or a point means different things in different locales, }
+{ which a design file does not record. So the value is written with a LETTER }
+{ where the point would be: 4K7, 0R005, 2u2, 10uF, 2u2H, 3V3, 500mA, 0%1,     }
+{ 2ppm5, 125C. Output is pure ASCII and locale-free; input is tolerant (4.7k, }
+{ 4,7 kOhm, 10 000uF, 2.2uF, 0.1 uF, 3,3 V, 125 degC).                        }
+{                                                                              }
+{ NO ROUNDING and no floating point: a value is a digit string and a power of }
+{ ten, the letters only move the point. 1K23456789012345678 comes back as it }
+{ went in. A value travels as a plain decimal string ('0.0000022').           }
+{                                                                              }
+{ The letters are chosen so nothing reads two ways, even upper-cased:        }
+{   ohm      R K M G; m is MEGA (no milli / micro: 0R005, 0R0005)            }
+{   farad    p n u, F; no femto (an upper-cased f is the farad: 0p1)         }
+{   henry    p n u m, H; M read as milli                                     }
+{   volt / ampere  p n u m, V / A; M read as milli (no megavolts), k read    }
+{            but never written (1500V)                                        }
+{ The unit letter (R F H V A, % ppm C) decides the kind; without one, p / n  }
+{ / u is a capacitor and G M m K an ohm value. The F is written only on a    }
+{ whole number of p / n / u (10uF, but 2u2); the H, V and A always.          }
+{                                                                              }
+{ Every Vf function answers a TAB-separated record: 'OK' and its fields, or  }
+{ 'ERR' and the message. No record, array or var parameter: the same text    }
+{ runs under DelphiScript and Free Pascal.                                   }
+{..............................................................................}
+
+Function VfField(Rec : String; N : Integer) : String;
+Var
+    S : String;
+    I, P : Integer;
+Begin
+    Result := '';
+    S := Rec;
+    For I := 1 To N Do
+    Begin
+        P := Pos(Chr(9), S);
+        If P = 0 Then Exit;
+        S := Copy(S, P + 1, Length(S));
+    End;
+    P := Pos(Chr(9), S);
+    If P > 0 Then Result := Copy(S, 1, P - 1) Else Result := S;
+End;
+
+Function VfErr(Msg : String) : String;
+Begin
+    Result := 'ERR' + Chr(9) + Msg;
+End;
+
+Function VfIsDigit(C : String) : Boolean;
+Begin
+    Result := (Length(C) = 1) And (C >= '0') And (C <= '9');
+End;
+
+Function VfIsMult(C : String) : Boolean;
+Begin
+    Result := (Length(C) = 1) And (Pos(C, 'GgMmKkUuNnPp') > 0);
+End;
+
+{ The kind named by K (aliases, case ignored); '' when unknown. }
+Function VfKind(K : String) : String;
+Var
+    U : String;
+Begin
+    U := UpperCase(Trim(K));
+    Result := '';
+    If (U = 'OHM') Or (U = 'R') Or (U = 'RES') Then Result := 'ohm'
+    Else If (U = 'FARAD') Or (U = 'C') Or (U = 'F') Or (U = 'CAP') Then Result := 'farad'
+    Else If (U = 'HENRY') Or (U = 'L') Or (U = 'H') Or (U = 'IND') Then Result := 'henry'
+    Else If (U = 'VOLT') Or (U = 'V') Then Result := 'volt'
+    Else If (U = 'AMPERE') Or (U = 'A') Or (U = 'AMP') Then Result := 'ampere'
+    Else If (U = 'PERCENT') Or (U = '%') Then Result := 'percent'
+    Else If U = 'PPM' Then Result := 'ppm'
+    Else If (U = 'CELSIUS') Or (U = 'DEGC') Or (U = 'TEMP') Then Result := 'celsius';
+End;
+
+Function VfUnitOf(Kind : String) : String;
+Begin
+    Result := '';
+    If Kind = 'ohm' Then Result := 'R'
+    Else If Kind = 'farad' Then Result := 'F'
+    Else If Kind = 'henry' Then Result := 'H'
+    Else If Kind = 'volt' Then Result := 'V'
+    Else If Kind = 'ampere' Then Result := 'A'
+    Else If Kind = 'percent' Then Result := '%'
+    Else If Kind = 'ppm' Then Result := 'ppm'
+    Else If Kind = 'celsius' Then Result := 'C';
+End;
+
+Function VfKindOfUnit(UnitTok : String) : String;
+Begin
+    Result := '';
+    If UnitTok = 'R' Then Result := 'ohm'
+    Else If UnitTok = 'F' Then Result := 'farad'
+    Else If UnitTok = 'H' Then Result := 'henry'
+    Else If UnitTok = 'V' Then Result := 'volt'
+    Else If UnitTok = 'A' Then Result := 'ampere'
+    Else If UnitTok = '%' Then Result := 'percent'
+    Else If UnitTok = 'ppm' Then Result := 'ppm'
+    Else If UnitTok = 'C' Then Result := 'celsius';
+End;
+
+Function VfNegativeOk(Kind : String) : Boolean;
+Begin
+    Result := (Kind = 'volt') Or (Kind = 'ampere') Or (Kind = 'percent')
+              Or (Kind = 'ppm') Or (Kind = 'celsius');
+End;
+
+{ Length of the unit token at S[I]: 3 for ppm, 1 for R F H V A C %, else 0. }
+Function VfUnitLen(S : String; I : Integer) : Integer;
+Var
+    C : String;
+Begin
+    Result := 0;
+    If LowerCase(Copy(S, I, 3)) = 'ppm' Then
+    Begin
+        Result := 3;
+        Exit;
+    End;
+    C := UpperCase(Copy(S, I, 1));
+    If (Length(C) = 1) And (Pos(C, 'RFHVAC%') > 0) Then Result := 1;
+End;
+
+Function VfUnitTok(S : String; I : Integer) : String;
+Begin
+    If VfUnitLen(S, I) = 3 Then Result := 'ppm'
+    Else Result := UpperCase(Copy(S, I, 1));
+End;
+
+{ Power of ten of multiplier M for Kind; 99 when it is not one there. }
+Function VfMultPower(Kind, M : String) : Integer;
+Begin
+    Result := 99;
+    If Kind = 'ohm' Then
+    Begin
+        If (M = 'G') Or (M = 'g') Then Result := 9
+        Else If (M = 'M') Or (M = 'm') Then Result := 6
+        Else If (M = 'K') Or (M = 'k') Then Result := 3;
+    End
+    Else If (Kind = 'farad') Or (Kind = 'henry') Or (Kind = 'volt') Or (Kind = 'ampere') Then
+    Begin
+        If (M = 'u') Or (M = 'U') Then Result := -6
+        Else If (M = 'n') Or (M = 'N') Then Result := -9
+        Else If (M = 'p') Or (M = 'P') Then Result := -12
+        Else If (Kind <> 'farad') And ((M = 'm') Or (M = 'M')) Then Result := -3
+        Else If ((Kind = 'volt') Or (Kind = 'ampere')) And ((M = 'k') Or (M = 'K')) Then Result := 3;
+    End;
+End;
+
+Function VfLetterPower(L : String) : Integer;
+Begin
+    Result := 0;
+    If L = 'G' Then Result := 9
+    Else If L = 'M' Then Result := 6
+    Else If L = 'K' Then Result := 3
+    Else If L = 'm' Then Result := -3
+    Else If L = 'u' Then Result := -6
+    Else If L = 'n' Then Result := -9
+    Else If L = 'p' Then Result := -12;
+End;
+
+{ The output letter for a value whose leading digit is at 10^Mag. }
+Function VfOutLetter(Kind : String; Mag : Integer) : String;
+Begin
+    If Kind = 'ohm' Then
+    Begin
+        If Mag >= 9 Then Result := 'G'
+        Else If Mag >= 6 Then Result := 'M'
+        Else If Mag >= 3 Then Result := 'K'
+        Else Result := 'R';
+    End
+    Else If Kind = 'farad' Then
+    Begin
+        If Mag >= 0 Then Result := 'F'
+        Else If Mag >= -6 Then Result := 'u'
+        Else If Mag >= -9 Then Result := 'n'
+        Else Result := 'p';
+    End
+    Else If (Kind = 'henry') Or (Kind = 'volt') Or (Kind = 'ampere') Then
+    Begin
+        If Mag >= 0 Then Result := VfUnitOf(Kind)
+        Else If Mag >= -3 Then Result := 'm'
+        Else If Mag >= -6 Then Result := 'u'
+        Else If Mag >= -9 Then Result := 'n'
+        Else Result := 'p';
+    End
+    Else Result := VfUnitOf(Kind);
+End;
+
+Function VfZeros(N : Integer) : String;
+Var
+    I : Integer;
+Begin
+    Result := '';
+    For I := 1 To N Do Result := Result + '0';
+End;
+
+{ D (digits) x 10^E as a plain decimal string, no exponent; D has no      }
+{ leading or trailing zeros except '0' itself.                             }
+Function VfPlain(D : String; E : Integer) : String;
+Var
+    P : Integer;
+Begin
+    If D = '0' Then
+    Begin
+        Result := '0';
+        Exit;
+    End;
+    If E >= 0 Then
+    Begin
+        Result := D + VfZeros(E);
+        Exit;
+    End;
+    P := Length(D) + E;
+    If P <= 0 Then Result := '0.' + VfZeros(-P) + D
+    Else Result := Copy(D, 1, P) + '.' + Copy(D, P + 1, Length(D));
+End;
+
+{ Digits and exponent in canonical form: 'OK' D E (no leading / trailing zeros). }
+Function VfCanon(D : String; E : Integer) : String;
+Begin
+    While (Length(D) > 1) And (Copy(D, 1, 1) = '0') Do D := Copy(D, 2, Length(D));
+    If D = '' Then D := '0';
+    While (Length(D) > 1) And (Copy(D, Length(D), 1) = '0') Do
+    Begin
+        D := Copy(D, 1, Length(D) - 1);
+        Inc(E);
+    End;
+    If D = '0' Then E := 0;
+    Result := 'OK' + Chr(9) + D + Chr(9) + IntToStr(E);
+End;
+
+{ VfToString - Kind and a plain decimal ('-0.0000022', '1e3') -> 'OK' text. }
+Function VfToString(Kind, ValueText : String) : String;
+Var
+    K, S, C, Whole, Frac, ExpS, D, Letter, Plain, UnitO, Sign, Rec : String;
+    I, N, E, Mag, PointPos : Integer;
+    Neg : Boolean;
+Begin
+    K := VfKind(Kind);
+    If K = '' Then
+    Begin
+        Result := VfErr('unknown kind ' + Kind);
+        Exit;
+    End;
+    S := Trim(ValueText);
+    N := Length(S);
+    I := 1;
+    Neg := False;
+    If (Copy(S, 1, 1) = '-') Or (Copy(S, 1, 1) = '+') Then
+    Begin
+        Neg := Copy(S, 1, 1) = '-';
+        I := 2;
+    End;
+    Whole := '';
+    While VfIsDigit(Copy(S, I, 1)) Do
+    Begin
+        Whole := Whole + Copy(S, I, 1);
+        Inc(I);
+    End;
+    Frac := '';
+    If Copy(S, I, 1) = '.' Then
+    Begin
+        Inc(I);
+        While VfIsDigit(Copy(S, I, 1)) Do
+        Begin
+            Frac := Frac + Copy(S, I, 1);
+            Inc(I);
+        End;
+    End;
+    ExpS := '';
+    C := Copy(S, I, 1);
+    If ((C = 'e') Or (C = 'E')) And (Whole + Frac <> '') Then
+    Begin
+        Inc(I);
+        If (Copy(S, I, 1) = '-') Or (Copy(S, I, 1) = '+') Then
+        Begin
+            If Copy(S, I, 1) = '-' Then ExpS := '-';
+            Inc(I);
+        End;
+        If Not VfIsDigit(Copy(S, I, 1)) Then I := N + 2;   { no digits: refused below }
+        While VfIsDigit(Copy(S, I, 1)) Do
+        Begin
+            ExpS := ExpS + Copy(S, I, 1);
+            Inc(I);
+        End;
+    End;
+    If (Whole + Frac = '') Or (I <> N + 1) Then
+    Begin
+        Result := VfErr('not a number: ' + ValueText);
+        Exit;
+    End;
+    E := 0;
+    If ExpS <> '' Then E := StrToInt(ExpS);
+    Rec := VfCanon(Whole + Frac, E - Length(Frac));
+    D := VfField(Rec, 1);
+    E := StrToInt(VfField(Rec, 2));
+    If Neg And (D <> '0') And (Not VfNegativeOk(K)) Then
+    Begin
+        Result := VfErr('negative ' + K + ' value');
+        Exit;
+    End;
+    UnitO := VfUnitOf(K);
+    If D = '0' Then
+    Begin
+        Result := 'OK' + Chr(9) + '0' + UnitO;
+        Exit;
+    End;
+    Sign := '';
+    If Neg Then Sign := '-';
+    Mag := Length(D) + E - 1;
+    Letter := VfOutLetter(K, Mag);
+    Plain := VfPlain(D, E - VfLetterPower(Letter));
+    PointPos := Pos('.', Plain);
+    If PointPos > 0 Then
+    Begin
+        Whole := Copy(Plain, 1, PointPos - 1);
+        Frac := Copy(Plain, PointPos + 1, Length(Plain));
+    End
+    Else
+    Begin
+        Whole := Plain;
+        Frac := '';
+    End;
+    If K = 'ohm' Then Result := Sign + Whole + Letter + Frac             { 10R 1K5 0R005 }
+    Else If Letter = UnitO Then Result := Sign + Whole + UnitO + Frac    { 3V3 2F2 0%1 }
+    Else If K = 'farad' Then
+    Begin
+        If Frac = '' Then Result := Sign + Whole + Letter + 'F'           { 10uF }
+        Else Result := Sign + Whole + Letter + Frac;                      { 2u2 }
+    End
+    Else Result := Sign + Whole + Letter + Frac + UnitO;                 { 2u2H 500mV }
+    Result := 'OK' + Chr(9) + Result;
+End;
+
+{ Text with the case-insensitive word W replaced by Rep everywhere. }
+Function VfReplaceWord(S, W, Rep : String) : String;
+Var
+    Rest : String;
+    P : Integer;
+Begin
+    Result := '';
+    Rest := S;
+    P := Pos(W, LowerCase(Rest));
+    While P > 0 Do
+    Begin
+        Result := Result + Copy(Rest, 1, P - 1) + Rep;
+        Rest := Copy(Rest, P + Length(W), Length(Rest));
+        P := Pos(W, LowerCase(Rest));
+    End;
+    Result := Result + Rest;
+End;
+
+{ Grouping characters out, symbols and words to the letters the grammar knows. }
+Function VfNormalise(Text : String) : String;
+Var
+    S, C : String;
+    I, O : Integer;
+Begin
+    S := '';
+    For I := 1 To Length(Text) Do
+    Begin
+        C := Copy(Text, I, 1);
+        O := Ord(Text[I]);
+        If (O = 160) Or (O = $202F) Or (O = $2009) Or (O = $2007)
+           Or (C = '''') Or (C = '_') Or (O = 176) Or (O = 186) Then
+            S := S                     { digit grouping and degree signs: dropped }
+        Else If (O = 181) Or (O = $3BC) Then S := S + 'u'                    { micro }
+        Else If (O = $3A9) Or (O = $2126) Then S := S + 'R'                  { ohm }
+        Else If (O = $2212) Or (O = $2013) Then S := S + '-'                 { minus }
+        Else If O = 9 Then S := S + ' '
+        Else S := S + C;
+    End;
+    S := VfReplaceWord(S, 'ohms', 'R');
+    S := VfReplaceWord(S, 'ohm', 'R');
+    S := VfReplaceWord(S, 'farads', 'F');
+    S := VfReplaceWord(S, 'farad', 'F');
+    S := VfReplaceWord(S, 'henries', 'H');
+    S := VfReplaceWord(S, 'henrys', 'H');
+    S := VfReplaceWord(S, 'henry', 'H');
+    S := VfReplaceWord(S, 'volts', 'V');
+    S := VfReplaceWord(S, 'volt', 'V');
+    S := VfReplaceWord(S, 'amperes', 'A');
+    S := VfReplaceWord(S, 'ampere', 'A');
+    S := VfReplaceWord(S, 'amps', 'A');
+    S := VfReplaceWord(S, 'amp', 'A');
+    S := VfReplaceWord(S, 'mfd', 'uF');
+    S := VfReplaceWord(S, 'meg', 'M');
+    S := VfReplaceWord(S, 'degc', 'C');
+    S := VfReplaceWord(S, 'deg', '');
+    S := VfReplaceWord(S, 'percent', '%');
+    Result := Trim(S);
+End;
+
+{ Whether the word after a space is nothing but value letters, so the     }
+{ space joins it to the number ("10 uF", "4.7 kR", "2u2 H"); a word like   }
+{ "Vishay" is not. UnitOnly: just a unit (after a letter point).          }
+Function VfLetterWord(W : String; UnitOnly : Boolean) : Boolean;
+Var
+    I, N : Integer;
+Begin
+    Result := False;
+    N := Length(W);
+    If N = 0 Then Exit;
+    I := 1;
+    If UnitOnly Then
+    Begin
+        If VfUnitLen(W, 1) = 0 Then Exit;
+        I := 1 + VfUnitLen(W, 1);
+    End
+    Else
+    Begin
+        If VfIsDigit(Copy(W, 1, 1)) Then Exit;
+        If VfIsMult(Copy(W, 1, 1)) And (VfUnitLen(W, 1) <> 3) Then Inc(I);
+        I := I + VfUnitLen(W, I);
+        While VfIsDigit(Copy(W, I, 1)) Do Inc(I);
+        I := I + VfUnitLen(W, I);
+    End;
+    If Copy(W, I, 1) = '/' Then I := N + 1;     { 50 ppm/C }
+    Result := I > N;
+End;
+
+Function VfSkipSpace(S : String; K : Integer; UnitOnly : Boolean) : Integer;
+Var
+    K2, P : Integer;
+    W : String;
+Begin
+    Result := K;
+    If Copy(S, K, 1) <> ' ' Then Exit;
+    K2 := K;
+    While Copy(S, K2, 1) = ' ' Do Inc(K2);
+    W := Copy(S, K2, Length(S));
+    P := Pos(' ', W);
+    If P > 0 Then W := Copy(W, 1, P - 1);
+    If VfLetterWord(W, UnitOnly) Then Result := K2;
+End;
+
+{ VfScan - the normalised text left to right: sign, number, exponent,     }
+{ multiplier, letter-point digits, unit; the rest. A value that runs on   }
+{ into digits, separators or letters it cannot use is malformed.          }
+{ 'OK' sign num exp mult digits unit rest                                 }
+Function VfScan(S, Text : String) : String;
+Var
+    I, J, N, L : Integer;
+    Sign, Num, Ex, Mult, Digits, UnitTok, Rest, C, Raw : String;
+    Go : Boolean;
+Begin
+    N := Length(S);
+    I := 1;
+    Sign := '';
+    If (Copy(S, 1, 1) = '+') Or (Copy(S, 1, 1) = '-') Then
+    Begin
+        Sign := Copy(S, 1, 1);
+        I := 2;
+    End;
+    J := I;
+    Go := True;
+    While Go And (J <= N) Do
+    Begin
+        C := Copy(S, J, 1);
+        If VfIsDigit(C) Or (C = '.') Or (C = ',') Then Inc(J)
+        Else If (C = ' ') And (J > I) And VfIsDigit(Copy(S, J - 1, 1))
+                And VfIsDigit(Copy(S, J + 1, 1)) And VfIsDigit(Copy(S, J + 2, 1))
+                And VfIsDigit(Copy(S, J + 3, 1)) And (Not VfIsDigit(Copy(S, J + 4, 1)))
+                And (Pos('.', Copy(S, I, J - I)) = 0) And (Pos(',', Copy(S, I, J - I)) = 0) Then
+            Inc(J)                                            { 10 000uF }
+        Else Go := False;
+    End;
+    Raw := Copy(S, I, J - I);
+    Num := '';
+    For L := 1 To Length(Raw) Do
+        If Copy(Raw, L, 1) <> ' ' Then Num := Num + Copy(Raw, L, 1);
+    I := J;
+    Ex := '';
+    C := Copy(S, I, 1);
+    If (Num <> '') And ((C = 'e') Or (C = 'E')) Then
+    Begin
+        J := I + 1;
+        If (Copy(S, J, 1) = '-') Or (Copy(S, J, 1) = '+') Then Inc(J);
+        If VfIsDigit(Copy(S, J, 1)) Then
+        Begin
+            While VfIsDigit(Copy(S, J, 1)) Do Inc(J);
+            Ex := Copy(S, I + 1, J - I - 1);
+            If Copy(Ex, 1, 1) = '+' Then Ex := Copy(Ex, 2, Length(Ex));
+            I := J;
+        End;
+    End;
+    If (Num <> '') Or (Ex <> '') Then I := VfSkipSpace(S, I, False);
+    Mult := '';
+    UnitTok := '';
+    Digits := '';
+    L := VfUnitLen(S, I);
+    If L > 0 Then
+    Begin
+        UnitTok := VfUnitTok(S, I);
+        I := I + L;
+    End
+    Else If VfIsMult(Copy(S, I, 1)) Then
+    Begin
+        Mult := Copy(S, I, 1);
+        Inc(I);
+        L := VfUnitLen(S, I);
+        If L > 0 Then
+        Begin
+            UnitTok := VfUnitTok(S, I);
+            I := I + L;
+        End;
+    End;
+    If (Mult <> '') Or (UnitTok <> '') Then
+    Begin
+        J := I;
+        While VfIsDigit(Copy(S, J, 1)) Do Inc(J);
+        If J > I Then
+        Begin
+            Digits := Copy(S, I, J - I);
+            I := J;
+            If UnitTok = '' Then
+            Begin
+                I := VfSkipSpace(S, I, True);                 { 2u2 H }
+                L := VfUnitLen(S, I);
+                If L > 0 Then
+                Begin
+                    UnitTok := VfUnitTok(S, I);               { 2u2F 1m5V 4k7R }
+                    I := I + L;
+                End;
+            End;
+        End;
+    End;
+    Rest := Copy(S, I, Length(S));
+    If (Rest <> '') And (Copy(Rest, 1, 1) <> ' ') Then
+    Begin
+        C := Copy(Rest, 1, 1);
+        If VfIsDigit(C) Or (C = '.') Or (C = ',') Or VfIsMult(C) Or (VfUnitLen(Rest, 1) > 0) Then
+        Begin
+            Result := VfErr('malformed value ' + Text + ' (at ' + Rest + ')');
+            Exit;
+        End;
+    End;
+    Rest := Trim(Rest);
+    Result := 'OK' + Chr(9) + Sign + Chr(9) + Num + Chr(9) + Ex + Chr(9) + Mult
+              + Chr(9) + Digits + Chr(9) + UnitTok + Chr(9) + Rest;
+End;
+
+Function VfLastPos(C, S : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(S) Do
+        If Copy(S, I, 1) = C Then Result := I;
+End;
+
+Function VfCount(C, S : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(S) Do
+        If Copy(S, I, 1) = C Then Inc(Result);
+End;
+
+{ VfNumber - digits with '.' and ',' -> 'OK' whole frac note, deciding which }
+{ is the decimal point: both present, the last; one used twice or more,     }
+{ grouping; once with exactly three digits after and one to three (not 0)  }
+{ before, ambiguous: Sep (the source's decimal separator) decides.          }
+Function VfNumber(Num, Sep : String; LetterPoint : Boolean) : String;
+Var
+    Dots, Commas, P, I : Integer;
+    Point, SepC, Head, Tail, Frac, Note, Whole, Group, C : String;
+    Grouped : Boolean;
+Begin
+    Dots := VfCount('.', Num);
+    Commas := VfCount(',', Num);
+    Point := '';
+    Note := '';
+    If (Dots > 0) And (Commas > 0) Then
+    Begin
+        If VfLastPos('.', Num) > VfLastPos(',', Num) Then Point := '.' Else Point := ',';
+    End
+    Else If Dots + Commas = 1 Then
+    Begin
+        If Dots = 1 Then SepC := '.' Else SepC := ',';
+        P := Pos(SepC, Num);
+        Head := Copy(Num, 1, P - 1);
+        Tail := Copy(Num, P + 1, Length(Num));
+        Grouped := (Length(Tail) = 3) And (Length(Head) >= 1) And (Length(Head) <= 3) And (Head <> '0');
+        If Not Grouped Then Point := SepC
+        Else If LetterPoint Then Point := ''
+        Else If Sep = SepC Then
+        Begin
+            Point := SepC;
+            Note := '''' + Num + ''' read with ''' + SepC + ''' as the decimal point';
+        End
+        Else Note := '''' + Num + ''' read with ''' + SepC + ''' as thousands grouping';
+    End;
+    If LetterPoint And (Point <> '') Then
+    Begin
+        Result := VfErr('decimal point and letter point together: ' + Num);
+        Exit;
+    End;
+    If Point <> '' Then
+    Begin
+        P := Pos(Point, Num);
+        Head := Copy(Num, 1, P - 1);
+        Frac := Copy(Num, P + 1, Length(Num));
+    End
+    Else
+    Begin
+        Head := Num;
+        Frac := '';
+    End;
+    If (Pos('.', Frac) > 0) Or (Pos(',', Frac) > 0) Then
+    Begin
+        Result := VfErr('malformed value: separator after the point in ' + Num);
+        Exit;
+    End;
+    { the whole part: groups of three after the first, the first one to three }
+    Whole := '';
+    Group := '';
+    P := 0;
+    For I := 1 To Length(Head) + 1 Do
+    Begin
+        C := Copy(Head, I, 1);
+        If (C = '.') Or (C = ',') Or (I > Length(Head)) Then
+        Begin
+            If ((P = 0) And (Length(Group) > 3) And (I <= Length(Head)))
+               Or ((P = 0) And (I <= Length(Head)) And (Length(Group) < 1))
+               Or ((P > 0) And (Length(Group) <> 3)) Then
+            Begin
+                Result := VfErr('malformed value: bad grouping in ' + Num);
+                Exit;
+            End;
+            Whole := Whole + Group;
+            Group := '';
+            Inc(P);
+        End
+        Else Group := Group + C;
+    End;
+    Result := 'OK' + Chr(9) + Whole + Chr(9) + Frac + Chr(9) + Note;
+End;
+
+Function VfAddNote(Notes, Note : String) : String;
+Begin
+    If Note = '' Then Result := Notes
+    Else If Notes = '' Then Result := Note
+    Else Result := Notes + Chr(10) + Note;
+End;
+
+{ VfParse - Text -> 'OK' kind value rest notes (notes LF-separated).      }
+{ Kind ('' = from the text) takes precedence; a unit in the text that     }
+{ contradicts it is a note, the value is still read. Sep is the decimal   }
+{ separator of the SOURCE ('.' or ','); '' = this machine's.              }
+Function VfParse(Text, Kind, Sep : String) : String;
+Var
+    K, S, Rec, Sign, Num, Ex, Mult, Digits, UnitTok, Rest : String;
+    Notes, Found, KRead, Whole, Frac, D, Final : String;
+    Power, P, I, E : Integer;
+    HasDigit : Boolean;
+Begin
+    K := '';
+    If Trim(Kind) <> '' Then
+    Begin
+        K := VfKind(Kind);
+        If K = '' Then
+        Begin
+            Result := VfErr('unknown kind ' + Kind);
+            Exit;
+        End;
+    End;
+    If Sep = '' Then Sep := DecimalSeparator;
+    S := VfNormalise(Text);
+    Rec := VfScan(S, Text);
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    Sign := VfField(Rec, 1);
+    Num := VfField(Rec, 2);
+    Ex := VfField(Rec, 3);
+    Mult := VfField(Rec, 4);
+    Digits := VfField(Rec, 5);
+    UnitTok := VfField(Rec, 6);
+    Rest := VfField(Rec, 7);
+    Notes := '';
+    If Rest <> '' Then Notes := VfAddNote(Notes, 'ignored after the value: ' + Rest);
+    HasDigit := False;
+    For I := 1 To Length(Num) Do
+        If VfIsDigit(Copy(Num, I, 1)) Then HasDigit := True;
+    If (Not HasDigit) And (Digits = '') Then
+    Begin
+        Result := VfErr('not a value: ' + Text);
+        Exit;
+    End;
+    If (Ex <> '') And ((Mult <> '') Or (Digits <> '')) Then
+    Begin
+        Result := VfErr('malformed value: exponent and letter together: ' + Text);
+        Exit;
+    End;
+    Found := VfKindOfUnit(UnitTok);
+    If (Found = '') And (Mult <> '') Then
+    Begin
+        If Pos(Mult, 'UuNnPp') > 0 Then Found := 'farad' Else Found := 'ohm';
+    End;
+    If (K <> '') And (Found <> '') And (Found <> K) Then
+        Notes := VfAddNote(Notes, Text + ' reads as ' + Found + '; taken as ' + K + ' as asked');
+    KRead := Found;
+    If KRead = '' Then KRead := K;
+    Power := 0;
+    If Mult <> '' Then
+    Begin
+        P := VfMultPower(KRead, Mult);
+        If P = 99 Then
+        Begin
+            If (KRead = 'ohm') And ((Mult = 'u') Or (Mult = 'U')) Then
+                Result := VfErr('micro is not used for ohms: write 0R0005')
+            Else If (KRead = 'farad') And (Mult = 'm') Then
+                Result := VfErr('milli is not used for farads: write 1000uF')
+            Else If (KRead = 'farad') And (Mult = 'M') Then
+                Result := VfErr('M is not used for farads: write 1000uF')
+            Else
+                Result := VfErr('''' + Mult + ''' is not a multiplier for ' + KRead + ': ' + Text);
+            Exit;
+        End;
+        Power := P;
+        If (P = 3) And ((KRead = 'volt') Or (KRead = 'ampere')) Then
+            Notes := VfAddNote(Notes, 'kilo read; written out in full');
+    End;
+    Rec := VfNumber(Num, Sep, Digits <> '');
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    Whole := VfField(Rec, 1);
+    Frac := VfField(Rec, 2);
+    Notes := VfAddNote(Notes, VfField(Rec, 3));
+    If Frac = '' Then Frac := Digits;
+    E := 0;
+    If Ex <> '' Then E := StrToInt(Ex);
+    Power := Power + E - Length(Frac);
+    Rec := VfCanon(Whole + Frac, Power);
+    D := VfField(Rec, 1);
+    Power := StrToInt(VfField(Rec, 2));
+    Final := K;
+    If Final = '' Then Final := Found;
+    If (Sign = '-') And (D <> '0') And (Final <> '') And (Not VfNegativeOk(Final)) Then
+    Begin
+        Result := VfErr('negative ' + Final + ' value: ' + Text);
+        Exit;
+    End;
+    If (Sign = '-') And (D <> '0') Then D := '-' + VfPlain(D, Power)
+    Else D := VfPlain(D, Power);
+    Result := 'OK' + Chr(9) + Final + Chr(9) + D + Chr(9) + Rest + Chr(9) + Notes;
+End;
+
+{ VfCleanup - a malformed value string made proper: 'OK' text kind value  }
+{ rest notes. The digits are carried over as they stand; nothing rounds.  }
+Function VfCleanup(Text, Kind, Sep : String) : String;
+Var
+    Rec, TextRec : String;
+Begin
+    Rec := VfParse(Text, Kind, Sep);
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    If VfField(Rec, 1) = '' Then
+    Begin
+        Result := VfErr('kind unknown for ' + Text + ': pass kind');
+        Exit;
+    End;
+    TextRec := VfToString(VfField(Rec, 1), VfField(Rec, 2));
+    If VfField(TextRec, 0) <> 'OK' Then
+    Begin
+        Result := TextRec;
+        Exit;
+    End;
+    Result := 'OK' + Chr(9) + VfField(TextRec, 1) + Chr(9) + VfField(Rec, 1) + Chr(9)
+              + VfField(Rec, 2) + Chr(9) + VfField(Rec, 3) + Chr(9) + VfField(Rec, 4);
+End;
+
 { install-scripts writes the hash of this file into the deployed copy. }
 Function UnitStamp_Utils(Dummy : Integer) : String;
 Begin

@@ -1551,7 +1551,8 @@ Begin
            Or ActionHasPrefix(Verb, 'inspect_')
            Or ActionHasPrefix(Verb, 'diff_')
            Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
+           Or (Verb = 'ping')
+           Or (Verb = 'format_value');
 End;
 
 { SessionFocus - put the session's own document back in front, in the same }
