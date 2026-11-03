@@ -11333,6 +11333,149 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_EmbeddedData - named text records stored inside the board file.         }
+{                                                                              }
+{ A board has no place for an application's own data other than visible      }
+{ texts, which a designer can move, delete or print. An embedded object       }
+{ (eEmbeddedObject) carries a Name and a Description, is saved with the       }
+{ board, survives close and reopen (69 byte and 100 kB records measured) and }
+{ is neither drawn nor selectable on the canvas. The record IS the            }
+{ Description; the Name is how a caller finds it again.                       }
+{                                                                              }
+{ IPCB_Embedded is not in the script engine's identifier table, so a record   }
+{ is held in a Variant: a typed local would stop the unit at compile time.   }
+{ Several records may share a name (another writer may have made one), so    }
+{ read, write and delete act on every match, in board order.                 }
+{                                                                              }
+{ Matches are collected first and only touched after the iterator is gone:   }
+{ removing an object from the board while its iterator walks it disturbs the }
+{ walk. A write reads the Description back: "exact" says every record      }
+{ now holds the text as sent, "length" its length as read.                   }
+{..............................................................................}
+Function PCB_EmbeddedData(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    P : IPCB_Primitive;
+    E : Variant;
+    Matches : TInterfaceList;
+    Action, Name, Text, Rows : String;
+    I, Updated, Created, Deleted, ReadBack : Integer;
+    Exact : Boolean;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If (Action <> 'list') And (Action <> 'read') And (Action <> 'write')
+        And (Action <> 'delete') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
+            'action is list, read, write or delete');
+        Exit;
+    End;
+    Name := ExtractJsonValue(Params, 'name');
+    If (Action <> 'list') And (Trim(Name) = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'name is required for ' + Action);
+        Exit;
+    End;
+    Text := ExtractJsonValue(Params, 'text');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Matches := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eEmbeddedObject));
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    P := Iter.FirstPCBObject;
+    While P <> Nil Do
+    Begin
+        E := P;
+        If (Action = 'list') Or (E.Name = Name) Then Matches.Add(P);
+        P := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+
+    Rows := '';
+    Updated := 0;
+    Created := 0;
+    Deleted := 0;
+    ReadBack := 0;
+    Exact := True;
+    For I := 0 To Matches.Count - 1 Do
+    Begin
+        P := Matches.Items[I];
+        E := P;
+        If Action = 'write' Then
+        Begin
+            E.BeginModify;
+            E.Description := Text;
+            E.EndModify;
+            Inc(Updated);
+            ReadBack := Length(E.Description);
+            If E.Description <> Text Then Exact := False;
+        End;
+        If Action = 'delete' Then
+        Begin
+            Board.RemovePCBObject(P);
+            Inc(Deleted);
+        End
+        Else
+        Begin
+            If Rows <> '' Then Rows := Rows + ',';
+            If Action = 'list' Then
+                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                    + JsonInt('length', Length(E.Description)) + ','
+                    + JsonStr('head', Copy(E.Description, 1, 200)) + ','
+                    + JsonStr('layer', LayerDisplayName(E.Layer)) + '}'
+            Else If Action = 'read' Then
+                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                    + JsonInt('length', Length(E.Description)) + ','
+                    + JsonStr('text', E.Description) + '}'
+            Else
+                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                    + JsonInt('length', Length(E.Description)) + '}';
+        End;
+    End;
+
+    { Nothing by that name yet: a write makes the record. }
+    If (Action = 'write') And (Matches.Count = 0) Then
+    Begin
+        E := PCBServer.PCBObjectFactory(eEmbeddedObject, eNoDimension, eCreate_Default);
+        E.Name := Name;
+        E.Description := Text;
+        E.Layer := LayerUtils.MechanicalLayer(1);
+        Board.AddPCBObject(E);
+        Created := 1;
+        ReadBack := Length(E.Description);
+        If E.Description <> Text Then Exact := False;
+        Rows := '{' + JsonStr('name', E.Name) + ','
+            + JsonInt('length', Length(E.Description)) + '}';
+    End;
+
+    If (Updated + Created + Deleted) > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    If Action = 'list' Then
+        Result := BuildSuccessResponse(RequestId, '{' + JsonInt('count', Matches.Count)
+            + ',"records":[' + Rows + ']}')
+    Else If Action = 'read' Then
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('name', Name) + ','
+            + JsonInt('found', Matches.Count) + ',"records":[' + Rows + ']}')
+    Else If Action = 'write' Then
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('name', Name) + ','
+            + JsonInt('created', Created) + ',' + JsonInt('updated', Updated) + ','
+            + JsonInt('length', ReadBack) + ',' + JsonBool('exact', Exact)
+            + ',"records":[' + Rows + ']}')
+    Else
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('name', Name) + ','
+            + JsonInt('deleted', Deleted) + '}');
+End;
+
+{..............................................................................}
 { PCB_GetPolygons - Get all polygon pours with layer, net, hatching, etc.    }
 {..............................................................................}
 
@@ -27567,6 +27710,7 @@ Begin
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
+        'embedded_data':           Result := PCB_EmbeddedData(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

@@ -8558,6 +8558,67 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.pour_copper", ask)
 
     @mcp.tool()
+    async def pcb_embedded_data(
+        action: str, name: str = "", text: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Keep named text records inside the board file, out of sight.
+
+        Each record is an Altium embedded object on Mechanical1: it is saved
+        with the PcbDoc, survives close and reopen, and is neither drawn nor
+        selectable on the canvas, so a designer cannot move or delete it by
+        accident. The data is plain text: encode JSON or anything else
+        yourself; it comes back exactly as written. Not for secrets: anyone
+        who opens the file can read it. Several records can share a name
+        (another writer may have made one), so read, write and delete act
+        on every record with that name, in board order.
+
+        Args:
+            action: ``list`` (every record: ``name``, ``length``, ``head`` =
+                the first 200 characters, ``layer``), ``read`` (the full
+                ``text`` of each record named ``name``), ``write`` (replace
+                the text of every record named ``name``, or make one when
+                there is none) or ``delete`` (remove every record named
+                ``name``).
+            name: The record's name, matched exactly (case and spaces
+                count). Required for read, write and delete.
+            text: The record's text, required for write. Sent unchanged.
+
+        Returns:
+            list: ``count`` and ``records``. read: ``found`` and ``records``
+            with ``text``. write: ``created``, ``updated``, ``length`` and
+            ``exact`` (the text read back equals the text sent). delete:
+            ``deleted``. The board is marked modified after a write or a
+            delete; save it to keep the change.
+
+        Name and text are Latin-1 (U+0000 to U+00FF): the bridge carries
+        no more into Altium, so other characters are refused here rather
+        than stored changed. Encode them first, for example as JSON with
+        ``ensure_ascii=True``.
+        """
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "read", "write", "delete"):
+            return {"ok": False, "reason": "action is list, read, write or delete"}
+        if act != "list" and (not isinstance(name, str) or not name.strip()):
+            return {"ok": False, "reason": f"name is required for {act}"}
+        if act == "write" and not isinstance(text, str):
+            return {"ok": False, "reason": "text is required for write"}
+        for label, value in (("name", name if act != "list" else ""),
+                             ("text", text if act == "write" else "")):
+            wide = [c for c in value if ord(c) > 0xFF]
+            if wide:
+                return {"ok": False, "reason": (
+                    f"{label} holds {len(wide)} character(s) beyond Latin-1 "
+                    f"(first {wide[0]!r}, U+{ord(wide[0]):04X}); the bridge "
+                    f"would store them changed. Encode them first, e.g. JSON "
+                    f"with ensure_ascii=True")}
+        ask: dict[str, str] = {"action": act}
+        if act != "list":
+            ask["name"] = name
+        if act == "write":
+            ask["text"] = text
+        return await get_bridge().send_command_async("pcb.embedded_data", ask)
+
+    @mcp.tool()
     async def pcb_get_copper(
         kinds: str = "",
         layer: str = "",

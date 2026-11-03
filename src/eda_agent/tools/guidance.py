@@ -975,6 +975,19 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "outline and holes. A hatched pour's tracks are read by pcb_get_copper."),
     },
     {
+        "task": "Store an application's own data inside the board file",
+        "keywords": ("embedded", "store", "record", "hidden"),
+        "when": (("store", "board"), ("embedded", "data"), ("hidden", "data"),
+                 ("record", "board")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_embedded_data"],
+        "avoid": ["pcb_place_text"],
+        "note": ("Named plain-text records kept as embedded objects: saved with the "
+                 "PcbDoc, not drawn or selectable. A visible text can be moved or "
+                 "deleted by a designer. Not for secrets."),
+    },
+    {
         "task": "Rename or swap designators across a whole project",
         "keywords": ("swap", "designator", "designators"),
         "when": (("swap", "designator"), ("rename", "designator"),
