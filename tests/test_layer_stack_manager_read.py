@@ -74,6 +74,19 @@ def test_via_span_layers_are_matched_without_case():
     assert "Result := UpperCase(R);" in key
 
 
+def test_every_layer_type_of_a_stack_has_a_name():
+    # A new board's dielectric is Altium's plain Dielectric type, neither
+    # core nor prepreg; it read as "other" before it had a name.
+    names = load(_PCB)["LsmTypeName"]
+    for guid, name in (("F4ECCD87-2CFB-4F37-BE50-4F3A272B4D01", "copper"),
+                       ("136C62EF-1FA6-4897-AE71-7E797B632B92", "core"),
+                       ("1A79611A-039D-4D40-A204-53C26C50F8B5", "prepreg"),
+                       ("92B02D5E-8D69-48A8-880E-AC4B77DB099D", "dielectric"),
+                       ("7B384237-13D8-4318-8BCB-ACCD8D9A51E7", "solder_mask"),
+                       ("C7EF040E-8D00-490B-B00C-A7E7823FF174", "overlay")):
+        assert f"T = '{{{guid}}}' Then Result := '{name}'" in names
+
+
 def test_the_command_is_routed():
     text = _PCB.read_text(encoding="utf-8")
     assert re.search(r"'layer_stack_manager':\s+Result := PCB_LayerStackManager\(Params, RequestId\);",

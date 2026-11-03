@@ -2353,7 +2353,7 @@ def register_pcb_tools(mcp):
         pcb_physical_stack reads the board's layer objects (Z, thickness,
         material, constant). This reads the Layer Stack Manager's own data,
         which holds more: each layer's type (copper, core, prepreg,
-        solder_mask, overlay or other), material, thickness, dielectric
+        dielectric, solder_mask, overlay or other), material, thickness, dielectric
         constant, copper weight, and every named material / process
         property that has a value, such as glass construction, resin
         content, Tg, frequency, copper weight and process, or pullback;
