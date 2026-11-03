@@ -1675,6 +1675,7 @@ Var
     PcbComp : IPCB_Component;
     I, J, DocCount : Integer;
     UsePhysical, Found : Boolean;
+    FilterWas : Boolean;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     Target := ExtractJsonValue(Params, 'target');
@@ -1744,6 +1745,9 @@ Begin
             AddStringParameter('Scope', 'All');
             RunProcess('PCB:DeSelect');
         Except End;
+        { Components switched off in the Selection Filter would otherwise }
+        { not be selected, and PCB:Jump would have nothing to go to.      }
+        FilterWas := PcbSelectFilterOff(Board);
         BoardIter := Board.BoardIterator_Create;
         Try
             BoardIter.AddFilter_ObjectSet(MkSet(eComponentObject));
@@ -1763,6 +1767,7 @@ Begin
             End;
         Finally
             Board.BoardIterator_Destroy(BoardIter);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Try Board.GraphicallyInvalidate; Except End;
         { Pan/zoom the view to the now-selected component. PCB:Jump with     }
