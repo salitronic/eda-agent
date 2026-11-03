@@ -6965,6 +6965,76 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.add_layer", params)
 
     @mcp.tool()
+    async def pcb_move_layer(
+        layer: str, direction: str, steps: int = 1, alone: bool = False,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Move a layer up or down the board's layer stack.
+
+        Moves it one or more places and writes the new order into the board.
+
+        This is the Layer Stack Manager's own intelligent move: the layer
+        swaps with its neighbour of the same kind (copper with copper) and
+        the dielectrics between them go with it. Objects stay on their
+        layers, so the routing on a moved layer moves with it. A move that
+        would leave the stack is refused; the moves done before it stay.
+
+        On a symmetric stack the move is mirrored on the opposite half
+        (moving L2 down also swaps the matching layers near the bottom),
+        unless ``alone`` is set: symmetry is then switched off for the move
+        and asked back on afterwards. Altium keeps a stack marked symmetric
+        only when it is: after a move alone that leaves it lopsided it
+        stays non-symmetric (``symmetric_after``).
+
+        The move goes through the Layer Stack Manager's own copy of the
+        stack and writes that copy into the board. Once a board carries
+        that copy, script writes to the board's stack (pcb_set_dielectric,
+        pcb_modify_layer, a rebuild) do not reach it, and a move would put
+        the old values back. So the two are compared first and the move is
+        refused while they disagree (``out_of_step``, as
+        pcb_layer_stack_manager reports it); ``force`` moves anyway.
+
+        Args:
+            layer: The layer's name as the stack shows it, e.g. "Layer 2".
+            direction: "up" or "down".
+            steps: How many places, 1 to 64.
+            alone: Move only this layer on a symmetric stack.
+            force: Move even when the Layer Stack Manager disagrees with
+                the board's stack (its values are then written back).
+
+        Returns:
+            ``layer``, ``direction``, ``steps_requested``, ``steps_done``,
+            ``refused`` (the next move was refused), ``symmetric`` (the
+            stack was symmetric), ``alone``, ``mirrored`` (the opposite
+            layers moved too), ``symmetric_after``, ``order_before`` /
+            ``order_after`` (the board's copper layers top down) and
+            ``stack``; refused for disagreement: ``out_of_step``.
+        """
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        direction = direction.strip().lower()
+        if direction not in ("up", "down"):
+            return {"ok": False, "reason": "direction is up or down"}
+        if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 64:
+            return {"ok": False, "reason": "steps is a whole number from 1 to 64"}
+        bridge = get_bridge()
+        if not force:
+            manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
+            physical = await bridge.send_command_async("pcb.physical_stack", {})
+            diff = stack_manager_out_of_step(manager, physical)
+            if diff:
+                return {"ok": False,
+                        "reason": ("the Layer Stack Manager disagrees with the board's "
+                                   "stack; a move would write its values back over the "
+                                   "board's (force=True moves anyway)"),
+                        "out_of_step": diff}
+        params: dict[str, Any] = {"layer": layer.strip(), "direction": direction,
+                                  "steps": str(steps),
+                                  "alone": "true" if alone else "false"}
+        return await bridge.send_command_async(
+            "pcb.move_layer", params, timeout=120.0)
+
+    @mcp.tool()
     async def pcb_remove_layer(layer: str) -> dict[str, Any]:
         """Remove a copper layer from the PCB layer stack.
 
