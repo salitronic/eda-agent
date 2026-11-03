@@ -198,6 +198,9 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Altium's Confirm box for the netlist update blocks the loop until it
+    # is answered; the tool presses Yes itself, as above.
+    "pcb_update_free_primitive_nets": MODAL,
     # Pulls new code into the installation and can restart the Altium
     # loop. It is filed under meta, which counts as offline, and offline
     # would otherwise read as readonly.

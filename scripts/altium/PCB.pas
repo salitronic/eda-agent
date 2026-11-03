@@ -17653,6 +17653,135 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_UpdateFreePrimitiveNets - Design > Netlist > Update Free Primitives     }
+{ From Component Pads: free copper with no net that touches a component pad   }
+{ takes that pad's net, and copper touching that copper follows, as Altium    }
+{ decides. Runs PCB:Netlist with Action=UpdateFreePrimitiveNets.              }
+{                                                                              }
+{ MEASURED (AD 25.8): the process raises a modal "Confirm" box, "Update        }
+{ free-primitives nets from component-pad nets?", Yes / No, and the script     }
+{ waits in RunProcess until it is answered. The MCP tool presses Yes on that  }
+{ box from Python; a direct call blocks the bridge until a person does.       }
+{                                                                              }
+{ RunProcess returns nothing, so the reply is built from what the board says  }
+{ before and after: the free copper with no net is counted, and every object  }
+{ that had no net before and has one now is listed.                           }
+{..............................................................................}
+
+{ One walk of the board's FREE copper: tracks, arcs, vias, fills and regions  }
+{ that belong to no component, pour or dimension, keepouts left out. Before   }
+{ the update every object with no net is remembered by its address; after it }
+{ an object remembered then that has a net now counts as changed, and the     }
+{ first 200 are listed in Listed. Returns how many objects have no net.       }
+Function FreeNetsWalk(Board : IPCB_Board; Seen : TStringList; Before : Boolean;
+    Var Changed : Integer; Var Listed : String) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    P : IPCB_Primitive;
+    Net : IPCB_Net;
+    NetName, Kind : String;
+    R : TCoordRect;
+    Owned : Boolean;
+Begin
+    Result := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, eFillObject, eRegionObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        P := Iter.FirstPCBObject;
+        While P <> Nil Do
+        Begin
+            Owned := P.InComponent Or P.InPolygon Or P.InDimension;
+            If (Not Owned) And PcbCheckIsCopper(P) Then
+            Begin
+                NetName := '';
+                Try
+                    Net := P.Net;
+                    If Net <> Nil Then NetName := Net.Name;
+                Except
+                End;
+                If NetName = '' Then
+                Begin
+                    Inc(Result);
+                    If Before Then Seen.Add(IntToStr(P.I_ObjectAddress));
+                End
+                Else If (Not Before) And (Seen.IndexOf(IntToStr(P.I_ObjectAddress)) >= 0) Then
+                Begin
+                    Inc(Changed);
+                    If Changed <= 200 Then
+                    Begin
+                        Kind := 'region';
+                        If P.ObjectId = eTrackObject Then Kind := 'track';
+                        If P.ObjectId = eArcObject Then Kind := 'arc';
+                        If P.ObjectId = eViaObject Then Kind := 'via';
+                        If P.ObjectId = eFillObject Then Kind := 'fill';
+                        R := P.BoundingRectangle;
+                        If Listed <> '' Then Listed := Listed + ',';
+                        Listed := Listed + '{' + JsonStr('kind', Kind) + ','
+                            + JsonStr('layer', LayerDisplayName(P.Layer)) + ','
+                            + JsonStr('net', NetName) + ','
+                            + JsonFloat('x1', CoordToMilsF(R.Left)) + ','
+                            + JsonFloat('y1', CoordToMilsF(R.Bottom)) + ','
+                            + JsonFloat('x2', CoordToMilsF(R.Right)) + ','
+                            + JsonFloat('y2', CoordToMilsF(R.Top)) + '}';
+                    End;
+                End;
+            End;
+            P := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function PCB_UpdateFreePrimitiveNets(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Seen : TStringList;
+    NoNetBefore, NoNetAfter, Changed, Unused : Integer;
+    Listed, UnusedList : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Changed := 0;
+    Unused := 0;
+    Listed := '';
+    UnusedList := '';
+    Seen := TStringList.Create;
+    Try
+        Seen.Sorted := True;
+        Seen.Duplicates := dupIgnore;
+        NoNetBefore := FreeNetsWalk(Board, Seen, True, Unused, UnusedList);
+
+        ResetParameters;
+        AddStringParameter('Action', 'UpdateFreePrimitiveNets');
+        RunProcess('PCB:Netlist');
+
+        NoNetAfter := FreeNetsWalk(Board, Seen, False, Changed, Listed);
+    Finally
+        Seen.Free;
+    End;
+    If Changed > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId, '{"dispatched":true,'
+        + '"process":"PCB:Netlist",'
+        + JsonInt('no_net_before', NoNetBefore) + ','
+        + JsonInt('no_net_after', NoNetAfter) + ','
+        + JsonInt('changed_count', Changed) + ','
+        + JsonBool('changed_truncated', Changed > 200) + ','
+        + '"changed":[' + Listed + '],'
+        + '"note":"RunProcess returns nothing, so these counts are read from '
+        + 'the board before and after. Nothing changed means the Confirm box '
+        + 'was answered No, or no free copper without a net touches a pad."}');
+End;
+
+{..............................................................................}
 { PCB_Panelize - build a production panel on the current (blank) board:       }
 { an embedded-board array of a source .PcbDoc, a rectangular panel outline,   }
 { corner tooling holes, and fiducials. board_width_mils / board_height_mils   }
@@ -27567,6 +27696,7 @@ Begin
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
+        'update_free_primitive_nets': Result := PCB_UpdateFreePrimitiveNets(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

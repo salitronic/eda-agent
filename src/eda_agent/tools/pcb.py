@@ -423,6 +423,70 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
 
 
 #: Altium's internal units per mil.
+#: Design > Netlist > Update Free Primitives From Component Pads asks first.
+#: MEASURED (AD 25.8): a box titled exactly "Confirm" with this text and
+#: Yes / No, raised inside RunProcess, so the handler waits on it.
+_FREE_NETS_TITLE = "Confirm"
+_FREE_NETS_TEXT = "Update free-primitives nets"
+_FREE_NETS_TIMEOUT = 600.0
+
+
+def _is_free_nets_prompt(title: str, text: str) -> bool:
+    """True only for the update's own Confirm box, by title AND text."""
+    return (title or "").strip() == _FREE_NETS_TITLE and _FREE_NETS_TEXT in text
+
+
+def _answer_free_nets_prompt(pid, done, state, poll: float = 0.1) -> None:
+    """Press Yes on the update's Confirm box once it shows. Runs in a thread.
+
+    Every dialog of the process is read; Yes is pressed only on one whose
+    title is "Confirm" and whose text names the update. Any other dialog is
+    left alone, and recorded in ``state["left"]``. Stops when ``done`` is
+    set or after one press.
+    """
+    from ..ui import uia, windows
+
+    passed = set()
+    while not done.is_set():
+        for dialog in windows.dialogs(pid):
+            hwnd = dialog.hwnd
+            if hwnd in passed:
+                continue
+            title = dialog.title or ""
+            read = uia.describe_window(hwnd, depth=4, limit=100)
+            names = [str(e.get("name", "")) for e in read.get("elements", [])]
+            names += [str(getattr(c, "text", "") or "")
+                      for c in getattr(dialog, "controls", []) or []]
+            text = " ".join(names)
+            if (title.strip() == _FREE_NETS_TITLE
+                    and _FREE_NETS_TEXT not in text):
+                # Altium draws this box's message in owner-drawn panels:
+                # neither the controls nor UI Automation expose it, so it
+                # is read the way the bridge reads a blocking dialog, by OCR.
+                from ..ui import dialog_report
+                try:
+                    seen = dialog_report.describe_dialog(dialog)
+                except Exception:  # unreadable: not known to be ours
+                    seen = {}
+                text += " " + " ".join(
+                    str(t) for t in (seen.get("message") or [])
+                    + (seen.get("ocr_text") or []))
+            if not _is_free_nets_prompt(title, text):
+                passed.add(hwnd)
+                state["left"].append(title)
+                continue
+            pressed = uia.invoke(hwnd, "Yes")
+            if not pressed.get("ok"):
+                state["reason"] = ("the Confirm box was found but Yes could "
+                                   "not be pressed: "
+                                   + str(pressed.get("reason", "")))
+                return
+            state["answered"] = True
+            windows.wait_for_close(hwnd, timeout=5.0)
+            return
+        done.wait(poll)
+
+
 _COORDS_PER_MIL = 10000
 
 
@@ -8556,6 +8620,93 @@ def register_pcb_tools(mcp):
         if name.strip():
             ask["name"] = name.strip()
         return await get_bridge().send_command_async("pcb.pour_copper", ask)
+
+    @mcp.tool()
+    async def pcb_update_free_primitive_nets() -> dict[str, Any]:
+        """Design > Netlist > Update Free Primitives From Component Pads.
+
+        Free tracks, arcs, vias, fills and regions with no net that touch a
+        component pad take that pad's net, and copper touching them follows,
+        as Altium decides. Altium asks "Update free-primitives nets from
+        component-pad nets?" in a Confirm box; this tool presses Yes on that
+        box, and on nothing else. Without UI Automation it refuses before
+        sending anything: a direct bridge call (not through this tool)
+        blocks the bridge until someone answers the Confirm box in Altium.
+
+        Returns:
+            What the bridge replied: ``no_net_before`` and ``no_net_after``
+            (free copper with no net), ``changed_count`` and ``changed``
+            (each object that gained a net, at most 200: ``kind``,
+            ``layer``, ``net`` and its box ``x1``, ``y1``, ``x2``, ``y2``
+            in mils), plus ``prompt_answered``.
+        """
+        import asyncio as _asyncio
+        import threading as _threading
+
+        from ..bridge.exceptions import AltiumTimeoutError
+        from ..ui import uia, windows
+
+        if not (windows.available() and uia.available()):
+            return {"success": False, "prompt_answered": False, "reason": (
+                "UI Automation is not available here, and Altium asks for "
+                "confirmation in a modal box that would block the bridge "
+                "until a person answers it, so nothing was sent")}
+        if not windows.automation_enabled():
+            return {"success": False, "prompt_answered": False, "reason": (
+                f"UI automation is disabled by {windows.UI_AUTOMATION_ENV}, "
+                f"and Altium asks for confirmation in a modal box that would "
+                f"block the bridge until a person answers it, so nothing "
+                f"was sent")}
+        bridge = get_bridge()
+        status = bridge.get_altium_status()
+        pid = status.get("pid")
+        if not pid:
+            return {"success": False, "prompt_answered": False, "reason": (
+                (status.get("reason") or "no single Altium process to answer "
+                 "the Confirm box in") + ", so nothing was sent")}
+
+        done = _threading.Event()
+        state: dict[str, Any] = {"answered": False, "left": [], "reason": None}
+        loop = _asyncio.get_running_loop()
+        watcher = loop.run_in_executor(
+            None, _answer_free_nets_prompt, pid, done, state)
+        try:
+            try:
+                reply = await bridge.send_command_async(
+                    "pcb.update_free_primitive_nets", {},
+                    timeout=_FREE_NETS_TIMEOUT)
+            except AltiumTimeoutError as exc:
+                # The bridge's own dialog check can see the box before it is
+                # answered and give up on the reply. If that box is ours,
+                # still answer it so the bridge is free again.
+                found = (getattr(exc, "details", None) or {}).get("dialogs") or {}
+                listed = found.get("dialogs", []) if isinstance(found, dict) else []
+                if not any((d.get("title") or "").strip() == _FREE_NETS_TITLE
+                           for d in listed if isinstance(d, dict)):
+                    raise
+                for _ in range(100):
+                    if state["answered"] or watcher.done():
+                        break
+                    await _asyncio.sleep(0.1)
+                return {"success": False,
+                        "prompt_answered": bool(state["answered"]),
+                        "reason": (
+                            "the bridge stopped waiting for the reply while "
+                            "the Confirm box was up. "
+                            + ("Yes was pressed afterwards, so the update "
+                               "ran: read the nets back to see what changed"
+                               if state["answered"] else
+                               "The box could not be answered: "
+                               + str(state["reason"] or "it was not found")))}
+        finally:
+            done.set()
+            await watcher
+        out = dict(reply) if isinstance(reply, dict) else {"reply": reply}
+        out["prompt_answered"] = bool(state["answered"])
+        if not state["answered"]:
+            out["prompt_note"] = (state["reason"] or
+                                  "no Confirm box for the update was seen")
+        return out
 
     @mcp.tool()
     async def pcb_get_copper(
