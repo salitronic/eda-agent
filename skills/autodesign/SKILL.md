@@ -83,7 +83,7 @@ truth.
 
 ## Discovering tools
 
-The surface is 350+ tools. Use `tool_catalog(category=, maturity=,
+The surface is several hundred tools. Use `tool_catalog(category=, maturity=,
 interaction=, query=)` to find the right one without loading every schema;
 `interaction="modal"` and `"partial"` flag tools that need a human or leave
 work incomplete. Run a discovered tool by name with `tool_invoke`.

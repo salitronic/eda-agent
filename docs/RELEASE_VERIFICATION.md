@@ -236,6 +236,11 @@ works elsewhere cannot be an undeclared identifier:
 | 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
+| 64, selection filter | `SelectedObjects_FilterDisabled` on the board | no, nowhere | low, put back in a Finally; ran live through a connected-copper selection |
+| 64, Online DRC | `DoOnlineDRC` in the PCB editor options | no, nowhere | low, an editor preference; read live here, set by its author on AD 25.8.1 |
+| 64, embedded records | `Description` on an embedded object | yes, `Library.pas` (footprint descriptions) | low, one record; ran live, read back, undone |
+| 64, layer move | `IntelliMoveLayerUp`, `IntelliMoveLayerDown` on the Layer Stack Manager's editor | no, nowhere | medium, reorders the stack; ran live down and back up, tracks stayed on their layers |
+| 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -3580,6 +3585,48 @@ scratch board Tent.PcbDoc, closed without saving:
 * `app_get_active_document` with nothing focused now names the document
   in the editor's current view before the schematic server's last
   sheet. Not provoked live: the state needs no focused document.
+
+## 64. Board tools from the November intake, and the Layer Stack Manager kept in step
+
+Measured 2026-11-03 on AD 26.11.1.5 with the 3 November scripts, on the
+scratch boards Tidy.PcbDoc and SymStack.PcbDoc:
+
+* `obj_count` without a filter answers from the primitive counter and
+  matches a board walk (3 tracks, 1 pad, 1 via; 0 on an empty board).
+* `pcb_connected_copper` from a free pad found the pad, its track, the via
+  and the bottom track, and left a separate track out; `select=true`
+  selected exactly those four. A track on Mechanical33 is refused as not
+  copper.
+* `pcb_measure_clearance` between a pad on NA and a track on NB 3 mil
+  away: the Clearance rule, 10 mil, `violation` true. With neither on a
+  net Altium applies no rule; the reply then names the rule whose scopes
+  take the pair, `net_scope_matches` false and `below_scoped_gap` true.
+* `pcb_embedded_data` wrote, rewrote, read and deleted a record, Latin-1
+  text exact; Undo brought a deleted record back. A JSON object given as
+  text is stored as its JSON text.
+* `pcb_view` set and restored the view; a view read after a zoom comes
+  back exactly, and `centre_error_mils` stays within half of the view's
+  8.9 mil step at a whole-board zoom.
+* `pcb_layer_stack_manager` reads a new board's FR-4 layer as `dielectric`.
+  `pcb_move_layer` moved Top Layer down and back up; the top edge is
+  refused, and tracks stay on their layers.
+* `pcb_get_board_statistics` counts a track on Mechanical33.
+* `pcb_update_free_primitive_nets` answered Altium's Confirm box itself
+  and the bridge stayed up; a board cutout no longer counts as free
+  copper.
+* `pcb_sync_stack_manager`, and the same sync run by `pcb_make_layer_stack`,
+  `pcb_set_dielectric` and `pcb_modify_layer`: after a 2 to 4 layer
+  rebuild the four kept copper layers were stale in the manager and came
+  back in step with the board unchanged, still in step after a save and
+  reopen. A symmetric stack edited in its centre stays symmetric; one
+  made lopsided loses the flag and keeps its values.
+* Adding and removing copper layers by script, on a symmetric and a
+  non-symmetric stack, saved and reopened: the manager always had the same
+  layers as the board.
+
+Not run live here: the replicate-layout net count, region holes in
+`pcb_apply_geometry_map` and the Online DRC switch, which their author
+ran on AD 25.8.1.
 
 ## Still open, and not blocking
 

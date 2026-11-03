@@ -148,7 +148,8 @@ commit that makes the substantive change, and is not mentioned in it.
 
 See [`.github/ISSUE_TEMPLATE/bug_report.md`](.github/ISSUE_TEMPLATE/bug_report.md).
 Include the Altium version, the `eda-agent --version` output, and, if you
-can, the contents of the workspace `response.json` from the failing call.
+can, the failing call's line from the workspace `activity.log`, which
+holds the command and Altium's full reply.
 
 ## Suggesting features
 

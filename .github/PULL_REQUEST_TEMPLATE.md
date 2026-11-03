@@ -38,4 +38,4 @@ Notes:
 - [ ] No secrets, customer designs, or proprietary library paths are
       included in the diff or test fixtures
 - [ ] If a Pascal file changed, the PR description notes that reviewers
-      must restart Altium to test
+      must redeploy and recompile the scripts to test (see CONTRIBUTING.md)

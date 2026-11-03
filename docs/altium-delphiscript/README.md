@@ -10,8 +10,12 @@ working, deployed DelphiScript (`scripts/altium/*.pas`). The reference is
 extracted from that implementation, so a signature listed here is one that has
 run against a real Altium instance, not a transcription of external
 documentation. Members Altium exposes but this project does not use are out of
-scope by design; the goal is a complete, accurate map of the surface the bridge
-exercises.
+scope by design.
+
+It was extracted in August 2026 and is not regenerated: the bridge has
+reached more of the API since (the Layer Stack Manager, embedded objects, the
+primitive counter, the view rectangle and others). For a member not listed
+here, the sources under `scripts/altium/` are the authority.
 
 ---
 

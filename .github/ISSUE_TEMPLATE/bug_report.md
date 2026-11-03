@@ -36,16 +36,13 @@ blocks.
 
 ## Workspace artefacts (if applicable)
 
-If a tool call failed, paste the relevant `request.json` and
-`response.json` from `%USERPROFILE%\EDA Agent\workspace\`. Redact any
-proprietary path or design data first.
+If a tool call failed, paste its line from `activity.log` in
+`%USERPROFILE%\EDA Agent\workspace\`: the command and Altium's full
+reply. For a crash, also the record under `logs\crashes` there. Redact
+any proprietary path or design data first.
 
-```json
-// request.json
-```
-
-```json
-// response.json
+```text
+// activity.log line
 ```
 
 ## Additional context
