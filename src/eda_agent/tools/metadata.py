@@ -253,6 +253,10 @@ INTERACTION_OVERRIDES = {
     # Measures two objects and asks the clearance rule on the pair; writes
     # nothing. The pcb_ prefix alone would call it mutating.
     "pcb_measure_clearance": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,

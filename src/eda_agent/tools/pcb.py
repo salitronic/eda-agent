@@ -37,6 +37,62 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 #: free primitive of a board, tens of thousands on a large one.
 _GEOMETRY_MAP_TIMEOUT = 1800.0
 
+#: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
+#: names them.
+_DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
+
+
+def stack_manager_out_of_step(manager: dict[str, Any],
+                              physical: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where the Layer Stack Manager's own model disagrees with the board.
+
+    ``manager`` is a pcb.layer_stack_manager reply, ``physical`` a
+    pcb.physical_stack reply. The manager keeps its own copy of the stack
+    and a script write to the board's stack does not reach it, so the
+    manager can go on showing old values. Each difference is one entry
+    (layer, field, board, stack_manager); none means the two agree.
+    Paste layers are the board's only (the manager has none).
+    """
+    out: list[dict[str, Any]] = []
+    lsm = {l.get("name"): l for l in manager.get("layers") or []}
+    board = {l.get("name"): l for l in physical.get("layers") or []
+             if l.get("kind") != "paste"}
+    for name, b in board.items():
+        m = lsm.get(name)
+        if m is None:
+            out.append({"layer": name, "field": "layer",
+                        "board": b.get("kind"), "stack_manager": None})
+            continue
+        # The manager gives an overlay no thickness (the board 0.25 mil):
+        # only layers with a real thickness are compared.
+        bt, mt = b.get("thickness_mils"), m.get("thickness_mils")
+        if (b.get("kind") in ("copper", "dielectric", "solder_mask")
+                and isinstance(bt, (int, float)) and isinstance(mt, (int, float))
+                and abs(bt - mt) > 0.01):
+            out.append({"layer": name, "field": "thickness_mils",
+                        "board": bt, "stack_manager": mt})
+        if b.get("kind") in ("dielectric", "solder_mask"):
+            try:
+                mdk = float(m.get("dielectric_constant") or "nan")
+            except ValueError:
+                mdk = math.nan
+            bdk = b.get("constant")
+            if isinstance(bdk, (int, float)) and not abs(bdk - mdk) <= 1e-6:
+                out.append({"layer": name, "field": "dielectric_constant",
+                            "board": bdk, "stack_manager": m.get("dielectric_constant")})
+            if (b.get("material") or "") != (m.get("material") or ""):
+                out.append({"layer": name, "field": "material",
+                            "board": b.get("material"), "stack_manager": m.get("material")})
+            kind = _DIELECTRIC_KIND.get(b.get("dielectric_type"))
+            if kind in ("core", "prepreg") and m.get("type") in ("core", "prepreg") and kind != m.get("type"):
+                out.append({"layer": name, "field": "type",
+                            "board": kind, "stack_manager": m.get("type")})
+    for name, m in lsm.items():
+        if name not in board:
+            out.append({"layer": name, "field": "layer",
+                        "board": None, "stack_manager": m.get("type")})
+    return out
+
 
 def _build_objective_report(
     place_comps: list,
@@ -2221,6 +2277,64 @@ def register_pcb_tools(mcp):
                 return {"ok": False, "reason": "style is 0 or more"}
             params["style"] = str(style)
         return await get_bridge().send_command_async("pcb.physical_stack", params)
+
+    @mcp.tool()
+    async def pcb_layer_stack_manager(include_model: str = "",
+                                      compare: bool = True) -> dict[str, Any]:
+        """Read the Layer Stack Manager's own data for the open board.
+
+        Nothing is written.
+
+        pcb_physical_stack reads the board's layer objects (Z, thickness,
+        material, constant). This reads the Layer Stack Manager's own data,
+        which holds more: each layer's type (copper, core, prepreg,
+        solder_mask, overlay or other), material, thickness, dielectric
+        constant, copper weight, and every named material / process
+        property that has a value, such as glass construction, resin
+        content, Tg, frequency, copper weight and process, or pullback;
+        the drill pairs; the stack (symmetric, flex), via spans, drill
+        spans and impedance profiles. The manager's provider is dropped
+        first, so the read follows the board as it is now.
+
+        Args:
+            include_model: "" for none; "xml" adds the manager's model as
+                its StackupDocument XML, "records" the same as |KEY=VALUE|
+                records.
+            compare: Also read pcb_physical_stack and report where the
+                manager disagrees with the board's own stack
+                (``out_of_step``). The manager keeps its own copy of the
+                stack; once it has one, a script write to the board's
+                stack (pcb_set_dielectric, pcb_modify_layer, a rebuild)
+                does not reach it, and the manager goes on showing, and on
+                its next apply writing back, the old values.
+
+        Returns:
+            ``layers`` (name, guid, type_id, type, material,
+            thickness_mils, dielectric_constant, weight, enabled,
+            properties), ``property_names``, ``drill_pairs`` (name,
+            start_layer / stop_layer ids and their names, micro_via,
+            back_drill), ``stack`` (name, id, symmetric, flex),
+            ``stacks_count``, ``stackup_type``, ``roughness_model``,
+            ``via_spans`` (name, type, start_layer, stop_layer),
+            ``drill_spans``, ``impedance_profiles`` (name, impedance_ohm)
+            and, when asked, ``model``; with compare, ``out_of_step``
+            (layer, field, board, stack_manager) and ``in_step``.
+        """
+        model = (include_model or "").strip().lower()
+        if model not in ("", "xml", "records"):
+            return {"ok": False,
+                    "reason": 'include_model is "", "xml" or "records"'}
+        params: dict[str, Any] = {}
+        if model:
+            params["include_model"] = model
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.layer_stack_manager", params)
+        if compare and isinstance(result, dict) and "layers" in result:
+            physical = await bridge.send_command_async("pcb.physical_stack", {})
+            diff = stack_manager_out_of_step(result, physical)
+            result["out_of_step"] = diff
+            result["in_step"] = not diff
+        return result
 
     @mcp.tool()
     async def pcb_make_layer_stack(
