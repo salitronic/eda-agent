@@ -3423,6 +3423,53 @@ Begin
 End;
 
 {..............................................................................}
+{ CloseRunOutJobs - close the OutJobs an earlier proj_run_outjob opened,      }
+{ except the one about to run. A run with a second OutJob still open (the     }
+{ previous board's) stopped the script inside GenerateReport, after its files }
+{ were out; the same container had run cleanly with one OutJob open.          }
+{ An OutJob that reads modified, or that a tool recorded as edited, is left   }
+{ open. Returns how many were closed.                                         }
+{..............................................................................}
+Function CloseRunOutJobs(Keep : String) : Integer;
+Var
+    Rest, Path, Kept : String;
+    P : Integer;
+    Doc : IServerDocument;
+    Dirty : Boolean;
+Begin
+    Result := 0;
+    Kept := '';
+    Rest := RunOutJobsOpened;
+    While Length(Rest) > 1 Do
+    Begin
+        Rest := Copy(Rest, 2, Length(Rest));
+        P := Pos('|', Rest);
+        If P = 0 Then Break;
+        Path := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P, Length(Rest));
+        If Path = '' Then Continue;
+        If UpperCase(Path) = UpperCase(Keep) Then
+        Begin
+            Kept := Kept + '|' + Path + '|';
+            Continue;
+        End;
+        Doc := Nil;
+        Try Doc := Client.GetDocumentByPath(Path); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Dirty := False;
+        Try Dirty := Doc.Modified; Except Dirty := True; End;
+        If DocWasEdited(Path) Then Dirty := True;
+        If Dirty Then Continue;
+        Try
+            Client.CloseDocument(Doc);
+            Inc(Result);
+        Except
+        End;
+    End;
+    RunOutJobsOpened := Kept;
+End;
+
+{..............................................................................}
 { Execute a specific OutJob container by name                                  }
 { Params: outjob_path (optional), container_name                              }
 {..............................................................................}
@@ -3433,7 +3480,8 @@ Var
     IniFile : TIniFile;
     FoundContainerName, ContainerType, RelativePath, OutputDir : String;
     G, J : Integer;
-    Found, OutJobOpened, OutJobActive : Boolean;
+    Found, OutJobOpened, OutJobActive, RunRaised : Boolean;
+    ClosedOthers : Integer;
     OutJobDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
@@ -3481,6 +3529,7 @@ Begin
     { The container writes nothing unless the OutJob is the ACTIVE document: }
     { focused but not shown, it ran cleanly and wrote 0 files (AD25, AD26).  }
     { Open it the way the Projects panel does, then show it, then focus it.  }
+    ClosedOthers := CloseRunOutJobs(OutJobPath);
     OutJobOpened := False;
     OutJobDoc := Nil;
     Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
@@ -3496,6 +3545,8 @@ Begin
             Try OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath); Except OutJobDoc := Nil; End;
         End;
         OutJobOpened := OutJobDoc <> Nil;
+        If OutJobOpened Then
+            RunOutJobsOpened := RunOutJobsOpened + '|' + OutJobPath + '|';
     End;
     If OutJobDoc <> Nil Then
     Begin
@@ -3552,26 +3603,33 @@ Begin
         Exit;
     End;
 
-    { Execute based on container type }
-    If ContainerType = 'Publish' Then
-    Begin
-        ResetParameters;
-        AddStringParameter('Action', 'PublishToPDF');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        AddStringParameter('DisableDialog', 'True');
-        RunProcess('WorkspaceManager:Print');
-    End
-    Else
-    Begin
-        { Default: GeneratedFiles and others use GenerateReport }
-        ResetParameters;
-        AddStringParameter('Action', 'Run');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        RunProcess('WorkspaceManager:GenerateReport');
+    { Execute based on container type. An exception from the run itself came }
+    { after the files were out (NC Drill, its report section unwritten) and  }
+    { stopped the script; it is caught and reported, and the folder decides. }
+    RunRaised := False;
+    Try
+        If ContainerType = 'Publish' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'PublishToPDF');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            AddStringParameter('DisableDialog', 'True');
+            RunProcess('WorkspaceManager:Print');
+        End
+        Else
+        Begin
+            { Default: GeneratedFiles and others use GenerateReport }
+            ResetParameters;
+            AddStringParameter('Action', 'Run');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            RunProcess('WorkspaceManager:GenerateReport');
+        End;
+    Except
+        RunRaised := True;
     End;
 
     { Resolve the OutJob's configured output directory so callers can pick }
@@ -3603,7 +3661,9 @@ Begin
         ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
         ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
         ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
-        ',"outjob_active":' + BoolToJsonStr(OutJobActive) + '}');
+        ',"outjob_active":' + BoolToJsonStr(OutJobActive) +
+        ',"run_raised":' + BoolToJsonStr(RunRaised) +
+        ',"other_outjobs_closed":' + IntToStr(ClosedOthers) + '}');
 End;
 
 {..............................................................................}

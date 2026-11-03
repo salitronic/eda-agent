@@ -282,3 +282,44 @@ def test_the_handler_makes_the_outjob_active_before_running():
     assert body.index("Client.ShowDocument(OutJobDoc)") < body.index(
         "RunProcess('WorkspaceManager:Print')")
     assert '"outjob_active":' in body
+
+
+def test_a_run_that_raised_after_writing_reports_both(tmp_path, tools):
+    """The NC Drill step raised after its files were out; the set is
+    reported, with the error, rather than the script stopping."""
+    folder = tmp_path / "out"
+    written = folder / "board.DRL"
+    out = _run(tools, _Bridge(_payload(folder, run_raised=True),
+                              writes=[written]))
+    assert out["success"] is True
+    assert out["written"] == [str(written)]
+    assert "raised an error" in out["reason"]
+
+
+def test_a_run_that_raised_and_wrote_nothing_fails(tmp_path, tools):
+    out = _run(tools, _Bridge(_payload(tmp_path / "out", run_raised=True)))
+    assert out["success"] is False
+    assert "Nothing new" in out["reason"]
+
+
+def test_the_handler_catches_an_error_from_the_run():
+    body = load(_PROJECT_PAS)["Proj_RunOutJob"]
+    try_at = body.index("RunRaised := False;")
+    for process in ("RunProcess('WorkspaceManager:GenerateReport')",
+                    "RunProcess('WorkspaceManager:Print')"):
+        assert try_at < body.index(process) < body.index("RunRaised := True;")
+    assert '"run_raised":' in body
+
+
+def test_the_handler_closes_outjobs_an_earlier_run_opened():
+    """Only OutJobs the bridge opened are closed, never the one about to
+    run, and never one with unsaved changes."""
+    body = load(_PROJECT_PAS)["Proj_RunOutJob"]
+    assert body.index("CloseRunOutJobs(OutJobPath)") < body.index(
+        "RunProcess('WorkspaceManager:OpenObject')")
+    assert "RunOutJobsOpened := RunOutJobsOpened + '|' + OutJobPath" in body
+    closer = load(_PROJECT_PAS)["CloseRunOutJobs"]
+    assert "UpperCase(Path) = UpperCase(Keep)" in closer
+    assert "Doc.Modified" in closer and "DocWasEdited(Path)" in closer
+    assert closer.index("If Dirty Then Continue;") < closer.index(
+        "Client.CloseDocument(Doc)")

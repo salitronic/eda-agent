@@ -1745,7 +1745,9 @@ def register_project_tools(mcp):
         not active. A dialog Altium raises during the run (an error
         after the files are out, say) comes back as ``dialog`` with the
         files found so far, not as a bare failure; close it before the
-        next call.
+        next call. An error Altium raises without a dialog comes back as
+        ``run_raised`` with the files found. OutJobs an earlier run
+        opened are closed first, unless they have unsaved changes.
 
         Args:
             container_name: Name of the output container to execute
@@ -1922,6 +1924,13 @@ def register_project_tools(mcp):
                 + "Close the dialog (app_list_open_dialogs) before the "
                   "next call")
             return out
+        if run.get("run_raised"):
+            out["reason"] = (
+                "Altium raised an error during the run. "
+                + (f"{len(fresh)} file(s) were written under {out_dir}; "
+                   f"check that the set is complete" if fresh else
+                   "Nothing new was found in the output folder"))
+            return out
         if not fresh:
             if run.get("outjob_active") is False:
                 out["reason"] = (
@@ -2022,7 +2031,8 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files if include_files else [],
             }
-            if not entry["ok"] or judged.get("dialog"):
+            if (not entry["ok"] or judged.get("dialog")
+                    or judged.get("run_raised")):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
             # A dialog blocks every later run; stop and say so.
@@ -2130,7 +2140,8 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files,
             }
-            if not entry["ok"] or judged.get("dialog"):
+            if (not entry["ok"] or judged.get("dialog")
+                    or judged.get("run_raised")):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
             # A dialog blocks every later run, and the extras too.
