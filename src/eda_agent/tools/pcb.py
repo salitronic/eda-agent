@@ -8558,6 +8558,75 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.pour_copper", ask)
 
     @mcp.tool()
+    async def pcb_connected_copper(
+        object_type: str = "",
+        filter: str = "",
+        pad: str = "",
+        limit: int = 20000,
+        include_objects: bool = False,
+        select: bool = False,
+        clear_selection: bool = False,
+    ) -> dict[str, Any]:
+        """The copper joined to one seed object, found by geometry, not net name.
+
+        Altium's Tab-select grows from the editor's last clicked object and
+        cannot be seeded from a script; this walk can. It finds copper of
+        another net touching a net (a short), free copper with no net that
+        touches it, and what a pour piece connects to. Each object found is
+        searched round its bounding box; copper tracks, arcs, vias, pads,
+        fills and copper regions join when they share a layer (or one spans
+        every layer: a via, a through-hole pad) and Altium measures no gap.
+
+        Args:
+            object_type: The seed's object type (e.g. ``pad``, ``track``).
+            filter: The generic filter for the seed (e.g.
+                ``Component=U1|Name=3``); the first match is the seed.
+            pad: Shorthand for a component pad, ``U1.3`` (designator, then
+                the pad name after the first dot). Replaces object_type and
+                filter.
+            limit: The most objects the walk collects; ``capped`` says it
+                stopped there. On a busy board a ground net of ~700 objects
+                took about 30 s.
+            include_objects: Add ``objects``: per object its ``kind``,
+                ``layer``, ``net`` and bounding box in mils.
+            select: Select every object found (the Selection Filter is
+                bypassed for the run and put back afterwards). Otherwise the
+                walk changes nothing.
+            clear_selection: With select, deselect everything first.
+
+        Returns:
+            ``total``, counts per kind (``tracks``, ``arcs``, ``vias``,
+            ``pads``, ``fills``, ``regions``), ``nets`` (sorted, unique;
+            ``(no net)`` for copper with no net -- poured polygon pieces read
+            no net, their net is on their polygon), ``ms``, ``capped``,
+            ``selected`` with select, ``objects`` with include_objects.
+            NOT_FOUND when the seed matches nothing, NOT_COPPER when it is not
+            copper on a signal layer.
+        """
+        shorthand = pad.strip()
+        if shorthand:
+            designator, dot, name = shorthand.partition(".")
+            designator, name = designator.strip(), name.strip()
+            if not dot or not designator or not name or any(
+                    c in shorthand for c in "|="):
+                return {"ok": False, "reason": "pad is designator.pad, e.g. U1.3"}
+            object_type = "pad"
+            filter = f"Component={designator}|Name={name}"
+        object_type = object_type.strip()
+        if not object_type:
+            return {"ok": False, "reason": "give object_type and filter, or pad"}
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            return {"ok": False, "reason": "limit must be a whole number of at least 1"}
+        ask = {"object_type": object_type, "filter": filter.strip(), "max": str(limit)}
+        if include_objects:
+            ask["include_objects"] = "true"
+        if select:
+            ask["select"] = "true"
+            if clear_selection:
+                ask["clear_selection"] = "true"
+        return await get_bridge().send_command_async("pcb.connected_copper", ask)
+
+    @mcp.tool()
     async def pcb_get_copper(
         kinds: str = "",
         layer: str = "",
