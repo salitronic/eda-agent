@@ -94,6 +94,163 @@ def stack_manager_out_of_step(manager: dict[str, Any],
     return out
 
 
+#: The Layer Stack Manager's type ids for a core and a prepreg, and the
+#: DIELTYPE number its records give each (pcb_physical_stack's numbers).
+_LSM_DIELECTRIC_TYPE = {"core": ("{136C62EF-1FA6-4897-AE71-7E797B632B92}", "1"),
+                        "prepreg": ("{1A79611A-039D-4D40-A204-53C26C50F8B5}", "2")}
+
+
+async def sync_stack_manager(bridge: Any, dry_run: bool = False) -> dict[str, Any]:
+    """Write the board's stack values into the Layer Stack Manager's own copy.
+
+    Shared by pcb_sync_stack_manager and the tools that change the board's
+    stack, which run it after a change: a board without the manager's copy,
+    or one already in step, reads in step and nothing is loaded.
+    """
+    lsm = await bridge.send_command_async(
+        "pcb.layer_stack_manager", {"include_model": "records"})
+    if not isinstance(lsm, dict) or "layers" not in lsm:
+        return lsm
+    physical = await bridge.send_command_async("pcb.physical_stack", {})
+    diff = stack_manager_out_of_step(lsm, physical)
+    if not diff:
+        return {"in_step": True, "changes": [], "dry_run": dry_run}
+    differ = [d for d in diff if d.get("field") == "layer"]
+    if differ:
+        return {"ok": False, "in_step": False, "layers_differ": differ,
+                "reason": ("the board and the Layer Stack Manager do not have "
+                           "the same layers; add or remove them in the Layer "
+                           "Stack Manager")}
+    kinds = {l.get("name"): l.get("kind") for l in physical.get("layers") or []}
+    model, changes = stack_model_edits(lsm.get("model") or "", diff, kinds)
+    if dry_run or not changes:
+        return {"in_step": False, "changes": changes, "dry_run": dry_run}
+    applied = await bridge.send_command_async(
+        "pcb.load_stack_manager_model", {"model": model})
+    if not isinstance(applied, dict) or applied.get("success") is False:
+        return applied
+    after = await bridge.send_command_async("pcb.layer_stack_manager", {})
+    physical_after = await bridge.send_command_async("pcb.physical_stack", {})
+    left = (stack_manager_out_of_step(after, physical_after)
+            if isinstance(after, dict) and "layers" in after else None)
+    # The apply writes the model into the board: the board's own stack
+    # must read as it did before, or the resync changed the design.
+    changed = board_stack_changes(physical, physical_after)
+    return {"in_step": False, "changes": changes, "dry_run": False,
+            "in_step_after": left == [] and not changed,
+            "out_of_step_after": left, "board_changed": changed,
+            "symmetric": applied.get("symmetric"),
+            "symmetric_after": applied.get("symmetric_after")}
+
+
+def board_stack_changes(before: dict[str, Any],
+                        after: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each layer value of the board's stack that differs between two
+    pcb.physical_stack replies (layer, field, before, after)."""
+    fields = ("kind", "thickness_mils", "constant", "material", "dielectric_type")
+    old = {l.get("name"): l for l in before.get("layers") or []}
+    new = {l.get("name"): l for l in after.get("layers") or []}
+    out: list[dict[str, Any]] = []
+    for name in list(old) + [n for n in new if n not in old]:
+        a, b = old.get(name), new.get(name)
+        if a is None or b is None:
+            out.append({"layer": name, "field": "layer",
+                        "before": a and a.get("kind"), "after": b and b.get("kind")})
+            continue
+        for field in fields:
+            x, y = a.get(field), b.get(field)
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                if abs(x - y) <= 1e-6:
+                    continue
+            elif x == y:
+                continue
+            out.append({"layer": name, "field": field, "before": x, "after": y})
+    return out
+
+
+#: The Layer Stack Manager's copper weight to thickness: 1 oz reads 1.4 mil.
+_MILS_PER_OZ = 1.4
+
+
+def _record_number(value: Any) -> str:
+    return f"{float(value):g}"
+
+
+def stack_model_edits(model: str, out_of_step: list[dict[str, Any]],
+                      kinds: dict[str, str]) -> tuple[str, list[dict[str, Any]]]:
+    """Write the board's values into the Layer Stack Manager's model.
+
+    ``model`` is the manager's model as |KEY=VALUE| records (its format 0),
+    ``out_of_step`` what stack_manager_out_of_step found and ``kinds`` each
+    layer's kind on the board (copper, dielectric, solder_mask). Each value
+    is written to both records the manager keeps for it: the stack record
+    (COPTHICK, DIELHEIGHT, DIELCONST, DIELMATERIAL, DIELTYPE) and its own
+    ($LSM$...). A layer only one side has is not edited here. Returns the
+    model and one change per value written (layer, field, value).
+    """
+    body = model.lstrip("\ufeff")
+    recs = body.split("|")
+    index: dict[str, str] = {}
+    for rec in recs:
+        key, _, value = rec.partition("=")
+        if key.startswith("LAYER_V8_") and key.endswith("NAME") and "_{" not in key:
+            index.setdefault(value, key[len("LAYER_V8_"):-len("NAME")])
+
+    def put(n: str, key: str, value: str) -> None:
+        full = f"LAYER_V8_{n}{key}"
+        for i, rec in enumerate(recs):
+            if rec.partition("=")[0] == full:
+                recs[i] = f"{full}={value}"
+                return
+        # Not there yet: before the layer's per-stack records.
+        at = next((i for i, rec in enumerate(recs)
+                   if rec.startswith(f"LAYER_V8_{n}_{{")), len(recs))
+        recs.insert(at, f"{full}={value}")
+
+    changes: list[dict[str, Any]] = []
+    for diff in out_of_step:
+        name, field, value = diff.get("layer"), diff.get("field"), diff.get("board")
+        n = index.get(name)
+        if n is None or field == "layer" or value is None:
+            continue
+        if field == "thickness_mils":
+            copper = kinds.get(name) == "copper"
+            text = _record_number(value) + "mil"
+            put(n, "COPTHICK" if copper else "DIELHEIGHT", text)
+            put(n, "$LSM$Thickness", text)
+            if copper:
+                # The manager derives a copper layer's thickness from its
+                # weight on load: a stale weight puts the old thickness back.
+                put(n, "$LSM$Weight", _record_number(float(value) / _MILS_PER_OZ) + "oz")
+        elif field == "dielectric_constant":
+            text = _record_number(value)
+            put(n, "DIELCONST", text)
+            put(n, "$LSM$DielectricConstant", text)
+        elif field == "material":
+            text = str(value)
+            put(n, "DIELMATERIAL", text)
+            put(n, "$LSM$Material", text)
+        elif field == "type" and value in _LSM_DIELECTRIC_TYPE:
+            type_id, number = _LSM_DIELECTRIC_TYPE[value]
+            text = str(value)
+            put(n, "TYPEID", type_id)
+            put(n, "DIELTYPE", number)
+        else:
+            continue
+        changes.append({"layer": name, "field": field, "value": text})
+    if changes:
+        # Loaded as symmetric, the manager mirrors one half of the stack
+        # onto the other, over the values just written. It is loaded
+        # non-symmetric; the load asks for symmetry back afterwards and
+        # Altium keeps it only when the stack is.
+        for i, rec in enumerate(recs):
+            key, _, value = rec.partition("=")
+            if (key.startswith("LAYERSUBSTACK_V8_") and key.endswith("SYMMETRIC")
+                    and value == "True"):
+                recs[i] = f"{key}=False"
+    return "|".join(recs), changes
+
+
 def _build_objective_report(
     place_comps: list,
     positions: dict[str, tuple],
@@ -2375,6 +2532,7 @@ def register_pcb_tools(mcp):
                 stack (pcb_set_dielectric, pcb_modify_layer, a rebuild)
                 does not reach it, and the manager goes on showing, and on
                 its next apply writing back, the old values.
+                pcb_sync_stack_manager brings it back in step.
 
         Returns:
             ``layers`` (name, guid, type_id, type, material,
@@ -2405,6 +2563,32 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_sync_stack_manager(dry_run: bool = True) -> dict[str, Any]:
+        """Bring the Layer Stack Manager's own copy of the stack back in step
+        with the board.
+
+        Once a board carries the manager's copy, script writes to its stack
+        (pcb_set_dielectric, pcb_modify_layer, a rebuild) do not reach it:
+        the manager shows the old values and writes them back on its next
+        apply, pcb_move_layer included. This writes the board's thickness,
+        dielectric constant, material and core / prepreg type into the
+        manager's model, loads it and applies it to the board, all through
+        Altium; the board's own values do not change. A layer only one side
+        has is refused: the manager's layers are added or removed in the
+        Layer Stack Manager itself.
+
+        Args:
+            dry_run: Only list what would change (the default).
+
+        Returns:
+            ``in_step`` before, ``changes`` (layer, field, value) and, once
+            run, ``in_step_after``, ``out_of_step_after``, ``symmetric`` and
+            ``symmetric_after`` (Altium keeps a stack symmetric only when it
+            is). Refused: ``layers_differ``.
+        """
+        return await sync_stack_manager(get_bridge(), dry_run)
+
+    @mcp.tool()
     async def pcb_make_layer_stack(
         layers: list[dict[str, Any]],
         dry_run: bool = True,
@@ -2421,8 +2605,10 @@ def register_pcb_tools(mcp):
         fewer than wanted is refused: plan one per gap.
 
         The board must be saved first. Any failure closes it unsaved and
-        reopens it, which restores it. Save after a run that matches; the
-        Layer Stack Manager may show old values until a save and reopen.
+        reopens it, which restores it. A run that matches also brings the
+        Layer Stack Manager's own copy of the stack in step
+        (``stack_manager``, as pcb_sync_stack_manager reports it); save
+        afterwards.
 
         Args:
             layers: Top to bottom: ``{"kind": "copper", "name",
@@ -2435,7 +2621,8 @@ def register_pcb_tools(mcp):
         Returns:
             ``wanted``, ``copper_edits`` (and ``dielectric_edits`` once run),
             ``mismatches`` (empty when the board reads as wanted), ``done``,
-            and ``restored`` after a failure.
+            ``stack_manager`` after a run that matches, and ``restored``
+            after a failure.
         """
         from ..design.layer_stack_plan import (StackError, copper_round,
                                                dielectric_round, mismatches,
@@ -2531,6 +2718,10 @@ def register_pcb_tools(mcp):
         result["mismatches"] = None if trouble else mismatches(await rows(), wanted)
         result["failed"] = trouble
         result["done"] = trouble is None and not result["mismatches"]
+        if result["done"]:
+            # The rebuild does not reach the Layer Stack Manager's own copy of
+            # the layers it kept; bring that copy in step before the save.
+            result["stack_manager"] = await sync_stack_manager(bridge)
         if not result["done"]:
             await bridge.send_command_async(
                 "application.close_document", {"file_path": board, "discard": "true"})
@@ -2555,6 +2746,8 @@ def register_pcb_tools(mcp):
         its type (Altium's number), material, dielectric constant (Dk),
         loss tangent (Df), thickness and whether it is a stiffener. Each
         value is read back; any that did not take is in ``not_applied``.
+        The Layer Stack Manager's own copy of the stack is then brought in
+        step (``stack_manager``, as pcb_sync_stack_manager reports it).
 
         Args:
             layer: The layer's name as pcb_physical_stack lists it.
@@ -2584,7 +2777,12 @@ def register_pcb_tools(mcp):
             params["rename_to"] = rename_to.strip()
         if len(params) == 1:
             return {"ok": False, "reason": "nothing to set"}
-        return await get_bridge().send_command_async("pcb.set_dielectric", params)
+        bridge = get_bridge()
+        reply = await bridge.send_command_async("pcb.set_dielectric", params)
+        if isinstance(reply, dict) and reply.get("success") is not False:
+            # The write does not reach the Layer Stack Manager's own copy.
+            reply["stack_manager"] = await sync_stack_manager(bridge)
+        return reply
 
     @mcp.tool()
     async def pcb_impedance_profile(
@@ -7060,7 +7258,8 @@ def register_pcb_tools(mcp):
         pcb_modify_layer, a rebuild) do not reach it, and a move would put
         the old values back. So the two are compared first and the move is
         refused while they disagree (``out_of_step``, as
-        pcb_layer_stack_manager reports it); ``force`` moves anyway.
+        pcb_layer_stack_manager reports it; pcb_sync_stack_manager brings
+        them in step); ``force`` moves anyway.
 
         Args:
             layer: The layer's name as the stack shows it, e.g. "Layer 2".
@@ -7094,7 +7293,8 @@ def register_pcb_tools(mcp):
                 return {"ok": False,
                         "reason": ("the Layer Stack Manager disagrees with the board's "
                                    "stack; a move would write its values back over the "
-                                   "board's (force=True moves anyway)"),
+                                   "board's. pcb_sync_stack_manager brings it in step "
+                                   "(force=True moves anyway)"),
                         "out_of_step": diff}
         params: dict[str, Any] = {"layer": layer.strip(), "direction": direction,
                                   "steps": str(steps),
@@ -7146,7 +7346,9 @@ def register_pcb_tools(mcp):
             dielectric_material: New dielectric material string (optional)
 
         Returns:
-            Dictionary confirming the changes.
+            Dictionary confirming the changes, and ``stack_manager``: the
+            Layer Stack Manager's own copy of the stack brought in step, as
+            pcb_sync_stack_manager reports it.
         """
         bridge = get_bridge()
         params: dict[str, str] = {"layer": layer}
@@ -7163,6 +7365,9 @@ def register_pcb_tools(mcp):
         if dielectric_material:
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
+        if isinstance(result, dict) and result.get("success") is not False:
+            # The write does not reach the Layer Stack Manager's own copy.
+            result["stack_manager"] = await sync_stack_manager(bridge)
         return result
 
     @mcp.tool()

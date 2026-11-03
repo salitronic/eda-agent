@@ -28818,6 +28818,96 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_LoadStackManagerModel - load a model into the Layer Stack Manager's     }
+{ document for the board and apply it to the board. Params: model, the       }
+{ manager's model as |KEY=VALUE| records (its format 0).                     }
+{                                                                              }
+{ The document loads a model only from a file: there is no load from a       }
+{ string, and its layer setters take value objects a script cannot make. So  }
+{ the model goes through one temporary file in the workspace, written here,  }
+{ read by Altium and deleted again; no design file is touched. Loading the   }
+{ records and applying them is what brings the manager's window in step: an  }
+{ apply of the document as opened writes its old values back instead.       }
+{ Altium clears a stack's symmetric flag on the load; it is asked back and   }
+{ kept only when the stack is symmetric.                                      }
+{..............................................................................}
+Function PCB_LoadStackManagerModel(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Model, Path : String;
+    LSM, Doc, DocEd, StEd : Variant;
+    Su : ILsmSdkStackup;
+    Sts : ILsmSdkLayerStackCollection;
+    St : ILsmSdkLayerStack;
+    SL : TStringList;
+    WasSym, SymAfter, Can : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Model := ExtractJsonValue(Params, 'model');
+    If Pos('|LAYER_V8_', Model) = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'model is the Layer Stack Manager model as |KEY=VALUE| records');
+        Exit;
+    End;
+
+    LSM := LayerStackManager;
+    LSM.RemoveLayerStackProvider(Board);
+    Doc := LSM.OpenDocumentFromPcb(Board);
+    Su := Doc.Stackup;
+    Sts := Su.Stacks;
+    St := Sts.Items[0];
+    WasSym := St.IsSymmetric;
+
+    EnsureWorkspaceDir(0);
+    Path := WorkspaceDir + 'stack_model_' + RequestId + '.txt';
+    SL := TStringList.Create;
+    Try
+        SL.Text := Model;
+        SL.SaveToFile(Path);
+    Finally
+        SL.Free;
+    End;
+    Try
+        Doc.LoadFromFile(Path, 0);
+        Doc.ApplyToPcb(Board.FileName);
+    Finally
+        If FileExists(Path) Then DeleteFile(Path);
+    End;
+
+    If WasSym Then
+    Begin
+        Doc := LSM.OpenDocumentFromPcb(Board);
+        Su := Doc.Stackup;
+        Sts := Su.Stacks;
+        St := Sts.Items[0];
+        St.SetState_IsSymmetric(True);
+        DocEd := Doc.GetDocumentEditor;
+        StEd := DocEd.GetLayerStackEditor;
+        Can := StEd.CanUpdateStack(St);
+        If Can Then StEd.UpdateStack(St);
+        Doc.ApplyToPcb(Board.FileName);
+    End;
+    LSM.RemoveLayerStackProvider(Board);
+    Doc := LSM.OpenDocumentFromPcb(Board);
+    Su := Doc.Stackup;
+    Sts := Su.Stacks;
+    St := Sts.Items[0];
+    SymAfter := St.IsSymmetric;
+    MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId, '{'
+        + JsonBool('loaded', True) + ','
+        + JsonBool('symmetric', WasSym) + ','
+        + JsonBool('symmetric_after', SymAfter) + '}');
+End;
+
+{..............................................................................}
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
@@ -28917,6 +29007,7 @@ Begin
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'move_layer':              Result := PCB_MoveLayer(Params, RequestId);
+        'load_stack_manager_model': Result := PCB_LoadStackManagerModel(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
         'set_plane_net':           Result := PCB_SetPlaneNet(Params, RequestId);

@@ -1076,8 +1076,10 @@ def test_stack_manager_tools_send_and_refuse(monkeypatch):
     _, s = sent("pcb_physical_stack", style=1)
     assert s == [("pcb.physical_stack", {"style": "1"})]
     _, s = sent("pcb_set_dielectric", layer="Dielectric 1", loss_tangent=0.02, stiffener=True)
-    assert s == [("pcb.set_dielectric", {"layer": "Dielectric 1", "loss_tangent": "0.02",
-                                         "stiffener": "true"})]
+    # The write, then the Layer Stack Manager's copy brought in step.
+    assert s[:2] == [("pcb.set_dielectric", {"layer": "Dielectric 1", "loss_tangent": "0.02",
+                                             "stiffener": "true"}),
+                     ("pcb.layer_stack_manager", {"include_model": "records"})]
     _, s = sent("pcb_impedance_profile", action="Create", profile="Z50", target_ohms=50,
                 differential=False)
     assert s == [("pcb.impedance_profile", {"action": "create", "profile": "Z50",

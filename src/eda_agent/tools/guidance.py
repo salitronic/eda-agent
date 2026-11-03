@@ -1338,6 +1338,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "dielectric or mask layer; pcb_add_layer takes above / below."),
     },
     {
+        "task": "The Layer Stack Manager shows old values after a scripted stack change",
+        "keywords": ("manager", "stale", "old", "values", "sync", "resync"),
+        "when": (("stack", "manager", "old"), ("stack", "manager", "stale"),
+                 ("stack", "manager", "sync"), ("layer", "stack", "manager")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_layer_stack_manager", "pcb_sync_stack_manager"],
+        "avoid": [("pcb_move_layer", "applies the manager's copy, old values included")],
+        "note": ("pcb_layer_stack_manager reports out_of_step; pcb_sync_stack_manager "
+                 "writes the board's values into the manager's copy through Altium."),
+    },
+    {
         "task": "Highlight nets in a colour on the board",
         "keywords": ("net", "color", "colour", "highlight", "override",
                      "schematic", "board"),
