@@ -11524,6 +11524,248 @@ Begin
 End;
 
 {..............................................................................}
+{ Connected copper. Altium's own Tab-select (PCB:SelectNext) grows from the   }
+{ editor's last clicked object and cannot be seeded from a script, so there   }
+{ was no way to ask what copper touches a given pad. This walk answers it by  }
+{ geometry, not by net name, so it finds copper of another net touching the  }
+{ seed (a short) and free copper with no net that touches it.                }
+{..............................................................................}
+
+{ Copper for the walk. A cutout or named region on a signal layer is not      }
+{ copper: let through, the walk leaked across no-net cutouts into every net   }
+{ under them.                                                                 }
+Function ConnectedCopperIsCopper(Prim : IPCB_Primitive) : Boolean;
+Var
+    Rgn : IPCB_Region;
+Begin
+    Result := PcbCheckIsCopper(Prim);
+    If Not Result Then Exit;
+    If Prim.ObjectId = eRegionObject Then
+    Begin
+        Rgn := Prim;
+        Result := Rgn.Kind = eRegionKind_Copper;
+    End;
+End;
+
+{ Two pieces join when they share a layer, or one spans every copper layer   }
+{ (a via, a through-hole pad), and Altium measures no gap between them.       }
+Function ConnectedCopperTouch(Board : IPCB_Board; A, B : IPCB_Primitive) : Boolean;
+Begin
+    Result := False;
+    If Not (PcbCheckSpansLayers(A) Or PcbCheckSpansLayers(B) Or (A.Layer = B.Layer)) Then Exit;
+    Try Result := Board.PrimPrimDistance(A, B) = 0; Except Result := False; End;
+End;
+
+Function ConnectedCopperKind(Prim : IPCB_Primitive) : String;
+Begin
+    Result := '';
+    If Prim.ObjectId = eTrackObject Then Result := 'track'
+    Else If Prim.ObjectId = eArcObject Then Result := 'arc'
+    Else If Prim.ObjectId = eViaObject Then Result := 'via'
+    Else If Prim.ObjectId = ePadObject Then Result := 'pad'
+    Else If Prim.ObjectId = eFillObject Then Result := 'fill'
+    Else If Prim.ObjectId = eRegionObject Then Result := 'region';
+End;
+
+{..............................................................................}
+{ PCB_ConnectedCopper - every copper object physically joined to a seed,      }
+{ breadth first: per object a spatial search of its bounding box grown by     }
+{ half a mil, each copper track, arc, via, pad, fill or region found there    }
+{ joining when ConnectedCopperTouch says so.                                  }
+{ Params: object_type + filter (the generic filter grammar; the first match   }
+{ is the seed), max (default 20000, caps the walk; capped says it stopped),   }
+{ include_objects (true = one row per object), select (true = select every    }
+{ object found, the Selection Filter bypassed for the duration),             }
+{ clear_selection (with select: deselect everything first).                  }
+{ Read-only unless select is true. Poured polygon pieces read no net: their   }
+{ net is on their polygon, so they count under "(no net)".                    }
+{..............................................................................}
+Function PCB_ConnectedCopper(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Sp : IPCB_SpatialIterator;
+    P, Q, Seed : IPCB_Primitive;
+    Matches, Queue : TInterfaceList;
+    Seen, Nets : TStringList;
+    R : TCoordRect;
+    Net : IPCB_Net;
+    TypeStr, FilterStr, Key, KindName, NetName, NetRows, ObjRows : String;
+    T, Head, MaxN, I, T0, NTrack, NArc, NVia, NPad, NFill, NRegion, NSelected : Integer;
+    Gap : TCoord;
+    Capped, WasOff, WithObjects, DoSelect : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    TypeStr := Trim(ExtractJsonValue(Params, 'object_type'));
+    FilterStr := ExtractJsonValue(Params, 'filter');
+    If TypeStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'object_type names the seed');
+        Exit;
+    End;
+    T := ObjectTypeFromStringPCB(TypeStr);
+    If T = -1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + TypeStr);
+        Exit;
+    End;
+    MaxN := StrToIntDef(ExtractJsonValue(Params, 'max'), 20000);
+    If MaxN < 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER', 'max must be at least 1');
+        Exit;
+    End;
+    WithObjects := ExtractJsonValue(Params, 'include_objects') = 'true';
+    DoSelect := ExtractJsonValue(Params, 'select') = 'true';
+
+    Matches := TInterfaceList.Create;
+    CollectPCBMatches(Board, T, FilterStr, 1, Matches);
+    If Matches.Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'The seed matched nothing: ' + TypeStr + ' ' + FilterStr);
+        Exit;
+    End;
+    Seed := Matches.Items[0];
+    If Not ConnectedCopperIsCopper(Seed) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_COPPER', 'The seed is not copper on a signal layer');
+        Exit;
+    End;
+
+    Gap := MilsToCoordF(0.5);
+    T0 := GetTickCount;
+    Capped := False;
+    Queue := TInterfaceList.Create;
+    Seen := TStringList.Create;
+    Nets := TStringList.Create;
+    Try
+        Seen.Sorted := True;
+        Seen.Duplicates := dupIgnore;
+        Nets.Sorted := True;
+        Nets.Duplicates := dupIgnore;
+        Queue.Add(Seed);
+        Seen.Add(IntToStr(Seed.I_ObjectAddress));
+        Head := 0;
+        While (Head < Queue.Count) And Not Capped Do
+        Begin
+            P := Queue.Items[Head];
+            Inc(Head);
+            R := P.BoundingRectangle;
+            Sp := Board.SpatialIterator_Create;
+            Try
+                Sp.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject, eFillObject, eRegionObject));
+                Sp.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Sp.AddFilter_Area(R.Left - Gap, R.Bottom - Gap, R.Right + Gap, R.Top + Gap);
+                Q := Sp.FirstPCBObject;
+                While Q <> Nil Do
+                Begin
+                    If ConnectedCopperIsCopper(Q) Then
+                    Begin
+                        Key := IntToStr(Q.I_ObjectAddress);
+                        If Seen.IndexOf(Key) < 0 Then
+                            If ConnectedCopperTouch(Board, P, Q) Then
+                            Begin
+                                If Queue.Count >= MaxN Then
+                                    Capped := True
+                                Else
+                                Begin
+                                    Seen.Add(Key);
+                                    Queue.Add(Q);
+                                End;
+                            End;
+                    End;
+                    Q := Sp.NextPCBObject;
+                End;
+            Finally
+                Board.SpatialIterator_Destroy(Sp);
+            End;
+        End;
+        T0 := GetTickCount - T0;
+
+        NTrack := 0; NArc := 0; NVia := 0; NPad := 0; NFill := 0; NRegion := 0;
+        ObjRows := '';
+        For I := 0 To Queue.Count - 1 Do
+        Begin
+            Q := Queue.Items[I];
+            KindName := ConnectedCopperKind(Q);
+            If KindName = 'track' Then Inc(NTrack)
+            Else If KindName = 'arc' Then Inc(NArc)
+            Else If KindName = 'via' Then Inc(NVia)
+            Else If KindName = 'pad' Then Inc(NPad)
+            Else If KindName = 'fill' Then Inc(NFill)
+            Else If KindName = 'region' Then Inc(NRegion);
+            NetName := '';
+            Try
+                Net := Q.Net;
+                If Net <> Nil Then NetName := Net.Name;
+            Except
+            End;
+            If NetName = '' Then NetName := '(no net)';
+            Nets.Add(NetName);
+            If WithObjects Then
+            Begin
+                R := Q.BoundingRectangle;
+                If ObjRows <> '' Then ObjRows := ObjRows + ',';
+                ObjRows := ObjRows + '{' + JsonStr('kind', KindName) + ','
+                    + JsonStr('layer', LayerDisplayName(Q.Layer)) + ',' + JsonStr('net', NetName) + ','
+                    + JsonFloat('left', CoordToMilsF(R.Left)) + ',' + JsonFloat('bottom', CoordToMilsF(R.Bottom)) + ','
+                    + JsonFloat('right', CoordToMilsF(R.Right)) + ',' + JsonFloat('top', CoordToMilsF(R.Top)) + '}';
+            End;
+        End;
+        NetRows := '';
+        For I := 0 To Nets.Count - 1 Do
+        Begin
+            If NetRows <> '' Then NetRows := NetRows + ',';
+            NetRows := NetRows + '"' + EscapeJsonString(Nets.Strings[I]) + '"';
+        End;
+
+        NSelected := 0;
+        If DoSelect Then
+        Begin
+            { The Selection Filter refuses Selected := True, silently, for every   }
+            { object kind it has switched off; it is switched off for the run and  }
+            { put back whatever happens.                                           }
+            WasOff := Board.SelectedObjects_FilterDisabled;
+            Board.SelectedObjects_FilterDisabled := True;
+            Try
+                Board.SelectedObjects_BeginUpdate;
+                If ExtractJsonValue(Params, 'clear_selection') = 'true' Then
+                    Try Board.SelectedObjects_Clear; Except End;
+                For I := 0 To Queue.Count - 1 Do
+                Begin
+                    Q := Queue.Items[I];
+                    Q.Selected := True;
+                End;
+                Board.SelectedObjects_EndUpdate;
+                For I := 0 To Queue.Count - 1 Do
+                Begin
+                    Q := Queue.Items[I];
+                    If Q.Selected Then Inc(NSelected);
+                End;
+            Finally
+                Board.SelectedObjects_FilterDisabled := WasOff;
+            End;
+            Try Board.ViewManager_FullUpdate; Except End;
+        End;
+
+        Result := '{' + JsonInt('total', Queue.Count) + ','
+            + JsonInt('tracks', NTrack) + ',' + JsonInt('arcs', NArc) + ',' + JsonInt('vias', NVia) + ','
+            + JsonInt('pads', NPad) + ',' + JsonInt('fills', NFill) + ',' + JsonInt('regions', NRegion) + ','
+            + '"nets":[' + NetRows + '],' + JsonInt('ms', T0) + ',' + JsonBool('capped', Capped);
+        If DoSelect Then Result := Result + ',' + JsonInt('selected', NSelected);
+        If WithObjects Then Result := Result + ',"objects":[' + ObjRows + ']';
+        Result := BuildSuccessResponse(RequestId, Result + '}');
+    Finally
+        Seen.Free;
+        Nets.Free;
+    End;
+End;
+
+{..............................................................................}
 { PCB_GetPolygons - Get all polygon pours with layer, net, hatching, etc.    }
 {..............................................................................}
 
@@ -28326,6 +28568,7 @@ Begin
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
         'embedded_data':           Result := PCB_EmbeddedData(Params, RequestId);
+        'connected_copper':        Result := PCB_ConnectedCopper(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

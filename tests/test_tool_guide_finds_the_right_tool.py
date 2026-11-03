@@ -142,6 +142,7 @@ QUESTIONS = [
     ("read the outline of a polygon pour with its arcs", {"pcb_get_pour_outline"}),
     ("read the poured copper of one pour with its holes", {"pcb_get_pour_copper"}),
     ("store hidden data in the board file", {"pcb_embedded_data"}),
+    ("find the copper connected to pad U1.3", {"pcb_connected_copper"}),
     ("swap the designators R1 and R2 across the project",
      {"sch_rename_designators"}),
     ("place several parts from a dblib", {"sch_place_dblib_rows"}),

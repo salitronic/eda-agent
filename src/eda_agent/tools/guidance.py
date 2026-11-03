@@ -988,6 +988,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "deleted by a designer. Not for secrets."),
     },
     {
+        "task": "Find the copper physically connected to a pad or other object",
+        "keywords": ("connected", "touches", "touching"),
+        "when": (("connected", "copper"), ("copper", "touches"),
+                 ("copper", "touching"), ("touches", "pad")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_connected_copper"],
+        "avoid": ["obj_select"],
+        "note": ("Walks the copper by geometry, not net name: other nets in its "
+                 "nets list are shorts. Seed with pad='U1.3' or object_type and filter."),
+    },
+    {
         "task": "Rename or swap designators across a whole project",
         "keywords": ("swap", "designator", "designators"),
         "when": (("swap", "designator"), ("rename", "designator"),
