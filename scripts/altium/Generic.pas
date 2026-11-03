@@ -8163,6 +8163,43 @@ Begin
         '{"success":true,"copied":' + IntToStr(MatchCount) + '}');
 End;
 
+{ PCB count without a filter, from the board's own primitive counter.      }
+{                                                                          }
+{ The query path builds the JSON of every matching object only to report   }
+{ how many there were: about 6 s for the 8722 tracks of one board. Altium  }
+{ keeps a per-kind counter that gives the same number at once (checked     }
+{ equal to a full board walk for tracks, pads, vias, polygons, components  }
+{ and texts). The board is resolved exactly as the query path resolves it, }
+{ so the target and the NO_PCB reply do not change. An empty result means  }
+{ the counter could not answer and the caller takes the query path.        }
+{ No "objects" list: the query path's list carries no properties for a    }
+{ count, and obj_count drops it anyway.                                    }
+Function PCBCountFromCounter(ObjTypeInt : Integer; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Counter : IPCB_PrimitiveCounter;
+    N : Integer;
+Begin
+    Result := '';
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    N := -1;
+    Try
+        Counter := Board.GetPrimitiveCounter;
+        If Counter <> Nil Then
+            N := Counter.GetObjectCount(ObjTypeInt);
+    Except
+        N := -1;
+    End;
+    If N < 0 Then Exit;
+    Result := BuildSuccessResponse(RequestId,
+        '{"count":' + IntToStr(N) + ',"counted_by":"counter"}');
+End;
+
 {..............................................................................}
 { Quick count of objects by type on active doc or project                     }
 { Params: object_type, scope (active_doc/project), filter                    }
@@ -8197,7 +8234,13 @@ Begin
             Exit;
         End;
 
-        // PCB count, active doc only
+        // PCB count, active doc only. Without a filter the board's counter
+        // answers at once; a filter still needs every object looked at.
+        If FilterStr = '' Then
+        Begin
+            Result := PCBCountFromCounter(ObjTypeInt, RequestId);
+            If Result <> '' Then Exit;
+        End;
         Result := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', '', 'query', RequestId, 0);
         // The query result already has count, just return it
         Exit;
