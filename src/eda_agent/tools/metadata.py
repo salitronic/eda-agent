@@ -250,6 +250,9 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Measures two objects and asks the clearance rule on the pair; writes
+    # nothing. The pcb_ prefix alone would call it mutating.
+    "pcb_measure_clearance": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,

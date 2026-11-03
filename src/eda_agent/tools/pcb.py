@@ -1133,6 +1133,38 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.find_dominant_rule", params)
 
     @mcp.tool()
+    async def pcb_measure_clearance(object1: str, object2: str) -> dict[str, Any]:
+        """How far apart two board objects are, and whether that breaks a rule.
+
+        The edge-to-edge distance Altium measures between the two
+        (PrimPrimDistance), the clearance rule Altium itself applies to the
+        pair (its own scope and priority resolution) and Altium's own check
+        of that rule against the pair (ActualCheck): the same resolution and
+        the same check the online DRC makes, for one pair, without a DRC run.
+
+        Args:
+            object1: "U1.3" pad 3 of U1, or "<type>:<filter>" for a free
+                primitive in the generic filter grammar, e.g.
+                "track:Layer=TopLayer|X1=100|Y1=200|X2=300|Y2=200" or
+                "via:X=1200|Y=800". The filter must match exactly one
+                object. A whole component ("U1") or a net ("net:GND") is
+                refused: a distance needs one primitive.
+            object2: The second object, in the same forms.
+
+        Returns:
+            ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
+            ``rule`` (``name``, ``kind``, ``priority``, ``enabled``,
+            ``scope1``, ``scope2``, ``descriptor``; null when no clearance
+            rule applies), ``gap_mm`` (the rule's gap, null when unknown)
+            and ``violation`` (false when no rule applies).
+        """
+        if not object1.strip() or not object2.strip():
+            return {"ok": False, "reason": "object1 and object2 are required"}
+        params: dict[str, Any] = {"object1": object1.strip(),
+                                  "object2": object2.strip()}
+        return await get_bridge().send_command_async("pcb.measure_clearance", params)
+
+    @mcp.tool()
     async def pcb_check_rule_scope(
         rule_name: str,
         object1: str,
