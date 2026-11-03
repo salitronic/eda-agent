@@ -7064,26 +7064,46 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_component_parameters(designator: str, action: str = "list",
-                                       name: str = "", value: str = "") -> dict[str, Any]:
-        """Read, set or remove the parameters a placed part carries on the board.
+                                       name: str = "", value: str = "",
+                                       group: str = "own") -> dict[str, Any]:
+        """Read, set, add or remove the parameters a placed part carries on the board.
 
         These are the board-side parameters of the part (as in its
-        Properties panel on the PCB), not the schematic's.
+        Properties panel on the PCB), not the schematic's. They come from
+        the schematic and the library when the board is updated, so treat
+        them as read-only: an update from the schematic can put them back.
+        ``add`` only creates a new parameter; it never changes one.
 
         Args:
             designator: The part.
-            action: ``list``, ``set`` (name and value) or ``remove`` (name).
+            action: ``list``, ``set`` (name and value), ``add`` (name and
+                value; refused with EXISTS when the name is already there
+                in any group) or ``remove`` (name).
+            group: Which parameters ``list`` reads. ``own`` (default): the
+                part's own parameters, from its schematic symbol and
+                library component. ``system``: the ones Altium keeps for
+                itself, such as Component.VaultGUID, ItemGUID and
+                RevisionGUID. ``footprint``: those of the footprint.
+                ``all``: every group, each row naming its ``group``.
+                ``set``, ``add`` and ``remove`` act on ``own`` only.
 
         Returns:
-            ``parameters`` as they now read, ``read_back`` (the value of
-            ``name`` after the change) and ``done``.
+            ``parameters`` as they now read (each with ``name``, ``value``
+            and ``group``), ``read_back`` (the value of ``name`` after the
+            change) and ``done``.
         """
-        if action not in ("list", "set", "remove"):
-            return {"ok": False, "reason": "action is list, set or remove"}
+        if action not in ("list", "set", "add", "remove"):
+            return {"ok": False, "reason": "action is list, set, add or remove"}
+        if group not in ("own", "system", "footprint", "all"):
+            return {"ok": False, "reason": "group is own, system, footprint or all"}
+        if action != "list" and group != "own":
+            return {"ok": False, "reason": "group is for list only; set, add and remove "
+                                           "act on the part's own parameters"}
         if action != "list" and not name:
-            return {"ok": False, "reason": "name is required to set or remove"}
+            return {"ok": False, "reason": "name is required to set, add or remove"}
         return await get_bridge().send_command_async("pcb.component_parameters", {
-            "designator": designator, "action": action, "name": name, "value": value})
+            "designator": designator, "action": action, "name": name, "value": value,
+            "group": group})
 
     @mcp.tool()
     async def pcb_place_simple_body(shape: str, x: float, y: float, radius: float,

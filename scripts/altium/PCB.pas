@@ -28074,24 +28074,102 @@ Begin
 End;
 
 {..............................................................................}
+{ PcbPartParameters - the board-side parameter list of a placed part, or Nil. }
+{ Altium 26 renamed the factory call: CreatePrimitiveParametersWithoutVariant }
+{ is not in Altium 25's script engine, and calling it there stops the        }
+{ polling loop with an error box a Try does not catch. So the version is     }
+{ read BEFORE the call, and older builds get the variant form with an empty  }
+{ variant name (the part as placed, no variant), which Altium 25 answers.    }
+{..............................................................................}
+Function PcbPartParameters(Comp : IPCB_Component) : IPCB_PrimitiveParameters;
+Var
+    Factory : IPCB_ParametersFactory;
+    Ver : String;
+    Major : Integer;
+Begin
+    Result := Nil;
+    Factory := Nil;
+    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
+    If Factory = Nil Then Exit;
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    If Major >= 26 Then
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Result := Nil; End;
+    End
+    Else
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersOfVariant(Comp, ''); Except Result := Nil; End;
+    End;
+End;
+
+{..............................................................................}
+{ PcbPartParameterItems - one group of a part's parameters as JSON objects,  }
+{ each carrying its group name. Ordinal is the group to switch to first, or  }
+{ -1 to read the list as it stands (the part's own parameters by default).   }
+{ Present / ReadBack report the parameter named PName, if it is there.       }
+{ The getter by name is not given to scripts and halts the loop, so the      }
+{ read-back comes from this walk.                                            }
+{..............................................................................}
+Function PcbPartParameterItems(Prims : IPCB_PrimitiveParameters; Ordinal : Integer;
+    GroupName : String; PName : String; Var Present : Boolean; Var ReadBack : String) : String;
+Var
+    Prm : IPCB_Parameter;
+    Got, Name : String;
+    I, Count : Integer;
+Begin
+    Result := '';
+    { Ordinals, not the enum names: a name the engine's table lacks would  }
+    { fail the whole unit at compile time. 0 own, 1 system, 2 footprint.   }
+    If Ordinal >= 0 Then
+    Begin
+        Try Prims.SwitchAppurtenance(Ordinal); Except Exit; End;
+    End;
+    Count := 0;
+    Try Count := Prims.Count; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Prm := Nil;
+        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
+        If Prm = Nil Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Got := '';
+        Name := '';
+        Try Got := Prm.GetValue; Except End;
+        Try Name := Prm.GetName; Except End;
+        If (PName <> '') And SameText(Name, PName) Then
+        Begin
+            Present := True;
+            ReadBack := Got;
+        End;
+        Result := Result + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got) + ','
+            + JsonStr('group', GroupName));
+    End;
+End;
+
+{..............................................................................}
 { PCB_ComponentParameters - the parameters a placed part carries on the      }
-{ board: read, set or remove. Params: designator (required), action          }
-{ list|set|remove, name, value.                                              }
+{ board: read, set, add or remove. Params: designator (required), action     }
+{ list|set|add|remove, name, value, group own|system|footprint|all (list     }
+{ only; set, add and remove act on the part's own parameters). add creates  }
+{ a parameter only: it refuses a name already present in any group.         }
 {..............................................................................}
 Function PCB_ComponentParameters(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
-    Factory : IPCB_ParametersFactory;
-    Prims : IPCB_PrimitiveParameters;
-    Prm : IPCB_Parameter;
-    Desig, Action, PName, PValue, Items, Problem, Got, ReadBack, Name : String;
-    I, Count : Integer;
-    Present : Boolean;
+    Prims, Check : IPCB_PrimitiveParameters;
+    Desig, Action, Group, PName, PValue, Items, More, Problem, ReadBack, Seen : String;
+    G : Integer;
+    Present, Taken : Boolean;
 Begin
     Desig := ExtractJsonValue(Params, 'designator');
     Action := LowerCase(ExtractJsonValue(Params, 'action'));
     If Action = '' Then Action := 'list';
+    Group := LowerCase(ExtractJsonValue(Params, 'group'));
+    If Group = '' Then Group := 'own';
     PName := ExtractJsonValue(Params, 'name');
     PValue := ExtractJsonValue(Params, 'value');
     If Desig = '' Then
@@ -28099,14 +28177,25 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator is required');
         Exit;
     End;
-    If (Action <> 'list') And (Action <> 'set') And (Action <> 'remove') Then
+    If (Action <> 'list') And (Action <> 'set') And (Action <> 'add') And (Action <> 'remove') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set or remove');
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set, add or remove');
+        Exit;
+    End;
+    If (Group <> 'own') And (Group <> 'system') And (Group <> 'footprint') And (Group <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'group is own, system, footprint or all');
+        Exit;
+    End;
+    If (Action <> 'list') And (Group <> 'own') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'group is for list only; set, add and remove act on the part''s own parameters');
         Exit;
     End;
     If (Action <> 'list') And (PName = '') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set or remove');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set, add or remove');
         Exit;
     End;
     Board := GetPCBBoardAnywhere(0);
@@ -28122,13 +28211,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No part ' + Desig + ' on the board');
         Exit;
     End;
-    Factory := Nil;
-    Prims := Nil;
-    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
-    If Factory <> Nil Then
-    Begin
-        Try Prims := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Prims := Nil; End;
-    End;
+    Prims := PcbPartParameters(Comp);
     If Prims = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
@@ -28136,7 +28219,30 @@ Begin
         Exit;
     End;
     Problem := '';
-    If Action = 'set' Then
+    If Action = 'add' Then
+    Begin
+        { The name must be new in EVERY group, so add can never overwrite a  }
+        { system or footprint parameter. The scan switches groups, so it     }
+        { runs on a list of its own and the write goes through one that was  }
+        { never switched.                                                    }
+        Check := PcbPartParameters(Comp);
+        Taken := False;
+        Seen := '';
+        If Check <> Nil Then
+        Begin
+            For G := 0 To 2 Do
+            Begin
+                PcbPartParameterItems(Check, G, '', PName, Taken, Seen);
+            End;
+        End;
+        If Taken Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'EXISTS',
+                'The part already has a parameter ' + PName + '; add only creates one');
+            Exit;
+        End;
+    End;
+    If (Action = 'set') Or (Action = 'add') Then
     Begin
         PcbBeginEdit(0);
         Try
@@ -28160,37 +28266,30 @@ Begin
         End;
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     End;
-    { The read-back comes from the same walk as the list: the getter by    }
-    { name is not given to scripts and halts the loop.                     }
-    Items := '';
+    { The read-back comes from the same walk as the list. own is the list }
+    { as it stands; all reads own first, then switches to the others.     }
     ReadBack := '';
     Present := False;
-    Count := 0;
-    Try Count := Prims.Count; Except Count := 0; End;
-    For I := 0 To Count - 1 Do
+    If Group = 'system' Then Items := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack)
+    Else If Group = 'footprint' Then Items := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack)
+    Else Items := PcbPartParameterItems(Prims, -1, 'own', PName, Present, ReadBack);
+    If Group = 'all' Then
     Begin
-        Prm := Nil;
-        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
-        If Prm = Nil Then Continue;
-        If Items <> '' Then Items := Items + ',';
-        Got := '';
-        Name := '';
-        Try Got := Prm.GetValue; Except End;
-        Try Name := Prm.GetName; Except End;
-        If (PName <> '') And SameText(Name, PName) Then
-        Begin
-            Present := True;
-            ReadBack := Got;
-        End;
-        Items := Items + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got));
+        More := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
+        More := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
     End;
-    If (Action = 'set') And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
+    If ((Action = 'set') Or (Action = 'add')) And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
         Problem := 'the value does not read back';
     If (Action = 'remove') And (Problem = '') And Present Then
         Problem := 'the parameter is still there';
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('designator', Desig) + ','
         + JsonStr('action', Action) + ','
+        + JsonStr('group', Group) + ','
         + JsonBool('done', Problem = '') + ','
         + JsonStr('problem', Problem) + ','
         + JsonStr('read_back', ReadBack) + ','
