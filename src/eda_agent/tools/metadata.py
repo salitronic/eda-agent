@@ -250,6 +250,10 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
