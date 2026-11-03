@@ -9107,7 +9107,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_embedded_data(
-        action: str, name: str = "", text: Optional[Union[str, dict, list]] = None
+        # str, not Optional[str]: offered "string or null", Claude Code
+        # parsed JSON-looking text into an object and the call was refused.
+        # The None default still tells a missing text from an empty one.
+        action: str, name: str = "", text: str = None,  # type: ignore[assignment]
     ) -> dict[str, Any]:
         """Keep named text records inside the board file, out of sight.
 
@@ -9129,8 +9132,7 @@ def register_pcb_tools(mcp):
                 ``name``).
             name: The record's name, matched exactly (case and spaces
                 count). Required for read, write and delete.
-            text: The record's text, required for write. Sent unchanged; a
-                JSON object or list is stored as its JSON text.
+            text: The record's text, required for write. Sent unchanged.
 
         Returns:
             list: ``count`` and ``records``. read: ``found`` and ``records``
@@ -9149,8 +9151,6 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "action is list, read, write or delete"}
         if act != "list" and (not isinstance(name, str) or not name.strip()):
             return {"ok": False, "reason": f"name is required for {act}"}
-        if isinstance(text, (dict, list)):
-            text = json.dumps(text, ensure_ascii=True)
         if act == "write" and not isinstance(text, str):
             return {"ok": False, "reason": "text is required for write"}
         for label, value in (("name", name if act != "list" else ""),

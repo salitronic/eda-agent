@@ -20,6 +20,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from eda_agent.tools import pcb
 
 REPO = Path(__file__).resolve().parents[1]
@@ -90,14 +92,33 @@ def test_name_and_text_go_unchanged(monkeypatch):
                             {"action": "write", "name": " My Tool ", "text": text})]
 
 
-def test_a_json_object_or_list_is_stored_as_its_json_text(monkeypatch):
-    # A client can hand a JSON-looking text over already parsed.
-    tool, bridge = _tool(monkeypatch)
-    asyncio.run(tool(action="write", name="n", text={"a": 1, "µ": "±"}))
-    asyncio.run(tool(action="write", name="n", text=[1, 2]))
-    sent = [p["text"] for _, p in bridge.sent]
-    assert [json.loads(s) for s in sent] == [{"a": 1, "µ": "±"}, [1, 2]]
-    assert all(s.isascii() for s in sent)
+def test_text_is_offered_as_a_plain_string(monkeypatch):
+    # Offered "string or null", Claude Code parsed a JSON-looking text into
+    # an object before sending it, and the call was refused. A plain string
+    # reached a tool as the text itself.
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    tool, _ = _tool(monkeypatch)
+    model = func_metadata(tool).arg_model
+    assert model.model_json_schema()["properties"]["text"]["type"] == "string"
+    assert "anyOf" not in model.model_json_schema()["properties"]["text"]
+    assert model.model_validate({"action": "list"}).text is None
+    assert model.model_validate({"action": "write", "text": ""}).text == ""
+
+
+def test_an_object_is_refused_not_rewritten(monkeypatch):
+    # Data goes through untouched, so there is no conversion to fall back on.
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+    from pydantic import ValidationError
+
+    tool, _ = _tool(monkeypatch)
+    model = func_metadata(tool).arg_model
+    for value in ({"a": 1}, [1, 2]):
+        with pytest.raises(ValidationError):
+            model.model_validate({"action": "write", "name": "n", "text": value})
+    payload = '{"a": 1, "µ": "±"}'
+    assert model.model_validate(
+        {"action": "write", "name": "n", "text": payload}).text == payload
 
 
 def test_an_empty_text_is_a_write_and_a_missing_one_is_refused(monkeypatch):
