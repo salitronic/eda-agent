@@ -7323,6 +7323,87 @@ Begin
         + '"visible":' + BoolToJsonStr(Visible) + LockJson + '}';
 End;
 
+{..............................................................................}
+{ pcb.view: read or set the area of the board the editor shows, in mils.    }
+{ A caller saves the user's view, zooms elsewhere for its own work, and     }
+{ puts the view back exactly. Altium fits a set rectangle to the window's   }
+{ aspect, so the reply is the rectangle read back, larger on one axis than  }
+{ the one asked for. View state only; the board is not marked modified.    }
+{..............................................................................}
+
+Function PvRectJson(Board : IPCB_Board) : String;
+Var
+    R : TCoordRect;
+    L, B, Rt, T : Double;
+Begin
+    { Read the whole record from the API before touching a field. }
+    R := Board.GraphicalView_ViewportRect;
+    L := R.Left / 10000.0;
+    B := R.Bottom / 10000.0;
+    Rt := R.Right / 10000.0;
+    T := R.Top / 10000.0;
+    Result := JsonFloat('left', L) + ',' + JsonFloat('bottom', B) + ','
+        + JsonFloat('right', Rt) + ',' + JsonFloat('top', T) + ','
+        + JsonFloat('width', Rt - L) + ',' + JsonFloat('height', T - B);
+End;
+
+Function PCB_View(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Action, LStr, BStr, RStr, TStr : String;
+    L, B, Rt, T : Double;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If Action = '' Then Action := 'get';
+
+    If Action = 'get' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{' + PvRectJson(Board) + '}');
+        Exit;
+    End;
+
+    If Action <> 'set' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION', 'action = get | set');
+        Exit;
+    End;
+
+    LStr := Trim(ExtractJsonValue(Params, 'left'));
+    BStr := Trim(ExtractJsonValue(Params, 'bottom'));
+    RStr := Trim(ExtractJsonValue(Params, 'right'));
+    TStr := Trim(ExtractJsonValue(Params, 'top'));
+    { A missing or non-numeric side would zoom on a rectangle from 0, }
+    { somewhere the caller never asked for.                            }
+    If (Not IsFloatStr(LStr)) Or (Not IsFloatStr(BStr))
+        Or (Not IsFloatStr(RStr)) Or (Not IsFloatStr(TStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_RECT',
+            'set needs left, bottom, right and top in mils');
+        Exit;
+    End;
+    L := StrToFloatDef(LStr, 0);
+    B := StrToFloatDef(BStr, 0);
+    Rt := StrToFloatDef(RStr, 0);
+    T := StrToFloatDef(TStr, 0);
+    If (Rt <= L) Or (T <= B) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_RECT',
+            'right must be above left and top above bottom');
+        Exit;
+    End;
+
+    Board.GraphicalView_ZoomOnRect(MilsToCoordF(L), MilsToCoordF(B),
+        MilsToCoordF(Rt), MilsToCoordF(T));
+    Result := BuildSuccessResponse(RequestId, '{' + PvRectJson(Board) + '}');
+End;
+
 Function LvIsMech(Lyr : TLayer) : Boolean;
 Begin
     { By name, so Mechanical17 and up count too (LayerDisplayName). }
@@ -27540,6 +27621,7 @@ Begin
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'layer_view':              Result := PCB_LayerView(Params, RequestId);
+        'view':                    Result := PCB_View(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
         'place_3d_body':           Result := PCB_Place3DBody(Params, RequestId);

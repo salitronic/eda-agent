@@ -8300,6 +8300,55 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.layer_view", params)
 
     @mcp.tool()
+    async def pcb_view(
+        action: str = "get",
+        left: Optional[float] = None,
+        bottom: Optional[float] = None,
+        right: Optional[float] = None,
+        top: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read or set the area of the board the PCB editor shows.
+
+        Save the user's view with ``action="get"``, zoom wherever the work
+        needs, then put the view back with ``action="set"`` and the saved
+        ``left``, ``bottom``, ``right``, ``top``.
+
+        Args:
+            action: "get" (the default) reads the view; "set" zooms the
+                editor on the rectangle given.
+            left, bottom, right, top: the rectangle for "set", in mils
+                (board coordinates, kept to 0.0001 mil).
+
+        Returns:
+            ``left``, ``bottom``, ``right``, ``top``, ``width`` and
+            ``height`` of the view in mils. After "set" these are read back
+            from the editor: Altium fits the rectangle to the window's
+            shape, so the view shown is larger than the one asked for on
+            one axis. Setting a rectangle read by "get" puts that view back
+            exactly. A missing side, right <= left or top <= bottom is
+            refused (BAD_RECT). View state only; the board is not marked
+            modified.
+        """
+        act = (action or "get").strip().lower()
+        if act == "get":
+            return await get_bridge().send_command_async(
+                "pcb.view", {"action": "get"})
+        if act != "set":
+            return {"success": False, "error": "BAD_ACTION",
+                    "reason": 'action is "get" or "set"'}
+        sides = {"left": left, "bottom": bottom, "right": right, "top": top}
+        missing = [k for k, v in sides.items() if v is None]
+        if missing:
+            return {"success": False, "error": "BAD_RECT",
+                    "reason": "set needs " + ", ".join(missing)}
+        if right <= left or top <= bottom:
+            return {"success": False, "error": "BAD_RECT",
+                    "reason": "right must be above left and top above bottom"}
+        params = {"action": "set"}
+        params.update({k: f"{float(v):.4f}" for k, v in sides.items()})
+        return await get_bridge().send_command_async("pcb.view", params)
+
+    @mcp.tool()
     async def pcb_set_layer_color(layer: str, color: str) -> dict[str, Any]:
         """Recolour one layer.
 
