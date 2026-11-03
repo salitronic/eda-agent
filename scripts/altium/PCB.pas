@@ -21252,7 +21252,7 @@ Begin
        (Name = 'DeleteUnconnectedPrims') Or (Name = 'CheckPatterns') Or
        (Name = 'CheckComments') Or (Name = 'ShowInvisibleObjects') Or
        (Name = 'UseTransparent') Or (Name = 'CleanRedraw') Or
-       (Name = 'RedrawLayerOnToggle') Then Result := 'b'
+       (Name = 'RedrawLayerOnToggle') Or (Name = 'DoOnlineDRC') Then Result := 'b'
     Else If (Name = 'PlaneDrawMode') Or (Name = 'PadTypesDisplayMode') Or
        (Name = 'FromTosDisplayMode') Or (Name = 'LayerNameDisplayMode') Or
        (Name = 'DragMode') Or (Name = 'ComponentMoveKind') Or
@@ -21332,6 +21332,7 @@ Begin
     Else If Name = 'UseTransparent' Then Result := BoolToJsonStr(Opts.UseTransparent)
     Else If Name = 'CleanRedraw' Then Result := BoolToJsonStr(Opts.CleanRedraw)
     Else If Name = 'RedrawLayerOnToggle' Then Result := BoolToJsonStr(Opts.RedrawLayerOnToggle)
+    Else If Name = 'DoOnlineDRC' Then Result := BoolToJsonStr(Opts.DoOnlineDRC)
     Else If Name = 'RepeatDegrees' Then Result := FloatToJsonStr(Opts.RepeatDegrees)
     Else If Name = 'RepeatX' Then Result := FloatToJsonStr(Opts.RepeatX)
     Else If Name = 'RepeatY' Then Result := FloatToJsonStr(Opts.RepeatY)
@@ -21442,6 +21443,7 @@ Begin
     Else If Name = 'UseTransparent' Then Opts.UseTransparent := B
     Else If Name = 'CleanRedraw' Then Opts.CleanRedraw := B
     Else If Name = 'RedrawLayerOnToggle' Then Opts.RedrawLayerOnToggle := B
+    Else If Name = 'DoOnlineDRC' Then Opts.DoOnlineDRC := B
     Else If Name = 'RepeatDegrees' Then Opts.RepeatDegrees := F
     Else If Name = 'RepeatX' Then Opts.RepeatX := F
     Else If Name = 'RepeatY' Then Opts.RepeatY := F

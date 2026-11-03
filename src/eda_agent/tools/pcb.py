@@ -672,6 +672,7 @@ _PCB_EDIT_OPTIONS = {
     "auto_pan_big_step": "AutoPanLargeStep",
     "auto_pan_speed": "AutoPanSpeed",
     "pour_redraw_threshold": "PolygonThreshold",
+    "online_drc": "DoOnlineDRC",
 }
 
 def _option_number_refusal(counts: dict[str, Any],
@@ -1691,6 +1692,7 @@ def register_pcb_tools(mcp):
         auto_pan_big_step: Optional[int] = None,
         auto_pan_speed: Optional[int] = None,
         pour_redraw_threshold: Optional[int] = None,
+        online_drc: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor behaves while editing.
 
@@ -1732,6 +1734,10 @@ def register_pcb_tools(mcp):
                 and auto_pan_speed its steps and speed.
             pour_redraw_threshold: Pours of more pieces than this are drawn
                 as outlines while they are edited.
+            online_drc: Altium's Online DRC preference (PCB Editor >
+                General): every object placed or changed is checked as it
+                goes. Switching it off speeds up bulk edits a lot; read it
+                first and put it back afterwards.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -1770,7 +1776,8 @@ def register_pcb_tools(mcp):
             "netlist_check_comments": netlist_check_comments,
             "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
             "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
-            "pour_redraw_threshold": pour_redraw_threshold})
+            "pour_redraw_threshold": pour_redraw_threshold,
+            "online_drc": online_drc})
 
     @mcp.tool()
     async def pcb_paste_options(
