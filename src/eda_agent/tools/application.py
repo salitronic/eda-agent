@@ -6,6 +6,7 @@ import functools
 import os
 import re
 import sys
+import unicodedata
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
@@ -434,6 +435,25 @@ async def _run_declared_menu(bridge, menu_path: str) -> dict:
     if isinstance(result, dict):
         out["bridge"] = result
     return out
+
+
+# The bridge request reaches the scripts as 8-bit text: a character above
+# U+00FF (the ohm sign, the Greek mu, the Unicode minus) arrives as "?".
+# The value engine reads these as R, u and -, so they are folded here.
+_VALUE_GROUPING = "    "
+_VALUE_FOLD = {"Ω": "R", "Ω": "R", "μ": "u", "µ": "u",
+               "−": "-", chr(0x2013): "-", "°": "", "º": ""}
+
+
+def fold_value_text(text: str) -> str:
+    """A value string folded to what the scripts can receive (ASCII for the
+    symbols the value engine knows). Grouping spaces go BEFORE NFKC, which
+    would turn them into plain spaces, and a plain space ends a value."""
+    t = text or ""
+    for ch in _VALUE_GROUPING:
+        t = t.replace(ch, "")
+    t = unicodedata.normalize("NFKC", t)
+    return "".join(_VALUE_FOLD.get(ch, ch) for ch in t)
 
 
 def register_application_tools(mcp):
@@ -1356,6 +1376,76 @@ def register_application_tools(mcp):
                 return {"ok": False, "reason": "interval_minutes is 1 or more"}
             params["interval"] = str(interval_minutes)
         return await get_bridge().send_command_async("application.autosave", params)
+
+    @mcp.tool()
+    async def app_format_value(
+        action: str,
+        text: Optional[str] = None,
+        value: Optional[Any] = None,
+        kind: Optional[str] = None,
+        decimal: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Read, write or clean up a component value in the RKM code of
+        IEC 60062: a letter stands where the decimal point would be, so a
+        value survives a scaled font, a print and any locale. 4K7, 0R005,
+        2M2, 2u2, 10uF, 100nF, 2u2H, 3V3, 500mA, 0%1, 2ppm5, 125C.
+
+        Done by the bridge's own value engine (no document is read or
+        touched), so a script can use the same rules. NO ROUNDING: a value
+        is digits and a power of ten, exact to the last digit.
+
+        Reading is tolerant: 4.7k, 4,7 kOhm, 10 000uF, 2.2uF, 0.1 uF,
+        3,3 V, 125 degC. The unit letter decides the kind; without one,
+        p / n / u is a capacitor and G / M / m / K a resistor. Letters
+        that could read two ways are blocked: on a resistor m is MEGA
+        (milli and micro are written 0R005, 0R0005); on volts and amperes
+        M is milli; femto is never read (100 fF is 0p1). The value ends at
+        the first space or character that is not part of it ("10uF 50V"
+        and "10uF/50V" read 10uF, the rest comes back in ``rest``); a value
+        that runs on into digits or letters it cannot use ("10.1.1k") is
+        refused.
+
+        Args:
+            action: ``cleanup`` (text -> the proper text), ``fromstring``
+                (text -> value and kind) or ``tostring`` (kind + value ->
+                text).
+            text: The value as written, for cleanup / fromstring.
+            value: The value in the base unit (ohm, farad, henry, volt,
+                ampere, %, ppm, degree C) for tostring: a string such as
+                "0.0000022" or "1e3", or a number.
+            kind: ohm, farad, henry, volt, ampere, percent, ppm or
+                celsius (also R, C, L, V, A). Takes precedence over the
+                text; a unit in the text that disagrees is a note.
+            decimal: The decimal separator of the SOURCE text, "." or
+                ",", for "1,000" / "1.000"; default this machine's.
+
+        Returns:
+            ``text`` (cleanup, tostring), ``value`` as an exact decimal
+            string and ``kind`` (cleanup, fromstring), ``rest`` (what
+            followed the value) and ``notes`` (every guess made).
+        """
+        act = (action or "").strip().lower()
+        if act not in ("cleanup", "fromstring", "tostring"):
+            return {"ok": False,
+                    "reason": "action is cleanup, fromstring or tostring"}
+        if decimal not in (None, "", ".", ","):
+            return {"ok": False, "reason": "decimal is '.' or ','"}
+        params: dict[str, Any] = {"action": act}
+        if act == "tostring":
+            if value is None or not kind:
+                return {"ok": False, "reason": "tostring needs kind and value"}
+            if isinstance(value, bool):
+                return {"ok": False, "reason": "value is a number"}
+            params["value"] = repr(value) if isinstance(value, float) else str(value)
+        else:
+            if text is None or not str(text).strip():
+                return {"ok": False, "reason": f"{act} needs text"}
+            params["text"] = fold_value_text(str(text))
+        if kind:
+            params["kind"] = kind
+        if decimal:
+            params["decimal"] = decimal
+        return await get_bridge().send_command_async("application.format_value", params)
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:

@@ -1439,6 +1439,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "A setting of Altium itself, for every document; minutes.",
     },
     {
+        "task": "Clean up or read a component value such as 4.7k, 2.2uF or 3.3V",
+        "keywords": ("value", "rkm", "resistance", "capacitance", "inductance",
+                     "voltage", "current", "cleanup", "format", "normalize"),
+        "when": (("value", "cleanup"), ("value", "format"), ("rkm",),
+                 ("normalize", "value")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["app_format_value"],
+        "avoid": [],
+        "note": "IEC 60062 form (4K7, 2u2, 10uF, 3V3), exact; touches no document.",
+    },
+    {
         "task": "Lock a schematic parameter or keep it from library updates",
         "keywords": ("parameter", "lock", "read", "only", "synchronize",
                      "update", "library", "database"),
