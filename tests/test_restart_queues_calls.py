@@ -52,10 +52,12 @@ def test_a_call_waits_through_a_restart(bridge, tmp_path):
 
     def new_loop_comes_up():
         time.sleep(1.5)                       # three windows of 0.5 s
-        (tmp_path / f"request_{rid}.json").unlink()
+        # Response first: removing the request first left a moment with
+        # neither file, and a window check landing in it gave up (CI).
         (tmp_path / f"response_{rid}.json").write_text(
             '{"protocol_version": 2, "id": "%s", "success": true, '
             '"data": {"ok": 1}, "error": null}' % rid)
+        (tmp_path / f"request_{rid}.json").unlink()
 
     t = threading.Thread(target=new_loop_comes_up)
     t.start()
