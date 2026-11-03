@@ -982,7 +982,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_embedded_data"],
-        "avoid": ["pcb_place_text"],
+        "avoid": [("pcb_place_text",
+                   "a visible text, which a designer can move, delete or print")],
         "note": ("Named plain-text records kept as embedded objects: saved with the "
                  "PcbDoc, not drawn or selectable. A visible text can be moved or "
                  "deleted by a designer. Not for secrets."),
@@ -995,7 +996,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_connected_copper"],
-        "avoid": ["obj_select"],
+        "avoid": [("obj_select",
+                   "selects by net or object type, so copper of another net "
+                   "touching it, a short, is missed")],
         "note": ("Walks the copper by geometry, not net name: other nets in its "
                  "nets list are shorts. Seed with pad='U1.3' or object_type and filter."),
     },
@@ -1007,7 +1010,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_rename_designators"],
-        "avoid": ["obj_modify"],
+        "avoid": [("obj_modify",
+                   "renames one part at a time with no collision check, so a "
+                   "swap collides halfway")],
         "note": ("Collisions are refused before any write; parts go through "
                  "temporary names, so a swap works. proj_annotate renumbers a "
                  "whole design."),
@@ -1033,7 +1038,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "library",
         "backends": ("altium",),
         "use": ["lib_set_3d_body"],
-        "avoid": ["obj_modify"],
+        "avoid": [("obj_modify",
+                   "does not place the body by its box centre or read the "
+                   "position back")],
         "note": ("center_x / center_y with body_index put the body's box centre "
                  "there, relative to the footprint origin, and read it back."),
     },
