@@ -172,9 +172,8 @@ def test_the_selection_filter_is_bypassed_and_restored_in_finally():
     body = _routine("PCB_ConnectedCopper")
     assert "If DoSelect Then" in body
     sel = body[body.index("If DoSelect Then"):]
-    assert "WasOff := Board.SelectedObjects_FilterDisabled;" in sel
-    assert "Board.SelectedObjects_FilterDisabled := True;" in sel
-    assert re.search(r"Finally\s+Board\.SelectedObjects_FilterDisabled := WasOff;", sel)
+    assert "WasOff := PcbSelectFilterOff(Board);" in sel
+    assert re.search(r"Finally\s+PcbSelectFilterRestore\(Board, WasOff\);", sel)
     assert sel.index("Board.SelectedObjects_BeginUpdate;") < sel.index("Q.Selected := True;")
     assert sel.index("Q.Selected := True;") < sel.index("Board.SelectedObjects_EndUpdate;")
     assert "If ExtractJsonValue(Params, 'clear_selection') = 'true' Then" in sel

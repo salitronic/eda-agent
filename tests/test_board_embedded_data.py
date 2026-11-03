@@ -90,6 +90,16 @@ def test_name_and_text_go_unchanged(monkeypatch):
                             {"action": "write", "name": " My Tool ", "text": text})]
 
 
+def test_a_json_object_or_list_is_stored_as_its_json_text(monkeypatch):
+    # A client can hand a JSON-looking text over already parsed.
+    tool, bridge = _tool(monkeypatch)
+    asyncio.run(tool(action="write", name="n", text={"a": 1, "µ": "±"}))
+    asyncio.run(tool(action="write", name="n", text=[1, 2]))
+    sent = [p["text"] for _, p in bridge.sent]
+    assert [json.loads(s) for s in sent] == [{"a": 1, "µ": "±"}, [1, 2]]
+    assert all(s.isascii() for s in sent)
+
+
 def test_an_empty_text_is_a_write_and_a_missing_one_is_refused(monkeypatch):
     tool, bridge = _tool(monkeypatch)
     asyncio.run(tool(action="write", name="n", text=""))
@@ -214,3 +224,16 @@ def test_reads_carry_the_whole_text_and_lists_a_head():
 def test_a_change_marks_the_board_modified():
     body = _routine("PCB_EmbeddedData")
     assert "If (Updated + Created + Deleted) > 0 Then MarkDocDirtyByPath(Board.FileName);" in body
+
+
+def test_a_write_or_delete_is_one_undo_step():
+    body = _routine("PCB_EmbeddedData")
+    assert "Edits := (Action = 'write') Or (Action = 'delete');" in body
+    begin = body.index("If Edits Then PcbBeginEdit(0);")
+    end = body.index("If Edits Then PcbEndEdit(0);")
+    assert re.search(r"Finally\s+If Edits Then PcbEndEdit\(0\);", body)
+    edits = body[begin:end]
+    register = r"SendMessageToRobots\(Board\.I_ObjectAddress, c_Broadcast,\s+PCBM_BoardRegisteration, "
+    assert re.search(register + r"P\.I_ObjectAddress\);\s+Board\.RemovePCBObject\(P\);", edits)
+    assert re.search(r"Board\.AddPCBObject\(E\);\s+PCBServer\." + register + r"E\.I_ObjectAddress\);",
+                     edits)

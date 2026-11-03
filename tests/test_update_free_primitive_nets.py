@@ -75,7 +75,10 @@ def test_the_walk_is_filtered_to_free_copper():
             "eFillObject, eRegionObject));") in walk
     assert "Board.BoardIterator_Destroy(Iter);" in walk
     assert "Owned := P.InComponent Or P.InPolygon Or P.InDimension;" in walk
-    assert "If (Not Owned) And PcbCheckIsCopper(P) Then" in walk
+    # A copper REGION only: a board cutout is a no-net region on MultiLayer.
+    assert "If (Not Owned) And ConnectedCopperIsCopper(P) Then" in walk
+    region = _routine("ConnectedCopperIsCopper")
+    assert "Result := Rgn.Kind = eRegionKind_Copper;" in region
 
 
 def test_a_change_is_an_object_that_had_no_net_before():

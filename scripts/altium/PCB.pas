@@ -3233,7 +3233,7 @@ Begin
     SrcGroup := TStringList.Create;
     { Duplicates is honoured only by a SORTED list: unsorted, GroupNets took }
     { one entry per pad, and every internal or shared net was counted once  }
-    { per pad in the reply (#171). Sorting also makes IndexOf a binary search. }
+    { per pad in the reply. Sorting also makes IndexOf a binary search.        }
     GroupNets := TStringList.Create;       GroupNets.Sorted := True;       GroupNets.Duplicates := dupIgnore;
     OutsideNets := TStringList.Create;     OutsideNets.Sorted := True;     OutsideNets.Duplicates := dupIgnore;
     InternalNets := TStringList.Create;    InternalNets.Sorted := True;    InternalNets.Duplicates := dupIgnore;
@@ -11490,7 +11490,7 @@ Var
     Matches : TInterfaceList;
     Action, Name, Text, Rows : String;
     I, Updated, Created, Deleted, ReadBack : Integer;
-    Exact : Boolean;
+    Exact, Edits : Boolean;
 Begin
     Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
     If (Action <> 'list') And (Action <> 'read') And (Action <> 'write')
@@ -11535,55 +11535,66 @@ Begin
     Deleted := 0;
     ReadBack := 0;
     Exact := True;
-    For I := 0 To Matches.Count - 1 Do
-    Begin
-        P := Matches.Items[I];
-        E := P;
-        If Action = 'write' Then
+    { A write or a delete is one undo step. }
+    Edits := (Action = 'write') Or (Action = 'delete');
+    If Edits Then PcbBeginEdit(0);
+    Try
+        For I := 0 To Matches.Count - 1 Do
         Begin
-            E.BeginModify;
+            P := Matches.Items[I];
+            E := P;
+            If Action = 'write' Then
+            Begin
+                E.BeginModify;
+                E.Description := Text;
+                E.EndModify;
+                Inc(Updated);
+                ReadBack := Length(E.Description);
+                If E.Description <> Text Then Exact := False;
+            End;
+            If Action = 'delete' Then
+            Begin
+                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, P.I_ObjectAddress);
+                Board.RemovePCBObject(P);
+                Inc(Deleted);
+            End
+            Else
+            Begin
+                If Rows <> '' Then Rows := Rows + ',';
+                If Action = 'list' Then
+                    Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                        + JsonInt('length', Length(E.Description)) + ','
+                        + JsonStr('head', Copy(E.Description, 1, 200)) + ','
+                        + JsonStr('layer', LayerDisplayName(E.Layer)) + '}'
+                Else If Action = 'read' Then
+                    Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                        + JsonInt('length', Length(E.Description)) + ','
+                        + JsonStr('text', E.Description) + '}'
+                Else
+                    Rows := Rows + '{' + JsonStr('name', E.Name) + ','
+                        + JsonInt('length', Length(E.Description)) + '}';
+            End;
+        End;
+
+        { Nothing by that name yet: a write makes the record. }
+        If (Action = 'write') And (Matches.Count = 0) Then
+        Begin
+            E := PCBServer.PCBObjectFactory(eEmbeddedObject, eNoDimension, eCreate_Default);
+            E.Name := Name;
             E.Description := Text;
-            E.EndModify;
-            Inc(Updated);
+            E.Layer := LayerUtils.MechanicalLayer(1);
+            Board.AddPCBObject(E);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, E.I_ObjectAddress);
+            Created := 1;
             ReadBack := Length(E.Description);
             If E.Description <> Text Then Exact := False;
+            Rows := '{' + JsonStr('name', E.Name) + ','
+                + JsonInt('length', Length(E.Description)) + '}';
         End;
-        If Action = 'delete' Then
-        Begin
-            Board.RemovePCBObject(P);
-            Inc(Deleted);
-        End
-        Else
-        Begin
-            If Rows <> '' Then Rows := Rows + ',';
-            If Action = 'list' Then
-                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
-                    + JsonInt('length', Length(E.Description)) + ','
-                    + JsonStr('head', Copy(E.Description, 1, 200)) + ','
-                    + JsonStr('layer', LayerDisplayName(E.Layer)) + '}'
-            Else If Action = 'read' Then
-                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
-                    + JsonInt('length', Length(E.Description)) + ','
-                    + JsonStr('text', E.Description) + '}'
-            Else
-                Rows := Rows + '{' + JsonStr('name', E.Name) + ','
-                    + JsonInt('length', Length(E.Description)) + '}';
-        End;
-    End;
-
-    { Nothing by that name yet: a write makes the record. }
-    If (Action = 'write') And (Matches.Count = 0) Then
-    Begin
-        E := PCBServer.PCBObjectFactory(eEmbeddedObject, eNoDimension, eCreate_Default);
-        E.Name := Name;
-        E.Description := Text;
-        E.Layer := LayerUtils.MechanicalLayer(1);
-        Board.AddPCBObject(E);
-        Created := 1;
-        ReadBack := Length(E.Description);
-        If E.Description <> Text Then Exact := False;
-        Rows := '{' + JsonStr('name', E.Name) + ','
-            + JsonInt('length', Length(E.Description)) + '}';
+    Finally
+        If Edits Then PcbEndEdit(0);
     End;
 
     If (Updated + Created + Deleted) > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -11810,8 +11821,7 @@ Begin
             { The Selection Filter refuses Selected := True, silently, for every   }
             { object kind it has switched off; it is switched off for the run and  }
             { put back whatever happens.                                           }
-            WasOff := Board.SelectedObjects_FilterDisabled;
-            Board.SelectedObjects_FilterDisabled := True;
+            WasOff := PcbSelectFilterOff(Board);
             Try
                 Board.SelectedObjects_BeginUpdate;
                 If ExtractJsonValue(Params, 'clear_selection') = 'true' Then
@@ -11828,7 +11838,7 @@ Begin
                     If Q.Selected Then Inc(NSelected);
                 End;
             Finally
-                Board.SelectedObjects_FilterDisabled := WasOff;
+                PcbSelectFilterRestore(Board, WasOff);
             End;
             Try Board.ViewManager_FullUpdate; Except End;
         End;
@@ -17356,7 +17366,7 @@ Begin
         { layer as empty.                                                     }
         { A legacy MkSet stops at Mechanical16: a layer past it came back as }
         { an empty set and every such layer counted 0. The V7 layer set      }
-        { holds any layer (#149); the layer test stays as a guard.           }
+        { holds any layer; the layer test stays as a guard.                  }
         Wide := ParseMechLayerNumber(LayerDisplayName(Lyr)) > 16;
         If Wide Then
         Begin
@@ -18199,10 +18209,11 @@ End;
 {..............................................................................}
 
 { One walk of the board's FREE copper: tracks, arcs, vias, fills and regions  }
-{ that belong to no component, pour or dimension, keepouts left out. Before   }
-{ the update every object with no net is remembered by its address; after it }
-{ an object remembered then that has a net now counts as changed, and the     }
-{ first 200 are listed in Listed. Returns how many objects have no net.       }
+{ that belong to no component, pour or dimension, keepouts left out, and only  }
+{ copper regions: a board cutout sits on MultiLayer with no net. Before the  }
+{ update every object with no net is remembered by its address; after it an  }
+{ object remembered then that has a net now counts as changed, and the first }
+{ 200 are listed in Listed. Returns how many objects have no net.            }
 Function FreeNetsWalk(Board : IPCB_Board; Seen : TStringList; Before : Boolean;
     Var Changed : Integer; Var Listed : String) : Integer;
 Var
@@ -18223,7 +18234,7 @@ Begin
         While P <> Nil Do
         Begin
             Owned := P.InComponent Or P.InPolygon Or P.InDimension;
-            If (Not Owned) And PcbCheckIsCopper(P) Then
+            If (Not Owned) And ConnectedCopperIsCopper(P) Then
             Begin
                 NetName := '';
                 Try
@@ -26799,7 +26810,7 @@ Begin
                             { (MEASURED). Any other gets a new geometric polygon }
                             { of its own: the outline and every hole, each as    }
                             { many points as the map gives, so a hole can be     }
-                            { added, removed or reshaped (#173). The polygon     }
+                            { added, removed or reshaped. The polygon            }
                             { of an IPCB_Region is declared in this binding (of  }
                             { an IPCB_Polygon it is not), read and written, and  }
                             { AddPoint counts its points itself, so no index     }

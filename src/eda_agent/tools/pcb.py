@@ -1276,7 +1276,8 @@ def register_pcb_tools(mcp):
             ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
             ``rule`` (``name``, ``kind``, ``priority``, ``enabled``,
             ``scope1``, ``scope2``, ``descriptor``; null when no clearance
-            rule applies), ``gap_mm`` (the rule's gap, null when unknown)
+            rule applies, which Altium answers for two objects with no
+            net), ``gap_mm`` (the rule's gap, null when unknown)
             and ``violation`` (false when no rule applies).
         """
         if not object1.strip() or not object2.strip():
@@ -8612,7 +8613,7 @@ def register_pcb_tools(mcp):
             from the editor: Altium fits the rectangle to the window's
             shape, so the view shown is larger than the one asked for on
             one axis. Setting a rectangle read by "get" puts that view back
-            exactly. A missing side, right <= left or top <= bottom is
+            to within a few mils. A missing side, right <= left or top <= bottom is
             refused (BAD_RECT). View state only; the board is not marked
             modified.
         """
@@ -8895,7 +8896,7 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_embedded_data(
-        action: str, name: str = "", text: Optional[str] = None
+        action: str, name: str = "", text: Optional[Union[str, dict, list]] = None
     ) -> dict[str, Any]:
         """Keep named text records inside the board file, out of sight.
 
@@ -8917,7 +8918,8 @@ def register_pcb_tools(mcp):
                 ``name``).
             name: The record's name, matched exactly (case and spaces
                 count). Required for read, write and delete.
-            text: The record's text, required for write. Sent unchanged.
+            text: The record's text, required for write. Sent unchanged; a
+                JSON object or list is stored as its JSON text.
 
         Returns:
             list: ``count`` and ``records``. read: ``found`` and ``records``
@@ -8936,6 +8938,8 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "action is list, read, write or delete"}
         if act != "list" and (not isinstance(name, str) or not name.strip()):
             return {"ok": False, "reason": f"name is required for {act}"}
+        if isinstance(text, (dict, list)):
+            text = json.dumps(text, ensure_ascii=True)
         if act == "write" and not isinstance(text, str):
             return {"ok": False, "reason": "text is required for write"}
         for label, value in (("name", name if act != "list" else ""),
