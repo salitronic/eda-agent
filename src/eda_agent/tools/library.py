@@ -3357,8 +3357,12 @@ def register_library_tools(mcp):
                 Defaults to the focused document.
 
         Returns:
-            Dict with ``library_path``, ``count`` and ``footprints``
-            (a list of ``{name, description}``).
+            Dict with ``library_path``, ``count``, ``footprints``
+            (a list of ``{name, description}``) and ``current``: the
+            name of the footprint the editor has current in that
+            library, or "" when none is. Writers called without a
+            footprint name, the library origin read and processes such
+            as ``PCB:SetComponentReference`` act on that footprint.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
