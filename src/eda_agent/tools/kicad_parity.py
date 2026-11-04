@@ -403,6 +403,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_set_mech_layer_kind": _MECH,
     "pcb_set_layer_color": "layer colours live in KiCad's colour theme, not the board",
     "pcb_plane_connections": "KiCad has no split planes; zones carry their own connection",
+    "pcb_pad_relief_spokes": "KiCad has no custom spoke points on a pad",
     "pcb_plane_state": "KiCad has no split planes",
     "pcb_remove_split_line": "KiCad has no split planes",
     "pcb_polygon_repour_mode": "Altium polygon repour setting",
@@ -485,6 +486,7 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "pcb_pad_relief": "a KiCad pad carries its own zone connection, spoke width, gap and spoke angle; no tool sets them yet",
     "app_screenshot": "no view capture in the API; would need OS window capture",
     "pcb_autoplace": "Autoplacer action needs a footprint selection and no dialog check yet",
     "pcb_autoplace_apply": "as pcb_autoplace",

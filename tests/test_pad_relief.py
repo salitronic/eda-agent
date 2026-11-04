@@ -1,0 +1,350 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+# Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
+"""pcb_pad_relief / pcb_pad_relief_spokes: one pad's own thermal relief.
+
+A pad's own relief (Properties > Thermal Relief: style, spokes, width, gap,
+rotation) and its custom spokes (the relief "Edit" points) could not be
+read or written through the bridge, so dense boards had to be done by hand
+one pad at a time. The record is ThermalReliefData keyed by an empty
+TPadViaThermalReliefItem; spokes are points on the relief outline. The
+outlines below follow the edge orders measured on AD 25.8.1: a rounded
+rectangle runs clockwise from its west side, a plain rectangle
+counter-clockwise from west going down, round pads are four quarter arcs,
+an octagon has eight straight sides, an oblong two sides and four arcs.
+"""
+from __future__ import annotations
+
+import asyncio
+import math
+import re
+from pathlib import Path
+
+import pytest
+
+from tests.pascal_source import load
+
+from eda_agent.layout import pad_relief
+from eda_agent.tools import pcb
+
+_ALTIUM = Path(__file__).resolve().parent.parent / "scripts" / "altium"
+
+
+def _line(x, y):
+    return {"kind": "line", "x": x, "y": y}
+
+
+def _arc(x, y, cx, cy, r, a1, a2):
+    return {"kind": "arc", "x": x, "y": y, "cx": cx, "cy": cy, "r": r, "a1": a1, "a2": a2}
+
+
+def _rounded_square():
+    # Read back from a 110.24 mil rounded square, corner radius 27.559.
+    c, h, r = (1929.1339, 6456.6929), 55.1181, 27.559
+    x0, x1, y0, y1 = c[0] - h, c[0] + h, c[1] - h, c[1] + h
+    return {"x": c[0], "y": c[1], "pad_rotation": 0, "width": 6, "outline": [
+        _line(x0, y0 + r),
+        _arc(x0, y1 - r, x0 + r, y1 - r, r, 90, 180),
+        _line(x0 + r, y1),
+        _arc(x1 - r, y1, x1 - r, y1 - r, r, 0, 90),
+        _line(x1, y1 - r),
+        _arc(x1, y0 + r, x1 - r, y0 + r, r, 270, 360),
+        _line(x1 - r, y0),
+        _arc(x0 + r, y0, x0 + r, y0 + r, r, 180, 270),
+    ]}
+
+
+def _rect():
+    return {"x": 0, "y": 0, "pad_rotation": 0, "width": 4, "outline": [
+        _line(-10, 15), _line(-10, -15), _line(10, -15), _line(10, 15)]}
+
+
+def _round():
+    return {"x": 0, "y": 0, "pad_rotation": 0, "width": 6, "outline": [
+        _arc(15, 0, 0, 0, 15, 0, 90), _arc(0, 15, 0, 0, 15, 90, 180),
+        _arc(-15, 0, 0, 0, 15, 180, 270), _arc(0, -15, 0, 0, 15, 270, 360)]}
+
+
+def _octagon():
+    v = [(-15, -7.5), (-15, 7.5), (-7.5, 15), (7.5, 15), (15, 7.5), (15, -7.5),
+         (7.5, -15), (-7.5, -15)]
+    return {"x": 0, "y": 0, "pad_rotation": 0, "width": 6,
+            "outline": [_line(x, y) for x, y in v]}
+
+
+def _oblong():
+    return {"x": 0, "y": 0, "pad_rotation": 0, "width": 6, "outline": [
+        _line(-10, -10), _line(-10, 10),
+        _arc(-10, 10, 0, 10, 10, 90, 180), _arc(0, 20, 0, 10, 10, 0, 90),
+        _line(10, 10), _line(10, -10),
+        _arc(10, -10, 0, -10, 10, 270, 360), _arc(0, -20, 0, -10, 10, 180, 270)]}
+
+
+def _turned(deg):
+    pad = _rect()
+    a = math.radians(deg)
+    for seg in pad["outline"]:
+        x, y = seg["x"], seg["y"]
+        seg["x"], seg["y"] = x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a)
+    pad["pad_rotation"] = deg
+    return pad
+
+
+def _at(pad, spokes, frame="pad", width=None):
+    return [(r["segment"], r["fraction"], r["x"], r["y"])
+            for r in pad_relief.resolve(pad, spokes, frame, width)]
+
+
+# --- names resolved from the outline ---------------------------------------
+
+def test_sides_take_the_middle_of_the_straight_side_facing_them():
+    pad = _rounded_square()
+    got = _at(pad, ["W", "N", "E", "S"])
+    assert [g[0] for g in got] == [0, 2, 4, 6]
+    assert all(g[1] == 0.5 for g in got)
+    assert got[1][2:] == (1929.1339, 6511.811)
+
+
+def test_a_rounded_corner_is_the_middle_of_its_arc():
+    seg, frac, x, y = _at(_rounded_square(), ["NE"])[0]
+    assert (seg, frac) == (3, 0.5)
+    assert x == pytest.approx(1956.693 + 27.559 * math.cos(math.radians(45)), abs=1e-3)
+
+
+def test_a_square_corner_is_where_two_sides_meet():
+    # Live: the S side at fraction 0 put the spoke exactly on the corner.
+    assert _at(_rect(), ["SW"]) == [(1, 0.0, -10.0, -15.0)]
+    assert _at(_rect(), ["NE"]) == [(3, 0.0, 10.0, 15.0)]
+
+
+def test_an_octagon_corner_is_its_cut_side():
+    got = _at(_octagon(), ["NE", "SW"])
+    assert [(g[2], g[3]) for g in got] == [(11.25, 11.25), (-11.25, -11.25)]
+
+
+def test_degrees_land_on_arcs_from_angle1_counter_clockwise():
+    got = _at(_round(), ["45", "225", "200"])
+    assert got[0][:2] == (0, 0.5)
+    assert got[1][:2] == (2, 0.5)
+    assert got[2][:2] == (2, pytest.approx(20 / 90, abs=1e-6))
+    assert (got[0][2], got[0][3]) == (10.6066, 10.6066)
+
+
+def test_degrees_land_on_lines_too():
+    seg, frac, x, y = _at(_rounded_square(), ["0"])[0]
+    assert (seg, frac, y) == (4, 0.5, 6456.6929)
+
+
+def test_a_round_end_has_no_side_and_says_so():
+    with pytest.raises(pad_relief.SpokeError, match="degrees"):
+        pad_relief.resolve(_oblong(), ["N"])
+    assert _at(_oblong(), ["90"])[0][2:] == (0.0, 20.0)
+    assert _at(_oblong(), ["W"])[0][:2] == (0, 0.5)
+
+
+def test_a_round_pad_has_no_corner_beyond_its_quarter_arcs():
+    assert _at(_round(), ["NE"])[0][:2] == (0, 0.5)
+
+
+def test_an_offset_moves_along_the_side_up_to_the_straight_part():
+    pad = _rounded_square()
+    # N side 55.12 long, spoke 6 wide: 24.56 each way from the middle.
+    got = _at(pad, ["N:+1", "N:-1", "N:0.5"])
+    assert got[0][2] == pytest.approx(1929.1339 + 24.5591, abs=1e-3)
+    assert got[1][2] == pytest.approx(1929.1339 - 24.5591, abs=1e-3)
+    # + on W / E is north, whichever way the side runs.
+    assert _at(pad, ["W:+1"])[0][3] > 6456.6929
+    assert _at(pad, ["E:+1"])[0][3] > 6456.6929
+
+
+def test_an_offset_beyond_the_side_is_refused_not_clamped():
+    with pytest.raises(pad_relief.SpokeError, match="outside"):
+        pad_relief.resolve(_rounded_square(), ["N:1.2"])
+    with pytest.raises(pad_relief.SpokeError, match="no room"):
+        pad_relief.resolve(_rect(), ["N:0.5"], width=30)
+    with pytest.raises(pad_relief.SpokeError, match="only a side"):
+        pad_relief.resolve(_rect(), ["NE:0.5"])
+
+
+def test_the_pad_frame_turns_with_the_pad_and_the_board_frame_does_not():
+    pad = _turned(60)
+    seg_pad = _at(pad, ["W"])[0]
+    assert math.degrees(math.atan2(seg_pad[3], seg_pad[2])) % 360 == pytest.approx(240, abs=1e-3)
+    seg_board = _at(pad, ["W"], frame="board")[0]
+    assert math.degrees(math.atan2(seg_board[3], seg_board[2])) % 360 == pytest.approx(150, abs=1e-3)
+    pad = _turned(30)
+    seg_board = _at(pad, ["90"], frame="board")[0]
+    assert math.degrees(math.atan2(seg_board[3], seg_board[2])) == pytest.approx(90, abs=1e-3)
+
+
+def test_unknown_names_and_frames_are_refused():
+    with pytest.raises(pad_relief.SpokeError):
+        pad_relief.resolve(_rect(), ["UP"])
+    with pytest.raises(pad_relief.SpokeError, match="frame"):
+        pad_relief.resolve(_rect(), ["N"], frame="part")
+    with pytest.raises(pad_relief.SpokeError, match="outline"):
+        pad_relief.resolve({"x": 0, "y": 0, "outline": []}, ["N"])
+
+
+def test_a_board_frame_corner_on_a_turned_rectangle_stays_a_corner():
+    # Turned 30, a side faces NE within 15 degrees; a corner is still asked.
+    seg, frac, x, y = _at(_turned(30), ["NE"], frame="board")[0]
+    assert frac == 0.0
+    assert math.hypot(x, y) == pytest.approx(math.hypot(10, 15), abs=1e-3)
+
+
+def test_a_turned_octagon_keeps_its_cut_corners():
+    pad = _octagon()
+    a = math.radians(20)
+    for seg in pad["outline"]:
+        x, y = seg["x"], seg["y"]
+        seg["x"], seg["y"] = x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a)
+    seg, frac, x, y = _at(pad, ["NE"], frame="board")[0]
+    assert frac == 0.5
+    assert math.degrees(math.atan2(y, x)) == pytest.approx(65, abs=1e-3)
+
+
+def test_a_side_exactly_between_two_is_refused_not_guessed():
+    with pytest.raises(pad_relief.SpokeError, match="no straight side"):
+        pad_relief.resolve(_turned(45), ["N"], frame="board")
+
+
+def test_points_are_segment_and_fraction_pairs():
+    got = pad_relief.resolve(_rect(), ["N", "SW"])
+    assert pad_relief.points(got) == "3:0.5;1:0.0"
+
+
+# --- the Pascal handler ----------------------------------------------------
+
+def _units() -> dict:
+    return load(_ALTIUM / "PCB.pas", minimum=20)
+
+
+def test_the_action_is_dispatched():
+    assert re.search(r"'pad_relief':\s+Result := PCB_PadRelief\(Params, RequestId\);",
+                     _units()["HandlePCBCommand"])
+
+
+def test_the_record_is_keyed_by_an_empty_item_never_a_layer():
+    body = _units()["PCB_PadRelief"]
+    assert "Item := TPadViaThermalReliefItem;" in body
+    assert not re.search(r"ThermalReliefData\[L\]", body)
+    assert "EditThermalReliefData" not in body
+
+
+def test_the_style_map_matches_altium_25():
+    body = _units()["PCB_PadRelief"]
+    assert "If Style = 'relief' Then StyleN := 0" in body
+    assert "Else If Style = 'direct' Then StyleN := 1" in body
+    assert "Else If Style = 'none' Then StyleN := 2" in body
+    rec = _units()["PadReliefRecord"]
+    assert "If D.Rotation = 0 Then S := S + ',' + JsonInt('rotation', 45)" in rec
+    body_set = body[body.index("Pad.ThermalReliefData[Item] := D") - 600:]
+    assert "If RotS = '45' Then D.Rotation := 0;" in body_set
+    assert "If RotS = '90' Then D.Rotation := 1;" in body_set
+
+
+def test_every_value_is_checked_before_the_board_is_touched():
+    body = _units()["PCB_PadRelief"]
+    first = body.index("GetPCBBoardAnywhere")
+    for refusal in ("'style is rule, relief, direct or none'", "'spokes is 2 or 4'",
+                    "'rotation is 45 or 90'", "'width is a length in mils above 0'",
+                    "fraction 0 .. 1'"):
+        assert body.index(refusal) < first, refusal
+
+
+def test_a_thru_hole_pad_is_refused_before_any_write():
+    body = _units()["PCB_PadRelief"]
+    refuse = body.index("'NOT_SUPPORTED'")
+    assert body.index("IsSmd := (L = eTopLayer) Or (L = eBottomLayer);") < refuse
+    assert refuse < body.index("PcbBeginEdit(0);")
+
+
+def test_a_spoke_write_adds_before_it_clears_and_replaces_the_list():
+    body = _units()["PCB_PadRelief"]
+    add = body.index("Pad.AddCustomRelief(L, 0, 0.5);")
+    clear = body.index("Pad.ClearCustomRelief(L);")
+    assert body.index("D.UseCustomRelief := True;") < body.index("Pad.ThermalReliefData[Item] := D;") < add < clear
+    assert clear < body.index("Pad.AddCustomRelief(L, Edge, Frac);")
+
+
+def test_the_custom_list_is_only_read_where_this_call_made_it():
+    body = _units()["PCB_PadRelief"]
+    read = body.index("PadReliefSpokes(Board, Pad, L)")
+    guard = body.rfind("If IsSmd And (SegCount > 0) And D.UseCustomRelief", 0, read)
+    assert guard > 0 and "((Action = 'spokes') Or ReadSpokes)" in body[guard:read]
+    probe = body.index("Pad.RemoveCustomRelief(L, 0, 0.5);")
+    assert body.index("Pad.AddCustomRelief(L, 0, 0.5);", body.index("Else If ReadSpokes")) < probe
+
+
+def test_an_ambiguous_pad_is_refused():
+    body = _units()["PCB_PadRelief"]
+    assert "If Count > 1 Then" in body and "'AMBIGUOUS'" in body
+
+
+# --- the tools -------------------------------------------------------------
+
+class _Mcp:
+    def __init__(self):
+        self.tools = {}
+
+    def tool(self, *a, **k):
+        def reg(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+        return reg
+
+
+class _Bridge:
+    def __init__(self, read):
+        self.sent = []
+        self.read = read
+
+    async def send_command_async(self, command, params, **kwargs):
+        self.sent.append((command, dict(params)))
+        if params.get("action") == "read":
+            return dict(self.read)
+        return {"written": True}
+
+
+def _tool(monkeypatch, name, read=None, **kwargs):
+    bridge = _Bridge(read or {})
+    monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    pcb.register_pcb_tools(mcp)
+    return asyncio.run(mcp.tools[name](**kwargs)), bridge.sent
+
+
+def test_no_value_reads_and_any_value_writes(monkeypatch):
+    _, sent = _tool(monkeypatch, "pcb_pad_relief", designator="C1", pad="1")
+    assert sent == [("pcb.pad_relief", {"designator": "C1", "pad": "1", "action": "read"})]
+    _, sent = _tool(monkeypatch, "pcb_pad_relief", designator="C1", pad="1",
+                    style="Relief", spokes=2, width=4, gap=4, rotation=45)
+    assert sent[0][1] == {"designator": "C1", "pad": "1", "style": "relief", "spokes": "2",
+                          "width": "4.0", "gap": "4.0", "rotation": "45", "action": "set"}
+
+
+def test_a_free_pad_is_found_by_x_and_y(monkeypatch):
+    _, sent = _tool(monkeypatch, "pcb_pad_relief", x=1929.1339, y=6456.6929)
+    assert sent[0][1] == {"x": "1929.1339", "y": "6456.6929", "action": "read"}
+
+
+def test_spokes_are_resolved_from_the_read_and_written_as_points(monkeypatch):
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_rect(),
+                        designator="C1", pad="1", spokes="N, SW", gap=4)
+    assert [s[1]["action"] for s in sent] == ["read", "spokes"]
+    assert sent[1][1]["points"] == "3:0.5;1:0.0"
+    assert sent[1][1]["gap"] == "4.0"
+    assert [p["segment"] for p in reply["planned"]] == [3, 1]
+
+
+def test_a_dry_run_or_a_refusal_writes_nothing(monkeypatch):
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_rect(),
+                        designator="C1", pad="1", spokes=["N"], dry_run=True)
+    assert reply["dry_run"] and len(sent) == 1
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_oblong(),
+                        designator="C1", pad="1", spokes=["N"])
+    assert reply["ok"] is False and len(sent) == 1
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=dict(_rect(), side="thru"),
+                        designator="J1", pad="1", spokes=["N"])
+    assert reply["ok"] is False and "thru-hole" in reply["reason"] and len(sent) == 1
