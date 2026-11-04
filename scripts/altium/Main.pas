@@ -90,6 +90,10 @@ Var
     PollIntervalIdleMs   : Integer;
     IdleThreshold        : Integer;
     AutoShutdownMs       : Cardinal;
+    { The auto-off period a double-click on the status window's auto-off  }
+    { card returns to after "always on": the config file's value when it  }
+    { is above 0, else the 10-minute default.                              }
+    ConfiguredShutdownMs : Cardinal;
     YieldIterations      : Integer;
     YieldEveryNActive    : Integer;
 
@@ -257,6 +261,7 @@ Begin
     PollIntervalIdleMs   := 30;
     IdleThreshold        := 150;
     AutoShutdownMs       := 600000;  { 10 min }
+    ConfiguredShutdownMs := 600000;
     YieldIterations      := 5;
     YieldEveryNActive    := 5;
 End;
@@ -2919,6 +2924,7 @@ Begin
 
     V := ExtractJsonValue(Content, 'auto_shutdown_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
+    If AutoShutdownMs > 0 Then ConfiguredShutdownMs := AutoShutdownMs;
 
     V := ExtractJsonValue(Content, 'yield_iterations');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldIterations := N; Except End; End;
