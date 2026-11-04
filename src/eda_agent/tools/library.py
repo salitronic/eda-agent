@@ -5423,7 +5423,9 @@ def register_library_tools(mcp):
         """Copy one footprint (all pads/primitives) into a PcbLib, optionally renaming.
 
         A same-library copy needs a different new_name; an existing
-        new_name in dest is refused unless overwrite.
+        new_name in dest is refused unless overwrite. A library that is
+        not open is opened as a document, so the copy can be saved; the
+        copy is read back before success.
 
         Args:
             source_name: the footprint to copy.

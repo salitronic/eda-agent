@@ -135,6 +135,24 @@ def test_values_come_back_as_before(reader):
         "7", "x", '{ "k" : [ 1 , "}" ] }', "a}b]c,d:e{f[g", "1"]
 
 
+def test_library_and_file_keys_get_one_path_spelling(reader):
+    """source_library kept its forward slashes, missed the open library and
+    copied a footprint into a hidden second copy that never saved."""
+    cases = [
+        ("source_library", '{"source_library":"C:/x/y.PcbLib"}'),
+        ("dest_library", '{"dest_library":"//srv/x/y.PcbLib"}'),
+        ("batch_file", '{"batch_file":"C:/x/b.txt"}'),
+        ("destination", '{"destination":"C:/x/out"}'),
+        ("library_path", '{"library_path":"C:/x/y.PcbLib"}'),
+        ("library", '{"library":"Misc Devices"}'),
+        ("text", '{"text":"C:/x/y"}'),
+        ("menu_path", '{"menu_path":"File/Open"}'),
+    ]
+    assert reader(cases) == [
+        "C:\\x\\y.PcbLib", "\\\\srv\\x\\y.PcbLib", "C:\\x\\b.txt", "C:\\x\\out",
+        "C:\\x\\y.PcbLib", "Misc Devices", "C:/x/y", "File/Open"]
+
+
 def _random_value(rng: random.Random, keys: list[str], depth: int):
     pick = rng.random()
     if depth < 3 and pick < 0.25:
