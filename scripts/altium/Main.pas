@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.10';
+    SCRIPT_VERSION = '2026.11.04.11';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -143,6 +143,10 @@ Var
     ClosingMode : String;
     UiAutomationMode : String;
     KeepInViewMode : String;
+    { EcoMode 'auto' lets proj_sync_pcb execute and close the change     }
+    { order itself; 'manual' leaves the dialog to the user. Default auto; }
+    { the Python side does the pressing.                                  }
+    EcoMode : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
@@ -2405,6 +2409,7 @@ Begin
     ClosingMode := 'allowed';
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
+    EcoMode := 'auto';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
     ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
@@ -2417,6 +2422,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'closing')) = 'refused' Then ClosingMode := 'refused';
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'change_orders')) = 'manual' Then EcoMode := 'manual';
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2425,7 +2431,8 @@ Begin
         '{"value_format":"' + ValueFormat + '","value_unit":"' + ValueUnit
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
-        + '","keep_in_view":"' + KeepInViewMode + '"}');
+        + '","keep_in_view":"' + KeepInViewMode
+        + '","change_orders":"' + EcoMode + '"}');
 End;
 
 {..............................................................................}

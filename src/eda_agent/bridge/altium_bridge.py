@@ -9,6 +9,7 @@ race that the older single-file scheme had when keep-alive pings overlapped
 user tool calls.
 """
 
+import contextlib
 import itertools
 import json
 import locale
@@ -98,13 +99,21 @@ _DIALOG_PROBE_AFTER = 1.0
 _DIALOG_PROBE_EVERY = 0.5
 
 
-def _blocking_signature(report: Optional[dict]) -> str:
-    """The dialogs blocking Altium, as one comparable string; '' if none."""
+def _blocking_signature(report: Optional[dict], expected: frozenset = frozenset()) -> str:
+    """The dialogs blocking Altium, as one comparable string; '' if none.
+
+    A dialog whose title contains one of ``expected`` is one the caller
+    is answering itself (proj_sync_pcb and its change order) and is not
+    counted.
+    """
     if not report or not report.get("blocked"):
         return ""
+    dialogs = [d for d in report.get("dialogs") or [] if isinstance(d, dict)]
+    if not dialogs:
+        return "blocked"
     return "|".join(sorted(
-        f"{d.get('hwnd')}:{d.get('title')}" for d in report.get("dialogs") or []
-        if isinstance(d, dict))) or "blocked"
+        f"{d.get('hwnd')}:{d.get('title')}" for d in dialogs
+        if not any(e.lower() in str(d.get("title") or "").lower() for e in expected)))
 
 # Thread pool for blocking I/O
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -518,6 +527,9 @@ class AltiumBridge:
     def __init__(self):
         self.config = get_config()
         self.process_manager = AltiumProcessManager()
+        #: Titles of dialogs a caller is answering itself while its call
+        #: runs; the poll loop does not stop for them. See expecting().
+        self.expected_dialogs: frozenset = frozenset()
         self._attached = False
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop = threading.Event()
@@ -969,7 +981,7 @@ class AltiumBridge:
                         and maintenance_in_progress(workspace_dir)
                         and self._request_path(request_id).exists()):
                     continue
-                seen = _blocking_signature(early)
+                seen = _blocking_signature(early, self.expected_dialogs)
                 confirmed = bool(seen) and seen == last_blocked
                 last_blocked = seen
                 if confirmed:
@@ -1515,6 +1527,17 @@ class AltiumBridge:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
         return self._execute_command(command, one_spelling(params or {}), timeout)
+
+    @contextlib.contextmanager
+    def expecting(self, title: str):
+        """While inside, a dialog whose title contains ``title`` does not
+        stop a call: the caller is answering it itself."""
+        before = self.expected_dialogs
+        self.expected_dialogs = before | {title}
+        try:
+            yield
+        finally:
+            self.expected_dialogs = before
 
     async def send_command_async(
         self,

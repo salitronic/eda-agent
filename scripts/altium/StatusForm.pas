@@ -548,6 +548,10 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'What happens to the Engineering Change Order an Update PCB '
+        + 'opens. Automatic: the AI executes and closes it, then reads the '
+        + 'board back. Manual: the dialog waits for you.';
+    SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
 End;
 
 
@@ -770,6 +774,8 @@ Begin
     OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
     OwnPanelColours(opt_CloseAllowed);  OwnPanelColours(opt_CloseRefused);
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
+    OwnPanelColours(sep_Cfg6);
+    OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
 End;
 
 
@@ -900,6 +906,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_EcoAuto, EcoMode <> 'manual');
+        PaintOption(opt_EcoManual, EcoMode = 'manual');
+        If EcoMode = 'manual' Then
+            lbl_CfgEcoHint.Caption := 'The change order waits for you to '
+                + 'execute and close it.'
+        Else
+            lbl_CfgEcoHint.Caption := 'The AI executes and closes the change '
+                + 'order, then checks the board against the schematic.';
     Except End;
 End;
 
@@ -1348,7 +1362,8 @@ Begin
         Else If Setting = 'deleting' Then DeletingMode := Choice
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
-        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice;
+        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'change_orders' Then EcoMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1372,6 +1387,12 @@ Begin ChooseAgentSetting('closing', 'allowed'); End;
 
 Procedure opt_CloseRefusedClick(Sender : TObject);
 Begin ChooseAgentSetting('closing', 'refused'); End;
+
+Procedure opt_EcoAutoClick(Sender : TObject);
+Begin ChooseAgentSetting('change_orders', 'auto'); End;
+
+Procedure opt_EcoManualClick(Sender : TObject);
+Begin ChooseAgentSetting('change_orders', 'manual'); End;
 
 Procedure opt_AutoOnClick(Sender : TObject);
 Begin ChooseAgentSetting('ui_automation', 'on'); End;

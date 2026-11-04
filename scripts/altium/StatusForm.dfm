@@ -1304,6 +1304,96 @@ object StatusForm: TStatusForm
         Font.Style = []
         ParentFont = False
       end
+      object sep_Cfg6: TPanel
+        Left = 12
+        Top = 526
+        Width = 340
+        Height = 1
+        BevelOuter = bvNone
+        Color = $00545454
+        TabOrder = 20
+      end
+      object lbl_CfgGrpEco: TLabel
+        Left = 12
+        Top = 538
+        Width = 340
+        Height = 16
+        AutoSize = False
+        Caption = 'CHANGE ORDERS'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00FFB363
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object lbl_CfgEco: TLabel
+        Left = 12
+        Top = 564
+        Width = 150
+        Height = 16
+        AutoSize = False
+        Caption = 'Update PCB'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -12
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object opt_EcoAuto: TPanel
+        Left = 166
+        Top = 560
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Automatic'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 21
+        OnClick = opt_EcoAutoClick
+      end
+      object opt_EcoManual: TPanel
+        Left = 262
+        Top = 560
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Manual'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 22
+        OnClick = opt_EcoManualClick
+      end
+      object lbl_CfgEcoHint: TLabel
+        Left = 12
+        Top = 588
+        Width = 340
+        Height = 28
+        AutoSize = False
+        WordWrap = True
+        Caption = ''
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00A0A0A0
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+      end
     end
   end
   object pnl_Footer: TPanel

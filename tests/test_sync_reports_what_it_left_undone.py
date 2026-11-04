@@ -42,8 +42,9 @@ class _Bridge:
         raise AssertionError(command)
 
 
-def _tools(bridge, monkeypatch):
+def _tools(bridge, monkeypatch, driver=None):
     monkeypatch.setattr(project, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(project, "_change_order_driver", lambda: driver)
     tools = {}
 
     class _Mcp:
@@ -87,3 +88,25 @@ def test_a_clean_sync_says_nothing(monkeypatch):
     assert after == {"footprint_mismatch": [],
                      "missing_on_board": [],
                      "diff_pairs_removed": []}
+
+
+def test_automatic_change_orders_are_driven_while_the_call_waits(monkeypatch):
+    import contextlib
+    import threading
+
+    bridge = _Bridge()
+    seen = {}
+
+    @contextlib.contextmanager
+    def expecting(title):
+        seen["expected"] = title
+        yield
+
+    bridge.expecting = expecting
+    stop = threading.Event()
+    driver = (lambda: {"appeared": True, "executed": True,
+                       "finished": True, "closed": True}, stop)
+    out = asyncio.run(_tools(bridge, monkeypatch, driver)["proj_sync_pcb"]())
+    assert seen["expected"] == "Engineering Change Order"
+    assert out["change_order"]["closed"] is True
+    assert stop.is_set()

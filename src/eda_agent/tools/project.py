@@ -30,6 +30,23 @@ async def _pair_names(bridge) -> set:
             if isinstance(p, dict) and p.get("name")}
 
 
+def _change_order_driver():
+    """``(run, stop)`` that executes and closes the change order an Update
+    PCB opens, or None when the Config tab leaves it to the user, menus
+    and dialogs are switched off, or Altium's process cannot be named."""
+    from ..preferences import change_orders_auto
+    if not change_orders_auto():
+        return None
+    from .uiauto import _altium_pid
+    pid, problem = _altium_pid()
+    if problem:
+        return None
+    import threading
+    from ..ui.change_order import drive
+    stop = threading.Event()
+    return (lambda: drive(pid, stop)), stop
+
+
 async def _after_sync(bridge, pairs_before: set) -> dict:
     """What a schematic-to-board sync left undone, read from both sides."""
     bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
@@ -3579,21 +3596,21 @@ def register_project_tools(mcp):
     async def proj_sync_pcb() -> dict[str, Any]:
         """Push schematic changes to the PCB (Design > Update PCB Document).
 
-        NOT SILENT: the ECO dialog BLOCKS the bridge until Execute Changes
-        is pressed. Prefer opening it without blocking and pressing it
-        yourself: app_menu(how="click", args={"menu_path": "Design|Import
-        Changes From <Project>.PrjPcb", "expect_dialog": "Engineering
-        Change Order"}), then app_press_dialog_button("Execute Changes",
-        allow_irreversible=True) and "Close". It focuses the PCB first so the update runs
-        schematic to board (refuses with WRONG_FOCUS if it cannot); check
-        the ECO lists the PcbDoc before executing. ``app_list_open_dialogs``
-        reads the dialog while the bridge is blocked.
+        Opens the Engineering Change Order. With Update PCB set to
+        Automatic on the panel's Config tab (the default) this tool
+        executes and closes it; ``change_order`` says what happened. Set
+        to Manual, or with menus and dialogs switched off, the dialog
+        waits for the user and the bridge is blocked until it closes
+        (``app_list_open_dialogs`` reads it meanwhile). It focuses the
+        PCB first so the update runs schematic to board (refuses with
+        WRONG_FOCUS if it cannot).
 
         Returns:
             success, pcb_path, before/after mapping counts,
             components_added_to_pcb, components_removed_from_pcb,
-            components_in_sync, and dialog_outcome_verified (always
-            false: which button was pressed is unknown). The counts see
+            components_in_sync, dialog_outcome_verified, and when
+            automatic ``change_order`` (appeared, executed, finished,
+            closed, reason). The counts see
             components added or removed only. ``after_sync`` then reads the
             board against the schematic: ``footprint_mismatch`` (the
             board's footprint is not the schematic's), ``missing_on_board``,
@@ -3603,7 +3620,23 @@ def register_project_tools(mcp):
         """
         bridge = get_bridge()
         pairs_before = await _pair_names(bridge)
-        result = await bridge.send_command_async("project.update_pcb", {})
+        driver = _change_order_driver()
+        if driver is None:
+            result = await bridge.send_command_async("project.update_pcb", {})
+        else:
+            import asyncio
+            from ..ui.change_order import TITLE
+            run, stop = driver
+            pressing = asyncio.get_running_loop().run_in_executor(None, run)
+            try:
+                with bridge.expecting(TITLE):
+                    result = await bridge.send_command_async(
+                        "project.update_pcb", {}, timeout=360.0)
+            finally:
+                stop.set()
+            driven = await pressing
+            if isinstance(result, dict):
+                result["change_order"] = driven
         if isinstance(result, dict):
             try:
                 result["after_sync"] = await _after_sync(bridge, pairs_before)
