@@ -7075,26 +7075,46 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_component_parameters(designator: str, action: str = "list",
-                                       name: str = "", value: str = "") -> dict[str, Any]:
-        """Read, set or remove the parameters a placed part carries on the board.
+                                       name: str = "", value: str = "",
+                                       group: str = "own") -> dict[str, Any]:
+        """Read, set, add or remove the parameters a placed part carries on the board.
 
         These are the board-side parameters of the part (as in its
-        Properties panel on the PCB), not the schematic's.
+        Properties panel on the PCB), not the schematic's. They come from
+        the schematic and the library when the board is updated, so treat
+        them as read-only: an update from the schematic can put them back.
+        ``add`` only creates a new parameter; it never changes one.
 
         Args:
             designator: The part.
-            action: ``list``, ``set`` (name and value) or ``remove`` (name).
+            action: ``list``, ``set`` (name and value), ``add`` (name and
+                value; refused with EXISTS when the name is already there
+                in any group) or ``remove`` (name).
+            group: Which parameters ``list`` reads. ``own`` (default): the
+                part's own parameters, from its schematic symbol and
+                library component. ``system``: the ones Altium keeps for
+                itself, such as Component.VaultGUID, ItemGUID and
+                RevisionGUID. ``footprint``: those of the footprint.
+                ``all``: every group, each row naming its ``group``.
+                ``set``, ``add`` and ``remove`` act on ``own`` only.
 
         Returns:
-            ``parameters`` as they now read, ``read_back`` (the value of
-            ``name`` after the change) and ``done``.
+            ``parameters`` as they now read (each with ``name``, ``value``
+            and ``group``), ``read_back`` (the value of ``name`` after the
+            change) and ``done``.
         """
-        if action not in ("list", "set", "remove"):
-            return {"ok": False, "reason": "action is list, set or remove"}
+        if action not in ("list", "set", "add", "remove"):
+            return {"ok": False, "reason": "action is list, set, add or remove"}
+        if group not in ("own", "system", "footprint", "all"):
+            return {"ok": False, "reason": "group is own, system, footprint or all"}
+        if action != "list" and group != "own":
+            return {"ok": False, "reason": "group is for list only; set, add and remove "
+                                           "act on the part's own parameters"}
         if action != "list" and not name:
-            return {"ok": False, "reason": "name is required to set or remove"}
+            return {"ok": False, "reason": "name is required to set, add or remove"}
         return await get_bridge().send_command_async("pcb.component_parameters", {
-            "designator": designator, "action": action, "name": name, "value": value})
+            "designator": designator, "action": action, "name": name, "value": value,
+            "group": group})
 
     @mcp.tool()
     async def pcb_place_simple_body(shape: str, x: float, y: float, radius: float,
@@ -9328,6 +9348,61 @@ def register_pcb_tools(mcp):
         if act == "write":
             ask["text"] = text
         return await get_bridge().send_command_async("pcb.embedded_data", ask)
+
+    @mcp.tool()
+    async def pcb_special_strings(
+        action: str = "list", names: str = "",
+    ) -> dict[str, Any]:
+        """List Altium's special strings on the active board, or resolve some.
+
+        A special string is a text such as ``.Layer_Count`` that Altium
+        draws as a value (``8``). Read only: nothing is left on the board.
+
+        Args:
+            action: ``list`` (default): every special string name Altium
+                offers on a board, plus the names that belong to this board
+                (for example ``.Total_Thickness(Board Layer Stack)``).
+                ``resolve``: the value of each text in ``names``.
+            names: For resolve, a ``|`` separated list of up to 200 texts,
+                each a name (``.Layer_Count|.Total_Thickness|.Via_Count``)
+                or mixed text (``Rev .Layer_Count/.Via_Count``).
+
+        Each text is resolved the only way found to work from a script:
+        placed as a temporary free text on the top overlay at the board
+        origin, its converted string read, and removed again in the same
+        call (one edit). Altium may still mark the board modified and keep
+        an undo step that changes nothing.
+
+        Only strings that a free text on a board can show resolve. Part
+        strings (``.Designator``, ``.Comment``, a part parameter such as
+        ``.Tolerance``) resolve only on a part's own text, and project
+        parameters (``.Designer``) only on a board inside a project; on a
+        free text they come back unresolved. Layer strings answer for the
+        top overlay, where the text sits.
+
+        Returns:
+            list: ``count``, ``capped`` (the walk stopped at 2000),
+            ``names`` and ``board_names``. resolve: ``count``, ``placed``,
+            ``removed`` and ``strings``: per text ``name``, ``value`` (as
+            Altium draws it), ``resolved`` (value present and different
+            from the name) and ``underlying`` (the text as written, read
+            back).
+        """
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "resolve"):
+            return {"ok": False, "reason": "action is list or resolve"}
+        if act == "list":
+            return await get_bridge().send_command_async(
+                "pcb.special_strings", {"action": "list"})
+        items = [n for n in names.split("|") if n.strip()] if isinstance(names, str) else []
+        if not items:
+            return {"ok": False, "reason": (
+                "names is required for resolve: a '|' list such as "
+                ".Layer_Count|.Via_Count")}
+        if len(items) > 200:
+            return {"ok": False, "reason": f"at most 200 names in one call, got {len(items)}"}
+        return await get_bridge().send_command_async(
+            "pcb.special_strings", {"action": "resolve", "names": "|".join(items)})
 
     @mcp.tool()
     async def pcb_connected_copper(

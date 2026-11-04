@@ -1252,6 +1252,85 @@ Begin
         + JsonInt('interval_minutes', Workspace.DM_GetRecoveryInterval Div 60000)));
 End;
 
+{ App_FormatValue - a component value in the RKM code of IEC 60062 (4K7,  }
+{ 2u2, 10uF, 3V3; the Vf functions in Utils.pas). Pure string work: no     }
+{ document is read or touched. action tostring: kind + value (a plain     }
+{ decimal) -> text. fromstring: text (+ kind, decimal) -> value, kind,     }
+{ rest, notes. cleanup: both, the text made proper. decimal is the SOURCE }
+{ text's decimal separator, '.' or ','; empty = this machine's.          }
+Function App_FormatValue(Params : String; RequestId : String) : String;
+Var
+    Action, Text, Value, Kind, Sep, Rec, Msg, Notes, Line, Arr, Body : String;
+    P : Integer;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Text := ExtractJsonValue(Params, 'text');
+    Value := ExtractJsonValue(Params, 'value');
+    Kind := ExtractJsonValue(Params, 'kind');
+    Sep := Trim(ExtractJsonValue(Params, 'decimal'));
+    If (Sep <> '') And (Sep <> '.') And (Sep <> ',') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'decimal is ''.'' or '','': ' + Sep);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+        Rec := VfToString(Kind, Value)
+    Else If Action = 'fromstring' Then
+        Rec := VfParse(Text, Kind, Sep)
+    Else If Action = 'cleanup' Then
+        Rec := VfCleanup(Text, Kind, Sep)
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'action is tostring, fromstring or cleanup: ' + Action);
+        Exit;
+    End;
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Msg := VfField(Rec, 1);
+        If Copy(Msg, 1, 12) = 'unknown kind' Then
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_KIND', Msg)
+        Else
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Msg);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('text', VfField(Rec, 1))));
+        Exit;
+    End;
+    { fromstring: kind value rest notes; cleanup: text kind value rest notes }
+    P := 1;
+    Body := '';
+    If Action = 'cleanup' Then
+    Begin
+        Body := JsonStr('text', VfField(Rec, 1)) + ',';
+        P := 2;
+    End;
+    If VfField(Rec, P) = '' Then Body := Body + JsonNull('kind') + ','
+    Else Body := Body + JsonStr('kind', VfField(Rec, P)) + ',';
+    Body := Body + JsonStr('value', VfField(Rec, P + 1)) + ',' + JsonStr('rest', VfField(Rec, P + 2));
+    Notes := VfField(Rec, P + 3);
+    Arr := '';
+    While Notes <> '' Do
+    Begin
+        P := Pos(Chr(10), Notes);
+        If P > 0 Then
+        Begin
+            Line := Copy(Notes, 1, P - 1);
+            Notes := Copy(Notes, P + 1, Length(Notes));
+        End
+        Else
+        Begin
+            Line := Notes;
+            Notes := '';
+        End;
+        If Arr <> '' Then Arr := Arr + ',';
+        Arr := Arr + '"' + EscapeJsonString(Line) + '"';
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1272,6 +1351,7 @@ Begin
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
         'stop_server':         Result := App_StopServer(RequestId);
         'autosave':            Result := App_Autosave(Params, RequestId);
+        'format_value':        Result := App_FormatValue(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

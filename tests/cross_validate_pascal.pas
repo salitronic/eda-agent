@@ -1001,7 +1001,8 @@ Begin
            Or ActionHasPrefix(Verb, 'inspect_')
            Or ActionHasPrefix(Verb, 'diff_')
            Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
+           Or (Verb = 'ping')
+           Or (Verb = 'format_value');
 End;
 
 function B64Decode(S : String) : String;

@@ -330,12 +330,18 @@ _READ_VERBS = ("get_", "query", "count", "list", "find", "read", "export",
 def _wants_board_in_view(command: str, now: Optional[float] = None) -> bool:
     """True when the view should be fitted after ``command``.
 
-    Only with ``EDA_AGENT_KEEP_BOARD_IN_VIEW`` set, only after a board,
+    Only with ``EDA_AGENT_KEEP_BOARD_IN_VIEW`` set or Keep board in view on
+    the panel's Config tab, only after a board,
     schematic or object edit (``pcb.`` and ``generic.`` commands that are
     not reads), and at most once every two seconds.
     """
     if os.environ.get(KEEP_IN_VIEW_ENV, "").strip().lower() not in ("1", "true", "yes"):
-        return False
+        from ..preferences import keep_in_view
+        try:
+            if not keep_in_view():
+                return False
+        except Exception:
+            return False
     domain, _, verb = command.partition(".")
     if domain not in ("pcb", "generic") or not verb:
         return False
@@ -1485,7 +1491,7 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
-        refusal = refuse_command(command)
+        refusal = refuse_command(command, params)
         if refusal is not None:
             return {"success": False, "error": {
                 "code": "REFUSED_BY_POLICY", "message": refusal}}
@@ -1506,7 +1512,7 @@ class AltiumBridge:
         # goes to Altium in one bulk request. See bridge/bulk.py.
         from . import bulk
         collector = bulk.current()
-        if collector is not None and refuse_command(command) is None:
+        if collector is not None and refuse_command(command, params) is None:
             return await collector.submit(command, params or {}, timeout)
         return await self.send_command_direct(command, params, timeout)
 
@@ -1572,7 +1578,7 @@ class AltiumBridge:
         timeout: Optional[float] = None,
     ) -> Any:
         """Send one request now, collector or not."""
-        refusal = refuse_command(command)
+        refusal = refuse_command(command, params)
         if refusal is not None:
             return {"success": False, "error": {
                 "code": "REFUSED_BY_POLICY", "message": refusal}}

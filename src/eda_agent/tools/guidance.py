@@ -989,6 +989,20 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "deleted by a designer. Not for secrets."),
     },
     {
+        "task": "List or resolve a board's special strings (.Layer_Count, .Total_Thickness)",
+        "keywords": ("special", "string", "strings"),
+        "when": (("special", "string"), ("special", "strings"), ("resolve", "string")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_special_strings"],
+        "avoid": [("pcb_place_text",
+                   "leaves the text on the board; pcb_special_strings removes it again")],
+        "note": ("list names every special string Altium offers on a board; resolve "
+                 "places each as a temporary free text, reads what Altium draws and "
+                 "removes it. Part strings (.Designator, .Comment) and project "
+                 "parameters (.Designer) do not resolve on a free text."),
+    },
+    {
         "task": "Find the copper physically connected to a pad or other object",
         "keywords": ("connected", "touches", "touching"),
         "when": (("connected", "copper"), ("copper", "touches"),
@@ -1437,6 +1451,20 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "use": ["app_autosave"],
         "avoid": [],
         "note": "A setting of Altium itself, for every document; minutes.",
+    },
+    {
+        "task": "Clean up or read a component value such as 4.7k, 2.2uF or 3.3V",
+        "keywords": ("value", "rkm", "resistance", "capacitance", "inductance",
+                     "voltage", "current", "cleanup", "format", "normalize"),
+        "when": (("value", "cleanup"), ("value", "format"), ("rkm",),
+                 ("normalize", "value")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["app_format_value"],
+        "avoid": [],
+        "note": ("Exact; touches no document. The written form is the user's "
+                 "choice on the Config tab of the bridge panel (None, RKM, SI, "
+                 "SI with unit), never the agent's."),
     },
     {
         "task": "Lock a schematic parameter or keep it from library updates",

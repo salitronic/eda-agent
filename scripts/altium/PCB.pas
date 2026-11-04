@@ -12210,6 +12210,163 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_SpecialStrings - Altium's special strings on a board, read only.        }
+{ action list (default): every name the special string converter offers, a   }
+{ walk of FirstSpecialStringName / NextSpecialStringName capped at 2000, and  }
+{ the names that belong to this board (GetBoardSpecificSpecialStrings).       }
+{ action resolve, names = a '|' list of texts (".Layer_Count|.Via_Count", or  }
+{ mixed text such as "Rev .Layer_Count"): each is placed as a temporary free  }
+{ text on the top overlay at the board origin, its ConvertedString read, and  }
+{ every text removed again before the call returns, in one edit.             }
+{ MEASURED (AD 25.8.1): only a text that is ON the board resolves. The        }
+{ converter's Convert answered True with an empty string for every name (the  }
+{ out parameter does not come back to a script), the ConvertedString of a     }
+{ text not added to the board was empty, and IProject.DM_TryToResolve*        }
+{ answered False on a free board.                                            }
+{ The converter and the board's list are held in Variants, as they were       }
+{ proven; the list's interface was never declared in a working script.        }
+{..............................................................................}
+Function PCB_SpecialStrings(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Conv, Wide : Variant;
+    Txt : IPCB_Text;
+    Texts : TInterfaceList;
+    Asked : TStringList;
+    Action, Names, Rest, One, S, Rows, BoardRows, Value, Under : String;
+    I, N, P, BoardCount, Removed : Integer;
+    Capped : Boolean;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If Action = '' Then Action := 'list';
+    If (Action <> 'list') And (Action <> 'resolve') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION', 'action is list or resolve');
+        Exit;
+    End;
+    Names := ExtractJsonValue(Params, 'names');
+    If (Action = 'resolve') And (Trim(Names) = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'names is required for resolve: a ''|'' list such as .Layer_Count|.Via_Count');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    If Action = 'list' Then
+    Begin
+        Conv := PCBServer.SpecialStringConverter;
+        Rows := '';
+        N := 0;
+        S := Conv.FirstSpecialStringName;
+        { Capped: a converter that never answers '' must not hang the loop. }
+        While (S <> '') And (N < 2000) Do
+        Begin
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '"' + EscapeJsonString(S) + '"';
+            Inc(N);
+            S := Conv.NextSpecialStringName;
+        End;
+        Capped := S <> '';
+        BoardRows := '';
+        BoardCount := 0;
+        Try
+            Wide := Conv.GetBoardSpecificSpecialStrings(Board);
+            BoardCount := Wide.Count;
+        Except
+            BoardCount := 0;
+        End;
+        For I := 0 To BoardCount - 1 Do
+        Begin
+            S := '';
+            Try S := Wide.Strings[I]; Except S := ''; End;
+            If S = '' Then Continue;
+            If BoardRows <> '' Then BoardRows := BoardRows + ',';
+            BoardRows := BoardRows + '"' + EscapeJsonString(S) + '"';
+        End;
+        Result := BuildSuccessResponse(RequestId, '{' + JsonInt('count', N) + ','
+            + JsonBool('capped', Capped) + ',"names":[' + Rows + '],'
+            + '"board_names":[' + BoardRows + ']}');
+        Exit;
+    End;
+
+    Asked := TStringList.Create;
+    Rest := Names + '|';
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        One := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If Trim(One) <> '' Then Asked.Add(One);
+    End;
+    If Asked.Count > 200 Then
+    Begin
+        N := Asked.Count;
+        Asked.Free;
+        Result := BuildErrorResponse(RequestId, 'TOO_MANY',
+            'at most 200 names in one call, got ' + IntToStr(N));
+        Exit;
+    End;
+
+    { The temporary texts, kept to be removed: never freed, it holds board }
+    { references.                                                          }
+    Texts := TInterfaceList.Create;
+    Rows := '';
+    Removed := 0;
+    PcbBeginEdit(0);
+    Try
+        For I := 0 To Asked.Count - 1 Do
+        Begin
+            One := Asked.Strings[I];
+            Value := '';
+            Under := '';
+            Txt := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+            If Txt <> Nil Then
+            Begin
+                Txt.XLocation := Board.XOrigin;
+                Txt.YLocation := Board.YOrigin;
+                Txt.Text := One;
+                Txt.Layer := eTopOverlay;
+                Board.AddPCBObject(Txt);
+                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, Txt.I_ObjectAddress);
+                Texts.Add(Txt);
+                { ConvertedString is the text as drawn; UnderlyingString what }
+                { was written, which says the name went in unchanged.         }
+                Try Value := Txt.ConvertedString; Except Value := ''; End;
+                Try Under := Txt.UnderlyingString; Except Under := ''; End;
+            End;
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '{' + JsonStr('name', One) + ',' + JsonStr('value', Value) + ','
+                + JsonBool('resolved', (Value <> '') And (Value <> One)) + ','
+                + JsonStr('underlying', Under) + '}';
+        End;
+    Finally
+        { Removed in the same edit, also when a read above failed. }
+        For I := 0 To Texts.Count - 1 Do
+        Begin
+            Txt := Texts.Items[I];
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Txt.I_ObjectAddress);
+            Board.RemovePCBObject(Txt);
+            Inc(Removed);
+        End;
+        PcbEndEdit(0);
+    End;
+    N := Asked.Count;
+    Asked.Free;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonInt('count', N) + ','
+        + JsonInt('placed', Texts.Count) + ',' + JsonInt('removed', Removed) + ','
+        + '"strings":[' + Rows + ']}');
+End;
+
+{..............................................................................}
 { Connected copper. Altium's own Tab-select (PCB:SelectNext) grows from the   }
 { editor's last clicked object and cannot be seeded from a script, so there   }
 { was no way to ask what copper touches a given pad. This walk answers it by  }
@@ -28638,24 +28795,102 @@ Begin
 End;
 
 {..............................................................................}
+{ PcbPartParameters - the board-side parameter list of a placed part, or Nil. }
+{ Altium 26 renamed the factory call: CreatePrimitiveParametersWithoutVariant }
+{ is not in Altium 25's script engine, and calling it there stops the        }
+{ polling loop with an error box a Try does not catch. So the version is     }
+{ read BEFORE the call, and older builds get the variant form with an empty  }
+{ variant name (the part as placed, no variant), which Altium 25 answers.    }
+{..............................................................................}
+Function PcbPartParameters(Comp : IPCB_Component) : IPCB_PrimitiveParameters;
+Var
+    Factory : IPCB_ParametersFactory;
+    Ver : String;
+    Major : Integer;
+Begin
+    Result := Nil;
+    Factory := Nil;
+    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
+    If Factory = Nil Then Exit;
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    If Major >= 26 Then
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Result := Nil; End;
+    End
+    Else
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersOfVariant(Comp, ''); Except Result := Nil; End;
+    End;
+End;
+
+{..............................................................................}
+{ PcbPartParameterItems - one group of a part's parameters as JSON objects,  }
+{ each carrying its group name. Ordinal is the group to switch to first, or  }
+{ -1 to read the list as it stands (the part's own parameters by default).   }
+{ Present / ReadBack report the parameter named PName, if it is there.       }
+{ The getter by name is not given to scripts and halts the loop, so the      }
+{ read-back comes from this walk.                                            }
+{..............................................................................}
+Function PcbPartParameterItems(Prims : IPCB_PrimitiveParameters; Ordinal : Integer;
+    GroupName : String; PName : String; Var Present : Boolean; Var ReadBack : String) : String;
+Var
+    Prm : IPCB_Parameter;
+    Got, Name : String;
+    I, Count : Integer;
+Begin
+    Result := '';
+    { Ordinals, not the enum names: a name the engine's table lacks would  }
+    { fail the whole unit at compile time. 0 own, 1 system, 2 footprint.   }
+    If Ordinal >= 0 Then
+    Begin
+        Try Prims.SwitchAppurtenance(Ordinal); Except Exit; End;
+    End;
+    Count := 0;
+    Try Count := Prims.Count; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Prm := Nil;
+        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
+        If Prm = Nil Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Got := '';
+        Name := '';
+        Try Got := Prm.GetValue; Except End;
+        Try Name := Prm.GetName; Except End;
+        If (PName <> '') And SameText(Name, PName) Then
+        Begin
+            Present := True;
+            ReadBack := Got;
+        End;
+        Result := Result + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got) + ','
+            + JsonStr('group', GroupName));
+    End;
+End;
+
+{..............................................................................}
 { PCB_ComponentParameters - the parameters a placed part carries on the      }
-{ board: read, set or remove. Params: designator (required), action          }
-{ list|set|remove, name, value.                                              }
+{ board: read, set, add or remove. Params: designator (required), action     }
+{ list|set|add|remove, name, value, group own|system|footprint|all (list     }
+{ only; set, add and remove act on the part's own parameters). add creates  }
+{ a parameter only: it refuses a name already present in any group.         }
 {..............................................................................}
 Function PCB_ComponentParameters(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
-    Factory : IPCB_ParametersFactory;
-    Prims : IPCB_PrimitiveParameters;
-    Prm : IPCB_Parameter;
-    Desig, Action, PName, PValue, Items, Problem, Got, ReadBack, Name : String;
-    I, Count : Integer;
-    Present : Boolean;
+    Prims, Check : IPCB_PrimitiveParameters;
+    Desig, Action, Group, PName, PValue, Items, More, Problem, ReadBack, Seen : String;
+    G : Integer;
+    Present, Taken : Boolean;
 Begin
     Desig := ExtractJsonValue(Params, 'designator');
     Action := LowerCase(ExtractJsonValue(Params, 'action'));
     If Action = '' Then Action := 'list';
+    Group := LowerCase(ExtractJsonValue(Params, 'group'));
+    If Group = '' Then Group := 'own';
     PName := ExtractJsonValue(Params, 'name');
     PValue := ExtractJsonValue(Params, 'value');
     If Desig = '' Then
@@ -28663,14 +28898,25 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator is required');
         Exit;
     End;
-    If (Action <> 'list') And (Action <> 'set') And (Action <> 'remove') Then
+    If (Action <> 'list') And (Action <> 'set') And (Action <> 'add') And (Action <> 'remove') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set or remove');
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set, add or remove');
+        Exit;
+    End;
+    If (Group <> 'own') And (Group <> 'system') And (Group <> 'footprint') And (Group <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'group is own, system, footprint or all');
+        Exit;
+    End;
+    If (Action <> 'list') And (Group <> 'own') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'group is for list only; set, add and remove act on the part''s own parameters');
         Exit;
     End;
     If (Action <> 'list') And (PName = '') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set or remove');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set, add or remove');
         Exit;
     End;
     Board := GetPCBBoardAnywhere(0);
@@ -28686,13 +28932,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No part ' + Desig + ' on the board');
         Exit;
     End;
-    Factory := Nil;
-    Prims := Nil;
-    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
-    If Factory <> Nil Then
-    Begin
-        Try Prims := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Prims := Nil; End;
-    End;
+    Prims := PcbPartParameters(Comp);
     If Prims = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
@@ -28700,7 +28940,30 @@ Begin
         Exit;
     End;
     Problem := '';
-    If Action = 'set' Then
+    If Action = 'add' Then
+    Begin
+        { The name must be new in EVERY group, so add can never overwrite a  }
+        { system or footprint parameter. The scan switches groups, so it     }
+        { runs on a list of its own and the write goes through one that was  }
+        { never switched.                                                    }
+        Check := PcbPartParameters(Comp);
+        Taken := False;
+        Seen := '';
+        If Check <> Nil Then
+        Begin
+            For G := 0 To 2 Do
+            Begin
+                PcbPartParameterItems(Check, G, '', PName, Taken, Seen);
+            End;
+        End;
+        If Taken Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'EXISTS',
+                'The part already has a parameter ' + PName + '; add only creates one');
+            Exit;
+        End;
+    End;
+    If (Action = 'set') Or (Action = 'add') Then
     Begin
         PcbBeginEdit(0);
         Try
@@ -28724,37 +28987,30 @@ Begin
         End;
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     End;
-    { The read-back comes from the same walk as the list: the getter by    }
-    { name is not given to scripts and halts the loop.                     }
-    Items := '';
+    { The read-back comes from the same walk as the list. own is the list }
+    { as it stands; all reads own first, then switches to the others.     }
     ReadBack := '';
     Present := False;
-    Count := 0;
-    Try Count := Prims.Count; Except Count := 0; End;
-    For I := 0 To Count - 1 Do
+    If Group = 'system' Then Items := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack)
+    Else If Group = 'footprint' Then Items := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack)
+    Else Items := PcbPartParameterItems(Prims, -1, 'own', PName, Present, ReadBack);
+    If Group = 'all' Then
     Begin
-        Prm := Nil;
-        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
-        If Prm = Nil Then Continue;
-        If Items <> '' Then Items := Items + ',';
-        Got := '';
-        Name := '';
-        Try Got := Prm.GetValue; Except End;
-        Try Name := Prm.GetName; Except End;
-        If (PName <> '') And SameText(Name, PName) Then
-        Begin
-            Present := True;
-            ReadBack := Got;
-        End;
-        Items := Items + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got));
+        More := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
+        More := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
     End;
-    If (Action = 'set') And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
+    If ((Action = 'set') Or (Action = 'add')) And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
         Problem := 'the value does not read back';
     If (Action = 'remove') And (Problem = '') And Present Then
         Problem := 'the parameter is still there';
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('designator', Desig) + ','
         + JsonStr('action', Action) + ','
+        + JsonStr('group', Group) + ','
         + JsonBool('done', Problem = '') + ','
         + JsonStr('problem', Problem) + ','
         + JsonStr('read_back', ReadBack) + ','
@@ -29614,6 +29870,7 @@ Begin
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
         'embedded_data':           Result := PCB_EmbeddedData(Params, RequestId);
+        'special_strings':         Result := PCB_SpecialStrings(Params, RequestId);
         'connected_copper':        Result := PCB_ConnectedCopper(Params, RequestId);
         'update_free_primitive_nets': Result := PCB_UpdateFreePrimitiveNets(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);

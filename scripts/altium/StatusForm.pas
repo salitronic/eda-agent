@@ -16,6 +16,10 @@
 {   - Log tab with newest-on-top entries, request-ID column, inline error    }
 {     detail rows, free-text filter                                            }
 {   - Perf tab with per-command stats, sorted by max duration desc            }
+{   - Config tab: the user's choices for the bridge, kept across restarts in  }
+{     preferences.json in the workspace: component value format, read-only  }
+{     edits, deleting, closing documents, interface automation and keeping  }
+{     the board in view                                                      }
 {                                                                              }
 { State lives in module-level TStringLists, function locals avoid fixed-size  }
 { arrays per [[delphiscript_fixed_string_array_bug]]. Module-level fixed-size }
@@ -66,6 +70,10 @@ Var
     { Open Dashboard button only enables when this is within the last 60s. }
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
+
+    { Altium's own tooltip timeout, put back when the form is hidden. Its  }
+    { 2.5 s default hid a tip while the pointer was still on the button.  }
+    SavedHintHidePause : Integer;
 
 
 { Static UI constants: Altium's dark theme, read off AD 26.11's own      }
@@ -507,13 +515,39 @@ Begin
         + 'in ms, request id and command.');
     SetTip(tab_Perf, 'Totals per command for this session: how many times '
         + 'it ran, and its average and longest time in ms.');
-    Tip := 'Starts the web dashboard on its own, without an AI client. '
-        + 'Copy it with the button on the right and run it in a terminal.';
-    SetTip(lbl_FooterHint, Tip);  SetTip(lbl_LaunchCmd, Tip);
-    SetTip(btn_CopyCmd, 'Copy the command that starts the web dashboard '
-        + 'to the clipboard.');
-    SetTip(btn_CopyLog, 'Copy the open tab to the clipboard: the command '
-        + 'log on Log, the table of totals on Perf.');
+    SetTip(tab_Config, 'Your choices for how the bridge works. Kept across '
+        + 'restarts.');
+    Tip := 'How a component value is written when it is cleaned up. '
+        + 'Kept across restarts.';
+    SetTip(lbl_CfgValue, Tip);
+    SetTip(opt_FmtNone, 'Leave every value as it is written.');
+    SetTip(opt_FmtRkm, 'RKM code of IEC 60062: the letter in place of the '
+        + 'decimal point, so a lost point cannot change the value. No unit.');
+    SetTip(opt_FmtSi, 'A decimal point and an SI prefix, without the unit.');
+    SetTip(opt_FmtSiUnit, 'A decimal point and an SI prefix, with the unit '
+        + 'symbol. Resistors carry no unit, since the ohm sign cannot pass '
+        + 'through the bridge.');
+    Tip := 'Whether the AI may change designs. Read-only refuses every '
+        + 'command that is not a read. EDA_AGENT_READONLY in the AI client''s '
+        + 'config also makes it read-only, whatever this says.';
+    SetTip(lbl_CfgEdits, Tip);  SetTip(opt_EditsAllowed, Tip);
+    SetTip(opt_EditsReadOnly, Tip);
+    Tip := 'Whether the AI may delete or remove anything: objects, parts, '
+        + 'footprints, nets, sheets, rules, variants, layers, documents from a '
+        + 'project, routing. Other edits still run.';
+    SetTip(lbl_CfgDelete, Tip);  SetTip(opt_DeleteAllowed, Tip);
+    SetTip(opt_DeleteRefused, Tip);
+    Tip := 'Whether the AI may close a document or a project.';
+    SetTip(lbl_CfgClose, Tip);  SetTip(opt_CloseAllowed, Tip);
+    SetTip(opt_CloseRefused, Tip);
+    Tip := 'Whether the AI may pick menus, press dialog buttons and type into '
+        + 'Altium. EDA_AGENT_UI_AUTOMATION=0 in the AI client''s config also '
+        + 'turns it off, whatever this says.';
+    SetTip(lbl_CfgAuto, Tip);  SetTip(opt_AutoOn, Tip);  SetTip(opt_AutoOff, Tip);
+    Tip := 'Fit the board or sheet in the window after each edit the AI '
+        + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
+        + 'in the AI client''s config also turns it on.';
+    SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
 End;
 
 
@@ -724,7 +758,18 @@ Begin
     OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
     OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
-    OwnPanelColours(btn_CopyLog);
+    OwnPanelColours(btn_CopyLog);   OwnPanelColours(tab_Config);
+    OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
+    OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
+    OwnPanelColours(opt_FmtSiUnit);
+    OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
+    OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
+    OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
+    OwnPanelColours(sep_Cfg3);
+    OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
+    OwnPanelColours(opt_CloseAllowed);  OwnPanelColours(opt_CloseRefused);
+    OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
 End;
 
 
@@ -755,6 +800,110 @@ Begin
 End;
 
 
+{ One option of a choice: the chosen one in the accent colour. }
+Procedure PaintOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_BLUE;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ A restrictive choice, once chosen, shows amber like Saving OFF. }
+Procedure PaintWarnOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_AMBER;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ The value format on the Config tab, with what the choice does. }
+Procedure PaintValueFormat(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_FmtNone, ValueFormat = 'none');
+        PaintOption(opt_FmtRkm, ValueFormat = 'rkm');
+        PaintOption(opt_FmtSi, (ValueFormat = 'si') And (ValueUnit <> 'with'));
+        PaintOption(opt_FmtSiUnit, (ValueFormat = 'si') And (ValueUnit = 'with'));
+        If ValueFormat = 'rkm' Then
+            lbl_CfgValueHint.Caption := 'RKM code of IEC 60062, the letter in '
+                + 'place of the decimal point: 4K7, 2u2, 100n, 3V3, 0R1.'
+        Else If (ValueFormat = 'si') And (ValueUnit = 'with') Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix, '
+                + 'with the unit: 4.7k, 2.2uF, 100nF, 10uH, 3.3V. Resistors '
+                + 'carry no unit.'
+        Else If ValueFormat = 'si' Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix: '
+                + '4.7k, 2.2u, 100n, 3.3V, 0.1.'
+        Else
+            lbl_CfgValueHint.Caption := 'Values are left as they are written. '
+                + 'Nothing is reformatted.';
+    Except End;
+End;
+
+
+{ The agent and view settings on the Config tab, with what each does. }
+Procedure PaintAgentSettings(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_EditsAllowed, EditsMode <> 'readonly');
+        PaintWarnOption(opt_EditsReadOnly, EditsMode = 'readonly');
+        If EditsMode = 'readonly' Then
+            lbl_CfgEditsHint.Caption := 'Read-only: every command that changes '
+                + 'a design is refused. Reads, checks and exports still run.'
+        Else
+            lbl_CfgEditsHint.Caption := 'The AI may change the open designs.';
+        PaintOption(opt_DeleteAllowed, DeletingMode <> 'refused');
+        PaintWarnOption(opt_DeleteRefused, DeletingMode = 'refused');
+        If DeletingMode = 'refused' Then
+            lbl_CfgDeleteHint.Caption := 'Refused: nothing is deleted or '
+                + 'removed. Other edits still run.'
+        Else
+            lbl_CfgDeleteHint.Caption := 'The AI may delete objects, parts, '
+                + 'nets, rules and the like.';
+        PaintOption(opt_CloseAllowed, ClosingMode <> 'refused');
+        PaintWarnOption(opt_CloseRefused, ClosingMode = 'refused');
+        If ClosingMode = 'refused' Then
+            lbl_CfgCloseHint.Caption := 'Refused: the AI cannot close a '
+                + 'document or a project.'
+        Else
+            lbl_CfgCloseHint.Caption := 'The AI may close documents and projects.';
+        PaintOption(opt_AutoOn, UiAutomationMode <> 'off');
+        PaintWarnOption(opt_AutoOff, UiAutomationMode = 'off');
+        If UiAutomationMode = 'off' Then
+            lbl_CfgAutoHint.Caption := 'Off: the AI cannot pick menus, press '
+                + 'dialog buttons or type. Some tasks have no other route.'
+        Else
+            lbl_CfgAutoHint.Caption := 'The AI may pick menus, press dialog '
+                + 'buttons and type where there is no API route.';
+        PaintOption(opt_ViewOff, KeepInViewMode <> 'on');
+        PaintOption(opt_ViewOn, KeepInViewMode = 'on');
+        If KeepInViewMode = 'on' Then
+            lbl_CfgViewHint.Caption := 'After each edit the window is fitted '
+                + 'to the whole board or sheet, at most every 2 seconds.'
+        Else
+            lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+    Except End;
+End;
+
+
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -777,11 +926,20 @@ Begin
         OpenWebEnabled  := False;
 
         OwnAllPanelColours(0);
+        Try
+            If Application.HintHidePause < 30000 Then
+            Begin
+                SavedHintHidePause := Application.HintHidePause;
+                Application.HintHidePause := 30000;
+            End;
+        Except End;
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  'Slow only');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'On top');
         ApplyTips(0);
         PaintSavingSwitch(0);
+        PaintValueFormat(0);
+        PaintAgentSettings(0);
         ApplyAlwaysOnTop(0);
 
         ResetPerfStats(0);
@@ -820,6 +978,9 @@ Procedure HideStatusForm(Dummy : Integer);
 Begin
     Try
         If StatusForm.Visible Then StatusForm.Hide;
+    Except End;
+    Try
+        If SavedHintHidePause > 0 Then Application.HintHidePause := SavedHintHidePause;
     Except End;
 End;
 
@@ -1097,30 +1258,132 @@ Begin
 End;
 
 
-Procedure tab_LogClick(Sender : TObject);
+{ Show one of the three tabs: 0 Log, 1 Perf, 2 Config. }
+Procedure PaintTab(Pnl : TPanel; Open : Boolean);
 Begin
     Try
-        mmo_Log.Visible := True;
-        mmo_Perf.Visible := False;
-        tab_Log.Color := COLOR_BG_LOG;
-        tab_Log.Font.Color := COLOR_TEXT_BODY;
-        tab_Perf.Color := COLOR_BG_CARD;
-        tab_Perf.Font.Color := COLOR_TEXT_MUTED;
+        If Open Then
+        Begin
+            Pnl.Color := COLOR_BG_LOG;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_CARD;
+            Pnl.Font.Color := COLOR_TEXT_MUTED;
+        End;
     Except End;
 End;
 
-Procedure tab_PerfClick(Sender : TObject);
+Procedure ShowTab(Which : Integer);
 Begin
     Try
-        RefreshPerfPanel(0);
-        mmo_Log.Visible := False;
-        mmo_Perf.Visible := True;
-        tab_Perf.Color := COLOR_BG_LOG;
-        tab_Perf.Font.Color := COLOR_TEXT_BODY;
-        tab_Log.Color := COLOR_BG_CARD;
-        tab_Log.Font.Color := COLOR_TEXT_MUTED;
+        If Which = 1 Then RefreshPerfPanel(0);
+        mmo_Log.Visible := Which = 0;
+        mmo_Perf.Visible := Which = 1;
+        pnl_Config.Visible := Which = 2;
+        lbl_LogHint.Visible := Which <> 2;
+        btn_CopyLog.Visible := Which <> 2;
+        PaintTab(tab_Log, Which = 0);
+        PaintTab(tab_Perf, Which = 1);
+        PaintTab(tab_Config, Which = 2);
     Except End;
 End;
+
+Procedure tab_LogClick(Sender : TObject);
+Begin ShowTab(0); End;
+
+Procedure tab_PerfClick(Sender : TObject);
+Begin ShowTab(1); End;
+
+Procedure tab_ConfigClick(Sender : TObject);
+Begin ShowTab(2); End;
+
+Procedure tab_ConfigEnter(Sender : TObject);
+Begin
+    Try
+        If Not pnl_Config.Visible Then tab_Config.Color := $004A4A4A;
+    Except End;
+End;
+
+Procedure tab_ConfigLeave(Sender : TObject);
+Begin
+    Try
+        If pnl_Config.Visible Then tab_Config.Color := COLOR_BG_LOG
+        Else tab_Config.Color := COLOR_BG_CARD;
+    Except End;
+End;
+
+{ A value format chosen on the Config tab is stored at once, so the server }
+{ and a restart see it. Only SI takes a unit.                             }
+Procedure ChooseValueFormat(Choice : String; UnitChoice : String);
+Begin
+    Try
+        ValueFormat := Choice;
+        ValueUnit := UnitChoice;
+        StorePreferences(0);
+        PaintValueFormat(0);
+        mmo_Log.Lines.Insert(0, '      value format set to ' + Choice + ', unit '
+            + UnitChoice);
+    Except End;
+End;
+
+Procedure opt_FmtNoneClick(Sender : TObject);
+Begin ChooseValueFormat('none', 'without'); End;
+
+Procedure opt_FmtRkmClick(Sender : TObject);
+Begin ChooseValueFormat('rkm', 'without'); End;
+
+Procedure opt_FmtSiClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'without'); End;
+
+Procedure opt_FmtSiUnitClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'with'); End;
+
+{ An agent or view setting chosen on the Config tab, stored at once. }
+Procedure ChooseAgentSetting(Setting : String; Choice : String);
+Begin
+    Try
+        If Setting = 'edits' Then EditsMode := Choice
+        Else If Setting = 'deleting' Then DeletingMode := Choice
+        Else If Setting = 'closing' Then ClosingMode := Choice
+        Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
+        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
+    Except End;
+End;
+
+Procedure opt_EditsAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'allowed'); End;
+
+Procedure opt_EditsReadOnlyClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'readonly'); End;
+
+Procedure opt_DeleteAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'allowed'); End;
+
+Procedure opt_DeleteRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'refused'); End;
+
+Procedure opt_CloseAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'allowed'); End;
+
+Procedure opt_CloseRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'refused'); End;
+
+Procedure opt_AutoOnClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'on'); End;
+
+Procedure opt_AutoOffClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'off'); End;
+
+Procedure opt_ViewOffClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'off'); End;
+
+Procedure opt_ViewOnClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'on'); End;
 
 
 { ============================================================================ }
@@ -1551,7 +1814,48 @@ Begin
            Or ActionHasPrefix(Verb, 'inspect_')
            Or ActionHasPrefix(Verb, 'diff_')
            Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
+           Or (Verb = 'ping')
+           Or (Verb = 'format_value');
+End;
+
+{ Deleting and Closing documents on the Config tab. A command deletes when its
+  verb is delete_*, remove_*, batch_delete, unroute or a clear_*source*library,
+  or when its action is delete or remove (pcb.embedded_data, component
+  parameters). It closes when it is application.close_document or
+  project.close. MIRRORED in safety.py, pinned by a test. }
+Function CommandDeletes(Command : String; Params : String) : Boolean;
+Var
+    Verb, Action : String;
+Begin
+    Verb := LowerCase(Copy(Command, Pos('.', Command) + 1, Length(Command)));
+    Action := LowerCase(ExtractJsonValue(Params, 'action'));
+    Result := ActionHasPrefix(Verb, 'delete_') Or ActionHasPrefix(Verb, 'remove_')
+        Or (Verb = 'batch_delete') Or (Verb = 'unroute')
+        Or ((Pos('clear_', Verb) = 1) And (Pos('source', Verb) > 0))
+        Or (Action = 'delete') Or (Action = 'remove');
+End;
+
+Function CommandCloses(Command : String) : Boolean;
+Begin
+    Result := (Command = 'application.close_document') Or (Command = 'project.close');
+End;
+
+Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
+Begin
+    Result := '';
+    If (EditsMode = 'readonly') And Not CommandIsReadOnly(Command) Then
+        Result := BuildErrorResponse(RequestId, 'READ_ONLY',
+            Command + ' is refused: edits are set to read-only on the '
+            + 'Config tab of the bridge panel in Altium. Only commands '
+            + 'that leave the design alone run.')
+    Else If (DeletingMode = 'refused') And CommandDeletes(Command, Params) Then
+        Result := BuildErrorResponse(RequestId, 'DELETE_REFUSED',
+            Command + ' is refused: deleting is switched off on the Config '
+            + 'tab of the bridge panel in Altium. Nothing was deleted.')
+    Else If (ClosingMode = 'refused') And CommandCloses(Command) Then
+        Result := BuildErrorResponse(RequestId, 'CLOSE_REFUSED',
+            Command + ' is refused: closing documents is switched off on the '
+            + 'Config tab of the bridge panel in Altium. Nothing was closed.');
 End;
 
 { SessionFocus - put the session's own document back in front, in the same }
@@ -1713,7 +2017,11 @@ Begin
     LastErrorMsg := '';
     Try
         Try
-            ResponseContent := ProcessCommand(Command, Params, RequestId);
+            { The Config tab's permissions: refused here, where every request
+              passes, so a client running older Python is held to them too. }
+            ResponseContent := SettingRefusal(Command, Params, RequestId);
+            If ResponseContent = '' Then
+                ResponseContent := ProcessCommand(Command, Params, RequestId);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
@@ -2100,6 +2408,7 @@ Begin
     EnsureWorkspaceDir(0);
     LoadMCPConfig(0);
     LoadSavingSwitch(0);
+    LoadPreferences(0);
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }

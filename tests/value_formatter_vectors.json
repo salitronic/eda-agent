@@ -1,0 +1,3416 @@
+{
+ "about": "Vectors for the RKM value engine (Utils.pas Vf*, application.format_value). text is as written; the tool folds it (fold_value_text) before the bridge, except raw cases, which reach the engine as they are (Latin-1). value is the exact plain decimal in the base unit. error = refused.",
+ "parse": [
+  {
+   "text": "10R",
+   "kind": "",
+   "decimal": ".",
+   "value": "10",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10R"
+  },
+  {
+   "text": "100R",
+   "kind": "",
+   "decimal": ".",
+   "value": "100",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "100R"
+  },
+  {
+   "text": "1K",
+   "kind": "",
+   "decimal": ".",
+   "value": "1000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K"
+  },
+  {
+   "text": "1K5",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K5"
+  },
+  {
+   "text": "12K9",
+   "kind": "",
+   "decimal": ".",
+   "value": "12900",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "12K9"
+  },
+  {
+   "text": "0R005",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.005",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "0R005"
+  },
+  {
+   "text": "R005",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.005",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "0R005"
+  },
+  {
+   "text": "0R",
+   "kind": "",
+   "decimal": ".",
+   "value": "0",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "0R"
+  },
+  {
+   "text": "1K2345",
+   "kind": "",
+   "decimal": ".",
+   "value": "1234.5",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K2345"
+  },
+  {
+   "text": "1K23456789012345678901234567890123",
+   "kind": "",
+   "decimal": ".",
+   "value": "1234.56789012345678901234567890123",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K23456789012345678901234567890123"
+  },
+  {
+   "text": "10K10",
+   "kind": "",
+   "decimal": ".",
+   "value": "10100",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10K1"
+  },
+  {
+   "text": "10K0",
+   "kind": "",
+   "decimal": ".",
+   "value": "10000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10K"
+  },
+  {
+   "text": "007R",
+   "kind": "",
+   "decimal": ".",
+   "value": "7",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "7R"
+  },
+  {
+   "text": "10.0",
+   "kind": "R",
+   "decimal": ".",
+   "value": "10",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10R"
+  },
+  {
+   "text": "10.20",
+   "kind": "R",
+   "decimal": ".",
+   "value": "10.2",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10R2"
+  },
+  {
+   "text": "999.96",
+   "kind": "R",
+   "decimal": ".",
+   "value": "999.96",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "999R96"
+  },
+  {
+   "text": "4k7",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "4k7r",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "4.7k",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "4,7k",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "4.7 kΩ",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "4.7 kΩ",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "10 ohm",
+   "kind": "",
+   "decimal": ".",
+   "value": "10",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "10R"
+  },
+  {
+   "text": "2M2",
+   "kind": "",
+   "decimal": ".",
+   "value": "2200000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "2M2"
+  },
+  {
+   "text": "500M",
+   "kind": "",
+   "decimal": ".",
+   "value": "500000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "500M"
+  },
+  {
+   "text": "500m",
+   "kind": "",
+   "decimal": ".",
+   "value": "500000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "500M"
+  },
+  {
+   "text": "1mR",
+   "kind": "",
+   "decimal": ".",
+   "value": "1000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1M"
+  },
+  {
+   "text": "2m2",
+   "kind": "",
+   "decimal": ".",
+   "value": "2200000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "2M2"
+  },
+  {
+   "text": "1uR",
+   "kind": "",
+   "decimal": ".",
+   "error": "micro is not used for ohms: write 0R0005"
+  },
+  {
+   "text": "10.1.1k",
+   "kind": "",
+   "decimal": ".",
+   "error": "malformed value: bad grouping in '10.1.1'"
+  },
+  {
+   "text": "1K5 0603",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "ohm",
+   "rest": "0603",
+   "cleanup": "1K5"
+  },
+  {
+   "text": "10K-1%",
+   "kind": "",
+   "decimal": ".",
+   "value": "10000",
+   "found": "ohm",
+   "rest": "-1%",
+   "cleanup": "10K"
+  },
+  {
+   "text": "1meg",
+   "kind": "",
+   "decimal": ".",
+   "value": "1000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1M"
+  },
+  {
+   "text": "1G",
+   "kind": "",
+   "decimal": ".",
+   "value": "1000000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1G"
+  },
+  {
+   "text": "1000G",
+   "kind": "",
+   "decimal": ".",
+   "value": "1000000000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1000G"
+  },
+  {
+   "text": "4E7",
+   "kind": "R",
+   "decimal": ".",
+   "value": "40000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "40M"
+  },
+  {
+   "text": "1e3",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K"
+  },
+  {
+   "text": "1,000",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K"
+  },
+  {
+   "text": "1,000",
+   "kind": "R",
+   "decimal": ",",
+   "value": "1",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1R"
+  },
+  {
+   "text": "1.000",
+   "kind": "R",
+   "decimal": ",",
+   "value": "1000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K"
+  },
+  {
+   "text": "1.000",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1R"
+  },
+  {
+   "text": "1,5",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1.5",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1R5"
+  },
+  {
+   "text": "0,100",
+   "kind": "R",
+   "decimal": ".",
+   "value": "0.1",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "0R1"
+  },
+  {
+   "text": "1.234,5",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1234.5",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K2345"
+  },
+  {
+   "text": "1,234.5",
+   "kind": "R",
+   "decimal": ",",
+   "value": "1234.5",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1K2345"
+  },
+  {
+   "text": "1.000.000",
+   "kind": "R",
+   "decimal": ".",
+   "value": "1000000",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1M"
+  },
+  {
+   "text": "1,000K5",
+   "kind": "",
+   "decimal": ",",
+   "value": "1000500",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "1M0005"
+  },
+  {
+   "text": "10K 1%",
+   "kind": "",
+   "decimal": ".",
+   "value": "10000",
+   "found": "ohm",
+   "rest": "1%",
+   "cleanup": "10K"
+  },
+  {
+   "text": "100",
+   "kind": "",
+   "decimal": ".",
+   "value": "100",
+   "found": "",
+   "rest": "",
+   "cleanup": null
+  },
+  {
+   "text": "1,2,3",
+   "kind": "R",
+   "decimal": ".",
+   "error": "malformed value: bad grouping in '1,2,3'"
+  },
+  {
+   "text": "1e3K5",
+   "kind": "",
+   "decimal": ".",
+   "error": "malformed value: exponent and letter together: '1e3K5'"
+  },
+  {
+   "text": "1000,000,000",
+   "kind": "R",
+   "decimal": ".",
+   "error": "malformed value: bad grouping in '1000,000,000'"
+  },
+  {
+   "text": "10 0000uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "10",
+   "found": "",
+   "rest": "0000uF",
+   "cleanup": null
+  },
+  {
+   "text": "2.2µF",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "10 000uF",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "0.01",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10000uF"
+  },
+  {
+   "text": "85°C",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "85",
+   "found": "celsius",
+   "rest": "",
+   "cleanup": "85C"
+  },
+  {
+   "text": "-10R",
+   "kind": "",
+   "decimal": ".",
+   "error": "negative ohm value: '-10R'"
+  },
+  {
+   "text": "1.5K2",
+   "kind": "",
+   "decimal": ".",
+   "error": "decimal point and letter point together: '1.5'"
+  },
+  {
+   "text": "1K,5",
+   "kind": "",
+   "decimal": ".",
+   "error": "malformed value '1K,5' (at ',5')"
+  },
+  {
+   "text": "abc",
+   "kind": "",
+   "decimal": ".",
+   "error": "not a value: 'abc'"
+  },
+  {
+   "text": "R",
+   "kind": "",
+   "decimal": ".",
+   "error": "not a value: 'R'"
+  },
+  {
+   "text": "10uF/50V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "/50V",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "1uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1uF"
+  },
+  {
+   "text": "1u",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1uF"
+  },
+  {
+   "text": "10uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "10000uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.01",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10000uF"
+  },
+  {
+   "text": "10,000uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.01",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10000uF"
+  },
+  {
+   "text": "10.000uF",
+   "kind": "",
+   "decimal": ",",
+   "value": "0.01",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10000uF"
+  },
+  {
+   "text": "10 000uF",
+   "kind": "",
+   "decimal": ",",
+   "value": "0.01",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10000uF"
+  },
+  {
+   "text": "2u2",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "2u2F",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "2.2µF",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "2.2μF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "2u20",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "1p2",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000000012",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1p2"
+  },
+  {
+   "text": "1n2",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000012",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1n2"
+  },
+  {
+   "text": "0p01",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00000000000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "0p01"
+  },
+  {
+   "text": "10fF",
+   "kind": "",
+   "decimal": ".",
+   "error": "malformed value '10fF' (at 'F')"
+  },
+  {
+   "text": "10f",
+   "kind": "",
+   "decimal": ".",
+   "value": "10",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10F"
+  },
+  {
+   "text": "2n2 50V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000022",
+   "found": "farad",
+   "rest": "50V",
+   "cleanup": "2n2"
+  },
+  {
+   "text": "100nX7R",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "farad",
+   "rest": "X7R",
+   "cleanup": "100nF"
+  },
+  {
+   "text": "100n X7R 50V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "farad",
+   "rest": "X7R 50V",
+   "cleanup": "100nF"
+  },
+  {
+   "text": "2u2 F",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2u2"
+  },
+  {
+   "text": "10 Vishay",
+   "kind": "C",
+   "decimal": ".",
+   "value": "10",
+   "found": "farad",
+   "rest": "Vishay",
+   "cleanup": "10F"
+  },
+  {
+   "text": "4K7 resistor",
+   "kind": "",
+   "decimal": ".",
+   "value": "4700",
+   "found": "ohm",
+   "rest": "resistor",
+   "cleanup": "4K7"
+  },
+  {
+   "text": "2n2 Vishay",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000022",
+   "found": "farad",
+   "rest": "Vishay",
+   "cleanup": "2n2"
+  },
+  {
+   "text": "10 uF/50V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "/50V",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "10 u F",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "F",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "1UF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1uF"
+  },
+  {
+   "text": "100NF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "100nF"
+  },
+  {
+   "text": "100nF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "100nF"
+  },
+  {
+   "text": "0.1uF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "100nF"
+  },
+  {
+   "text": "4700pF",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000047",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "4n7"
+  },
+  {
+   "text": "1500p",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000015",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1n5"
+  },
+  {
+   "text": "4.7e-6",
+   "kind": "C",
+   "decimal": ".",
+   "value": "0.0000047",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "4u7"
+  },
+  {
+   "text": "1mF",
+   "kind": "",
+   "decimal": ".",
+   "error": "milli is not used for farads: write 1000uF"
+  },
+  {
+   "text": "10MFD",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "1F",
+   "kind": "",
+   "decimal": ".",
+   "value": "1",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "1F"
+  },
+  {
+   "text": "2.2F",
+   "kind": "",
+   "decimal": ".",
+   "value": "2.2",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "2F2"
+  },
+  {
+   "text": "10 Farad",
+   "kind": "",
+   "decimal": ".",
+   "value": "10",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "10F"
+  },
+  {
+   "text": "10uF 50V X7R",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "farad",
+   "rest": "50V X7R",
+   "cleanup": "10uF"
+  },
+  {
+   "text": "1MF",
+   "kind": "",
+   "decimal": ".",
+   "error": "M is not used for farads: write 1000uF"
+  },
+  {
+   "text": "1uF",
+   "kind": "R",
+   "decimal": ".",
+   "value": "0.000001",
+   "found": "ohm",
+   "rest": "",
+   "cleanup": "0R000001"
+  },
+  {
+   "text": "3V3",
+   "kind": "C",
+   "decimal": ".",
+   "value": "3.3",
+   "found": "farad",
+   "rest": "",
+   "cleanup": "3F3"
+  },
+  {
+   "text": "-1uF",
+   "kind": "",
+   "decimal": ".",
+   "error": "negative farad value: '-1uF'"
+  },
+  {
+   "text": "2u2H",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "2u2H"
+  },
+  {
+   "text": "4u7h",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000047",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "4u7H"
+  },
+  {
+   "text": "2u2",
+   "kind": "L",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "2u2H"
+  },
+  {
+   "text": "10uH",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "10uH"
+  },
+  {
+   "text": "1.5mH",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0015",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "1m5H"
+  },
+  {
+   "text": "2u2 H",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000022",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "2u2H"
+  },
+  {
+   "text": "100nH",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "100nH"
+  },
+  {
+   "text": "1H5",
+   "kind": "",
+   "decimal": ".",
+   "value": "1.5",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "1H5"
+  },
+  {
+   "text": "1.5MH",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0015",
+   "found": "henry",
+   "rest": "",
+   "cleanup": "1m5H"
+  },
+  {
+   "text": "1GH",
+   "kind": "",
+   "decimal": ".",
+   "error": "'G' is not a multiplier for henry: '1GH'"
+  },
+  {
+   "text": "1K5H",
+   "kind": "",
+   "decimal": ".",
+   "error": "'K' is not a multiplier for henry: '1K5H'"
+  },
+  {
+   "text": "3V3",
+   "kind": "",
+   "decimal": ".",
+   "value": "3.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "3V3"
+  },
+  {
+   "text": "3.3V",
+   "kind": "",
+   "decimal": ".",
+   "value": "3.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "3V3"
+  },
+  {
+   "text": "3,3 V",
+   "kind": "",
+   "decimal": ",",
+   "value": "3.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "3V3"
+  },
+  {
+   "text": "3v3",
+   "kind": "",
+   "decimal": ".",
+   "value": "3.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "3V3"
+  },
+  {
+   "text": "12V",
+   "kind": "",
+   "decimal": ".",
+   "value": "12",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "12V"
+  },
+  {
+   "text": "10.3V",
+   "kind": "",
+   "decimal": ".",
+   "value": "10.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "10V3"
+  },
+  {
+   "text": "1500V",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1500V"
+  },
+  {
+   "text": "1.5kV",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1500V"
+  },
+  {
+   "text": "0.5V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.5",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "500mV"
+  },
+  {
+   "text": "500mV",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.5",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "500mV"
+  },
+  {
+   "text": "500MV",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.5",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "500mV"
+  },
+  {
+   "text": "1.5mV",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0015",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1m5V"
+  },
+  {
+   "text": "0.0005V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0005",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "500uV"
+  },
+  {
+   "text": "0.5uV",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000005",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "500nV"
+  },
+  {
+   "text": "2n2V",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000022",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "2n2V"
+  },
+  {
+   "text": "0.0001pV",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000000000000001",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "0p0001V"
+  },
+  {
+   "text": "1K5V",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1500V"
+  },
+  {
+   "text": "1.5KV",
+   "kind": "",
+   "decimal": ".",
+   "value": "1500",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1500V"
+  },
+  {
+   "text": "-5V",
+   "kind": "",
+   "decimal": ".",
+   "value": "-5",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "-5V"
+  },
+  {
+   "text": "−3.3V",
+   "kind": "",
+   "decimal": ".",
+   "value": "-3.3",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "-3V3"
+  },
+  {
+   "text": "1.5",
+   "kind": "V",
+   "decimal": ".",
+   "value": "1.5",
+   "found": "volt",
+   "rest": "",
+   "cleanup": "1V5"
+  },
+  {
+   "text": "1A5",
+   "kind": "",
+   "decimal": ".",
+   "value": "1.5",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "1A5"
+  },
+  {
+   "text": "0.5A",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.5",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "500mA"
+  },
+  {
+   "text": "10uA",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.00001",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "10uA"
+  },
+  {
+   "text": "0.5uA",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000005",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "500nA"
+  },
+  {
+   "text": "100NA",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0000001",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "100nA"
+  },
+  {
+   "text": "1.5MA",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.0015",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "1m5A"
+  },
+  {
+   "text": "3 amps",
+   "kind": "",
+   "decimal": ".",
+   "value": "3",
+   "found": "ampere",
+   "rest": "",
+   "cleanup": "3A"
+  },
+  {
+   "text": "1%",
+   "kind": "",
+   "decimal": ".",
+   "value": "1",
+   "found": "percent",
+   "rest": "",
+   "cleanup": "1%"
+  },
+  {
+   "text": "0.1%",
+   "kind": "",
+   "decimal": ".",
+   "value": "0.1",
+   "found": "percent",
+   "rest": "",
+   "cleanup": "0%1"
+  },
+  {
+   "text": "-20%",
+   "kind": "",
+   "decimal": ".",
+   "value": "-20",
+   "found": "percent",
+   "rest": "",
+   "cleanup": "-20%"
+  },
+  {
+   "text": "50ppm",
+   "kind": "",
+   "decimal": ".",
+   "value": "50",
+   "found": "ppm",
+   "rest": "",
+   "cleanup": "50ppm"
+  },
+  {
+   "text": "2.5 PPM",
+   "kind": "",
+   "decimal": ".",
+   "value": "2.5",
+   "found": "ppm",
+   "rest": "",
+   "cleanup": "2ppm5"
+  },
+  {
+   "text": "100ppm/°C",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "100",
+   "found": "ppm",
+   "rest": "/C",
+   "cleanup": "100ppm"
+  },
+  {
+   "text": "-750ppm/K",
+   "kind": "",
+   "decimal": ".",
+   "value": "-750",
+   "found": "ppm",
+   "rest": "/K",
+   "cleanup": "-750ppm"
+  },
+  {
+   "text": "125°C",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "125",
+   "found": "celsius",
+   "rest": "",
+   "cleanup": "125C"
+  },
+  {
+   "text": "-40 °C",
+   "kind": "",
+   "decimal": ".",
+   "raw": true,
+   "value": "-40",
+   "found": "celsius",
+   "rest": "",
+   "cleanup": "-40C"
+  },
+  {
+   "text": "85 degC",
+   "kind": "",
+   "decimal": ".",
+   "value": "85",
+   "found": "celsius",
+   "rest": "",
+   "cleanup": "85C"
+  },
+  {
+   "text": "37.5C",
+   "kind": "",
+   "decimal": ".",
+   "value": "37.5",
+   "found": "celsius",
+   "rest": "",
+   "cleanup": "37C5"
+  }
+ ],
+ "tostring": [
+  {
+   "kind": "percent",
+   "value": "-85286005210042574946093173580000000",
+   "text": "-85286005210042574946093173580000000%"
+  },
+  {
+   "kind": "ohm",
+   "value": "42334495641891781.87857058681",
+   "text": "42334495G64189178187857058681"
+  },
+  {
+   "kind": "volt",
+   "value": "-96900",
+   "text": "-96900V"
+  },
+  {
+   "kind": "volt",
+   "value": "810900",
+   "text": "810900V"
+  },
+  {
+   "kind": "ohm",
+   "value": "263779902839809667032.8461119",
+   "text": "263779902839G8096670328461119"
+  },
+  {
+   "kind": "ppm",
+   "value": "50",
+   "text": "50ppm"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000083744",
+   "text": "8u3744H"
+  },
+  {
+   "kind": "percent",
+   "value": "-6584000",
+   "text": "-6584000%"
+  },
+  {
+   "kind": "volt",
+   "value": "0.056046",
+   "text": "56m046V"
+  },
+  {
+   "kind": "celsius",
+   "value": "24000000",
+   "text": "24000000C"
+  },
+  {
+   "kind": "farad",
+   "value": "0.064896",
+   "text": "64896uF"
+  },
+  {
+   "kind": "celsius",
+   "value": "2",
+   "text": "2C"
+  },
+  {
+   "kind": "percent",
+   "value": "0.00000000000691",
+   "text": "0%00000000000691"
+  },
+  {
+   "kind": "farad",
+   "value": "0.041124",
+   "text": "41124uF"
+  },
+  {
+   "kind": "percent",
+   "value": "0.00000000059796",
+   "text": "0%00000000059796"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000000068158",
+   "text": "68p158A"
+  },
+  {
+   "kind": "ampere",
+   "value": "-8618.51",
+   "text": "-8618A51"
+  },
+  {
+   "kind": "ppm",
+   "value": "4613821695898758297852.762017",
+   "text": "4613821695898758297852ppm762017"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000004822308",
+   "text": "0C000004822308"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.00000008330001",
+   "text": "-0ppm00000008330001"
+  },
+  {
+   "kind": "ppm",
+   "value": "-560",
+   "text": "-560ppm"
+  },
+  {
+   "kind": "ppm",
+   "value": "-39260335747886001377046555.71",
+   "text": "-39260335747886001377046555ppm71"
+  },
+  {
+   "kind": "henry",
+   "value": "0.2",
+   "text": "200mH"
+  },
+  {
+   "kind": "henry",
+   "value": "0.003",
+   "text": "3mH"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000000000976",
+   "text": "0%000000000976"
+  },
+  {
+   "kind": "ohm",
+   "value": "938.3023",
+   "text": "938R3023"
+  },
+  {
+   "kind": "ppm",
+   "value": "80000",
+   "text": "80000ppm"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.00000000057",
+   "text": "-570pV"
+  },
+  {
+   "kind": "ohm",
+   "value": "198270",
+   "text": "198K27"
+  },
+  {
+   "kind": "farad",
+   "value": "2211332242604979002530489206000000000000",
+   "text": "2211332242604979002530489206000000000000F"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00979",
+   "text": "0ppm00979"
+  },
+  {
+   "kind": "celsius",
+   "value": "81884.24",
+   "text": "81884C24"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.00000006",
+   "text": "60nA"
+  },
+  {
+   "kind": "henry",
+   "value": "0.00068",
+   "text": "680uH"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000009",
+   "text": "900nH"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00531",
+   "text": "5310uF"
+  },
+  {
+   "kind": "henry",
+   "value": "690",
+   "text": "690H"
+  },
+  {
+   "kind": "percent",
+   "value": "0.0000099395",
+   "text": "0%0000099395"
+  },
+  {
+   "kind": "ppm",
+   "value": "26",
+   "text": "26ppm"
+  },
+  {
+   "kind": "ohm",
+   "value": "7552106031413857185911991980000000000000000",
+   "text": "7552106031413857185911991980000000G"
+  },
+  {
+   "kind": "percent",
+   "value": "-3.66498",
+   "text": "-3%66498"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000000044",
+   "text": "4n4"
+  },
+  {
+   "kind": "celsius",
+   "value": "25.1",
+   "text": "25C1"
+  },
+  {
+   "kind": "percent",
+   "value": "0.0002",
+   "text": "0%0002"
+  },
+  {
+   "kind": "volt",
+   "value": "560000",
+   "text": "560000V"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00000000992789",
+   "text": "0ppm00000000992789"
+  },
+  {
+   "kind": "henry",
+   "value": "939560699851144556230180556400000",
+   "text": "939560699851144556230180556400000H"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.0000000000017169",
+   "text": "-0%0000000000017169"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000000056",
+   "text": "5n6"
+  },
+  {
+   "kind": "volt",
+   "value": "-38",
+   "text": "-38V"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000000000002148",
+   "text": "0%000000000002148"
+  },
+  {
+   "kind": "percent",
+   "value": "87922300652086037770432367790000000",
+   "text": "87922300652086037770432367790000000%"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000000000066919",
+   "text": "6p6919H"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.000000000516",
+   "text": "-0C000000000516"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000000000009",
+   "text": "0C000000000000009"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.000000000000009",
+   "text": "-0C000000000000009"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.09",
+   "text": "90mA"
+  },
+  {
+   "kind": "farad",
+   "value": "66264000",
+   "text": "66264000F"
+  },
+  {
+   "kind": "volt",
+   "value": "83260",
+   "text": "83260V"
+  },
+  {
+   "kind": "volt",
+   "value": "9450",
+   "text": "9450V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.0000000000054",
+   "text": "5p4V"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.00000000000055",
+   "text": "-0%00000000000055"
+  },
+  {
+   "kind": "ampere",
+   "value": "2591185000000",
+   "text": "2591185000000A"
+  },
+  {
+   "kind": "percent",
+   "value": "0.00000006",
+   "text": "0%00000006"
+  },
+  {
+   "kind": "farad",
+   "value": "266800000",
+   "text": "266800000F"
+  },
+  {
+   "kind": "volt",
+   "value": "0.8448",
+   "text": "844m8V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.0000000000000006",
+   "text": "0p0006V"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000007",
+   "text": "0C000007"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000002",
+   "text": "2nA"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00000000041",
+   "text": "410pF"
+  },
+  {
+   "kind": "ampere",
+   "value": "708425000000",
+   "text": "708425000000A"
+  },
+  {
+   "kind": "ampere",
+   "value": "6747400",
+   "text": "6747400A"
+  },
+  {
+   "kind": "percent",
+   "value": "0.003",
+   "text": "0%003"
+  },
+  {
+   "kind": "ampere",
+   "value": "14248052165337697122591293700000000000000",
+   "text": "14248052165337697122591293700000000000000A"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000000000000008",
+   "text": "0p0008"
+  },
+  {
+   "kind": "percent",
+   "value": "-6456086500835380807596.199429",
+   "text": "-6456086500835380807596%199429"
+  },
+  {
+   "kind": "volt",
+   "value": "25203634980233449393997.34605",
+   "text": "25203634980233449393997V34605"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.00000088101",
+   "text": "-881n01V"
+  },
+  {
+   "kind": "ohm",
+   "value": "9403603302981768147.619559562",
+   "text": "9403603302G981768147619559562"
+  },
+  {
+   "kind": "celsius",
+   "value": "725073700000",
+   "text": "725073700000C"
+  },
+  {
+   "kind": "ppm",
+   "value": "-37315073340387728037386648.54",
+   "text": "-37315073340387728037386648ppm54"
+  },
+  {
+   "kind": "henry",
+   "value": "0.000000000056",
+   "text": "56pH"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.00922595",
+   "text": "0R00922595"
+  },
+  {
+   "kind": "ppm",
+   "value": "7",
+   "text": "7ppm"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000000307295",
+   "text": "307p295A"
+  },
+  {
+   "kind": "henry",
+   "value": "0.00005",
+   "text": "50uH"
+  },
+  {
+   "kind": "percent",
+   "value": "-4739813110802604608919988.337",
+   "text": "-4739813110802604608919988%337"
+  },
+  {
+   "kind": "ppm",
+   "value": "-5150000",
+   "text": "-5150000ppm"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.000001505813",
+   "text": "0R000001505813"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0000369",
+   "text": "0ppm0000369"
+  },
+  {
+   "kind": "volt",
+   "value": "0.000000098375",
+   "text": "98n375V"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.000000518197",
+   "text": "-0ppm000000518197"
+  },
+  {
+   "kind": "henry",
+   "value": "86063970000",
+   "text": "86063970000H"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.000008481572",
+   "text": "0ppm000008481572"
+  },
+  {
+   "kind": "ohm",
+   "value": "9321700000",
+   "text": "9G3217"
+  },
+  {
+   "kind": "volt",
+   "value": "30000",
+   "text": "30000V"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000000009151",
+   "text": "9p151"
+  },
+  {
+   "kind": "ohm",
+   "value": "25644",
+   "text": "25K644"
+  },
+  {
+   "kind": "ampere",
+   "value": "1176277",
+   "text": "1176277A"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00000008",
+   "text": "80nF"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000000094",
+   "text": "9n4"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.8093",
+   "text": "-809m3V"
+  },
+  {
+   "kind": "ampere",
+   "value": "-829420000",
+   "text": "-829420000A"
+  },
+  {
+   "kind": "henry",
+   "value": "779320000000",
+   "text": "779320000000H"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.2",
+   "text": "-200mA"
+  },
+  {
+   "kind": "ampere",
+   "value": "5353507631449603135127.231187",
+   "text": "5353507631449603135127A231187"
+  },
+  {
+   "kind": "ampere",
+   "value": "-19420",
+   "text": "-19420A"
+  },
+  {
+   "kind": "farad",
+   "value": "1514530251691937597099245370",
+   "text": "1514530251691937597099245370F"
+  },
+  {
+   "kind": "celsius",
+   "value": "-966329621451926511342475.628",
+   "text": "-966329621451926511342475C628"
+  },
+  {
+   "kind": "farad",
+   "value": "0.34316",
+   "text": "343160uF"
+  },
+  {
+   "kind": "henry",
+   "value": "0.00533458",
+   "text": "5m33458H"
+  },
+  {
+   "kind": "farad",
+   "value": "6.4",
+   "text": "6F4"
+  },
+  {
+   "kind": "ppm",
+   "value": "800000",
+   "text": "800000ppm"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.5636",
+   "text": "563m6A"
+  },
+  {
+   "kind": "percent",
+   "value": "-567.5273",
+   "text": "-567%5273"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00303912",
+   "text": "3m03912V"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00000009884745",
+   "text": "0ppm00000009884745"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.00809805",
+   "text": "-0ppm00809805"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.00000032",
+   "text": "320nA"
+  },
+  {
+   "kind": "percent",
+   "value": "0.804",
+   "text": "0%804"
+  },
+  {
+   "kind": "ppm",
+   "value": "107105123874296842418.4521877",
+   "text": "107105123874296842418ppm4521877"
+  },
+  {
+   "kind": "ppm",
+   "value": "23248620000",
+   "text": "23248620000ppm"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.00000016687",
+   "text": "0C00000016687"
+  },
+  {
+   "kind": "percent",
+   "value": "-7570000",
+   "text": "-7570000%"
+  },
+  {
+   "kind": "volt",
+   "value": "-8.7671",
+   "text": "-8V7671"
+  },
+  {
+   "kind": "henry",
+   "value": "651530",
+   "text": "651530H"
+  },
+  {
+   "kind": "volt",
+   "value": "7.78",
+   "text": "7V78"
+  },
+  {
+   "kind": "volt",
+   "value": "-440",
+   "text": "-440V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00095566",
+   "text": "955u66V"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0000549631",
+   "text": "0ppm0000549631"
+  },
+  {
+   "kind": "percent",
+   "value": "454700",
+   "text": "454700%"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000082527",
+   "text": "8u2527H"
+  },
+  {
+   "kind": "farad",
+   "value": "0.005",
+   "text": "5000uF"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.000000000000087",
+   "text": "-0C000000000000087"
+  },
+  {
+   "kind": "ppm",
+   "value": "794012500",
+   "text": "794012500ppm"
+  },
+  {
+   "kind": "farad",
+   "value": "88560.45",
+   "text": "88560F45"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.000000000004",
+   "text": "-0C000000000004"
+  },
+  {
+   "kind": "farad",
+   "value": "26435231138884214995125.31327",
+   "text": "26435231138884214995125F31327"
+  },
+  {
+   "kind": "henry",
+   "value": "0.000000000005",
+   "text": "5pH"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.0000000001838",
+   "text": "-183p8A"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.0000000000000077",
+   "text": "-0p0077V"
+  },
+  {
+   "kind": "ampere",
+   "value": "85366388508008898377450.00251",
+   "text": "85366388508008898377450A00251"
+  },
+  {
+   "kind": "ohm",
+   "value": "741386230417673415650512219000000000",
+   "text": "741386230417673415650512219G"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.086",
+   "text": "0ppm086"
+  },
+  {
+   "kind": "volt",
+   "value": "354473000000",
+   "text": "354473000000V"
+  },
+  {
+   "kind": "ppm",
+   "value": "-4900813",
+   "text": "-4900813ppm"
+  },
+  {
+   "kind": "celsius",
+   "value": "-374110576830436064685039329700",
+   "text": "-374110576830436064685039329700C"
+  },
+  {
+   "kind": "ampere",
+   "value": "-64981000",
+   "text": "-64981000A"
+  },
+  {
+   "kind": "volt",
+   "value": "-59158000",
+   "text": "-59158000V"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.003",
+   "text": "-0ppm003"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.0000000005148",
+   "text": "0R0000000005148"
+  },
+  {
+   "kind": "farad",
+   "value": "4139414917547119911332812.588",
+   "text": "4139414917547119911332812F588"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.00000000454",
+   "text": "-0ppm00000000454"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000000000431",
+   "text": "43p1"
+  },
+  {
+   "kind": "volt",
+   "value": "-5179.114",
+   "text": "-5179V114"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000058504",
+   "text": "0C0000058504"
+  },
+  {
+   "kind": "celsius",
+   "value": "40640000",
+   "text": "40640000C"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.000000000001026",
+   "text": "0R000000000001026"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.00006",
+   "text": "-60uA"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.723075",
+   "text": "0R723075"
+  },
+  {
+   "kind": "ampere",
+   "value": "792359000",
+   "text": "792359000A"
+  },
+  {
+   "kind": "farad",
+   "value": "1.4",
+   "text": "1F4"
+  },
+  {
+   "kind": "celsius",
+   "value": "-446473779241377043288080800600000",
+   "text": "-446473779241377043288080800600000C"
+  },
+  {
+   "kind": "celsius",
+   "value": "5088778000000",
+   "text": "5088778000000C"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00472",
+   "text": "4m72V"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000002621",
+   "text": "2u621"
+  },
+  {
+   "kind": "ppm",
+   "value": "80",
+   "text": "80ppm"
+  },
+  {
+   "kind": "henry",
+   "value": "763938370016276466232239308.4",
+   "text": "763938370016276466232239308H4"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.54",
+   "text": "0C54"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.2032807",
+   "text": "-203m2807V"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.0000272982",
+   "text": "27u2982A"
+  },
+  {
+   "kind": "henry",
+   "value": "3700",
+   "text": "3700H"
+  },
+  {
+   "kind": "volt",
+   "value": "0.000004124",
+   "text": "4u124V"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.000000000000008",
+   "text": "-0p008V"
+  },
+  {
+   "kind": "celsius",
+   "value": "3796167933415567.423470962652",
+   "text": "3796167933415567C423470962652"
+  },
+  {
+   "kind": "volt",
+   "value": "-7700",
+   "text": "-7700V"
+  },
+  {
+   "kind": "farad",
+   "value": "29823.02",
+   "text": "29823F02"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.0000000000991641",
+   "text": "-99p1641A"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.000000000349",
+   "text": "-0%000000000349"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.0000683298",
+   "text": "68u3298A"
+  },
+  {
+   "kind": "percent",
+   "value": "190000",
+   "text": "190000%"
+  },
+  {
+   "kind": "volt",
+   "value": "-898",
+   "text": "-898V"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000576862",
+   "text": "576n862"
+  },
+  {
+   "kind": "farad",
+   "value": "4.443",
+   "text": "4F443"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.0000842",
+   "text": "84u2A"
+  },
+  {
+   "kind": "percent",
+   "value": "-60000",
+   "text": "-60000%"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00000000007",
+   "text": "0ppm00000000007"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00000000472",
+   "text": "4n72"
+  },
+  {
+   "kind": "henry",
+   "value": "186780000",
+   "text": "186780000H"
+  },
+  {
+   "kind": "ppm",
+   "value": "-48608",
+   "text": "-48608ppm"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.00000000022517",
+   "text": "-0%00000000022517"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.3310845",
+   "text": "-0C3310845"
+  },
+  {
+   "kind": "ohm",
+   "value": "67206526480057501527671257990000000000",
+   "text": "67206526480057501527671257990G"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.0000000073",
+   "text": "-7n3V"
+  },
+  {
+   "kind": "henry",
+   "value": "0.000000003",
+   "text": "3nH"
+  },
+  {
+   "kind": "volt",
+   "value": "-9928200000",
+   "text": "-9928200000V"
+  },
+  {
+   "kind": "percent",
+   "value": "597340",
+   "text": "597340%"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000597",
+   "text": "597nA"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.0000000000002929",
+   "text": "-0%0000000000002929"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.00000007509",
+   "text": "0C00000007509"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.046",
+   "text": "0ppm046"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000000042748",
+   "text": "0C000000000042748"
+  },
+  {
+   "kind": "farad",
+   "value": "103829416652030803.8124989487",
+   "text": "103829416652030803F8124989487"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0000000002284818",
+   "text": "0ppm0000000002284818"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00000004717",
+   "text": "47n17"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.00000626",
+   "text": "-6u26V"
+  },
+  {
+   "kind": "ampere",
+   "value": "983441916144563751293189695.9",
+   "text": "983441916144563751293189695A9"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00000000004",
+   "text": "40pV"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.00002765",
+   "text": "-27u65A"
+  },
+  {
+   "kind": "ohm",
+   "value": "9.9",
+   "text": "9R9"
+  },
+  {
+   "kind": "farad",
+   "value": "8.2547",
+   "text": "8F2547"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000000000592",
+   "text": "0%000000000592"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000000000079",
+   "text": "0p079"
+  },
+  {
+   "kind": "ampere",
+   "value": "3180000",
+   "text": "3180000A"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.000035435",
+   "text": "-0%000035435"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.000000000000918",
+   "text": "-0ppm000000000000918"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.000000000000001",
+   "text": "-0p001V"
+  },
+  {
+   "kind": "percent",
+   "value": "-468130",
+   "text": "-468130%"
+  },
+  {
+   "kind": "ampere",
+   "value": "47000",
+   "text": "47000A"
+  },
+  {
+   "kind": "henry",
+   "value": "4086733000000",
+   "text": "4086733000000H"
+  },
+  {
+   "kind": "henry",
+   "value": "300000",
+   "text": "300000H"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.0000000000000991",
+   "text": "-0p0991A"
+  },
+  {
+   "kind": "percent",
+   "value": "58164000",
+   "text": "58164000%"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000000000001",
+   "text": "0C000000000000001"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.0000000000008",
+   "text": "-0ppm0000000000008"
+  },
+  {
+   "kind": "volt",
+   "value": "67000",
+   "text": "67000V"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.0000066",
+   "text": "-0ppm0000066"
+  },
+  {
+   "kind": "ohm",
+   "value": "18321018647035220922142763350000000",
+   "text": "18321018647035220922142763G35"
+  },
+  {
+   "kind": "ppm",
+   "value": "13190000",
+   "text": "13190000ppm"
+  },
+  {
+   "kind": "volt",
+   "value": "19968572398098875930900270.93",
+   "text": "19968572398098875930900270V93"
+  },
+  {
+   "kind": "ampere",
+   "value": "6520",
+   "text": "6520A"
+  },
+  {
+   "kind": "ampere",
+   "value": "-11",
+   "text": "-11A"
+  },
+  {
+   "kind": "ampere",
+   "value": "-472552565303728170069818229500000000000000",
+   "text": "-472552565303728170069818229500000000000000A"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000000000091439",
+   "text": "0C0000000000091439"
+  },
+  {
+   "kind": "ppm",
+   "value": "802642694667174057484.0031139",
+   "text": "802642694667174057484ppm0031139"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000000000019",
+   "text": "0p019"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.21209",
+   "text": "0R21209"
+  },
+  {
+   "kind": "henry",
+   "value": "0.000000000001",
+   "text": "1pH"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.00000000048958",
+   "text": "0R00000000048958"
+  },
+  {
+   "kind": "percent",
+   "value": "-895725800000",
+   "text": "-895725800000%"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.0000000000027",
+   "text": "-0ppm0000000000027"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0662972",
+   "text": "66297u2"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000004",
+   "text": "0C0000004"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.0000263",
+   "text": "-0ppm0000263"
+  },
+  {
+   "kind": "percent",
+   "value": "934962647989268241697513414100000",
+   "text": "934962647989268241697513414100000%"
+  },
+  {
+   "kind": "ohm",
+   "value": "7",
+   "text": "7R"
+  },
+  {
+   "kind": "farad",
+   "value": "504550",
+   "text": "504550F"
+  },
+  {
+   "kind": "volt",
+   "value": "152487400",
+   "text": "152487400V"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0026482",
+   "text": "2m6482H"
+  },
+  {
+   "kind": "ohm",
+   "value": "156.8",
+   "text": "156R8"
+  },
+  {
+   "kind": "henry",
+   "value": "54779109642644250272685421210",
+   "text": "54779109642644250272685421210H"
+  },
+  {
+   "kind": "henry",
+   "value": "0.00000009",
+   "text": "90nH"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.00000000804059",
+   "text": "0C00000000804059"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0098",
+   "text": "9800uF"
+  },
+  {
+   "kind": "ppm",
+   "value": "-2197756836415350418551440847000000",
+   "text": "-2197756836415350418551440847000000ppm"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.00000065692",
+   "text": "656n92A"
+  },
+  {
+   "kind": "volt",
+   "value": "931285509304198776966943559300000",
+   "text": "931285509304198776966943559300000V"
+  },
+  {
+   "kind": "percent",
+   "value": "203.59",
+   "text": "203%59"
+  },
+  {
+   "kind": "percent",
+   "value": "-421500",
+   "text": "-421500%"
+  },
+  {
+   "kind": "percent",
+   "value": "-249499",
+   "text": "-249499%"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000002593663",
+   "text": "2u593663A"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000000165",
+   "text": "0%000000165"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00000106752",
+   "text": "1u06752V"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000019",
+   "text": "1u9"
+  },
+  {
+   "kind": "ampere",
+   "value": "140000",
+   "text": "140000A"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.000000000007601",
+   "text": "-7p601A"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0082888",
+   "text": "0ppm0082888"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000000000424373",
+   "text": "42p4373H"
+  },
+  {
+   "kind": "volt",
+   "value": "77791429053747211144893730650000000000",
+   "text": "77791429053747211144893730650000000000V"
+  },
+  {
+   "kind": "volt",
+   "value": "9228280000",
+   "text": "9228280000V"
+  },
+  {
+   "kind": "volt",
+   "value": "1302.5",
+   "text": "1302V5"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000007",
+   "text": "7nA"
+  },
+  {
+   "kind": "henry",
+   "value": "79.1",
+   "text": "79H1"
+  },
+  {
+   "kind": "ohm",
+   "value": "849200000",
+   "text": "849M2"
+  },
+  {
+   "kind": "henry",
+   "value": "138092676416805367.8598400942",
+   "text": "138092676416805367H8598400942"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.0000000092",
+   "text": "9n2A"
+  },
+  {
+   "kind": "farad",
+   "value": "0.0000008865",
+   "text": "886n5"
+  },
+  {
+   "kind": "celsius",
+   "value": "8.31067",
+   "text": "8C31067"
+  },
+  {
+   "kind": "ppm",
+   "value": "-344300000",
+   "text": "-344300000ppm"
+  },
+  {
+   "kind": "farad",
+   "value": "465930000",
+   "text": "465930000F"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.000000000006549",
+   "text": "0R000000000006549"
+  },
+  {
+   "kind": "ohm",
+   "value": "577000",
+   "text": "577K"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.076",
+   "text": "76mA"
+  },
+  {
+   "kind": "volt",
+   "value": "13426927058042095289.93832963",
+   "text": "13426927058042095289V93832963"
+  },
+  {
+   "kind": "volt",
+   "value": "0.000094465",
+   "text": "94u465V"
+  },
+  {
+   "kind": "henry",
+   "value": "871.052",
+   "text": "871H052"
+  },
+  {
+   "kind": "celsius",
+   "value": "911270961600170371673246605000000000000",
+   "text": "911270961600170371673246605000000000000C"
+  },
+  {
+   "kind": "volt",
+   "value": "4.155",
+   "text": "4V155"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.00837721",
+   "text": "0C00837721"
+  },
+  {
+   "kind": "ampere",
+   "value": "7021000",
+   "text": "7021000A"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.0875",
+   "text": "-0%0875"
+  },
+  {
+   "kind": "percent",
+   "value": "0.00068",
+   "text": "0%00068"
+  },
+  {
+   "kind": "ohm",
+   "value": "100000",
+   "text": "100K"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.000000003",
+   "text": "-3nA"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0027",
+   "text": "0C0027"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000000063792",
+   "text": "6n3792H"
+  },
+  {
+   "kind": "ampere",
+   "value": "-223453",
+   "text": "-223453A"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.0000000000009",
+   "text": "-0C0000000000009"
+  },
+  {
+   "kind": "volt",
+   "value": "-80790",
+   "text": "-80790V"
+  },
+  {
+   "kind": "celsius",
+   "value": "736580787640050344578155764900000000000000",
+   "text": "736580787640050344578155764900000000000000C"
+  },
+  {
+   "kind": "ohm",
+   "value": "480000000",
+   "text": "480M"
+  },
+  {
+   "kind": "celsius",
+   "value": "78.14188",
+   "text": "78C14188"
+  },
+  {
+   "kind": "farad",
+   "value": "6520000",
+   "text": "6520000F"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.0000000000006",
+   "text": "0R0000000000006"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000000005",
+   "text": "0C0000000005"
+  },
+  {
+   "kind": "henry",
+   "value": "6.143118",
+   "text": "6H143118"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0027621",
+   "text": "0C0027621"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0000005",
+   "text": "0ppm0000005"
+  },
+  {
+   "kind": "celsius",
+   "value": "35612",
+   "text": "35612C"
+  },
+  {
+   "kind": "volt",
+   "value": "-1.978508",
+   "text": "-1V978508"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000000091831",
+   "text": "91p831A"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.0000007",
+   "text": "-0ppm0000007"
+  },
+  {
+   "kind": "ohm",
+   "value": "997300000",
+   "text": "997M3"
+  },
+  {
+   "kind": "ohm",
+   "value": "8.0182",
+   "text": "8R0182"
+  },
+  {
+   "kind": "henry",
+   "value": "722600000",
+   "text": "722600000H"
+  },
+  {
+   "kind": "farad",
+   "value": "6643.69",
+   "text": "6643F69"
+  },
+  {
+   "kind": "henry",
+   "value": "0.005",
+   "text": "5mH"
+  },
+  {
+   "kind": "farad",
+   "value": "95636608218906854534523031650000000000000000",
+   "text": "95636608218906854534523031650000000000000000F"
+  },
+  {
+   "kind": "ampere",
+   "value": "25232354605940040816727299.38",
+   "text": "25232354605940040816727299A38"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.0000000005162",
+   "text": "0R0000000005162"
+  },
+  {
+   "kind": "ppm",
+   "value": "-0.00000000007315",
+   "text": "-0ppm00000000007315"
+  },
+  {
+   "kind": "ppm",
+   "value": "16284",
+   "text": "16284ppm"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000003478",
+   "text": "3n478"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.00000000000002",
+   "text": "0R00000000000002"
+  },
+  {
+   "kind": "volt",
+   "value": "-89333286016202380084725748430000",
+   "text": "-89333286016202380084725748430000V"
+  },
+  {
+   "kind": "henry",
+   "value": "901989935479796135042.8736077",
+   "text": "901989935479796135042H8736077"
+  },
+  {
+   "kind": "farad",
+   "value": "9296.1",
+   "text": "9296F1"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000000000936",
+   "text": "0C000000000000936"
+  },
+  {
+   "kind": "ohm",
+   "value": "719994000",
+   "text": "719M994"
+  },
+  {
+   "kind": "farad",
+   "value": "747000",
+   "text": "747000F"
+  },
+  {
+   "kind": "henry",
+   "value": "6107226185073876357460620183000000000",
+   "text": "6107226185073876357460620183000000000H"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000000000019",
+   "text": "0C0000000000019"
+  },
+  {
+   "kind": "henry",
+   "value": "0.7815",
+   "text": "781m5H"
+  },
+  {
+   "kind": "celsius",
+   "value": "2821753516733380274800959.396",
+   "text": "2821753516733380274800959C396"
+  },
+  {
+   "kind": "percent",
+   "value": "73198835368850920042495835960000",
+   "text": "73198835368850920042495835960000%"
+  },
+  {
+   "kind": "volt",
+   "value": "394475000",
+   "text": "394475000V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.0000000000000706",
+   "text": "0p0706V"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.0005544",
+   "text": "554u4A"
+  },
+  {
+   "kind": "henry",
+   "value": "919136600000",
+   "text": "919136600000H"
+  },
+  {
+   "kind": "celsius",
+   "value": "90",
+   "text": "90C"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.392641",
+   "text": "0ppm392641"
+  },
+  {
+   "kind": "ppm",
+   "value": "3300",
+   "text": "3300ppm"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00009",
+   "text": "0ppm00009"
+  },
+  {
+   "kind": "volt",
+   "value": "34019",
+   "text": "34019V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00000000012",
+   "text": "120pV"
+  },
+  {
+   "kind": "ampere",
+   "value": "4.7041",
+   "text": "4A7041"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000000006129",
+   "text": "612p9H"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000001371361",
+   "text": "0%000001371361"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.0000000000079579",
+   "text": "0R0000000000079579"
+  },
+  {
+   "kind": "farad",
+   "value": "948708.6",
+   "text": "948708F6"
+  },
+  {
+   "kind": "volt",
+   "value": "-4694.676",
+   "text": "-4694V676"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.02196202",
+   "text": "0C02196202"
+  },
+  {
+   "kind": "percent",
+   "value": "-0.00000000000049",
+   "text": "-0%00000000000049"
+  },
+  {
+   "kind": "ohm",
+   "value": "768867.9",
+   "text": "768K8679"
+  },
+  {
+   "kind": "farad",
+   "value": "5422579575874667724180237342000000000000",
+   "text": "5422579575874667724180237342000000000000F"
+  },
+  {
+   "kind": "volt",
+   "value": "-53.1105",
+   "text": "-53V1105"
+  },
+  {
+   "kind": "henry",
+   "value": "0.000000093",
+   "text": "93nH"
+  },
+  {
+   "kind": "henry",
+   "value": "0.00964",
+   "text": "9m64H"
+  },
+  {
+   "kind": "ohm",
+   "value": "9317680263140284856.94450049",
+   "text": "9317680263G14028485694450049"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.0000000000000041",
+   "text": "0C0000000000000041"
+  },
+  {
+   "kind": "ampere",
+   "value": "172.8",
+   "text": "172A8"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.0493",
+   "text": "-49m3A"
+  },
+  {
+   "kind": "volt",
+   "value": "0.0000000000935508",
+   "text": "93p5508V"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00000000000029",
+   "text": "0p29V"
+  },
+  {
+   "kind": "percent",
+   "value": "15512509096286055400725070.87",
+   "text": "15512509096286055400725070%87"
+  },
+  {
+   "kind": "farad",
+   "value": "0.000000331",
+   "text": "331nF"
+  },
+  {
+   "kind": "celsius",
+   "value": "-0.000147",
+   "text": "-0C000147"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.000000009067",
+   "text": "0R000000009067"
+  },
+  {
+   "kind": "celsius",
+   "value": "-2521410578128474.315317606425",
+   "text": "-2521410578128474C315317606425"
+  },
+  {
+   "kind": "ampere",
+   "value": "-3.4",
+   "text": "-3A4"
+  },
+  {
+   "kind": "celsius",
+   "value": "406803063661654113961117740300000",
+   "text": "406803063661654113961117740300000C"
+  },
+  {
+   "kind": "volt",
+   "value": "-0.0000004802196",
+   "text": "-480n2196V"
+  },
+  {
+   "kind": "volt",
+   "value": "-2478573684424187555172686.95",
+   "text": "-2478573684424187555172686V95"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.0000008",
+   "text": "-800nA"
+  },
+  {
+   "kind": "ohm",
+   "value": "44684",
+   "text": "44K684"
+  },
+  {
+   "kind": "henry",
+   "value": "0.8834659",
+   "text": "883m4659H"
+  },
+  {
+   "kind": "henry",
+   "value": "0.0000000007",
+   "text": "700pH"
+  },
+  {
+   "kind": "ampere",
+   "value": "24",
+   "text": "24A"
+  },
+  {
+   "kind": "henry",
+   "value": "2000",
+   "text": "2000H"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000000027",
+   "text": "0C000000000027"
+  },
+  {
+   "kind": "volt",
+   "value": "0.00000000000002",
+   "text": "0p02V"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.00009",
+   "text": "0ppm00009"
+  },
+  {
+   "kind": "celsius",
+   "value": "0.000000007809",
+   "text": "0C000000007809"
+  },
+  {
+   "kind": "ampere",
+   "value": "-0.000000000048117",
+   "text": "-48p117A"
+  },
+  {
+   "kind": "percent",
+   "value": "0.77838",
+   "text": "0%77838"
+  },
+  {
+   "kind": "celsius",
+   "value": "56615648893615402177822.12434",
+   "text": "56615648893615402177822C12434"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.0000000000005",
+   "text": "0ppm0000000000005"
+  },
+  {
+   "kind": "celsius",
+   "value": "-90",
+   "text": "-90C"
+  },
+  {
+   "kind": "volt",
+   "value": "-104326697083681652719312.5157",
+   "text": "-104326697083681652719312V5157"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.0000774635",
+   "text": "0R0000774635"
+  },
+  {
+   "kind": "ampere",
+   "value": "8347200",
+   "text": "8347200A"
+  },
+  {
+   "kind": "volt",
+   "value": "0.0000000000006",
+   "text": "0p6V"
+  },
+  {
+   "kind": "ohm",
+   "value": "808800",
+   "text": "808K8"
+  },
+  {
+   "kind": "ampere",
+   "value": "0.000000000007",
+   "text": "7pA"
+  },
+  {
+   "kind": "volt",
+   "value": "-90811753412587863648395151.8",
+   "text": "-90811753412587863648395151V8"
+  },
+  {
+   "kind": "ohm",
+   "value": "8720215781369680729919032490000000000",
+   "text": "8720215781369680729919032490G"
+  },
+  {
+   "kind": "ohm",
+   "value": "0.000006",
+   "text": "0R000006"
+  },
+  {
+   "kind": "ppm",
+   "value": "0.733",
+   "text": "0ppm733"
+  },
+  {
+   "kind": "percent",
+   "value": "0.000000009413373",
+   "text": "0%000000009413373"
+  },
+  {
+   "kind": "henry",
+   "value": "8607682026256544253676513846000000000",
+   "text": "8607682026256544253676513846000000000H"
+  },
+  {
+   "kind": "ohm",
+   "value": "0",
+   "text": "0R"
+  },
+  {
+   "kind": "farad",
+   "value": "-0",
+   "text": "0F"
+  },
+  {
+   "kind": "volt",
+   "value": "1e3",
+   "text": "1000V"
+  },
+  {
+   "kind": "ohm",
+   "value": "4.7E+3",
+   "text": "4K7"
+  },
+  {
+   "kind": "farad",
+   "value": "0.00000220",
+   "text": "2u2"
+  },
+  {
+   "kind": "ohm",
+   "value": "-1",
+   "error": "negative ohm value"
+  },
+  {
+   "kind": "ohm",
+   "value": "abc",
+   "error": "not a number: 'abc'"
+  },
+  {
+   "kind": "ohm",
+   "value": "1e",
+   "error": "not a number: '1e'"
+  },
+  {
+   "kind": "ohm",
+   "value": ".",
+   "error": "not a number: '.'"
+  },
+  {
+   "kind": "bogus",
+   "value": "1",
+   "error": "unknown kind 'bogus'"
+  },
+  {
+   "kind": "farad",
+   "value": "1.2.3",
+   "error": "not a number: '1.2.3'"
+  }
+ ]
+}

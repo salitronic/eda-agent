@@ -171,9 +171,18 @@ def automation_enabled() -> bool:
     on the next restart.
     """
     raw = os.environ.get(UI_AUTOMATION_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in _OFF
+    if raw is not None and raw.strip().lower() in _OFF:
+        return False
+    return not _panel_off()
+
+
+def _panel_off() -> bool:
+    """Switched off on the Config tab of the Altium panel."""
+    from ..preferences import ui_automation_off
+    try:
+        return ui_automation_off()
+    except Exception:
+        return False
 
 
 def _gate(what: str) -> None:
@@ -185,9 +194,10 @@ def _gate(what: str) -> None:
     """
     if not automation_enabled():
         raise AutomationDisabled(
-            f"refusing {what}: UI automation is disabled by "
-            f"{UI_AUTOMATION_ENV}. Unset it, or set it to 1, to allow "
-            f"synthesised keyboard and mouse input again")
+            f"refusing {what}: UI automation is switched off, by "
+            f"{UI_AUTOMATION_ENV} or on the Config tab of the bridge panel "
+            f"in Altium (Menus, dialogs, keys). The user can turn it back "
+            f"on there, or unset the variable")
 
 
 class ForegroundLost(RuntimeError):

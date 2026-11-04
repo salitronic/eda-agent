@@ -113,19 +113,79 @@ def _flag(name: str) -> bool:
     }
 
 
+def _panel_read_only() -> bool:
+    from .preferences import edits_read_only
+    try:
+        return edits_read_only()
+    except Exception:
+        return False
+
+
+# MIRRORS CommandDeletes / CommandCloses IN StatusForm.pas, pinned by a test.
+_DELETE_VERB_PREFIXES = ("delete_", "remove_")
+_DELETE_VERBS_EXACT = ("batch_delete", "unroute")
+_CLOSE_COMMANDS = ("application.close_document", "project.close")
+
+
+def command_deletes(command: str, params: dict | None = None) -> bool:
+    """Does this command delete or remove something?"""
+    verb = (command or "").strip().lower().split(".", 1)[-1]
+    action = str((params or {}).get("action", "")).strip().lower()
+    return (verb.startswith(_DELETE_VERB_PREFIXES) or verb in _DELETE_VERBS_EXACT
+            or (verb.startswith("clear_") and "source" in verb)
+            or action in ("delete", "remove"))
+
+
+def command_closes(command: str) -> bool:
+    """Does this command close a document or a project?"""
+    return (command or "").strip().lower() in _CLOSE_COMMANDS
+
+
+def _panel(check: str) -> bool:
+    from . import preferences
+    try:
+        return getattr(preferences, check)()
+    except Exception:
+        return False
+
+
 def readonly_mode() -> bool:
-    """Is the server refusing everything that is not a read?"""
-    return _flag(READONLY_ENV)
+    """Is the server refusing everything that is not a read?
+
+    Either the environment variable or the Config tab on the Altium panel
+    makes it so; the stricter of the two wins.
+    """
+    return _flag(READONLY_ENV) or _panel_read_only()
 
 
-
-def refuse_command(command: str) -> str | None:
+def refuse_command(command: str, params: dict | None = None) -> str | None:
     """Why this bridge command must not run, or None if it may."""
-    if readonly_mode() and not command_is_read_only(command):
+    if command_deletes(command, params) and _panel("deleting_refused"):
+        return (
+            f"{command!r} is refused: deleting is switched off on the Config "
+            f"tab of the bridge panel in Altium, so nothing was deleted. The "
+            f"user can switch it back to Allowed there."
+        )
+    if command_closes(command) and _panel("closing_refused"):
+        return (
+            f"{command!r} is refused: closing documents is switched off on "
+            f"the Config tab of the bridge panel in Altium, so nothing was "
+            f"closed. The user can switch it back to Allowed there."
+        )
+    if command_is_read_only(command):
+        return None
+    if _flag(READONLY_ENV):
         return (
             f"{command!r} is refused: {READONLY_ENV} is set, so this "
             f"server will only run commands that leave the design "
             f"alone. Unset it to allow writes."
+        )
+    if _panel_read_only():
+        return (
+            f"{command!r} is refused: edits are set to read-only on the "
+            f"Config tab of the bridge panel in Altium, so only commands "
+            f"that leave the design alone run. The user can switch it back "
+            f"to Allowed there."
         )
     return None
 
