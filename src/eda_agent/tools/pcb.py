@@ -8879,7 +8879,9 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dict with ``mechanical_layers`` (each: layer, number, name,
-            enabled, displayed, kind, kind_id, primitive_count),
+            enabled, displayed, kind, kind_id, partner_layer -- the
+            enabled layer it is paired with, or None -- and
+            primitive_count),
             ``count``, ``occupied_count``, ``counted_primitives`` and
             ``scanned_to``, the layer number the scan stopped at.
         """
@@ -9083,7 +9085,8 @@ def register_pcb_tools(mcp):
         checks, assembly drawings, 3D bodies and via treatments read the
         KIND. A single kind ("Fab Notes") moves off any layer holding it
         (``cleared_from``). A kind ending in Top or Bottom belongs to a
-        layer PAIR and needs ``partner_layer``. The write is read back.
+        layer PAIR and needs ``partner_layer``; it moves off any other
+        pair holding it (``pairs_released``). The write is read back.
 
         Args:
             layer: Mechanical layer, e.g. "Mechanical13".
@@ -9095,7 +9098,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dict with ``layer``, ``kind``, ``kind_id``, ``paired``,
-            ``pair_kind``, ``partner_layer`` and ``cleared_from``.
+            ``pair_kind``, ``partner_layer``, ``pairs_released`` and
+            ``cleared_from``.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"layer": layer, "kind": kind}
