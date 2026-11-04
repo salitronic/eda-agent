@@ -1,4 +1,4 @@
-# Release verification: 2026.11.04.14
+# Release verification: 2026.11.04.15
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -418,7 +418,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.04.14`, `version_match` =
+Expect `altium_script_version` = `2026.11.04.15`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3672,6 +3672,24 @@ Live check after the deploy:
    them back and confirm no `writes_failed` on any of the replies.
 3. On a scratch board, set a track width and a rule's comment; confirm
    no `writes_failed`.
+
+## 67. A large reply no longer freezes Altium after it is sent
+
+After writing each reply, the loop indexed the whole reply to read its
+`error` for the status window. On a reply of several hundred KB that
+held Altium's main thread for minutes (a 620 KB `obj_query` answered in
+29 s, then the loop was silent for 539 s), and every session's calls
+queued behind it. The loop now reads the error only when the envelope
+says `success:false` in its first fields, takes it from what the
+handler recorded when it built the error, and parses the reply only
+when it is 64 KB or less. `tests/test_large_reply_is_not_parsed.py`
+refuses a whole-reply parse there.
+
+Live check after the deploy: on a scratch board with about 4000
+tracks, `obj_query` every track with its geometry (over 500 KB), then
+`app_ping`. The ping answers in under a second, and the status window
+still shows an error row for a failed call such as `obj_query` with an
+unknown object type.
 
 ## Still open, and not blocking
 

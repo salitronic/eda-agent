@@ -209,10 +209,11 @@ def test_every_step_that_writes_a_property_is_ranked():
 # Step 61 (items on every tool) runs existing handlers in one request and
 # one undo step; every property it reaches is ranked under its own step.
 #
-# Step 66 (failed writes reported) adds fields to the reply; it writes no
-# Altium property.
+# Step 66 (failed writes reported) adds fields to the reply and step 67
+# (no whole-reply parse after sending) changes the status window's read;
+# neither writes an Altium property.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
-                             "30", "58", "59", "61", "66"}
+                             "30", "58", "59", "61", "66", "67"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

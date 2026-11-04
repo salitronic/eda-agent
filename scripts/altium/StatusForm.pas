@@ -2142,22 +2142,38 @@ Begin
               + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
-    { error banner) when the response is success=false. ExtractJsonValue   }
-    { handles the nested error/code/message path via two successive calls. }
+    { error banner) when the response is success=false.                    }
+    { The reply is never parsed whole here: indexing a reply of several    }
+    { hundred KB character by character held Altium's main thread for      }
+    { minutes after the reply was already sent. The envelope says          }
+    { success:false within its first fields; only then is the error read,  }
+    { from what the handler recorded when it built it, else from a reply   }
+    { small enough to parse. The recorded error is used only when it is    }
+    { this reply's: a failed reply has data null, so its code sits in the  }
+    { first few hundred characters.                                        }
     DashIsError := (ResultTag = 'EXCEPTION');
-    DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+    DashErrPayload := '';
     DashDetail := '';
     DashCode := '';
-    If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+    If Pos('"success":false', Copy(ResponseContent, 1, 200)) > 0 Then
     Begin
         DashIsError := True;
-        DashCode    := ExtractJsonValue(DashErrPayload, 'code');
-        DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
-        { The message as the handler wrote it, when this reply is the error }
-        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
-        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
-            And (LastErrorMsg <> '') Then
+        If (LastErrorId = RequestId) And (LastErrorCode <> '')
+            And (Pos('"error":{"code":"' + LastErrorCode + '"',
+                     Copy(ResponseContent, 1, 400)) > 0) Then
+        Begin
+            DashCode := LastErrorCode;
             DashDetail := LastErrorMsg;
+        End
+        Else If Length(ResponseContent) <= 65536 Then
+        Begin
+            DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+            If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+            Begin
+                DashCode    := ExtractJsonValue(DashErrPayload, 'code');
+                DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+            End;
+        End;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then
