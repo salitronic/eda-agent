@@ -39,13 +39,18 @@ from . import windows as win
 from .captions import plain
 
 try:                                            # pragma: no cover - platform
-    import comtypes
-    import comtypes.client
-    from comtypes import COMError
-    from comtypes.automation import VARIANT
+    import warnings
+    with warnings.catch_warnings():
+        # comtypes emits a FutureWarning on Python 3.15 (enum/IntFlag
+        # behaviour); it is noise here, other warnings stay visible.
+        warnings.simplefilter("ignore", FutureWarning)
+        import comtypes
+        import comtypes.client
+        from comtypes import COMError
+        from comtypes.automation import VARIANT
 
-    comtypes.client.GetModule("oleacc.dll")
-    from comtypes.gen.Accessibility import IAccessible
+        comtypes.client.GetModule("oleacc.dll")
+        from comtypes.gen.Accessibility import IAccessible
 
     import win32con
     import win32gui
