@@ -76,7 +76,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - Python 3.11+
 - An EDA tool, one of:
   - **Altium Designer** (recent versions, AD20+ preferred) - Windows only
-  - **KiCad 9+** with the IPC API server enabled (Preferences → Plugins → KiCad API server), plus `pip install -e .[kicad]`
+  - **KiCad 10** with its API enabled (Preferences → Plugins → Enable KiCad API) and the board open in the PCB editor; nothing extra to install
   - **EasyEDA Pro** with the bundled extension installed (see [`extensions/easyeda/README.md`](extensions/easyeda/README.md))
 
 The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), so one install drives any of them. See [EDA backends](#eda-backends).

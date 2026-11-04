@@ -60,14 +60,10 @@ dependencies = [
 render = [
     "matplotlib>=3.5,<4",
 ]
-# KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). kipy is the
-# official KiCad IPC client; it is imported lazily inside the bridge so the
-# core install and the Altium backend never need it, and the KiCad tools
-# degrade to a clear "install kicad-python" reason when it is absent. Needs
-# KiCad 9+ with Preferences > Plugins > KiCad API server enabled.
-kicad = [
-    "kicad-python>=0.7",
-]
+# KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). It talks to
+# KiCad's API server with the standard library alone, so this extra is
+# empty; it stays so that `pip install eda-agent[kicad]` keeps working.
+kicad = []
 # STEP models built from a package drawing (design/models3d.py). CadQuery
 # is imported lazily; without it the generator uses FreeCAD's freecadcmd
 # when installed, and with neither a footprint falls back to an extruded

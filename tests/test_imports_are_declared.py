@@ -19,7 +19,7 @@ SRC = ROOT / "src" / "eda_agent"
 
 # Import name -> the distribution that provides it, where they differ.
 DISTRIBUTION = {
-    "PIL": "pillow", "kipy": "kicad-python", "win32api": "pywin32",
+    "PIL": "pillow", "win32api": "pywin32",
     "win32com": "pywin32", "win32con": "pywin32", "win32gui": "pywin32",
     "win32process": "pywin32", "win32ui": "pywin32", "pythoncom": "pywin32",
     "pywintypes": "pywin32", "win32clipboard": "pywin32",
