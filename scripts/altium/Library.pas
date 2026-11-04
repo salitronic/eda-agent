@@ -3982,14 +3982,21 @@ End;
 {                                                                              }
 { Params:                                                                      }
 {   library_path - optional .PcbLib to focus first; defaults to focused doc. }
+{                                                                              }
+{ Response also carries "current": the name of the footprint the editor has  }
+{ current in the library whose footprints are listed ("" when none). Writers }
+{ given no footprint_name, the origin read and processes such as            }
+{ PCB:SetComponentReference all act on that footprint.                      }
 Function Lib_GetFootprints(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpName, FpDescr, FpsJson, RespJson : String;
+    CurName : String;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
     Iter : IPCB_LibraryIterator;
     Footprint : IPCB_LibComponent;
+    Cur : IPCB_LibComponent;
     Count : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -4048,9 +4055,17 @@ Begin
     End;
     FpsJson := FpsJson + ']';
 
+    { Read off the same PcbLib the iterator walked, by Name only: reading }
+    { I_ObjectAddress off a footprint faulted on AD 26.11 (issue #135).    }
+    CurName := '';
+    Cur := Nil;
+    Try Cur := PcbLib.CurrentComponent; Except End;
+    If Cur <> Nil Then Try CurName := Cur.Name; Except End;
+
     RespJson :=
         '{"library_path":"' + EscapeJsonString(LibPath) + '"' +
         ',"count":' + IntToStr(Count) +
+        ',"current":"' + EscapeJsonString(CurName) + '"' +
         ',"footprints":' + FpsJson + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
