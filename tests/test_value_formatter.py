@@ -94,7 +94,11 @@ def test_the_tool_folds_the_symbols_the_scripts_cannot_receive(monkeypatch):
     assert fold_value_text("2.2μF").isascii()
 
 
-def test_the_tool_sends_a_value_exactly(monkeypatch):
+def test_the_tool_sends_a_value_exactly(monkeypatch, tmp_path):
+    # tostring needs a format chosen on the panel's Config tab.
+    from eda_agent.config import get_config
+    monkeypatch.setattr(get_config(), "workspace_dir", tmp_path, raising=False)
+    (tmp_path / "preferences.json").write_text('{"value_format":"rkm"}')
     _, sent = _call(monkeypatch, action="tostring", kind="C", value=4.7e-6)
     assert sent == [("application.format_value",
                      {"action": "tostring", "value": "4.7e-06", "kind": "C"})]

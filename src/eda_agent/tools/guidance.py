@@ -1462,7 +1462,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["app_format_value"],
         "avoid": [],
-        "note": "IEC 60062 form (4K7, 2u2, 10uF, 3V3), exact; touches no document.",
+        "note": ("Exact; touches no document. The written form is the user's "
+                 "choice on the Config tab of the bridge panel (None, RKM, SI, "
+                 "SI with unit), never the agent's."),
     },
     {
         "task": "Lock a schematic parameter or keep it from library updates",

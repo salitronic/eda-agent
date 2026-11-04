@@ -456,6 +456,54 @@ def fold_value_text(text: str) -> str:
     return "".join(_VALUE_FOLD.get(ch, ch) for ch in t)
 
 
+# SI form of a value, per kind: the prefixes the value engine allows for
+# it (largest first), and whether the unit is always written. Resistors take
+# no milli or micro (the engine writes 0R005), capacitors no milli, volts and
+# amperes no kilo, so the SI form keeps to the same letters.
+_SI_PREFIXES = {
+    "ohm": (("G", 9), ("M", 6), ("k", 3), ("", 0)),
+    "farad": (("", 0), ("u", -6), ("n", -9), ("p", -12)),
+    "henry": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "volt": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "ampere": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "percent": (("", 0),),
+    "ppm": (("", 0),),
+    "celsius": (("", 0),),
+}
+_SI_UNIT = {"ohm": "", "farad": "F", "henry": "H", "volt": "V", "ampere": "A",
+            "percent": "%", "ppm": "ppm", "celsius": "C"}
+_SI_UNIT_ALWAYS = ("volt", "ampere", "percent", "ppm", "celsius")
+_KIND_ALIASES = {"r": "ohm", "c": "farad", "l": "henry", "v": "volt",
+                 "a": "ampere", "%": "percent"}
+
+
+def si_value_text(value: str, kind: str, with_unit: bool) -> Optional[str]:
+    """``value`` (an exact decimal in the base unit) written with a decimal
+    point and an SI prefix, or None for a kind it does not know. Exact: the
+    digits are moved, never rounded. Resistors never carry a unit; volts,
+    amperes, %, ppm and degrees C always do, farads and henries only
+    ``with_unit``."""
+    from decimal import Decimal, InvalidOperation, localcontext
+    k = _KIND_ALIASES.get((kind or "").strip().lower(), (kind or "").strip().lower())
+    if k not in _SI_PREFIXES:
+        return None
+    try:
+        d = Decimal(str(value).strip())
+    except InvalidOperation:
+        return None
+    letter, power = _SI_PREFIXES[k][-1]
+    for cand, p in _SI_PREFIXES[k]:
+        if d == 0 or abs(d) >= Decimal(1).scaleb(p):
+            letter, power = cand, p
+            break
+    # Enough digits for any value: the default 28 would round a long one.
+    with localcontext() as ctx:
+        ctx.prec = len(d.as_tuple().digits) + 30
+        mantissa = format(d.scaleb(-power).normalize(), "f")
+    unit = _SI_UNIT[k] if (k in _SI_UNIT_ALWAYS or with_unit) else ""
+    return f"{mantissa}{letter}{unit}"
+
+
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
 
@@ -1385,10 +1433,14 @@ def register_application_tools(mcp):
         kind: Optional[str] = None,
         decimal: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Read, write or clean up a component value in the RKM code of
-        IEC 60062: a letter stands where the decimal point would be, so a
-        value survives a scaled font, a print and any locale. 4K7, 0R005,
-        2M2, 2u2, 10uF, 100nF, 2u2H, 3V3, 500mA, 0%1, 2ppm5, 125C.
+        """Read, write or clean up a component value. HOW IT IS WRITTEN IS
+        THE USER'S CHOICE on the Config tab of the bridge panel in Altium,
+        read on every call: RKM (IEC 60062, a letter where the decimal
+        point would be: 4K7, 0R005, 2u2, 10uF, 3V3), SI (4.7k, 0.005, 2.2u,
+        3.3V), SI with the unit (2.2uF, 100nF, 10uH; never on resistors), or
+        None, which leaves values as written: cleanup returns the text
+        unchanged and tostring is refused. The reply's ``value_format``
+        says which applied. Do not pick a form for the user.
 
         Done by the bridge's own value engine (no document is read or
         touched), so a script can use the same rules. NO ROUNDING: a value
@@ -1422,7 +1474,8 @@ def register_application_tools(mcp):
         Returns:
             ``text`` (cleanup, tostring), ``value`` as an exact decimal
             string and ``kind`` (cleanup, fromstring), ``rest`` (what
-            followed the value) and ``notes`` (every guess made).
+            followed the value), ``notes`` (every guess made) and
+            ``value_format`` (cleanup, tostring).
         """
         act = (action or "").strip().lower()
         if act not in ("cleanup", "fromstring", "tostring"):
@@ -1445,7 +1498,35 @@ def register_application_tools(mcp):
             params["kind"] = kind
         if decimal:
             params["decimal"] = decimal
-        return await get_bridge().send_command_async("application.format_value", params)
+        if act == "fromstring":
+            return await get_bridge().send_command_async("application.format_value", params)
+
+        from ..preferences import value_format, value_unit
+        style, unit = value_format(), value_unit()
+        if style == "none" and act == "tostring":
+            return {"ok": False, "value_format": "none",
+                    "reason": "No value format is chosen: the Config tab of the "
+                              "bridge panel in Altium says None, so values are "
+                              "left as written. The user can choose one there."}
+        reply = await get_bridge().send_command_async("application.format_value", params)
+        if not isinstance(reply, dict) or reply.get("success") is False or "text" not in reply:
+            return reply
+        reply = dict(reply)
+        if style == "none":
+            reply["text"] = str(text)
+            reply["note"] = ("Left as written: the value format on the Config tab "
+                             "of the bridge panel is None.")
+        elif style == "si":
+            exact = params.get("value") if act == "tostring" else reply.get("value")
+            kind_of = kind if act == "tostring" else reply.get("kind")
+            si = si_value_text(exact, kind_of or "", unit == "with")
+            if si is None:
+                return {"ok": False, "value_format": "si",
+                        "reason": f"No SI form for kind {kind_of!r}; the value read "
+                                  f"{exact!r}."}
+            reply["text"] = si
+        reply["value_format"] = style + ("_unit" if style == "si" and unit == "with" else "")
+        return reply
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:
