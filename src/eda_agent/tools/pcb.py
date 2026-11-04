@@ -2232,32 +2232,59 @@ def register_pcb_tools(mcp):
                               "distance_mils": repr(float(distance_mils))})
 
     @mcp.tool()
-    async def pcb_plane_connections(designator: str, pad: str = "") -> dict[str, Any]:
-        """How each pad of a part meets the internal planes, as the
-        board's rules decide it: relief, direct or no connection, and the
-        relief and clearance (conductor width, entries, air gap, relief
-        expansion, plane clearance).
+    async def pcb_plane_connections(
+        designator: str = "", pad: str = "", kind: str = "", net: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """How pads and vias meet the internal planes.
 
-        Use it to check that a power pad joins its plane solidly and a
-        signal pad clears the planes it passes.
+        Per object: the connection the board's rules give it (relief,
+        direct or none) with the relief and clearance values, the ruling
+        rule names, ``manual_reliefs`` (a hand-edited thermal relief; the
+        rule's values do not show one) and ``plane_contacts``: the planes
+        the object really passes through, each with the plane's net (on
+        a split plane, the region under the object) and ``joins`` (same net) -- an SMD pad has none, a hole spans every
+        plane, a blind / buried via only the planes it reaches.
+
+        Use it to check that a power pad or via joins its plane, and that
+        a signal via only clears the planes it passes.
 
         Args:
-            designator: The part, e.g. "U1".
-            pad: One pad name; empty lists every pad.
+            designator: One part's pads, e.g. "U1".
+            pad: One pad name of that part; empty lists every pad.
+            kind: Without a designator, "via" for the board's free vias or
+                "pad" for its free pads.
+            net: Only objects on this net.
+            limit: Most objects reported (``truncated`` says when more
+                matched; ``matched`` counts them all).
 
         Returns:
-            ``plane_layers`` and ``pads``, each with ``net``,
-            ``connection`` (relief, direct or none; ``rule_style`` is
-            Altium's number) and the relief values in mils.
+            ``plane_layers``, ``planes`` (layer, name, net), ``matched``,
+            ``truncated`` and ``pads`` or ``vias``, each with ``net``,
+            ``connection`` (``rule_style`` is Altium's number), the relief
+            values in mils, ``rule``, ``clearance_rule``,
+            ``manual_reliefs`` and ``plane_contacts``; free objects also
+            carry ``x`` / ``y`` in mils from the board origin.
         """
-        if not designator.strip():
-            return {"ok": False, "reason": "designator is required"}
-        params: dict[str, Any] = {"designator": designator.strip()}
-        if pad.strip():
-            params["pad"] = pad.strip()
+        kind = kind.strip().lower()
+        if not designator.strip() and kind not in ("via", "pad"):
+            return {"ok": False,
+                    "reason": 'designator is required, or kind="via" / "pad" '
+                              "for the free vias / pads"}
+        params: dict[str, Any] = {}
+        if designator.strip():
+            params["designator"] = designator.strip()
+            if pad.strip():
+                params["pad"] = pad.strip()
+        else:
+            params["kind"] = kind
+        if net.strip():
+            params["net"] = net.strip()
+        if limit != 500:
+            params["limit"] = str(int(limit))
         reply = await get_bridge().send_command_async("pcb.plane_connections", params)
         if isinstance(reply, dict):
-            for item in reply.get("pads") or []:
+            for item in (reply.get("pads") or []) + (reply.get("vias") or []):
                 style = item.get("rule_style")
                 # Measured on AD 26.11 by switching the rule.
                 item["connection"] = {0: "relief", 1: "direct", 2: "none"}.get(style, str(style))
