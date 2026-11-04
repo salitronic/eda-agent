@@ -2177,6 +2177,17 @@ Begin
         If (EqPos < 2) Or (Op = '') Then Begin Result := False; Exit; End;
         PropName := Copy(Condition, 1, EqPos - 1);
         Expected := Copy(Condition, EqPos + Length(Op), Length(Condition));
+        { Layer.In=A;B (Layer1.In, Layer2.In): the set of layers a       }
+        { Layer~pattern stood for, put there by CanonicalLayerFilter.    }
+        If (PropName = 'Layer.In') Or (PropName = 'Layer1.In')
+            Or (PropName = 'Layer2.In') Then
+        Begin
+            Actual := GetPCBProperty(Obj, Copy(PropName, 1, Length(PropName) - 3));
+            If FilterOpHolds(Op, Actual, Expected,
+                    Pos(';' + Actual + ';', ';' + Expected + ';') > 0) Then Continue;
+            Result := False;
+            Exit;
+        End;
         Actual := GetPCBProperty(Obj, PropName);
         If Not FilterOpHolds(Op, Actual, Expected,
                 FilterValueMatchesPCB(PropName, Actual, Expected)) Then
@@ -2184,6 +2195,122 @@ Begin
             Result := False;
             Exit;
         End;
+    End;
+End;
+
+{ A LAYER IN A FILTER MEANS A LAYER, WHATEVER IT IS CALLED (issue #211).      }
+{                                                                            }
+{ The Layer getter answers the internal name (TopLayer, MidLayer3,           }
+{ Mechanical21) and a filter used to compare that text with the value given, }
+{ exactly and case-sensitively. A user's layer name (FluidGon, L2 (GND),     }
+{ Top Layer) or a case variant then matched nothing and the call reported    }
+{ success, Layer!=<user name> matched every object, the objects on that      }
+{ layer included, so a delete written to spare one layer removed it too,     }
+{ and Layer~Fluid* never met a user name. A set= value is resolved by        }
+{ ResolveLayerId; the filter now is too, once per call: a Layer, Layer1 or   }
+{ Layer2 condition with = or != gets the internal name of the layer its      }
+{ value resolves to, and one with ~ or !~ becomes Layer.In= / Layer.In!= the }
+{ layers whose internal OR user name the pattern matches. A value that names }
+{ no layer is handed back in Bad and the condition left as it was. An        }
+{ internal name resolves to itself, so a second pass changes nothing, and    }
+{ NarrowPCBWalk then narrows a user name's walk as it does an internal one.  }
+
+{ Name;Name; of every layer whose internal or user name matches Pattern:   }
+{ the legacy ids 1..80, then Mechanical17..1024.                          }
+Function LayersMatchingPattern(Board : IPCB_Board; Pattern : String) : String;
+Var
+    Stack : IPCB_LayerStack_V7;
+    Obj : IPCB_LayerObject_V7;
+    I : Integer;
+    L : TLayer;
+    Internal, User : String;
+Begin
+    Result := '';
+    Stack := Nil;
+    Try Stack := Board.LayerStack_V7; Except Stack := Nil; End;
+    For I := 1 To 1104 Do
+    Begin
+        If I <= 80 Then
+        Begin
+            L := I;
+            Internal := LayerDisplayName(L);
+            If Internal = 'Unknown' Then Continue;
+        End
+        Else
+        Begin
+            If I - 80 <= 16 Then Continue;
+            L := MechLayerFromNumber(I - 80);
+            If L = eNoLayer Then Break;
+            Internal := 'Mechanical' + IntToStr(I - 80);
+        End;
+        User := '';
+        If Stack <> Nil Then
+        Begin
+            Obj := Nil;
+            Try Obj := Stack.LayerObject_V7[L]; Except Obj := Nil; End;
+            If Obj <> Nil Then
+                Try User := Obj.Name; Except User := ''; End;
+        End;
+        If FilterWildMatch(Internal, Pattern)
+            Or ((User <> '') And FilterWildMatch(User, Pattern)) Then
+            Result := Result + Internal + ';';
+    End;
+End;
+
+Function CanonicalLayerFilter(Board : IPCB_Board; FilterStr : String;
+    Var Bad : String) : String;
+Var
+    Remaining, Condition, PropName, Value, Op : String;
+    PipePos, EqPos : Integer;
+    L : TLayer;
+Begin
+    Result := '';
+    Bad := '';
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else Begin Condition := Remaining; Remaining := ''; End;
+        EqPos := FilterOpPos(Condition);
+        Op := FilterOpText(Condition);
+        If (EqPos > 1) And (Op <> '') Then
+        Begin
+            PropName := Copy(Condition, 1, EqPos - 1);
+            Value := Copy(Condition, EqPos + Length(Op), Length(Condition));
+            If ((PropName = 'Layer') Or (PropName = 'Layer1') Or (PropName = 'Layer2'))
+                And (Trim(Value) <> '') Then
+            Begin
+                If (Op = '=') Or (Op = '!=') Then
+                Begin
+                    L := eNoLayer;
+                    Try L := ResolveLayerId(Board, Value); Except L := eNoLayer; End;
+                    If L = eNoLayer Then
+                    Begin
+                        If Bad = '' Then Bad := Value;
+                    End
+                    Else
+                        Condition := PropName + Op + LayerDisplayName(L);
+                End
+                Else If (Op = '~') Or (Op = '!~') Then
+                Begin
+                    { A pattern that names one layer becomes that layer, so }
+                    { the walk is narrowed to it as an exact name is.       }
+                    Value := LayersMatchingPattern(Board, Value);
+                    If Op = '~' Then Op := '=' Else Op := '!=';
+                    If (Value <> '') And (Pos(';', Value) = Length(Value)) Then
+                        Condition := PropName + Op + Copy(Value, 1, Length(Value) - 1)
+                    Else
+                        Condition := PropName + '.In' + Op + Value;
+                End;
+            End;
+        End;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Condition;
     End;
 End;
 
@@ -2425,15 +2552,20 @@ End;
 { MatchesFilterPCB still checks every object the narrowed walk hands out,  }
 { so a narrowing can only drop what the filter would reject. Anything else }
 { (another operator, a name that does not resolve) walks as before.        }
+{ A Layer.In=A;B (a Layer~pattern, CanonicalLayerFilter) narrows to the    }
+{ set of those layers, so a pattern meeting a few layers walks only them. }
 Procedure NarrowPCBWalk(Board : IPCB_Board; Iter : IPCB_BoardIterator;
     FilterStr : String);
 Var
-    Remaining, Condition, PropName, Expected : String;
-    PipePos, EqPos : Integer;
+    Remaining, Condition, PropName, Expected, Name : String;
+    PipePos, EqPos, SemiPos, InSet : Integer;
     OnLayer, Got : TLayer;
-    OneLayer : IPCB_LayerSet;
+    OneLayer, Several : IPCB_LayerSet;
+    HaveSet : Boolean;
 Begin
     OnLayer := eNoLayer;
+    HaveSet := False;
+    InSet := 0;
     Remaining := FilterStr;
     While Remaining <> '' Do
     Begin
@@ -2455,12 +2587,39 @@ Begin
                 Try Got := ResolveLayerId(Board, Expected); Except Got := eNoLayer; End;
                 If (Got <> eNoLayer) And (LayerDisplayName(Got) = Expected) Then
                     OnLayer := Got;
+            End
+            Else If (PropName = 'Layer.In') And (Not HaveSet) And (Expected <> '') Then
+            Begin
+                HaveSet := True;
+                Several := LayerSet.CreateLayerSet;
+                While Expected <> '' Do
+                Begin
+                    SemiPos := Pos(';', Expected);
+                    If SemiPos = 0 Then SemiPos := Length(Expected) + 1;
+                    Name := Copy(Expected, 1, SemiPos - 1);
+                    Expected := Copy(Expected, SemiPos + 1, Length(Expected));
+                    Got := eNoLayer;
+                    Try Got := ResolveLayerId(Board, Name); Except Got := eNoLayer; End;
+                    If (Got <> eNoLayer) And (LayerDisplayName(Got) = Name) Then
+                    Begin
+                        Several.Include(Got);
+                        Inc(InSet);
+                    End
+                    Else
+                    Begin
+                        { A name that does not round-trip: walk everything. }
+                        InSet := 0;
+                        Break;
+                    End;
+                End;
             End;
         End;
     End;
     { The legacy set stops at Mechanical16: a layer past it gets a V7 set  }
     { of its own, as the layout model's copper read does (issue #155).     }
-    If OnLayer = eNoLayer Then
+    If (OnLayer = eNoLayer) And (InSet > 0) Then
+        Iter.AddFilter_IPCB_LayerSet(Several)
+    Else If OnLayer = eNoLayer Then
         Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
     Else If GetLayerString(OnLayer) = 'Unknown' Then
     Begin
@@ -2537,6 +2696,10 @@ End;
 { else the board walk, narrowed by Layer= (NarrowPCBWalk). MatchesFilterPCB   }
 { still decides every object any route hands out, so a route can only leave  }
 { out what the filter would reject.                                           }
+{ Every route sees layers by their internal names: a user name in a Layer   }
+{ condition is resolved once here, not per object (CanonicalLayerFilter). A }
+{ value that names no layer stays as given; ProcessActivePCBDoc refuses     }
+{ such a filter before it gets here.                                        }
 Procedure CollectPCBMatches(Board : IPCB_Board; ObjTypeInt : Integer;
     FilterStr : String; Limit : Integer; Matches : TInterfaceList);
 Var
@@ -2548,10 +2711,11 @@ Var
     Net : IPCB_Net;
     Comp : IPCB_Component;
     Seen : TStringList;
-    Wanted, Value : String;
+    Wanted, Value, BadLayer : String;
     HasX, HasY, IsPrimitive : Boolean;
     X, Y, Lo, Hi : TCoord;
 Begin
+    FilterStr := CanonicalLayerFilter(Board, FilterStr, BadLayer);
     Seen := TStringList.Create;
     Try
         Seen.Sorted := True;
@@ -3033,7 +3197,7 @@ Function ProcessActivePCBDoc(ObjTypeInt : Integer;
 Var
     Board : IPCB_Board;
     TotalMatched : Integer;
-    JsonItems, Why, BadLayer, BadCond : String;
+    JsonItems, Why, BadLayer, BadCond, Canon : String;
 Begin
     BadCond := FilterProblem(FilterStr);
     If BadCond <> '' Then
@@ -3079,6 +3243,16 @@ Begin
         Exit;
     End;
 
+    { A filter layer that names no layer matched nothing with = and every }
+    { object with != (a delete then removed them all), reported as success. }
+    Canon := CanonicalLayerFilter(Board, FilterStr, BadLayer);
+    If BadLayer <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name in the filter: ' + BadLayer + '. Nothing was '
+            + 'matched or changed. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     If SetStr <> '' Then
     Begin
         BadLayer := UnresolvedLayerAssignment(Board, SetStr);
@@ -3091,7 +3265,7 @@ Begin
     End;
     TotalMatched := 0;
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
-        FilterStr, PropsStr, SetStr, Mode, TotalMatched, Limit);
+        Canon, PropsStr, SetStr, Mode, TotalMatched, Limit);
 
     { Nothing matched, nothing changed: no redraw of the whole board and no }
     { dirty mark on a document the call did not touch.                     }

@@ -61,8 +61,9 @@ def test_a_layer_narrows_only_when_the_getter_would_answer_that_name():
     body = _generic("NarrowPCBWalk")
     assert "If (PropName = 'Layer') And (OnLayer = eNoLayer) Then" in body
     assert "If (Got <> eNoLayer) And (LayerDisplayName(Got) = Expected) Then" in body
-    # The getter answers Layer with LayerDisplayName, so a user name such
-    # as "Fluidgon" (which the filter never matches) keeps the full walk.
+    # The getter answers Layer with LayerDisplayName. A user name such as
+    # "Fluidgon" reaches this already turned into its internal name by
+    # CanonicalLayerFilter, so it narrows too.
     getter = _generic("GetPCBProperty")
     assert "Then Result := LayerDisplayName(Obj.Layer)" in getter
 
