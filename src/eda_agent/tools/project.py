@@ -55,6 +55,28 @@ def _record_change_order(result, driven) -> list[str]:
     return failed
 
 
+async def _footprint_source(bridge, designator: str) -> dict:
+    """Where Altium looks for a part's current footprint: the library each
+    of its datafiles names and the path it resolves to ('' when none)."""
+    try:
+        reply = await bridge.send_command_async(
+            "project.component_models",
+            {"designator": designator, "limit": "1"}, timeout=180.0)
+    except Exception as exc:                    # noqa: BLE001 - reported, not raised
+        return {"footprint_source_error": str(exc)}
+    for part in _rows(reply, "parts"):
+        models = part.get("models") if isinstance(part, dict) else None
+        for model in models or []:
+            if (isinstance(model, dict) and model.get("current")
+                    and str(model.get("type", "")).upper() == "PCBLIB"):
+                if model.get("integrated"):
+                    return {"footprint_source": [{"integrated": True}]}
+                return {"footprint_source": [
+                    {"library": f.get("library", ""), "found_at": f.get("found_at", "")}
+                    for f in model.get("datafiles") or [] if isinstance(f, dict)]}
+    return {}
+
+
 async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
     """What a schematic-to-board sync left undone, read from both sides."""
     bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
@@ -70,6 +92,8 @@ async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict
         line = change_order.failure_for(row["schematic"], list(failed), row["designator"])
         if line:
             row["eco_line"] = line
+            if change_order.says_not_found(line):
+                row.update(await _footprint_source(bridge, row["designator"]))
     missing = sorted(d for d in sch if d not in pcb)
     removed = sorted(pairs_before - await _pair_names(bridge))
     out: dict[str, Any] = {"footprint_mismatch": mismatch,
@@ -91,11 +115,17 @@ async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict
                 f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
         explained = sum(1 for row in mismatch if row.get("eco_line"))
+        unresolved = sorted({f["library"] for row in mismatch
+                             for f in row.get("footprint_source") or []
+                             if f.get("library") and not f.get("found_at")})
         problems.append(
             f"{len(mismatch)} part(s) kept a footprint the schematic no longer "
             f"uses" + (f"; for {explained} the change order says why "
                        f"(eco_line), typically a footprint it found in no "
-                       f"library it searches" if explained else ""))
+                       f"library it searches" if explained else "")
+            + (f"; Altium finds no library named {', '.join(unresolved)} "
+               f"(footprint_source): install it (lib_install_library) or "
+               f"relink the part" if unresolved else ""))
     if missing:
         problems.append(f"{len(missing)} schematic part(s) are not on the board")
     if removed:
@@ -3619,13 +3649,14 @@ def register_project_tools(mcp):
 
         Returns:
             success, pcb_path, mapping counts, components added, removed
-            and in sync, ``change_order``, and ``after_sync`` read from the
-            board: ``footprint_mismatch``, ``missing_on_board``,
-            ``diff_pairs_removed`` (board-only pairs a sync deletes) and
-            ``pad_nets`` (pads ``unbound`` or ``mismatched`` to their pin).
-            ``change_order.failed_lines`` are the lines that failed, read
-            from the dialog by OCR (names can carry 0/O, 1/l slips); a
-            mismatch that one of them explains carries it as ``eco_line``.
+            and in sync, ``change_order``, and ``after_sync``:
+            ``footprint_mismatch``, ``missing_on_board``,
+            ``diff_pairs_removed`` (board-only pairs),
+            ``pad_nets`` (pads ``unbound`` or ``mismatched``).
+            ``change_order.failed_lines``: failed lines read by OCR (0/O,
+            1/l slips); a mismatch it explains carries ``eco_line``
+            and, for Footprint Not Found, ``footprint_source``: each
+            library and ``found_at`` ('' if none).
         """
         bridge = get_bridge()
         pairs_before = await _pair_names(bridge)

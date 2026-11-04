@@ -69,7 +69,7 @@ _ROWS = ["Engineering Change Order x",
          "Modifications Status",
          "Enable Action Affected Object Affected Document Check Done Message",
          "Add Components(5)",
-         "Add T DIO To Blinker555_v4.PcbDoc Footprint Not Found D041_SElF",
+         "Add T DIO To Blinker555_v4.PcbDoc Footprint Not Found D041_AXlAL",
          "IMI Add T D12 To Blinker555_v4.PcbDoc Footprint Not Found",
          "Validate Changes Execute Changes Report Changes... Only Show Errors Close"]
 
@@ -98,8 +98,10 @@ def test_the_failed_lines_are_the_rows_left_by_the_filter(altium, grid):
     lines = change_order.failed_lines(out)
     assert lines == [_ROWS[4], _ROWS[5]]
     # The schematic's exact name finds its line past OCR's 0/O, l/I slips.
-    assert change_order.failure_for("DO-41_SEIF", lines) == _ROWS[4]
-    assert change_order.failure_for("SOT23_N_SEIF", lines) == ""
+    assert change_order.failure_for("DO-41_AXIAL", lines) == _ROWS[4]
+    assert change_order.failure_for("SOT23_N", lines) == ""
+    assert change_order.says_not_found("Add D10 Footprint N0t F0und")
+    assert not change_order.says_not_found("Add R50 Unknown Pin")
 
 
 def test_a_line_with_its_name_cut_off_is_found_by_designator():

@@ -59,6 +59,11 @@ def _squash(text: str) -> str:
     return text.translate(str.maketrans("oils", "0115"))
 
 
+def says_not_found(line: str) -> bool:
+    """The line reports something Altium found nowhere ("Not Found")."""
+    return _squash("not found") in _squash(line)
+
+
 def failure_for(footprint: str, lines: list[str], designator: str = "") -> str:
     """The failed line that names ``footprint``, matched past OCR's usual
     confusions, else a footprint line that names ``designator`` (OCR can
