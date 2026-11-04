@@ -40,8 +40,9 @@ End;
 { SolderMaskExpansionMode, Altium's numbers: from the rule or manual) and   }
 { the paste opening as a percentage (PasteMaskUsePercent,                   }
 { PasteMaskPercent) or switched off (PasteMaskEnabled).                     }
-{ Text ConvertedString is the text as shown, special strings resolved; it   }
-{ is read only. A pad's DrillType is how its hole is made (0 drilled, 1     }
+{ Text ConvertedString is the text as shown, special strings resolved, and  }
+{ UnderlyingString the text as typed (".Layer_Count" stays a link); both   }
+{ are read only. A pad's DrillType is how its hole is made (0 drilled, 1     }
 { punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
 { (its "flip on layer" option, not its side) are read only. A text's       }
 { BorderSpaceType is Altium's number for how its inverted border is sized. }
@@ -72,7 +73,8 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Or
+            (PropName = 'ConvertedString') Or (PropName = 'UnderlyingString') Or
+            (PropName = 'BorderSpaceType') Or
             (PropName = 'FontName') Or (PropName = 'TextKind') Or
             (PropName = 'FontID') Or (PropName = 'Bold') Or
             (PropName = 'Italic') Or (PropName = 'InvRectWidth') Or
@@ -215,6 +217,7 @@ Begin
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
         Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
+        Else If PropName = 'UnderlyingString' Then Result := Txt.UnderlyingString
         Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType)
         Else If PropName = 'FontName' Then Result := Txt.FontName
         Else If PropName = 'TextKind' Then Result := IntToStr(Txt.TextKind)
@@ -323,6 +326,8 @@ Begin
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
        (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or
        (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;
+    { What the text was typed as; writing Text sets it. }
+    If PropName = 'UnderlyingString' Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -2472,7 +2477,7 @@ Begin
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
-        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, FontName, '
+        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, UnderlyingString, FontName, '
         + 'TextKind, FontID, Bold, Italic, InvRectWidth, InvRectHeight, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '

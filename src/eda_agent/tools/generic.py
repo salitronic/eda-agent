@@ -610,7 +610,8 @@ def register_generic_tools(mcp):
                 UseInvertedRectangle, InvertedTTTextBorder,
                 TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
                 ConvertedString (reads: the text as shown, special
-                strings resolved); on a 3D body OverrideColor (draw its
+                strings resolved) and UnderlyingString (reads: the text
+                as typed, a special string kept as the link); on a 3D body OverrideColor (draw its
                 own colour, not the model's), Texture (an image file) and
                 TextureRotation; on a board pad DrillType (how the hole
                 is made: 0 drilled, 1 punched, 2 laser, 3 plasma) and
