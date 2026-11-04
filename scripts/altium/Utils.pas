@@ -1850,15 +1850,20 @@ End;
 { string it was handed. Silently retargeting the top layer is the bug.          }
 {                                                                              }
 { Resolution order, first hit wins:                                            }
-{   1. the copper stack's own layer names - exactly what get_layer_stackup      }
-{      reports - compared with spaces stripped and case folded, so a renamed    }
-{      plane or signal layer resolves;                                          }
-{   2. the mechanical layers' names, read the same way; they are not part of    }
-{      the FirstLayer/NextLayer walk;                                           }
-{   3. the canonical token, but ONLY when GetLayerString round-trips it. That   }
+{   1. the canonical token, but ONLY when GetLayerString round-trips it. That   }
 {      round-trip is the guard: without it the eTopLayer Else branch comes      }
 {      back as a confident wrong answer for any typo at all;                    }
-{   4. Mechanical17..1024, which have no canonical token.                       }
+{   2. MechanicalN / MechN, N up to 1024, by number;                            }
+{   3. the copper stack's own layer names - exactly what get_layer_stackup      }
+{      reports - compared with spaces stripped and case folded, so a renamed    }
+{      plane or signal layer resolves;                                          }
+{   4. the mechanical layers' names, read the same way; they are not part of    }
+{      the FirstLayer/NextLayer walk.                                           }
+{ The tokens come first because they cost nothing, and 3 and 4 read a name    }
+{ off every layer to 1024: ~0.7 s on AD 25.8 for a token whose layer carries  }
+{ another user name ("TopLayer" for a top copper named "L1 (TOP)"), paid by   }
+{ every call that named it. A user name that spells ANOTHER layer's token     }
+{ (Mechanical3 renamed "Mechanical15") now resolves to the token's layer.     }
 {..............................................................................}
 
 { Spaces stripped and case folded: the form every comparison below uses, so    }
@@ -1880,6 +1885,23 @@ Begin
     Stripped := StripChar(Trim(LayerName), ' ');
     If Stripped = '' Then Exit;
     Wanted := UpperCase(Stripped);
+
+    Candidate := GetLayerFromString(Stripped);
+    If UpperCase(GetLayerString(Candidate)) = Wanted Then
+    Begin
+        Result := Candidate;
+        Exit;
+    End;
+
+    If Copy(Wanted, 1, 4) = 'MECH' Then
+    Begin
+        MechNum := ParseMechLayerNumber(Stripped);
+        If MechNum > 0 Then
+        Begin
+            Result := MechLayerFromNumber(MechNum);
+            If Result <> eNoLayer Then Exit;
+        End;
+    End;
 
     If LayerStack <> Nil Then
     Begin
@@ -1922,19 +1944,6 @@ Begin
             End;
         End;
     End;
-
-    Candidate := GetLayerFromString(Stripped);
-    If UpperCase(GetLayerString(Candidate)) = Wanted Then
-    Begin
-        Result := Candidate;
-        Exit;
-    End;
-
-    If Copy(Wanted, 1, 4) = 'MECH' Then
-    Begin
-        MechNum := ParseMechLayerNumber(Stripped);
-        If MechNum > 0 Then Result := MechLayerFromNumber(MechNum);
-    End;
 End;
 
 { The same resolution for the handlers that hold an IPCB_Board rather than a   }
@@ -1950,6 +1959,57 @@ Begin
         Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
     End;
     Result := ResolveLayerIdInStack(LayerStack, LayerName);
+End;
+
+{ ResolveLayerId once per NAME per call, for the handlers that place a list. }
+{ The resolver matches user names first: the whole stack, then every       }
+{ mechanical layer up to 1024, reading each one's name. A canonical token  }
+{ whose layer carries another user name ("TopLayer" for a top copper named }
+{ "L1 (TOP)", or "Mechanical15") is only tried after all of that. Measured  }
+{ on AD 25.8: ~0.7 s for each such name, ~20 ms for a user name that hits;  }
+{ a track's own creation is ~5 ms. Called per row, 1000 tracks on TopLayer }
+{ held Altium for 12 minutes. Cache holds Chr(1) KEY Chr(2) ordinal Chr(1) }
+{ per name seen, KEY in the resolver's own normalised form, so the answer  }
+{ is the one the resolver gives. The caller starts it empty for each call: }
+{ a layer renamed between calls is resolved afresh.                         }
+{ The name AS GIVEN is stored too and looked up first: normalising walks   }
+{ the name a character at a time in script, ~7 ms a row measured live, and }
+{ a list repeats one spelling.                                             }
+Function CachedLayerAt(Cache : String; Key : String) : Integer;
+Var
+    P, Q : Integer;
+    Tail : String;
+Begin
+    Result := -1;
+    P := Pos(Chr(1) + Key + Chr(2), Cache);
+    If P = 0 Then Exit;
+    Tail := Copy(Cache, P + Length(Key) + 2, Length(Cache));
+    Q := Pos(Chr(1), Tail);
+    Result := StrToIntDef(Copy(Tail, 1, Q - 1), 0);
+End;
+
+Function ResolveLayerIdCached(Board : IPCB_Board; LayerName : String;
+    Var Cache : String) : TLayer;
+Var
+    Key : String;
+    Hit : Integer;
+Begin
+    Hit := CachedLayerAt(Cache, LayerName);
+    If Hit >= 0 Then
+    Begin
+        Result := Hit;
+        Exit;
+    End;
+    Key := NormalizeLayerName(LayerName);
+    Hit := CachedLayerAt(Cache, Key);
+    If Hit >= 0 Then Result := Hit
+    Else
+    Begin
+        Result := ResolveLayerId(Board, LayerName);
+        Cache := Cache + Chr(1) + Key + Chr(2) + IntToStr(Result) + Chr(1);
+    End;
+    If LayerName <> Key Then
+        Cache := Cache + Chr(1) + LayerName + Chr(2) + IntToStr(Result) + Chr(1);
 End;
 
 { A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }

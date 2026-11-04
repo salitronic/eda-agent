@@ -37,6 +37,17 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 #: free primitive of a board, tens of thousands on a large one.
 _GEOMETRY_MAP_TIMEOUT = 1800.0
 
+
+def _list_field(value: Any, what: str) -> str:
+    """A name inside a comma / pipe separated list row: one holding either
+    separator would shift every field after it, so it is refused."""
+    text = str(value or "")
+    if "," in text or "|" in text:
+        raise ValueError(f"{what} {text!r} holds ',' or '|', which separate "
+                         f"the list's fields and rows")
+    return text
+
+
 #: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
 #: names them.
 _DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
@@ -7995,7 +8006,8 @@ def register_pcb_tools(mcp):
             tracks: List of track dicts. Each dict supports:
                 x1, y1, x2, y2 (required, mils; decimals are kept)
                 width (default 10, mils; decimals are kept, so a 0.1 mm
-                rule stays 3.937), layer (default "TopLayer"),
+                rule stays 3.937), layer (default "TopLayer"; "current" =
+                the editor's current layer, see pcb_layer_view),
                 net_name (optional, empty = no net; a net the board does
                 not have skips the track)
 
@@ -8009,7 +8021,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "placed" and "failed" counts, "unknown_layers"
-            and "unknown_nets" naming what did not resolve.
+            and "unknown_nets" naming what did not resolve, and, when any
+            track took "current", "current_layer" and "on_current_layer".
         """
         parts = []
         for t in tracks:
@@ -8113,6 +8126,153 @@ def register_pcb_tools(mcp):
             params["keepout"] = "1" if keepout else "0"
         result = await bridge.send_command_async("pcb.place_arc", params)
         return result
+
+    @mcp.tool()
+    async def pcb_place_arcs(
+        arcs: list[dict[str, Any]],
+        width: float = 10,
+        layer: str = "",
+        net: str = "",
+        keepout: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Place many arcs on the active PCB in ONE call and one Altium edit.
+
+        Each layer and net name is looked up once for the whole list. Mils,
+        decimals kept.
+
+        Args:
+            arcs: List of arc dicts. Each dict supports:
+                x_center, y_center, radius (required),
+                start_angle (default 0), end_angle (default 360),
+                and optionally its own width, layer, net, keepout
+            width: Line width for every arc that gives none (default 10)
+            layer: Layer for every arc that gives none. Empty (or
+                "current") = the editor's CURRENT layer, set with
+                pcb_layer_view current_layer; it is read once per call and
+                named in the reply, since a click on another layer tab
+                between calls moves it.
+            net: Net for every arc that gives none (empty = no net); an
+                arc on a net the board does not have is skipped
+            keepout: Mark the arcs keep-outs. Omitted: on for
+                "KeepOutLayer", off elsewhere.
+
+        Returns:
+            "placed" and "failed" counts, "bad_geometry" (radius not above
+            0 or a negative width), "unknown_layers" and "unknown_nets";
+            "current_layer" / "on_current_layer" when arcs went there.
+        """
+        parts = []
+        for a in arcs:
+            own_keep = a.get("keepout")
+            parts.append(",".join([
+                _mils(a["x_center"]), _mils(a["y_center"]), _mils(a["radius"]),
+                _angle_text(a.get("start_angle", 0)),
+                _angle_text(a.get("end_angle", 360)),
+                _mils(a["width"]) if a.get("width") is not None else "",
+                _list_field(a.get("layer", ""), "layer"),
+                _list_field(a.get("net", ""), "net"),
+                "" if own_keep is None else ("1" if own_keep else "0"),
+            ]))
+        params: dict[str, Any] = {"arcs": "|".join(parts),
+                                  "width": _mils(width)}
+        if layer:
+            params["layer"] = _list_field(layer, "layer")
+        if net:
+            params["net"] = _list_field(net, "net")
+        if keepout is not None:
+            params["keepout"] = "1" if keepout else "0"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.place_arcs", params)
+
+    @mcp.tool()
+    async def pcb_place_pads(
+        pads: list[dict[str, Any]],
+        shape: str = "round",
+        x_size: Optional[float] = None,
+        y_size: Optional[float] = None,
+        corner_radius: int = 25,
+        hole_size: float = 0,
+        hole_length: float = 0,
+        hole_rotation: float = 0,
+        plated: bool = True,
+        mask_expansion: Optional[float] = None,
+        paste_expansion: Optional[float] = None,
+        layer: str = "",
+        net: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Place many free pads that are all ONE pad, moved, turned and
+        named, in ONE call and one Altium edit.
+
+        The pad is described once by the arguments; each item of ``pads``
+        only says where it goes. Use for pad arrays, test point rows,
+        fiducials, mounting holes.
+
+        Args:
+            pads: List of dicts: x, y (required), rotation (degrees,
+                default 0), name, and optionally its own layer and net
+            shape: "round" (default) / "rect" / "oct" / "roundrect";
+                "rectangular", "octagonal", "rounded_rectangular" taken too
+            x_size, y_size: Pad size (default 60 mil)
+            corner_radius: roundrect corner, percent of half the shorter
+                side (default 25)
+            hole_size: Drill (0 = SMD). A pad with a hole goes on
+                MultiLayer.
+            hole_length: Slot length; above hole_size the hole is a slot
+                along the pad's X, turned by hole_rotation
+            plated: False for a non-plated hole
+            mask_expansion, paste_expansion: Manual solder / paste mask
+                expansion (omitted = the board's rules)
+            layer: Copper layer of an SMD pad. Empty (or "current") = the
+                editor's CURRENT layer, read once and named in the reply.
+            net: Net for every pad that gives none; a pad on a net the
+                board does not have is skipped
+            units: "mil" (default) or "mm" for every length
+
+        Returns:
+            "placed", "failed", "total", "slots", "unplated",
+            "expansions", "property_failures", "unknown_layers",
+            "unknown_nets"; "current_layer" / "on_current_layer" when pads
+            went there.
+        """
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        rows = []
+        for p in pads:
+            rows.append(",".join([
+                format_length(p["x"]), format_length(p["y"]),
+                _angle_text(p.get("rotation", 0)),
+                _list_field(p.get("name", ""), "name"),
+                _list_field(p.get("layer", ""), "layer"),
+                _list_field(p.get("net", ""), "net"),
+            ]))
+        params: dict[str, Any] = {
+            "pads": "|".join(rows),
+            "shape": shape,
+            "x_size": format_length(
+                length_in(units, 60) if x_size is None else x_size),
+            "y_size": format_length(
+                length_in(units, 60) if y_size is None else y_size),
+            "corner_radius": str(int(corner_radius)),
+            "hole_size": format_length(hole_size),
+        }
+        if hole_length:
+            params["hole_length"] = format_length(hole_length)
+            params["hole_rotation"] = _angle_text(hole_rotation)
+        if not plated:
+            params["plated"] = "false"
+        if mask_expansion is not None:
+            params["mask_expansion"] = format_length(mask_expansion)
+        if paste_expansion is not None:
+            params["paste_expansion"] = format_length(paste_expansion)
+        if layer:
+            params["layer"] = _list_field(layer, "layer")
+        if net:
+            params["net"] = _list_field(net, "net")
+        if normalise_units(units) == "mm":
+            params["units"] = "mm"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.place_pads", params)
 
     @mcp.tool()
     async def pcb_place_text(
