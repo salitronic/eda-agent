@@ -2997,6 +2997,10 @@ Begin
                 Finally
                     FoundObj.EndModify;
                 End;
+                { A via's mask moves its box but not its index entry. }
+                If (FoundObj.ObjectId = eViaObject)
+                    And (Pos('SolderMask', SetStr) > 0) Then
+                    ReindexBoardObject(Board, FoundObj);
                 FoundObj.GraphicallyInvalidate;
                 Inc(TotalMatched);
             End;

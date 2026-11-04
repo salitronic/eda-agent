@@ -17569,6 +17569,7 @@ Begin
             Via.SetState_Cache := Cache;
             PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
+            ReindexBoardObject(Board, Via);
             Via.GraphicallyInvalidate;
             Cache := Via.GetState_Cache;
             Ok := Via.SolderMaskExpansionFromHoleEdge
@@ -17758,6 +17759,7 @@ Begin
             End;
             PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
+            ReindexBoardObject(Board, Via);
             Via.GraphicallyInvalidate;
             If Ok Then Inc(Changed) Else Inc(Failed);
             NetName := '';

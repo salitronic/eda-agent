@@ -2036,6 +2036,26 @@ Begin
         Cache := Cache + Chr(1) + LayerName + Chr(2) + IntToStr(Result) + Chr(1);
 End;
 
+{ A VIA'S MASK WRITE LEAVES THE SPATIAL INDEX BEHIND (issue #208).         }
+{                                                                            }
+{ A via's bounding box includes its solder-mask expansion, and the mask is   }
+{ written through the pad cache. The getters see the new box at once, but   }
+{ the board's spatial index keeps the old one: neither the object's own     }
+{ BeginModify / EndModify nor the PCBM_BeginModify / PCBM_EndModify robot   }
+{ messages re-index it, so a spatial search by the new bounds finds nothing.}
+{ Taking the via off the board and putting it back does, measured on AD    }
+{ 26.11: the net stays, one Undo restores the old mask, and the via is      }
+{ found by its bounds before and after. Call it after the write, outside    }
+{ the object's modify bracket and inside the caller's PcbBeginEdit.         }
+Procedure ReindexBoardObject(Board : IPCB_Board; Obj : IPCB_Primitive);
+Begin
+    If (Board = Nil) Or (Obj = Nil) Then Exit;
+    Try
+        Board.RemovePCBObject(Obj);
+        Board.AddPCBObject(Obj);
+    Except End;
+End;
+
 { A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
 {                                                                            }
 { The Selection Filter (the per-type toggles in the Properties panel) also   }
