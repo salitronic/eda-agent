@@ -212,6 +212,7 @@ object StatusForm: TStatusForm
       Height = 62
       BevelOuter = bvNone
       Color = $00404040
+      OnDblClick = pnl_K4DblClick
       object lbl_LblStop: TLabel
         Left = 0
         Top = 9
@@ -226,6 +227,7 @@ object StatusForm: TStatusForm
         Font.Name = 'Segoe UI'
         Font.Style = [fsBold]
         ParentFont = False
+        OnDblClick = pnl_K4DblClick
       end
       object lbl_ValStop: TLabel
         Left = 0
@@ -241,6 +243,7 @@ object StatusForm: TStatusForm
         Font.Name = 'Segoe UI Semibold'
         Font.Style = []
         ParentFont = False
+        OnDblClick = pnl_K4DblClick
       end
     end
   end

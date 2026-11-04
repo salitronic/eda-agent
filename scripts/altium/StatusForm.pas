@@ -481,7 +481,8 @@ Begin
     Tip := 'Time left before the bridge stops on its own when no commands '
         + 'arrive. Every command starts the countdown again, and so does '
         + 'Renew. Amber under two minutes, red under 30 seconds; it does not '
-        + 'run while paused.';
+        + 'run while paused. Double-click to switch auto-off off ("always on") '
+        + 'or back on for this session; the config file is not changed.';
     SetTip(pnl_K4, Tip);  SetTip(lbl_LblStop, Tip);  SetTip(lbl_ValStop, Tip);
 
     Tip := 'The latest error or notice from the bridge.';
@@ -624,6 +625,16 @@ Var
     Col : Cardinal;
     Caption : String;
 Begin
+    { 0 = no auto-off: the countdown would otherwise subtract the elapsed }
+    { time from 0 and show a meaningless number.                          }
+    If AutoShutdownMs = 0 Then
+    Begin
+        Try
+            lbl_ValStop.Font.Color := COLOR_ACCENT_GREEN;
+            lbl_ValStop.Caption := 'always on';
+        Except End;
+        Exit;
+    End;
     If IdleSecToShutdown <= 30 Then Col := COLOR_ACCENT_RED
     Else If IdleSecToShutdown <= 120 Then Col := COLOR_ACCENT_AMBER
     Else Col := COLOR_ACCENT_GREEN;
@@ -1062,6 +1073,24 @@ Begin
     { Also reset the local tick so the visible countdown jumps back to the   }
     { full window immediately, without waiting for the next poll.            }
     Try LastActivityTick := GetTickCount; Except End;
+End;
+
+{ Double-click on the auto-off card: "always on" (no auto-off) or back to  }
+{ the countdown, from the full configured period. For this session only;   }
+{ mcp_config.json keeps its auto_shutdown_ms.                              }
+Procedure pnl_K4DblClick(Sender : TObject);
+Begin
+    If AutoShutdownMs > 0 Then
+        AutoShutdownMs := 0
+    Else
+    Begin
+        AutoShutdownMs := ConfiguredShutdownMs;
+        If AutoShutdownMs = 0 Then AutoShutdownMs := 600000;
+        { Start from the full period, as Renew does. }
+        Try RenewRequested := True; Except End;
+        Try LastActivityTick := GetTickCount; Except End;
+    End;
+    ColorCountdown(AutoShutdownMs Div 1000);
 End;
 
 

@@ -28,7 +28,7 @@ HELD_SCHEMATIC_EDIT = {"SchHeld", "SchHeldDoc", "SchHeldPath"}
 SESSION = {
     # Workspace, pump and polling configuration.
     "WorkspaceDir", "Running", "PollIntervalActiveMs", "PollIntervalIdleMs",
-    "IdleThreshold", "AutoShutdownMs", "YieldIterations", "YieldEveryNActive",
+    "IdleThreshold", "AutoShutdownMs", "ConfiguredShutdownMs", "YieldIterations", "YieldEveryNActive",
     "PumpStopPath", "PumpIdleCount", "PumpLastActivityMs", "PumpInterval",
     "PumpInTick", "PumpFinalised", "PumpQuitting", "PumpTicked",
     # Config tab settings.
