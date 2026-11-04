@@ -1,4 +1,4 @@
-# Release verification: 2026.11.04.12
+# Release verification: 2026.11.04.14
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -241,6 +241,8 @@ works elsewhere cannot be an undeclared identifier:
 | 64, embedded records | `Description` on an embedded object | yes, `Library.pas` (footprint descriptions) | low, one record; ran live, read back, undone |
 | 64, layer move | `IntelliMoveLayerUp`, `IntelliMoveLayerDown` on the Layer Stack Manager's editor | no, nowhere | medium, reorders the stack; ran live down and back up, tracks stayed on their layers |
 | 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
+| 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
+| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -416,7 +418,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.04.12`, `version_match` =
+Expect `altium_script_version` = `2026.11.04.14`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3627,6 +3629,49 @@ scratch boards Tidy.PcbDoc and SymStack.PcbDoc:
 Not run live here: the replicate-layout net count, region holes in
 `pcb_apply_geometry_map` and the Online DRC switch, which their author
 ran on AD 25.8.1.
+
+## 65. Blankets, and vertex reads on objects without vertices
+
+Measured 2026-11-04 on AD 26.11.1.5 with the first 4 November blanket build, on a scratch
+project with two labelled wires, one inside the blanket and one outside:
+
+* `sch_place_blanket` with `{"NetClass": "TESTCLASS"}` placed the
+  blanket and its directive on the first vertex; after a compile
+  `sch_get_blankets` listed it with that directive and coverage
+  `["SIG_IN"]` only.
+* `obj_query eBlanket` read `Vertices`, `VerticesCount`, `LineStyle`,
+  `Collapsed`, `Transparent` and `Color`.
+* `obj_modify eBlanket` set `Vertices` to an outline over both wires and
+  `LineStyle=1`; after a recompile the coverage was
+  `["SIG_IN","SIG_OUT"]` and `line_style` 1.
+* `obj_delete eBlanket` removed it; the query then found none.
+* `obj_query` on a rectangle asking `VerticesCount,LineStyle` returned
+  both as unreadable and the bridge kept answering. The same request
+  halted the script before.
+
+Not run live here: a directive held inside a blanket drawn in Altium's
+editor, which `sch_get_directives` now reports with owner `blanket`.
+
+## 66. A write that raised is reported
+
+Every `Try` around a property write whose `Except` was empty now either
+calls `NoteWriteFailed`, which puts `writes_failed`, `writes_failed_at`
+and `writes_warning` on the reply, or carries a comment saying why
+nothing is lost (read back below, a flag in the reply, display only).
+`tests/test_write_failures_are_reported.py` refuses a new silent one.
+The coverage list of `sch_get_blankets` gives each blanket's `index`
+instead of a position, which the compiled blanket does not have.
+
+Live check after the deploy:
+
+1. Ping: `altium_script_version` as at the top of this page, no stale
+   units. Then one call per unit: `obj_count` (generic),
+   `lib_get_components` on an open library (library),
+   `pcb_get_board_statistics` (board), `proj_get_focused` (project).
+2. On a scratch sheet, place a note, a text frame and a blanket; read
+   them back and confirm no `writes_failed` on any of the replies.
+3. On a scratch board, set a track width and a rule's comment; confirm
+   no `writes_failed`.
 
 ## Still open, and not blocking
 

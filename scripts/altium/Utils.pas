@@ -2053,7 +2053,7 @@ Begin
     Try
         Board.RemovePCBObject(Obj);
         Board.AddPCBObject(Obj);
-    Except End;
+    Except NoteWriteFailed('re-index an object on the board'); End;
 End;
 
 { A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
@@ -2073,13 +2073,13 @@ Begin
     Result := False;
     If Board = Nil Then Exit;
     Try Result := Board.SelectedObjects_FilterDisabled; Except Result := False; End;
-    Try Board.SelectedObjects_FilterDisabled := True; Except End;
+    Try Board.SelectedObjects_FilterDisabled := True; Except NoteWriteFailed('turn the selection filter off (a selection may miss objects)'); End;
 End;
 
 Procedure PcbSelectFilterRestore(Board : IPCB_Board; Was : Boolean);
 Begin
     If Board = Nil Then Exit;
-    Try Board.SelectedObjects_FilterDisabled := Was; Except End;
+    Try Board.SelectedObjects_FilterDisabled := Was; Except NoteWriteFailed('restore the selection filter'); End;
 End;
 
 { The names this board actually answers to, appended to an UNKNOWN_LAYER       }

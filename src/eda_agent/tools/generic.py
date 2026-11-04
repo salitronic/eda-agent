@@ -3055,13 +3055,7 @@ def register_generic_tools(mcp):
             project, so coverage is empty.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("generic.get_blankets", {})
-        # The compiled blanket has no location of its own (Altium reports
-        # 0,0 for every one), so a position here would only mislead.
-        for entry in result.get("coverage", []):
-            entry.pop("x", None)
-            entry.pop("y", None)
-        return result
+        return await bridge.send_command_async("generic.get_blankets", {})
 
     @mcp.tool()
     async def sch_place_image(

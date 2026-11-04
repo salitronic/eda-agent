@@ -400,7 +400,8 @@ Begin
     End;
     If Discard Then
     Begin
-        Try ServerDoc.SetModified(False); Except End;
+        { Still marked, the close can raise Altium's save prompt. }
+        Try ServerDoc.SetModified(False); Except NoteWriteFailed('clear the modified flag before close'); End;
     End;
     Client.CloseDocument(ServerDoc);
     Again := Nil;
@@ -833,7 +834,7 @@ Begin
     If FileExists(FilePath) Then
         Try AgeBefore := FileAge(FilePath); Except AgeBefore := -1; End;
     Saved := False;
-    Try ServerDoc.SetFileName(FilePath); Except End;
+    Try ServerDoc.SetFileName(FilePath); Except { the file check below decides } End;
     Try
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
@@ -937,8 +938,8 @@ Begin
     If DocWasEdited(FilePath) Then WasModified := True;
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
-    Try ServerDoc.SetModified(True); Except End;
-    Try ServerDoc.DoFileSave(''); Except End;
+    Try ServerDoc.SetModified(True); Except { the file age below decides } End;
+    Try ServerDoc.DoFileSave(''); Except { the file age below decides } End;
     AgeAfter := -1;
     Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
     Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);

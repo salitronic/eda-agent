@@ -1624,6 +1624,8 @@ Procedure ResetItemState(Dummy : Integer);
 Begin
     SheetsSeen := 0;
     SheetsSkipped := 0;
+    WritesFailed := 0;
+    WritesFailedAt := '';
     LibScopeName := '';
     LibScopePart := 0;
     BoardFallbackPath := '';
@@ -1683,6 +1685,7 @@ Begin
             'commands, or audit.* for design-lint checks.');
     End;
     Result := SheetCoverage(Result);
+    Result := WriteFailures(Result);
     Result := BoardFallbackNote(Result);
     Result := SavingNote(Result);
 End;
@@ -2212,7 +2215,7 @@ Begin
 
     { FIRST, and unconditionally. A tick that fires after this point would }
     { run against an engine Altium may already be unloading.                }
-    Try tmr_Poll.Enabled := False; Except End;
+    Try tmr_Poll.Enabled := False; Except { the engine is going away; nothing is left to tell } End;
 
     QuitTag := 'no';
     If PumpQuitting Then QuitTag := 'yes';
@@ -2386,7 +2389,7 @@ Begin
                 If PumpInterval <> PollIntervalActiveMs Then
                 Begin
                     PumpInterval := PollIntervalActiveMs;
-                    Try tmr_Poll.Interval := PumpInterval; Except End;
+                    Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
@@ -2410,7 +2413,7 @@ Begin
                     If PumpInterval <> PollIntervalIdleMs Then
                     Begin
                         PumpInterval := PollIntervalIdleMs;
-                        Try tmr_Poll.Interval := PumpInterval; Except End;
+                        Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                     End;
                 End;
                 If (PumpIdleCount Mod 10) = 0 Then
@@ -2515,7 +2518,7 @@ Begin
     Try
         tmr_Poll.Interval := PumpInterval;
         tmr_Poll.Enabled := True;
-    Except End;
+    Except { read back below } End;
     { Read back: an arm that raised inside the Try used to leave a session }
     { that logged _session_start and then served nothing, with no sign.    }
     Try Armed := tmr_Poll.Enabled; Except Armed := False; End;

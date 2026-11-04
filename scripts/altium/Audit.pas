@@ -1132,7 +1132,7 @@ Begin
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
-            Except End;
+            Except { a region that cannot be read is skipped; this only reads } End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
@@ -4171,7 +4171,7 @@ Begin
                                     ItemsJson := ItemsJson + JsonObj(EntryJson);
                                 End;
                             End;
-                        Except End;
+                        Except { a layer that cannot be read is skipped; this only reads } End;
                         Layer := Stack.NextLayer(Layer);
                     End;
                 End

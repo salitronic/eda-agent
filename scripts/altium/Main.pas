@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.13';
+    SCRIPT_VERSION = '2026.11.04.14';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -153,6 +153,11 @@ Var
     { ProcessCommand; see ProjectSheet and SheetCoverage.                  }
     SheetsSeen : Integer;
     SheetsSkipped : Integer;
+    { Writes that raised inside a Try whose handler had nothing else to do, }
+    { in the current request, and where (the first few). Reset per request }
+    { by ResetItemState; see NoteWriteFailed and WriteFailures.             }
+    WritesFailed : Integer;
+    WritesFailedAt : String;
     { The board GetPCBBoardAnywhere answered from when none was focused,  }
     { and the kind of the document that was in front; reset per request   }
     { and put on the reply by BoardFallbackNote. BoardMissWhy says why it }
@@ -720,6 +725,26 @@ Begin
     SchServer.ProcessControl.PostProcess(Doc, Name);
 End;
 
+{ A write that raised inside a Try whose handler has nothing else to do.  }
+{ Counted and named for the reply (see WriteFailures, later in this unit, }
+{ and the note above it). Defined here, ahead of every helper that calls  }
+{ it: DelphiScript has no forward declarations.                           }
+Procedure NoteWriteFailed(Where : String);
+Begin
+    Inc(WritesFailed);
+    { The first eight places are enough to find the cause; the count says }
+    { how many more there were.                                           }
+    If WritesFailed <= 8 Then
+    Begin
+        If WritesFailedAt <> '' Then WritesFailedAt := WritesFailedAt + ',';
+        { Labels are code names; a quote is the one character that could  }
+        { break the JSON (EscapeJsonString is in a later unit).            }
+        WritesFailedAt := WritesFailedAt + '"'
+            + StringReplace(StringReplace(Where, '\', '/', MkSet(rfReplaceAll)),
+                            '"', '''', MkSet(rfReplaceAll)) + '"';
+    End;
+End;
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -728,7 +753,7 @@ Begin
     NoteDocEdited(FilePath);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 End;
 
 {..............................................................................}
@@ -1136,8 +1161,8 @@ Begin
         SaveAttempts := SaveAttempts + 1;
         AgeBefore := -1;
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
-        Try ServerDoc.SetModified(True); Except End;
-        Try ServerDoc.DoFileSave(''); Except End;
+        Try ServerDoc.SetModified(True); Except { the file age below decides } End;
+        Try ServerDoc.DoFileSave(''); Except { the file age below decides } End;
         { Once written, a document has nothing pending until the next edit. }
         { Any kind, not only libraries: a stop saves what was edited, and a  }
         { sheet left marked would be rewritten by every later stop.          }
@@ -1167,7 +1192,7 @@ Begin
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
-    Try ProjDoc.SetModified(True); Except End;
+    Try ProjDoc.SetModified(True); Except { the save below decides Result } End;
     Try
         ProjDoc.DoFileSave('');
         Result := True;
@@ -1190,9 +1215,9 @@ Begin
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
             If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
             Begin
-                Try ProjectServerDoc.DoFileSave(''); Except End;
+                Try ProjectServerDoc.DoFileSave(''); Except { CountDirtyInProject reports what stayed unsaved } End;
             End;
-    Except End;
+    Except { CountDirtyInProject reports what stayed unsaved } End;
 End;
 
 { CountDirtyInProject / CountDirtyDocuments - how many documents are STILL     }
@@ -2193,6 +2218,41 @@ Begin
         + 'and were NOT read, so counts and findings cover only the rest. '
         + 'Run proj_load_sheets and ask again."';
     { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{..............................................................................}
+{ A WRITE THAT RAISED IS NOT A WRITE THAT HAPPENED.                           }
+{                                                                              }
+{ Most property writes sit in a Try so one refused value does not abort the   }
+{ rest of an edit. With an empty handler the reply still said success, and   }
+{ the caller had no way to tell the value was never set. A handler with      }
+{ nothing else to do calls NoteWriteFailed; WriteFailures puts the count and  }
+{ the places on the reply at the one dispatch point, as SheetCoverage does.  }
+{..............................................................................}
+
+{ NoteWriteFailed itself is defined near the top of this unit, before the  }
+{ first helper that calls it.                                                }
+
+{ The reply with the failed writes added. Only a success whose data is an    }
+{ object is touched: an error already says it failed.                        }
+Function WriteFailures(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If WritesFailed = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"writes_failed":' + IntToStr(WritesFailed)
+        + ',"writes_failed_at":[' + WritesFailedAt + ']'
+        + ',"writes_warning":"' + IntToStr(WritesFailed) + ' write(s) in this '
+        + 'call raised and did not take effect, although the call went on: '
+        + 'read the objects back before relying on them."';
     If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;

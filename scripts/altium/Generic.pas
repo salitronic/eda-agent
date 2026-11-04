@@ -376,19 +376,19 @@ Begin
     B := (LowerCase(Value) = 'true') Or (Value = '1');
     If PropName = 'SuppressAll' Then
     Begin
-        Try N.SuppressAll := B; Except End;
+        Try N.SuppressAll := B; Except NoteWriteFailed('NoERC.SuppressAll'); End;
     End
     Else If PropName = 'IsActive' Then
     Begin
-        Try N.IsActive := B; Except End;
+        Try N.IsActive := B; Except NoteWriteFailed('NoERC.IsActive'); End;
     End
     Else If PropName = 'ErrorKindSetToSuppress' Then
     Begin
-        Try N.StrErrorKindSetToSuppress := Value; Except End;
+        Try N.StrErrorKindSetToSuppress := Value; Except NoteWriteFailed('NoERC.ErrorKindSetToSuppress'); End;
     End
     Else If PropName = 'ConnectionPairsToSuppress' Then
     Begin
-        Try N.StrConnectionPairsToSuppress := Value; Except End;
+        Try N.StrConnectionPairsToSuppress := Value; Except NoteWriteFailed('NoERC.ConnectionPairsToSuppress'); End;
     End;
 End;
 
@@ -1057,7 +1057,8 @@ Begin
             If Field = 'Location.X' Then Loc.X := MilsToCoordF(StrToFloatDef(Value, 0));
             If Field = 'Location.Y' Then Loc.Y := MilsToCoordF(StrToFloatDef(Value, 0));
             Lbl.Location := Loc;
-            Try Lbl.Autoposition := False; Except End;
+            { Left on, Altium puts the moved label back where it was. }
+            Try Lbl.Autoposition := False; Except NoteWriteFailed('Label.Autoposition off after a move'); End;
         End;
         SchEndModify(Lbl);
         Result := True;
@@ -1114,17 +1115,17 @@ Begin
         Lbl := SchLabelOf(Obj, 'Designator');
         If Lbl <> Nil Then
         Begin
-            Try Lbl.Autoposition := True; Except End;
+            Try Lbl.Autoposition := True; Except NoteWriteFailed('Designator.Autoposition'); End;
         End;
         Lbl := SchLabelOf(Obj, 'Comment');
         If Lbl <> Nil Then
         Begin
-            Try Lbl.Autoposition := True; Except End;
+            Try Lbl.Autoposition := True; Except NoteWriteFailed('Comment.Autoposition'); End;
         End;
         Lbl := SchLabelOf(Obj, 'Filename');
         If Lbl <> Nil Then
         Begin
-            Try Lbl.Autoposition := True; Except End;
+            Try Lbl.Autoposition := True; Except NoteWriteFailed('Filename.Autoposition'); End;
         End;
     End;
     SchBeginModify(Obj);
@@ -1604,12 +1605,12 @@ Begin
         Begin
             Impl := Impls.Items[I];
             SchBeginModify(Impl);
-            Try Impl.IsCurrent := False; Except End;
+            Try Impl.IsCurrent := False; Except { read back below } End;
             SchEndModify(Impl);
         End;
     Impl := Impls.Items[K];
     SchBeginModify(Impl);
-    Try Impl.IsCurrent := True; Except End;
+    Try Impl.IsCurrent := True; Except { read back below } End;
     SchEndModify(Impl);
 
     Held := True;
@@ -1634,7 +1635,7 @@ Begin
         Begin
             Impl := Impls.Items[I];
             SchBeginModify(Impl);
-            Try Impl.IsCurrent := False; Except End;
+            Try Impl.IsCurrent := False; Except NoteWriteFailed('restore footprint model IsCurrent'); End;
             SchEndModify(Impl);
         End;
     For I := 0 To Impls.Count - 1 Do
@@ -1642,7 +1643,7 @@ Begin
         Begin
             Impl := Impls.Items[I];
             SchBeginModify(Impl);
-            Try Impl.IsCurrent := True; Except End;
+            Try Impl.IsCurrent := True; Except NoteWriteFailed('restore footprint model IsCurrent'); End;
             SchEndModify(Impl);
         End;
     After := Before;
@@ -1748,7 +1749,7 @@ Begin
     Old := '';
     Try Old := Impl.MapAsString; Except End;
     SchBeginModify(Impl);
-    Try Impl.MapAsString := Wanted; Except End;
+    Try Impl.MapAsString := Wanted; Except { read back below } End;
     SchEndModify(Impl);
     Got := '';
     Try Got := Impl.MapAsString; Except End;
@@ -1758,7 +1759,7 @@ Begin
         Exit;
     End;
     SchBeginModify(Impl);
-    Try Impl.MapAsString := Old; Except End;
+    Try Impl.MapAsString := Old; Except NoteWriteFailed('restore footprint pin map'); End;
     SchEndModify(Impl);
 End;
 
@@ -2437,14 +2438,19 @@ Begin
         Else If PropName = 'UniqueId' Then
         Begin
             Comp := Obj;
-            Try Comp.SetState_UniqueId(Value); Except End;
-            Try Comp.UniqueId := Value; Except End;
+            { Two spellings of one write; the read-back settles whether it took. }
+            Try Comp.SetState_UniqueId(Value); Except { read back below } End;
+            Try Comp.UniqueId := Value; Except { read back below } End;
+            WroteOK := False;
+            Try WroteOK := (Comp.UniqueId = Value); Except End;
         End
         Else If PropName = 'CurrentPartID' Then
         Begin
             Comp := Obj;
-            Try Comp.SetState_CurrentPartID(StrToIntDef(Value, 1)); Except End;
-            Try Comp.CurrentPartID := StrToIntDef(Value, 1); Except End;
+            Try Comp.SetState_CurrentPartID(StrToIntDef(Value, 1)); Except { read back below } End;
+            Try Comp.CurrentPartID := StrToIntDef(Value, 1); Except { read back below } End;
+            WroteOK := False;
+            Try WroteOK := (Comp.CurrentPartID = StrToIntDef(Value, 1)); Except End;
         End
         Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
             Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
@@ -2464,7 +2470,9 @@ Begin
               ISch_Component in this DelphiScript, and undeclared
               identifiers raise a modal that bypasses Try/Except. }
             Comp := Obj;
-            Try Comp.PartCount := StrToIntDef(Value, 1); Except End;
+            Try Comp.PartCount := StrToIntDef(Value, 1); Except { read back below } End;
+            WroteOK := False;
+            Try WroteOK := (Comp.PartCount = StrToIntDef(Value, 1)); Except End;
         End
 
         // Sub-object string properties (compound interfaces, typed cast required)
@@ -2697,11 +2705,11 @@ Begin
                 { components and the plain property only for non-component  }
                 { primitives.                                                }
                 Comp := Obj;
-                Try Comp.SetState_IsMirrored(StrToBool(Value)); Except End;
+                Try Comp.SetState_IsMirrored(StrToBool(Value)); Except WroteOK := False; End;
             End
             Else
             Begin
-                Try Obj.IsMirrored := StrToBool(Value); Except End;
+                Try Obj.IsMirrored := StrToBool(Value); Except WroteOK := False; End;
             End;
         End
         Else If PropName = 'Selection'   Then Obj.Selection := StrToBool(Value)
@@ -2785,9 +2793,15 @@ End;
 Procedure SetSchPartId(Comp : ISch_Component; PartId : Integer);
 Begin
     SchBeginModify(Comp);
-    Try Comp.SetState_CurrentPartID(PartId); Except End;
-    Try Comp.CurrentPartID := PartId; Except End;
+    { Two spellings of one write; the read-back settles whether it took. }
+    Try Comp.SetState_CurrentPartID(PartId); Except { read back below } End;
+    Try Comp.CurrentPartID := PartId; Except { read back below } End;
     SchEndModify(Comp);
+    Try
+        If Comp.CurrentPartID <> PartId Then NoteWriteFailed('CurrentPartID');
+    Except
+        NoteWriteFailed('CurrentPartID');
+    End;
     RefreshSchObjectRender(Comp);
 End;
 
@@ -3231,7 +3245,7 @@ Begin
         Comp := It.FirstSchObject;
         While Comp <> Nil Do
         Begin
-            Try Comp.RemoveSchObject(Obj); Except End;
+            Try Comp.RemoveSchObject(Obj); Except { not this component's; the caller looks again } End;
             Comp := It.NextSchObject;
         End;
     Finally
@@ -3390,7 +3404,7 @@ Begin
                     Break;
                 End;
                 RemoveFromComponents(SchDoc, FoundObj);
-                Try SchDoc.RemoveSchObject(FoundObj); Except End;
+                Try SchDoc.RemoveSchObject(FoundObj); Except { the next pass finds it again and counts the fault } End;
                 { MEASURED: the stuck No ERC then went from the sheet and the }
                 { saved file, yet the compiler kept a copy at its old place  }
                 { until the document was closed and reloaded.                }
@@ -3422,14 +3436,14 @@ Begin
                             Sym.RemoveSchObject(FoundObj);
                             Removed := True;
                             Break;
-                        Except End;
+                        Except { not this symbol's entry; try the next } End;
                         Sym := SymIter.NextSchObject;
                     End;
                 Finally
                     SchDoc.SchIterator_Destroy(SymIter);
                 End;
                 If Not Removed Then
-                    Try SchDoc.RemoveSchObject(FoundObj); Except End;
+                    Try SchDoc.RemoveSchObject(FoundObj); Except { the next pass finds it again and counts the fault } End;
             End
             Else
             Begin
@@ -4924,7 +4938,7 @@ Begin
                 AllNet := Iterator.FirstPCBObject;
                 While AllNet <> Nil Do
                 Begin
-                    Try AllNet.IsHighlighted := False; Except End;
+                    Try AllNet.IsHighlighted := False; Except NoteWriteFailed('clear net highlight'); End;
                     AllNet := Iterator.NextPCBObject;
                 End;
             Finally
@@ -4941,7 +4955,7 @@ Begin
         End;
 
         PcbBeginEdit(0);
-        Try Net.IsHighlighted := True; Except End;
+        Try Net.IsHighlighted := True; Except NoteWriteFailed('Net.IsHighlighted'); End;
         PcbEndEdit(0);
         Try Board.GraphicallyInvalidate; Except End;
 
@@ -4997,7 +5011,7 @@ Begin
 
                     If (ObjNet <> '') And (UpperCase(ObjNet) = TargetUpper) Then
                     Begin
-                        Try Obj.Selection := True; Except End;
+                        Try Obj.Selection := True; Except NoteWriteFailed('select net object'); End;
                         Matched := Matched + 1;
                     End;
                     Obj := SchIter.NextSchObject;
@@ -5055,7 +5069,7 @@ Begin
                         Net.IsHighlighted := False;
                         Cleared := Cleared + 1;
                     End;
-                Except End;
+                Except NoteWriteFailed('clear net highlight'); End;
                 Net := Iterator.NextPCBObject;
             End;
             PcbEndEdit(0);
@@ -5086,7 +5100,7 @@ Begin
                             Obj.Selection := False;
                             Cleared := Cleared + 1;
                         End;
-                    Except End;
+                    Except NoteWriteFailed('deselect'); End;
                     Obj := SchIter.NextSchObject;
                 End;
             Finally
@@ -5172,7 +5186,7 @@ Begin
       Save-As via WorkspaceManager:SaveObject (same fallback as
       App_CreateDocument). }
     Saved := False;
-    Try ServerDoc.SetFileName(NewDocPath); Except End;
+    Try ServerDoc.SetFileName(NewDocPath); Except { the file check below decides } End;
     Try
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
@@ -5844,7 +5858,7 @@ Begin
                     Loc.X := CompX + (CompX - Loc.X);
                     Prim.Location := Loc;
                     Moved := Moved + 1;
-                Except End;
+                Except NoteWriteFailed('mirror primitive Location'); End;
             End;
             If (Not Handled)
                And ((Kind = ePolygon) Or (Kind = ePolyline) Or (Kind = eBezier)) Then
@@ -5860,7 +5874,7 @@ Begin
                         Vtx := Prim.GetState_Vertex(I);
                         Vtx.X := CompX + (CompX - Vtx.X);
                         Prim.SetState_Vertex(I, Vtx);
-                    Except End;
+                    Except NoteWriteFailed('mirror primitive vertex'); End;
                 End;
                 If Cnt > 0 Then Moved := Moved + 1
                 Else Skipped := Skipped + 1;
@@ -5964,7 +5978,7 @@ Begin
                         Prim.Location := Loc;
                         Prim.Corner := Crn;
                     End;
-                Except End;
+                Except NoteWriteFailed('mirror primitive Corner'); End;
             End;
 
             { A horizontal mirror flips a pin that points left or right and   }
@@ -5975,7 +5989,7 @@ Begin
                     Ori := Prim.Orientation;
                     If Ori = 0 Then Prim.Orientation := 2
                     Else If Ori = 2 Then Prim.Orientation := 0;
-                Except End;
+                Except NoteWriteFailed('mirror pin Orientation'); End;
             End;
 
             Prim := PIter.NextSchObject;
@@ -5995,15 +6009,15 @@ Begin
         Loc := Found.Designator.Location;
         Loc.X := CompX + (CompX - Loc.X);
         Found.Designator.Location := Loc;
-    Except End;
+    Except NoteWriteFailed('mirror Designator location'); End;
     Try
         Loc := Found.Comment.Location;
         Loc.X := CompX + (CompX - Loc.X);
         Found.Comment.Location := Loc;
-    Except End;
+    Except NoteWriteFailed('mirror Comment location'); End;
 
     { The flag last, so the instance records what the geometry now shows.     }
-    Try Found.SetState_IsMirrored(WantMirror); Except End;
+    Try Found.SetState_IsMirrored(WantMirror); Except NoteWriteFailed('IsMirrored'); End;
 
     SchEndModify(Found);
     SchEndEdit(SchDoc, 'Edit');
@@ -6296,7 +6310,7 @@ Begin
         Else If LW = 1 Then Rect.LineWidth := eSmall
         Else If LW = 2 Then Rect.LineWidth := eMedium
         Else Rect.LineWidth := eLarge;
-    Except End;
+    Except NoteWriteFailed('Rectangle.LineWidth'); End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Rect);
@@ -6356,7 +6370,7 @@ Begin
         If LW <= 1 Then Line.LineWidth := eSmall
         Else If LW = 2 Then Line.LineWidth := eMedium
         Else Line.LineWidth := eLarge;
-    Except End;
+    Except NoteWriteFailed('Line.LineWidth'); End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Line);
@@ -6415,7 +6429,7 @@ Begin
 
     Note.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Note.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
-    Try Note.Text := TextStr; Except End;
+    Try Note.Text := TextStr; Except NoteWriteFailed('Note.Text'); End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Note);
@@ -6647,9 +6661,12 @@ Begin
     SchBeginEdit(SchDoc, '');
     Sym.AddAndPositionSchObject(Entry);
 
-    Try Entry.Side := WantSide; Except End;
-    Try Entry.DistanceFromTop := MilsToCoordF(DistFromTop); Except End;
-    If FontPick > 0 Then Try Entry.TextFontID := FontPick; Except End;
+    Try Entry.Side := WantSide; Except NoteWriteFailed('SheetEntry.Side'); End;
+    Try Entry.DistanceFromTop := MilsToCoordF(DistFromTop); Except NoteWriteFailed('SheetEntry.DistanceFromTop'); End;
+    If FontPick > 0 Then
+    Begin
+        Try Entry.TextFontID := FontPick; Except NoteWriteFailed('SheetEntry.TextFontID'); End;
+    End;
     { Added this way the entry keeps a Location off the body until the  }
     { sheet is reloaded, and a wire drawn meanwhile goes to that point. }
     { So its point on the edge is worked out here: the symbol's Location }
@@ -6668,7 +6685,7 @@ Begin
         EdgeX := EdgeX + DistFromTop;
         EdgeY := EdgeY - CoordToMilsF(Sym.YSize);
     End;
-    Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except End;
+    Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except NoteWriteFailed('SheetEntry.Location'); End;
 
     SchRegisterObject(Sym, Entry);
     SchEndEdit(SchDoc, 'Edit');
@@ -6808,9 +6825,13 @@ Begin
     SchBeginEdit(SchDoc, '');
     Try
         If OrientStr = 'landscape' Then
-            Try SchDoc.WorkspaceOrientation := eLandscape; Except End
+        Begin
+            Try SchDoc.WorkspaceOrientation := eLandscape; Except NoteWriteFailed('sheet orientation'); End;
+        End
         Else If OrientStr = 'portrait' Then
-            Try SchDoc.WorkspaceOrientation := ePortrait; Except End;
+        Begin
+            Try SchDoc.WorkspaceOrientation := ePortrait; Except NoteWriteFailed('sheet orientation'); End;
+        End;
 
         If StyleStr = '' Then
         Begin
@@ -7214,19 +7235,21 @@ Begin
 
     SchBeginEdit(SchDoc, '');
 
-    Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
 
     { Translate degrees to the orientation enum. }
     OrientationVal := 0;
     If Rotation = 90 Then OrientationVal := 1
     Else If Rotation = 180 Then OrientationVal := 2
     Else If Rotation = 270 Then OrientationVal := 3;
-    Try Comp.SetState_Orientation(OrientationVal); Except End;
+    Try Comp.SetState_Orientation(OrientationVal); Except NoteWriteFailed('component Orientation'); End;
 
     { Override designator if caller supplied one. }
     If DesigStr <> '' Then
-        Try Comp.Designator.Text := DesigStr; Except End;
+    Begin
+        Try Comp.Designator.Text := DesigStr; Except NoteWriteFailed('component Designator'); End;
+    End;
 
     { Footprint override at place time is intentionally skipped:           }
     { Comp.CurrentFootprintModelName is a read-only getter in DelphiScript  }
@@ -7245,7 +7268,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -7342,7 +7365,7 @@ Begin
     End;
 
     ParamSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
-    Try ParamSet.Name := ParamName; Except End;
+    Try ParamSet.Name := ParamName; Except NoteWriteFailed('directive Name'); End;
 
     Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
     If Param <> Nil Then
@@ -7561,7 +7584,7 @@ Begin
                 SchRegisterObject(PSet, Param);
                 If Added = 0 Then
                 Begin
-                    Try PSet.Name := PName; Except End;
+                    Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
                 End;
                 Inc(Added);
             End;
@@ -7654,11 +7677,11 @@ Begin
                                        MilsToCoordF(StrToFloatDef(Ys[I - 1], 0)));
         If StyleStr <> '' Then
         Begin
-            Try Blanket.LineStyle := StrToIntDef(StyleStr, 0); Except End;
+            Try Blanket.LineStyle := StrToIntDef(StyleStr, 0); Except NoteWriteFailed('Blanket.LineStyle'); End;
         End;
         If (CollStr = 'true') Or (CollStr = 'false') Then
         Begin
-            Try Blanket.Collapsed := (CollStr = 'true'); Except End;
+            Try Blanket.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('Blanket.Collapsed'); End;
         End;
 
         SchBeginEdit(SchDoc, '');
@@ -7671,7 +7694,7 @@ Begin
         End;
         SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
-        MarkDocDirtyByPath(SchDoc.DocumentName);
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
         DirJson := 'null';
         If ParamSet <> Nil Then DirJson := ParamSetJson(ParamSet, 'sheet');
@@ -7843,8 +7866,9 @@ Begin
                 End;
                 If Not First Then NetsJson := NetsJson + ',';
                 First := False;
-                NetsJson := NetsJson + '{"x":' + FloatToJsonStr(DMB.DM_LocationX / 10000)
-                    + ',"y":' + FloatToJsonStr(DMB.DM_LocationY / 10000)
+                { No position: a compiled blanket reports 0,0 for its      }
+                { location (measured on AD 26.11), so it would only mislead. }
+                NetsJson := NetsJson + '{"index":' + IntToStr(I)
                     + ',"net_items":' + IntToStr(DMB.DM_NetItemCount)
                     + ',"nets":[' + NetList + ']}';
             End;
@@ -7996,7 +8020,7 @@ Begin
     StyleFound := InferNetLabelStyle(SchDoc, InfFont);
     If StyleFound Then
     Begin
-        Try NetLabel.FontId := InfFont; Except End;
+        Try NetLabel.FontId := InfFont; Except NoteWriteFailed('NetLabel.FontId'); End;
     End;
     NetLabel.Color := NET_LABEL_COLOR;
 
@@ -8009,7 +8033,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"text":"' + EscapeJsonString(Text) +
@@ -8408,7 +8432,10 @@ Begin
     Else If IOTypeStr = 'bidirectional' Then SchPort.IOType := ePortBidirectional
     Else SchPort.IOType := ePortUnspecified;
 
-    If FontPick > 0 Then Try SchPort.FontId := FontPick; Except End;
+    If FontPick > 0 Then
+    Begin
+        Try SchPort.FontId := FontPick; Except NoteWriteFailed('Port.FontId'); End;
+    End;
     { AutoSize refits a port to its text at every redraw, which undoes a }
     { width; it is turned off for the width to stay.                     }
     If WantWidth > 0 Then
@@ -8416,7 +8443,7 @@ Begin
         Try
             SchPort.AutoSize := False;
             SchPort.Width := MilsToCoordF(WantWidth);
-        Except End;
+        Except NoteWriteFailed('Port.Width'); End;
     End;
 
     SchBeginEdit(SchDoc, '');
@@ -8540,8 +8567,11 @@ Begin
         Else
             OrientationVal := 1;
     End;
-    Try PowerObj.Orientation := OrientationVal; Except End;
-    If FontPick > 0 Then Try PowerObj.FontId := FontPick; Except End;
+    Try PowerObj.Orientation := OrientationVal; Except NoteWriteFailed('PowerPort.Orientation'); End;
+    If FontPick > 0 Then
+    Begin
+        Try PowerObj.FontId := FontPick; Except NoteWriteFailed('PowerPort.FontId'); End;
+    End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(PowerObj);
@@ -8552,7 +8582,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     FontRead := 0;
     Try FontRead := PowerObj.FontId; Except End;
@@ -9794,11 +9824,11 @@ Begin
       back as the value it still holds, not hidden as success. }
     If SetSnapOn Then
     Begin
-        Try SchDoc.SnapGridOn := (SnapOnStr = 'true'); Except End;
+        Try SchDoc.SnapGridOn := (SnapOnStr = 'true'); Except { read back below } End;
     End;
     If SetVisibleOn Then
     Begin
-        Try SchDoc.VisibleGridOn := (VisibleOnStr = 'true'); Except End;
+        Try SchDoc.VisibleGridOn := (VisibleOnStr = 'true'); Except { read back below } End;
     End;
     If HotGrid > 0 Then
         SchDoc.HotspotGridSize := MilsToCoordF(HotGrid);
@@ -9869,7 +9899,7 @@ Begin
     End;
 
     SchBeginEdit(SchDoc, '');
-    Try SchDoc.SetState_Unit(Target); Except End;
+    Try SchDoc.SetState_Unit(Target); Except NoteWriteFailed('sheet Unit'); End;
     SchEndEdit(SchDoc, 'Set schematic unit');
     SchDoc.GraphicallyInvalidate;
 
@@ -9924,6 +9954,7 @@ Begin
     Try
         Img.FileName := ImagePath;
     Except
+        NoteWriteFailed('Image.FileName');
     End;
 
     SchBeginEdit(SchDoc, '');
@@ -10117,19 +10148,19 @@ Begin
 
     SchBeginEdit(SchDoc, '');
     Try
-        Try SchDoc.AddSchObject(NewComp); Except End;
+        Try SchDoc.AddSchObject(NewComp); Except NoteWriteFailed('swap: add new symbol'); End;
         SchRegisterObject(SchDoc, NewComp);
         If PartId > 1 Then
         Begin
-            Try NewComp.CurrentPartID := PartId; Except End;
+            Try NewComp.CurrentPartID := PartId; Except NoteWriteFailed('swap: CurrentPartID'); End;
         End;
-        Try NewComp.MoveToXY(OldX, OldY); Except End;
-        Try NewComp.SetState_Orientation(Orient); Except End;
+        Try NewComp.MoveToXY(OldX, OldY); Except NoteWriteFailed('swap: MoveToXY'); End;
+        Try NewComp.SetState_Orientation(Orient); Except NoteWriteFailed('swap: Orientation'); End;
         If Mirrored Then
         Begin
-            Try NewComp.SetState_IsMirrored(True); Except End;
+            Try NewComp.SetState_IsMirrored(True); Except NoteWriteFailed('swap: IsMirrored'); End;
         End;
-        Try NewComp.Designator.Text := Designator; Except End;
+        Try NewComp.Designator.Text := Designator; Except NoteWriteFailed('swap: Designator'); End;
 
         NewMap := SchPinMap(NewComp);
         Missing := ';'; Moved := ';'; Added := ';'; Kept := 0;
@@ -10173,7 +10204,7 @@ Begin
 
         If ((Missing <> ';') Or (Moved <> ';')) And (Not AllowPinChanges) Then
         Begin
-            Try SchDoc.RemoveSchObject(NewComp); Except End;
+            Try SchDoc.RemoveSchObject(NewComp); Except NoteWriteFailed('swap: take the new symbol back off'); End;
             Result := BuildErrorResponse(RequestId, 'PIN_MISMATCH',
                 'The new symbol''s pins do not land where the old ones did, so '
                 + 'wires would come off them. Nothing was changed. Missing: '
@@ -10182,13 +10213,13 @@ Begin
             Exit;
         End;
 
-        Try SchDoc.RemoveSchObject(OldComp); Except End;
+        Try SchDoc.RemoveSchObject(OldComp); Except NoteWriteFailed('swap: remove the old symbol'); End;
         { The old part is gone, so its UniqueId is free and the stamp sticks;
           AddSchObject remints an id that is still on the sheet. }
         If OldId <> '' Then
         Begin
-            Try NewComp.SetState_UniqueId(OldId); Except End;
-            Try NewComp.UniqueId := OldId; Except End;
+            Try NewComp.SetState_UniqueId(OldId); Except { read back below } End;
+            Try NewComp.UniqueId := OldId; Except { read back below } End;
         End;
     Finally
         { Committed now, even inside a bulk call, for the check below. }
@@ -10201,8 +10232,8 @@ Begin
     Try NewId := NewComp.UniqueId; Except End;
     If (OldId <> '') And (NewId <> OldId) Then
     Begin
-        Try NewComp.SetState_UniqueId(OldId); Except End;
-        Try NewComp.UniqueId := OldId; Except End;
+        Try NewComp.SetState_UniqueId(OldId); Except { read back below } End;
+        Try NewComp.UniqueId := OldId; Except { read back below } End;
     End;
     SchDoc.GraphicallyInvalidate;
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
@@ -10312,7 +10343,7 @@ Begin
                   and shows <Not Found> after a re-link. Measured: a
                   replace that updated only LibReference/SourceLibraryName
                   left every re-linked part in that state. }
-                Try Comp.DesignItemId := NewLibRef; Except End;
+                Try Comp.DesignItemId := NewLibRef; Except NoteWriteFailed('replace: DesignItemId'); End;
                 If NewLibrary <> '' Then
                     Comp.SourceLibraryName := NewLibrary;
                 SchEndEdit(SchDoc, 'Edit');
@@ -10320,6 +10351,7 @@ Begin
                 Break;
             End;
         Except
+            { An object that is not a component has no Designator: skip it. }
         End;
         Obj := Iterator.NextSchObject;
     End;
@@ -10463,7 +10495,9 @@ Begin
     Harness.XSize := MilsToCoordF(W);
     Harness.YSize := MilsToCoordF(H);
     If HarnessType <> '' Then
-        Try Harness.HarnessType := HarnessType; Except End;
+    Begin
+        Try Harness.HarnessType := HarnessType; Except NoteWriteFailed('Harness.HarnessType'); End;
+    End;
 
     SchDoc.RegisterSchObjectInContainer(Harness);
     SchRegisterObject(SchDoc, Harness);
@@ -10517,13 +10551,19 @@ Begin
     End;
 
     SchBeginEdit(SchDoc, '');
-    Try Conn.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Try Conn.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('CrossSheetConnector.Location'); End;
     If NetName <> '' Then
-        Try Conn.Text := NetName; Except End;
+    Begin
+        Try Conn.Text := NetName; Except NoteWriteFailed('CrossSheetConnector.Text'); End;
+    End;
     If SideStr = 'left' Then
-        Try Conn.Side := 0; Except End
+    Begin
+        Try Conn.Side := 0; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+    End
     Else If SideStr = 'right' Then
-        Try Conn.Side := 1; Except End;
+    Begin
+        Try Conn.Side := 1; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+    End;
 
     SchDoc.RegisterSchObjectInContainer(Conn);
     SchRegisterObject(SchDoc, Conn);
@@ -10698,8 +10738,8 @@ Begin
             Begin
                 Total := Total + 1;
                 SchBeginEdit(SchDoc, 'Set UniqueId');
-                Try Comp.SetState_UniqueId(UniqueIdStr); Except End;
-                Try Comp.UniqueId := UniqueIdStr; Except End;
+                Try Comp.SetState_UniqueId(UniqueIdStr); Except { read back below } End;
+                Try Comp.UniqueId := UniqueIdStr; Except { read back below } End;
                 Try AfterId := Comp.UniqueId; Except AfterId := ''; End;
                 SchEndEdit(SchDoc, 'Set UniqueId');
 
@@ -10847,19 +10887,28 @@ Begin
     Try IdAfterReplicate := NewComp.UniqueId; Except IdAfterReplicate := ''; End;
     If MasterId <> '' Then
     Begin
-        Try NewComp.SetState_UniqueId(MasterId); Except End;
-        Try NewComp.UniqueId := MasterId; Except End;
+        Try NewComp.SetState_UniqueId(MasterId); Except { read back below } End;
+        Try NewComp.UniqueId := MasterId; Except { read back below } End;
     End;
     Try IdAfterSetPreAdd := NewComp.UniqueId; Except IdAfterSetPreAdd := ''; End;
     If PartId >= 1 Then
     Begin
-        Try NewComp.SetState_CurrentPartID(PartId); Except End;
-        Try NewComp.CurrentPartID := PartId; Except End;
+        Try NewComp.SetState_CurrentPartID(PartId); Except { read back below } End;
+        Try NewComp.CurrentPartID := PartId; Except { read back below } End;
+        Try
+            If NewComp.CurrentPartID <> PartId Then NoteWriteFailed('copy CurrentPartID');
+        Except
+            NoteWriteFailed('copy CurrentPartID');
+        End;
     End;
     If NewDesig <> '' Then
-        Try NewComp.Designator.Text := NewDesig; Except End;
+    Begin
+        Try NewComp.Designator.Text := NewDesig; Except NoteWriteFailed('copy Designator'); End;
+    End;
     If HaveXY Then
-        Try NewComp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Begin
+        Try NewComp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('copy MoveToXY'); End;
+    End;
     { AddSchObject remints UniqueId when that id is already on the sheet
       (live 2026-08-26: XVRAPPYA -> ASFAVKKE even after SetState_UniqueId
       pre-add). SCHM_PrimitiveRegistration does the same. Attach via
@@ -10868,12 +10917,12 @@ Begin
       ONE registration only: AddSchObject followed by this registered the
       copy twice under one key, and the next move of either part raised
       "An item with the same key has already been added". }
-    Try SchDoc.RegisterSchObjectInContainer(NewComp); Except End;
+    Try SchDoc.RegisterSchObjectInContainer(NewComp); Except NoteWriteFailed('register copy on the sheet'); End;
     Try IdAfterAdd := NewComp.UniqueId; Except IdAfterAdd := ''; End;
     If (MasterId <> '') And (IdAfterAdd <> MasterId) Then
     Begin
-        Try NewComp.SetState_UniqueId(MasterId); Except End;
-        Try NewComp.UniqueId := MasterId; Except End;
+        Try NewComp.SetState_UniqueId(MasterId); Except { read back below } End;
+        Try NewComp.UniqueId := MasterId; Except { read back below } End;
     End;
     Try CopyId := NewComp.UniqueId; Except CopyId := ''; End;
     SchEndEdit(SchDoc, 'Replicate component');
@@ -10919,7 +10968,7 @@ Begin
     If Param = Nil Then Exit;
     Param.Name := PName;
     Param.Text := PText;
-    Try Param.IsHidden := Hidden; Except End;
+    Try Param.IsHidden := Hidden; Except NoteWriteFailed('probe parameter IsHidden'); End;
     Try Param.Location := Point(Probe.Location.X + MilsToCoordF(DX),
         Probe.Location.Y + MilsToCoordF(DY)); Except End;
     Probe.AddSchObject(Param);
@@ -10967,7 +11016,7 @@ Begin
     End;
 
     SchBeginEdit(SchDoc, '');
-    Try Probe.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Try Probe.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('Probe.Location'); End;
     { ISch_Probe exposes essentially nothing settable from DelphiScript:
       ``Text``, ``NetName`` and ``ProbeMethod`` all raise "Undeclared
       identifier" at compile (Try/Except cannot catch). The probe
@@ -11281,7 +11330,7 @@ Begin
             If UpperCase(Param.Name) = UpperCase(ParamName) Then
             Begin
                 SchBeginModify(Param);
-                Try Param.Text := ParamValue; Except End;
+                Try Param.Text := ParamValue; Except NoteWriteFailed('parameter Text'); End;
                 SchEndModify(Param);
                 Result := True;
                 Break;
@@ -11337,8 +11386,8 @@ Begin
             { A new parameter came out shown and at the sheet origin, so    }
             { stamping many parts piled their texts there. Hidden, at the   }
             { part's own place.                                              }
-            Try NewParam.IsHidden := True; Except End;
-            Try NewParam.Location := Comp.Location; Except End;
+            Try NewParam.IsHidden := True; Except NoteWriteFailed('new parameter IsHidden'); End;
+            Try NewParam.Location := Comp.Location; Except NoteWriteFailed('new parameter Location'); End;
             Comp.AddSchObject(NewParam);
             SchRegisterObject(Comp, NewParam);
             Result := True;
@@ -11530,7 +11579,7 @@ Begin
 
     Try Before := Target.ModelName; Except End;
     SchBeginModify(Target);
-    Try Target.ModelName := NewName; Except End;
+    Try Target.ModelName := NewName; Except { read back below } End;
     LinkCount := 0;
     Try LinkCount := Target.DatafileLinkCount; Except LinkCount := 0; End;
     For J := 0 To LinkCount - 1 Do
@@ -11538,7 +11587,9 @@ Begin
         Link := Nil;
         Try Link := Target.DatafileLink[J]; Except End;
         If Link <> Nil Then
-            Try Link.EntityName := NewName; Except End;
+        Begin
+            Try Link.EntityName := NewName; Except NoteWriteFailed('footprint link EntityName'); End;
+        End;
     End;
     SchEndModify(Target);
     Try After := Target.ModelName; Except End;
@@ -11667,7 +11718,7 @@ Begin
                 { A symbol that shows its own Value parameter kept showing }
                 { the library's placeholder, so that one is written too.   }
                 SchBeginModify(TargetComp.Comment);
-                Try TargetComp.Comment.Text := Val; Except End;
+                Try TargetComp.Comment.Text := Val; Except NoteWriteFailed('Comment.Text'); End;
                 SchEndModify(TargetComp.Comment);
                 SetOwnCompParamText(TargetComp, 'Value', Val);
                 Inc(Applied);
@@ -11677,7 +11728,7 @@ Begin
                 { The part's description. As a parameter it was dropped }
                 { when the sheet was reloaded.                          }
                 SchBeginModify(TargetComp);
-                Try TargetComp.ComponentDescription := Val; Except End;
+                Try TargetComp.ComponentDescription := Val; Except NoteWriteFailed('ComponentDescription'); End;
                 SchEndModify(TargetComp);
                 Inc(Applied);
             End
@@ -11710,7 +11761,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesigStr) + '",'
@@ -12181,11 +12232,11 @@ Begin
     ServerDoc := Client.GetDocumentByPath(After);
     If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
-        Try ServerDoc.SetFileName(After); Except End;
+        Try ServerDoc.SetFileName(After); Except { judged by the file age below } End;
         Try
             ServerDoc.SetModified(True);
             ServerDoc.DoFileSave('');
-        Except End;
+        Except { judged by the file age below } End;
     End;
     NewAge := -1;
     Try If FileExists(After) Then NewAge := FileAge(After); Except End;
@@ -12267,11 +12318,11 @@ Begin
     ServerDoc := Client.GetDocumentByPath(After);
     If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
-        Try ServerDoc.SetFileName(After); Except End;
+        Try ServerDoc.SetFileName(After); Except { judged by the file age below } End;
         Try
             ServerDoc.SetModified(True);
             ServerDoc.DoFileSave('');
-        Except End;
+        Except { judged by the file age below } End;
     End;
     NewAge := -1;
     Try If FileExists(After) Then NewAge := FileAge(After); Except End;
@@ -12737,16 +12788,16 @@ Procedure PutLoadedComponent(SchDoc : ISch_Document; Comp : ISch_Component;
 Var
     Orientation : Integer;
 Begin
-    Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
     Orientation := 0;
     If Rotation = 90 Then Orientation := 1
     Else If Rotation = 180 Then Orientation := 2
     Else If Rotation = 270 Then Orientation := 3;
-    Try Comp.SetState_Orientation(Orientation); Except End;
+    Try Comp.SetState_Orientation(Orientation); Except NoteWriteFailed('component Orientation'); End;
     If Desig <> '' Then
     Begin
-        Try Comp.Designator.Text := Desig; Except End;
+        Try Comp.Designator.Text := Desig; Except NoteWriteFailed('component Designator'); End;
     End;
     SchRegisterObject(SchDoc, Comp);
     { Its designator and comment where Altium puts them for this rotation, }
@@ -12787,12 +12838,12 @@ Begin
     Try
         If LibFileName <> '' Then
         Begin
-            Try Part.UseDBTableName := False; Except End;
-            Try Part.DatabaseTableName := ''; Except End;
-            Try Part.UseLibraryName := True; Except End;
-            Try Part.SourceLibraryName := LibFileName; Except End;
-            Try Part.LibReference := LibRef; Except End;
-            Try Part.DesignItemId := LibRef; Except End;
+            Try Part.UseDBTableName := False; Except NoteWriteFailed('library link UseDBTableName'); End;
+            Try Part.DatabaseTableName := ''; Except NoteWriteFailed('library link DatabaseTableName'); End;
+            Try Part.UseLibraryName := True; Except NoteWriteFailed('library link UseLibraryName'); End;
+            Try Part.SourceLibraryName := LibFileName; Except NoteWriteFailed('library link SourceLibraryName'); End;
+            Try Part.LibReference := LibRef; Except NoteWriteFailed('library link LibReference'); End;
+            Try Part.DesignItemId := LibRef; Except NoteWriteFailed('library link DesignItemId'); End;
         End;
         Try Link := Part.SourceLibraryName; Except Link := ''; End;
 
@@ -12835,7 +12886,9 @@ Begin
         Begin
             Try OldFont := Part.Designator.FontId; Except OldFont := 0; End;
             If OldFont <> SheetDesFont Then
-                Try Part.Designator.FontId := SheetDesFont; Except End;
+            Begin
+                Try Part.Designator.FontId := SheetDesFont; Except NoteWriteFailed('Designator.FontId'); End;
+            End;
         End;
     Finally
         SchEndModify(Part);
@@ -13005,8 +13058,8 @@ Begin
             { too when it is asked for, never assumed.                         }
             If PartId >= 1 Then
             Begin
-                Try Comp.SetState_CurrentPartID(PartId); Except End;
-                Try Comp.CurrentPartID := PartId; Except End;
+                Try Comp.SetState_CurrentPartID(PartId); Except { written and checked again on the sheet below } End;
+                Try Comp.CurrentPartID := PartId; Except { written and checked again on the sheet below } End;
             End;
             PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);
             If PartId >= 1 Then
@@ -13302,10 +13355,10 @@ Begin
             NetLabel.Location := Loc;
             NetLabel.Text := Text;
             NetLabel.Orientation := Orientation;
-            Try NetLabel.Justification := Justification; Except End;
+            Try NetLabel.Justification := Justification; Except NoteWriteFailed('NetLabel.Justification'); End;
             If StyleFound Then
             Begin
-                Try NetLabel.FontId := InfFont; Except End;
+                Try NetLabel.FontId := InfFont; Except NoteWriteFailed('NetLabel.FontId'); End;
             End;
             NetLabel.Color := NET_LABEL_COLOR;
 
@@ -13417,8 +13470,11 @@ Begin
                 Else
                     OrientationVal := 1;
             End;
-            Try PowerObj.Orientation := OrientationVal; Except End;
-            If FontPick > 0 Then Try PowerObj.FontId := FontPick; Except End;
+            Try PowerObj.Orientation := OrientationVal; Except NoteWriteFailed('PowerPort.Orientation'); End;
+            If FontPick > 0 Then
+            Begin
+                Try PowerObj.FontId := FontPick; Except NoteWriteFailed('PowerPort.FontId'); End;
+            End;
 
             SchDoc.RegisterSchObjectInContainer(PowerObj);
             SchRegisterObject(SchDoc, PowerObj);
@@ -13658,7 +13714,7 @@ Begin
                                     If Key = 'Value' Then
                                     Begin
                                         SchBeginModify(Comp.Comment);
-                                        Try Comp.Comment.Text := Val; Except End;
+                                        Try Comp.Comment.Text := Val; Except NoteWriteFailed('Comment.Text'); End;
                                         SchEndModify(Comp.Comment);
                                         SetOwnCompParamText(Comp, 'Value', Val);
                                     End
@@ -13666,7 +13722,7 @@ Begin
                                         (Key = 'Description') Then
                                     Begin
                                         SchBeginModify(Comp);
-                                        Try Comp.ComponentDescription := Val; Except End;
+                                        Try Comp.ComponentDescription := Val; Except NoteWriteFailed('ComponentDescription'); End;
                                         SchEndModify(Comp);
                                     End
                                     Else If Key = 'Footprint' Then
@@ -13711,7 +13767,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
@@ -13813,7 +13869,7 @@ Begin
                             Loc.Y := MilsToCoordF(DY);
                             Comp.Designator.Location := Loc;
                             Comp.Designator.Autoposition := False;
-                        Except End;
+                        Except NoteWriteFailed('Designator position'); End;
                         SchEndModify(Comp.Designator);
 
                         If HasV Then
@@ -13825,7 +13881,7 @@ Begin
                                 Loc.Y := MilsToCoordF(VY);
                                 Comp.Comment.Location := Loc;
                                 Comp.Comment.Autoposition := False;
-                            Except End;
+                            Except NoteWriteFailed('Comment position'); End;
                             SchEndModify(Comp.Comment);
                         End;
                         Inc(Updated);
@@ -13848,7 +13904,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
@@ -15307,6 +15363,7 @@ Begin
                                 SchEndModify(Comp.Designator);
                                 Inc(Count);
                             Except
+                                NoteWriteFailed('increment Designator');
                             End;
                         End;
                     End;
@@ -15348,6 +15405,7 @@ Begin
                 SchEndModify(Pin);
                 Inc(Result);
             Except
+                NoteWriteFailed('pin ShowName/ShowDesignator');
             End;
             Pin := PinIter.NextSchObject;
         End;
@@ -15458,6 +15516,7 @@ Begin
                                 SchEndModify(Pin);
                                 Inc(Count);
                             Except
+                                NoteWriteFailed('pin ShowName/ShowDesignator');
                             End;
                             Pin := PinIter.NextSchObject;
                         End;
@@ -15533,18 +15592,21 @@ Begin
 
     TF.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     TF.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
-    Try TF.Text := TextStr; Except End;
-    Try TF.WordWrap := True; Except End;
-    Try TF.ClipToRect := True; Except End;
-    Try TF.ShowBorder := True; Except End;
-    Try TF.IsSolid := False; Except End;
+    Try TF.Text := TextStr; Except NoteWriteFailed('TextFrame.Text'); End;
+    Try TF.WordWrap := True; Except NoteWriteFailed('TextFrame.WordWrap'); End;
+    Try TF.ClipToRect := True; Except NoteWriteFailed('TextFrame.ClipToRect'); End;
+    Try TF.ShowBorder := True; Except NoteWriteFailed('TextFrame.ShowBorder'); End;
+    Try TF.IsSolid := False; Except NoteWriteFailed('TextFrame.IsSolid'); End;
     If AlignStr = 'center' Then
-    Begin Try TF.Alignment := eHorizontalCentreAlign; Except End; End
+    Begin Try TF.Alignment := eHorizontalCentreAlign; Except NoteWriteFailed('TextFrame.Alignment'); End; End
     Else If AlignStr = 'right' Then
-    Begin Try TF.Alignment := eRightAlign; Except End; End
+    Begin Try TF.Alignment := eRightAlign; Except NoteWriteFailed('TextFrame.Alignment'); End; End
     Else
-    Begin Try TF.Alignment := eLeftAlign; Except End; End;
-    If FontPick > 0 Then Try TF.FontId := FontPick; Except End;
+    Begin Try TF.Alignment := eLeftAlign; Except NoteWriteFailed('TextFrame.Alignment'); End; End;
+    If FontPick > 0 Then
+    Begin
+        Try TF.FontId := FontPick; Except NoteWriteFailed('TextFrame.FontId'); End;
+    End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
@@ -15645,7 +15707,7 @@ Begin
                                     SchEndModify(Comp);
                                     Inc(ClearedSrc);
                                 End;
-                            Except End;
+                            Except NoteWriteFailed('clear SourceLibraryName'); End;
                         End;
                         If SyncId Then
                         Begin
@@ -15658,7 +15720,7 @@ Begin
                                     SchEndModify(Comp);
                                     Inc(Synced);
                                 End;
-                            Except End;
+                            Except NoteWriteFailed('sync DesignItemId'); End;
                         End;
                     End;
                     Obj := Iterator.NextSchObject;
@@ -15677,7 +15739,7 @@ Begin
     Try
         SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"total":' + IntToStr(Total) +
@@ -15698,11 +15760,11 @@ Begin
     Impl := Nil;
     Try Impl := Comp.AddSchImplementation; Except End;
     If Impl = Nil Then Exit;
-    Try Impl.ClearAllDatafileLinks; Except End;
-    Try Impl.ModelName := Name; Except End;
-    Try Impl.ModelType := cDocKind_PcbLib; Except End;
-    Try Impl.IsCurrent := True; Except End;
-    Try Impl.AddDataFileLink(Name, LibName, 'PCBLib'); Except End;
+    Try Impl.ClearAllDatafileLinks; Except NoteWriteFailed('footprint model ClearAllDatafileLinks'); End;
+    Try Impl.ModelName := Name; Except NoteWriteFailed('footprint model ModelName'); End;
+    Try Impl.ModelType := cDocKind_PcbLib; Except NoteWriteFailed('footprint model ModelType'); End;
+    Try Impl.IsCurrent := True; Except NoteWriteFailed('footprint model IsCurrent'); End;
+    Try Impl.AddDataFileLink(Name, LibName, 'PCBLib'); Except NoteWriteFailed('footprint model library link'); End;
     Result := CurrentFootprintImpl(Comp) <> Nil;
 End;
 
@@ -15763,7 +15825,7 @@ Begin
     Impl := CurrentFootprintImpl(Comp);
     If Impl = Nil Then Exit;
     SchBeginModify(Impl);
-    Try Impl.UseComponentLibrary := False; Except End;
+    Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('footprint model UseComponentLibrary'); End;
     LinkCount := 0;
     Try LinkCount := Impl.DatafileLinkCount; Except LinkCount := 0; End;
     For J := 0 To LinkCount - 1 Do
@@ -15772,7 +15834,7 @@ Begin
         Try Link := Impl.DatafileLink[J]; Except End;
         If Link <> Nil Then
         Begin
-            Try Link.Location := LibName; Except End;
+            Try Link.Location := LibName; Except { read back below } End;
         End;
     End;
     SchEndModify(Impl);
@@ -15923,27 +15985,27 @@ Begin
                             Try
                                 If LibName <> '' Then
                                 Begin
-                                    Try Comp.SourceLibraryName := LibName; Except End;
+                                    Try Comp.SourceLibraryName := LibName; Except NoteWriteFailed('relink SourceLibraryName'); End;
                                 End;
                                 If LibRef <> '' Then
                                 Begin
-                                    Try Comp.LibReference := LibRef; Except End;
+                                    Try Comp.LibReference := LibRef; Except NoteWriteFailed('relink LibReference'); End;
                                 End;
                                 If Kind = 'dblib' Then
                                 Begin
-                                    Try Comp.DatabaseTableName := Table; Except End;
-                                    Try Comp.UseDBTableName := True; Except End;
-                                    Try Comp.UseLibraryName := True; Except End;
+                                    Try Comp.DatabaseTableName := Table; Except NoteWriteFailed('relink DatabaseTableName'); End;
+                                    Try Comp.UseDBTableName := True; Except NoteWriteFailed('relink UseDBTableName'); End;
+                                    Try Comp.UseLibraryName := True; Except NoteWriteFailed('relink UseLibraryName'); End;
                                 End;
                                 If (Kind = 'schlib') Or (Kind = 'intlib') Then
                                 Begin
-                                    Try Comp.DatabaseTableName := ''; Except End;
-                                    Try Comp.UseDBTableName := False; Except End;
-                                    Try Comp.UseLibraryName := True; Except End;
+                                    Try Comp.DatabaseTableName := ''; Except NoteWriteFailed('relink DatabaseTableName'); End;
+                                    Try Comp.UseDBTableName := False; Except NoteWriteFailed('relink UseDBTableName'); End;
+                                    Try Comp.UseLibraryName := True; Except NoteWriteFailed('relink UseLibraryName'); End;
                                 End;
                                 If WantItem <> '' Then
                                 Begin
-                                    Try Comp.DesignItemId := WantItem; Except End;
+                                    Try Comp.DesignItemId := WantItem; Except NoteWriteFailed('relink DesignItemId'); End;
                                 End;
                             Finally
                                 SchEndModify(Comp);
@@ -16178,7 +16240,7 @@ Begin
                 NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
                 If StyleFound Then
                 Begin
-                    Try NetLabel.FontId := InfFont; Except End;
+                    Try NetLabel.FontId := InfFont; Except NoteWriteFailed('NetLabel.FontId'); End;
                 End;
                 NetLabel.Color := NET_LABEL_COLOR;
                 SchDoc.RegisterSchObjectInContainer(NetLabel);

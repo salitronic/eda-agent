@@ -35,6 +35,8 @@ Begin
         NetObj.AddPCBObject(Prim);
         Result := True;
     Except
+        { The callers do not check Result: the object stays on no net. }
+        NoteWriteFailed('put primitive on its net');
     End;
 End;
 
@@ -791,7 +793,7 @@ Begin
                             JsonBool('new_enabled', NewEnabled);
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
-                Except End;
+                Except NoteWriteFailed('rule DRCEnabled'); End;
                 Rule := Iter.NextPCBObject;
             End;
         Finally
@@ -1343,7 +1345,7 @@ Begin
                     If MinLen <> '' Then
                     Begin
                         WantC := MilsToCoordF(StrToFloatDef(MinLen, -1));
-                        Try LenRule.MinLimit := WantC; Except End;
+                        Try LenRule.MinLimit := WantC; Except { read back on the next line } End;
                         GotC := LenRule.MinLimit;
                         Written := Written + ',"min_length_mils":' + FloatToJsonStr(CoordToMilsF(GotC));
                         If GotC = WantC Then Inc(Updated) Else Missed := Missed + ' min_length_mils';
@@ -1351,7 +1353,7 @@ Begin
                     If MaxLen <> '' Then
                     Begin
                         WantC := MilsToCoordF(StrToFloatDef(MaxLen, -1));
-                        Try LenRule.MaxLimit := WantC; Except End;
+                        Try LenRule.MaxLimit := WantC; Except { read back on the next line } End;
                         GotC := LenRule.MaxLimit;
                         Written := Written + ',"max_length_mils":' + FloatToJsonStr(CoordToMilsF(GotC));
                         If GotC = WantC Then Inc(Updated) Else Missed := Missed + ' max_length_mils';
@@ -1371,7 +1373,7 @@ Begin
                     If MinImp <> '' Then
                     Begin
                         WantD := StrToFloatDef(MinImp, -1);
-                        Try ImpRule.Minimum := WantD; Except End;
+                        Try ImpRule.Minimum := WantD; Except { read back on the next line } End;
                         GotD := ImpRule.Minimum;
                         Written := Written + ',"min_signal_impedance_ohms":' + FloatToJsonStr(GotD);
                         If Abs(GotD - WantD) < 0.0001 Then Inc(Updated)
@@ -1380,7 +1382,7 @@ Begin
                     If MaxImp <> '' Then
                     Begin
                         WantD := StrToFloatDef(MaxImp, -1);
-                        Try ImpRule.Maximum := WantD; Except End;
+                        Try ImpRule.Maximum := WantD; Except { read back on the next line } End;
                         GotD := ImpRule.Maximum;
                         Written := Written + ',"max_signal_impedance_ohms":' + FloatToJsonStr(GotD);
                         If Abs(GotD - WantD) < 0.0001 Then Inc(Updated)
@@ -1399,7 +1401,7 @@ Begin
                 Begin
                     Found := True;
                     WantD := StrToFloatDef(Flight, -1) / 1000000000;
-                    Try RiseRule.MaximumFlightTime := WantD; Except End;
+                    Try RiseRule.MaximumFlightTime := WantD; Except { read back on the next line } End;
                     GotD := RiseRule.MaximumFlightTime;
                 End;
                 If Not Found Then RiseRule := Iter.NextPCBObject;
@@ -1414,7 +1416,7 @@ Begin
                 Begin
                     Found := True;
                     WantD := StrToFloatDef(Flight, -1) / 1000000000;
-                    Try FallRule.MaximumFlightTime := WantD; Except End;
+                    Try FallRule.MaximumFlightTime := WantD; Except { read back on the next line } End;
                     GotD := FallRule.MaximumFlightTime;
                 End;
                 If Not Found Then FallRule := Iter.NextPCBObject;
@@ -1554,25 +1556,25 @@ Begin
         V := ExtractJsonValue(Params, 'enabled');
         If V <> '' Then
         Begin
-            Try Rule.Enabled := (V = 'true') Or (V = 'True') Or (V = '1'); Inc(UpdatedCount); Except End;
+            Try Rule.Enabled := (V = 'true') Or (V = 'True') Or (V = '1'); Inc(UpdatedCount); Except NoteWriteFailed('rule Enabled'); End;
         End;
 
         V := ExtractJsonValue(Params, 'scope1');
         If V <> '' Then
         Begin
-            Try Rule.Scope1Expression := V; Inc(UpdatedCount); Except End;
+            Try Rule.Scope1Expression := V; Inc(UpdatedCount); Except NoteWriteFailed('rule Scope1Expression'); End;
         End;
 
         V := ExtractJsonValue(Params, 'scope2');
         If V <> '' Then
         Begin
-            Try Rule.Scope2Expression := V; Inc(UpdatedCount); Except End;
+            Try Rule.Scope2Expression := V; Inc(UpdatedCount); Except NoteWriteFailed('rule Scope2Expression'); End;
         End;
 
         V := ExtractJsonValue(Params, 'comment');
         If V <> '' Then
         Begin
-            Try Rule.Comment := V; Inc(UpdatedCount); Except End;
+            Try Rule.Comment := V; Inc(UpdatedCount); Except NoteWriteFailed('rule Comment'); End;
         End;
 
         PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
@@ -1696,7 +1698,7 @@ Begin
                     GapBefore := -1;
                     GapAfter := -1;
                     Try GapBefore := RuleClearIter.Gap; Except End;
-                    Try RuleClearIter.Gap := GapWanted; Except End;
+                    Try RuleClearIter.Gap := GapWanted; Except { read back on the next line } End;
                     Try GapAfter := RuleClearIter.Gap; Except End;
                     GapVerified := (GapAfter = GapWanted);
                     If GapVerified Then Inc(UpdatedCount);
@@ -1734,7 +1736,7 @@ Begin
                     If (RuleSliverIter.RuleKind = 53) And (RuleSliverIter.Name = RuleName) Then
                     Begin
                         Try GapBefore := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
-                        Try RuleSliverIter.SetState_MinSolderMaskSliver(GapWanted); Except End;
+                        Try RuleSliverIter.SetState_MinSolderMaskSliver(GapWanted); Except { read back on the next line } End;
                         Try GapAfter := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
                         Found := True;
                     End;
@@ -1749,7 +1751,7 @@ Begin
                     If (RuleSilkMaskIter.RuleKind = 54) And (RuleSilkMaskIter.Name = RuleName) Then
                     Begin
                         Try GapBefore := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
-                        Try RuleSilkMaskIter.SetState_SilkToMaskGap(GapWanted); Except End;
+                        Try RuleSilkMaskIter.SetState_SilkToMaskGap(GapWanted); Except { read back on the next line } End;
                         Try GapAfter := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
                         Found := True;
                     End;
@@ -1764,7 +1766,7 @@ Begin
                     If (RuleSilkSilkIter.RuleKind = 55) And (RuleSilkSilkIter.Name = RuleName) Then
                     Begin
                         Try GapBefore := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
-                        Try RuleSilkSilkIter.SetState_SilkToSilkClearance(GapWanted); Except End;
+                        Try RuleSilkSilkIter.SetState_SilkToSilkClearance(GapWanted); Except { read back on the next line } End;
                         Try GapAfter := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
                         Found := True;
                     End;
@@ -1802,7 +1804,7 @@ Begin
                             For L := MinLayer To MaxLayer Do
                                 RuleWidthIter.MinWidth(L) := WCoord;
                             Inc(UpdatedCount);
-                        Except End;
+                        Except NoteWriteFailed('width rule MinWidth'); End;
                     End;
                     If (MaxWStr <> '') Or (MaxWMM <> '') Then
                     Begin
@@ -1812,7 +1814,7 @@ Begin
                             For L := MinLayer To MaxLayer Do
                                 RuleWidthIter.MaxWidth(L) := WCoord;
                             Inc(UpdatedCount);
-                        Except End;
+                        Except NoteWriteFailed('width rule MaxWidth'); End;
                     End;
                     If (FavWStr <> '') Or (FavWMM <> '') Then
                     Begin
@@ -1822,7 +1824,7 @@ Begin
                             For L := MinLayer To MaxLayer Do
                                 RuleWidthIter.FavoredWidth(L) := WCoord;
                             Inc(UpdatedCount);
-                        Except End;
+                        Except NoteWriteFailed('width rule FavoredWidth'); End;
                     End;
                     Found := True;
                 End;
@@ -1850,11 +1852,11 @@ Begin
                 Begin
                     If MinHStr <> '' Then
                     Begin
-                        Try RuleHoleIter.MinLimit := MilsToCoordF(StrToFloatDef(MinHStr, 0)); Inc(UpdatedCount); Except End;
+                        Try RuleHoleIter.MinLimit := MilsToCoordF(StrToFloatDef(MinHStr, 0)); Inc(UpdatedCount); Except NoteWriteFailed('hole rule MinLimit'); End;
                     End;
                     If MaxHStr <> '' Then
                     Begin
-                        Try RuleHoleIter.MaxLimit := MilsToCoordF(StrToFloatDef(MaxHStr, 0)); Inc(UpdatedCount); Except End;
+                        Try RuleHoleIter.MaxLimit := MilsToCoordF(StrToFloatDef(MaxHStr, 0)); Inc(UpdatedCount); Except NoteWriteFailed('hole rule MaxLimit'); End;
                     End;
                     Found := True;
                 End;
@@ -1919,12 +1921,12 @@ Begin
                         ViaProblem := 'every via diameter must be larger than its hole';
                     If ViaProblem = '' Then
                     Begin
-                        If VMinS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinWidth := NMinS; Except End; If RuleViaIter.MinWidth = NMinS Then Inc(ViaWritten); End;
-                        If VMaxS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxWidth := NMaxS; Except End; If RuleViaIter.MaxWidth = NMaxS Then Inc(ViaWritten); End;
-                        If VPrefS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedWidth := NPrefS; Except End; If RuleViaIter.PreferedWidth = NPrefS Then Inc(ViaWritten); End;
-                        If VMinH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinHoleWidth := NMinH; Except End; If RuleViaIter.MinHoleWidth = NMinH Then Inc(ViaWritten); End;
-                        If VMaxH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxHoleWidth := NMaxH; Except End; If RuleViaIter.MaxHoleWidth = NMaxH Then Inc(ViaWritten); End;
-                        If VPrefH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedHoleWidth := NPrefH; Except End; If RuleViaIter.PreferedHoleWidth = NPrefH Then Inc(ViaWritten); End;
+                        If VMinS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinWidth := NMinS; Except { read back next } End; If RuleViaIter.MinWidth = NMinS Then Inc(ViaWritten); End;
+                        If VMaxS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxWidth := NMaxS; Except { read back next } End; If RuleViaIter.MaxWidth = NMaxS Then Inc(ViaWritten); End;
+                        If VPrefS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedWidth := NPrefS; Except { read back next } End; If RuleViaIter.PreferedWidth = NPrefS Then Inc(ViaWritten); End;
+                        If VMinH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinHoleWidth := NMinH; Except { read back next } End; If RuleViaIter.MinHoleWidth = NMinH Then Inc(ViaWritten); End;
+                        If VMaxH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxHoleWidth := NMaxH; Except { read back next } End; If RuleViaIter.MaxHoleWidth = NMaxH Then Inc(ViaWritten); End;
+                        If VPrefH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedHoleWidth := NPrefH; Except { read back next } End; If RuleViaIter.PreferedHoleWidth = NPrefH Then Inc(ViaWritten); End;
                         UpdatedCount := UpdatedCount + ViaWritten;
                         ViaReport := ',"via_sizes_mils":{"min_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MinWidth))
                             + ',"max_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MaxWidth))
@@ -1982,7 +1984,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_MinWidth(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule MinWidth'); End;
                         Inc(DiffAsked);
                     End;
                     If (MaxWStr <> '') Or (MaxWMM <> '') Then
@@ -1992,7 +1994,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_MaxWidth(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule MaxWidth'); End;
                         Inc(DiffAsked);
                     End;
                     If (FavWStr <> '') Or (FavWMM <> '') Then
@@ -2002,7 +2004,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_PreferedWidth(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule PreferedWidth'); End;
                         Inc(DiffAsked);
                     End;
                     If (DGapMin <> '') Or (DGapMinMM <> '') Then
@@ -2012,7 +2014,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_MinGap(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule MinGap'); End;
                         Inc(DiffAsked);
                     End;
                     If (DGapMax <> '') Or (DGapMaxMM <> '') Then
@@ -2022,7 +2024,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_MaxGap(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule MaxGap'); End;
                         Inc(DiffAsked);
                     End;
                     If (DGapPref <> '') Or (DGapPrefMM <> '') Then
@@ -2032,7 +2034,7 @@ Begin
                         Try
                             For L := MinLayer To MaxLayer Do
                                 RuleDiff.SetState_PreferedGap(L, WCoord);
-                        Except End;
+                        Except NoteWriteFailed('diff pair rule PreferedGap'); End;
                         Inc(DiffAsked);
                     End;
                 End;
@@ -3077,33 +3079,33 @@ Begin
                 Try
                     PCBServer.SendMessageToRobots(Dst.I_ObjectAddress,
                         c_Broadcast, PCBM_BeginModify, c_NoEventData);
-                    Try Dst.Layer := Src.Layer; Except End;
-                    Try Dst.x := Src.x; Except End;
-                    Try Dst.y := Src.y; Except End;
-                    Try Dst.Rotation := Src.Rotation; Except End;
+                    Try Dst.Layer := Src.Layer; Except NoteWriteFailed('copy placement Layer'); End;
+                    Try Dst.x := Src.x; Except NoteWriteFailed('copy placement x'); End;
+                    Try Dst.y := Src.y; Except NoteWriteFailed('copy placement y'); End;
+                    Try Dst.Rotation := Src.Rotation; Except NoteWriteFailed('copy placement Rotation'); End;
                     If IncludeDes Then
                     Begin
-                        Try Dst.NameOn := Src.NameOn; Except End;
+                        Try Dst.NameOn := Src.NameOn; Except NoteWriteFailed('copy placement NameOn'); End;
                         Try Dst.Name.XLocation := Src.Name.XLocation
-                            - Src.x + Dst.x; Except End;
+                            - Src.x + Dst.x; Except NoteWriteFailed('copy placement designator X'); End;
                         Try Dst.Name.YLocation := Src.Name.YLocation
-                            - Src.y + Dst.y; Except End;
-                        Try Dst.Name.Rotation := Src.Name.Rotation; Except End;
-                        Try Dst.Name.Size := Src.Name.Size; Except End;
-                        Try Dst.Name.Width := Src.Name.Width; Except End;
-                        Try Dst.Name.Layer := Src.Name.Layer; Except End;
+                            - Src.y + Dst.y; Except NoteWriteFailed('copy placement designator Y'); End;
+                        Try Dst.Name.Rotation := Src.Name.Rotation; Except NoteWriteFailed('copy placement designator Rotation'); End;
+                        Try Dst.Name.Size := Src.Name.Size; Except NoteWriteFailed('copy placement designator Size'); End;
+                        Try Dst.Name.Width := Src.Name.Width; Except NoteWriteFailed('copy placement designator Width'); End;
+                        Try Dst.Name.Layer := Src.Name.Layer; Except NoteWriteFailed('copy placement designator Layer'); End;
                     End;
                     If IncludeComment Then
                     Begin
-                        Try Dst.CommentOn := Src.CommentOn; Except End;
+                        Try Dst.CommentOn := Src.CommentOn; Except NoteWriteFailed('copy placement CommentOn'); End;
                         Try Dst.Comment.XLocation := Src.Comment.XLocation
-                            - Src.x + Dst.x; Except End;
+                            - Src.x + Dst.x; Except NoteWriteFailed('copy placement comment X'); End;
                         Try Dst.Comment.YLocation := Src.Comment.YLocation
-                            - Src.y + Dst.y; Except End;
-                        Try Dst.Comment.Rotation := Src.Comment.Rotation; Except End;
-                        Try Dst.Comment.Size := Src.Comment.Size; Except End;
-                        Try Dst.Comment.Width := Src.Comment.Width; Except End;
-                        Try Dst.Comment.Layer := Src.Comment.Layer; Except End;
+                            - Src.y + Dst.y; Except NoteWriteFailed('copy placement comment Y'); End;
+                        Try Dst.Comment.Rotation := Src.Comment.Rotation; Except NoteWriteFailed('copy placement comment Rotation'); End;
+                        Try Dst.Comment.Size := Src.Comment.Size; Except NoteWriteFailed('copy placement comment Size'); End;
+                        Try Dst.Comment.Width := Src.Comment.Width; Except NoteWriteFailed('copy placement comment Width'); End;
+                        Try Dst.Comment.Layer := Src.Comment.Layer; Except NoteWriteFailed('copy placement comment Layer'); End;
                     End;
                     PCBServer.SendMessageToRobots(Dst.I_ObjectAddress,
                         c_Broadcast, PCBM_EndModify, c_NoEventData);
@@ -3345,7 +3347,7 @@ Begin
                     CmpDst.MoveByXY(Round(ExpX) - CmpDst.x, Round(ExpY) - CmpDst.y);
                     PCBServer.SendMessageToRobots(CmpDst.I_ObjectAddress,
                         c_Broadcast, PCBM_EndModify, c_NoEventData);
-                Except End;
+                Except NoteWriteFailed('replicate: place a target part'); End;
             End;
 
             { dst pad name -> net. A fresh list per pair: TStringList.Clear is
@@ -3504,7 +3506,7 @@ Begin
                             PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
                                 c_Broadcast, PCBM_BoardRegisteration,
                                 NewPrim.I_ObjectAddress);
-                        Except End;
+                        Except NoteWriteFailed('replicate: copy routing'); End;
                     End;
                 End;
                 Prim := Iter.NextPCBObject;
@@ -3697,7 +3699,7 @@ Begin
             PcbComp := Iter.FirstPCBObject;
             While PcbComp <> Nil Do
             Begin
-                Try PcbComp.Selected := (Matches.IndexOf(PcbComp.Name.Text) >= 0); Except End;
+                Try PcbComp.Selected := (Matches.IndexOf(PcbComp.Name.Text) >= 0); Except NoteWriteFailed('select variant component'); End;
                 PcbComp := Iter.NextPCBObject;
             End;
             Board.BoardIterator_Destroy(Iter);
@@ -3912,7 +3914,7 @@ Begin
                         Pad.Name := NewName;
                         PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast,
                             PCBM_EndModify, c_NoEventData);
-                    Except End;
+                    Except NoteWriteFailed('pad Name'); End;
                     If Not First Then MapJson := MapJson + ',';
                     First := False;
                     MapJson := MapJson + '{"old":"' + EscapeJsonString(OldName) +
@@ -4026,7 +4028,7 @@ Begin
                         PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
                             c_Broadcast, PCBM_BoardRegisteration, NewPrim.I_ObjectAddress);
                         Inc(Copied);
-                    Except End;
+                    Except NoteWriteFailed('radial copy'); End;
                 End;
             End;
         End;
@@ -4327,7 +4329,7 @@ Begin
                             End;
                         End;
                     End;
-                Except End;
+                Except NoteWriteFailed('lock routing: primitive Moveable'); End;
                 Prim := Iter.NextPCBObject;
             End;
         Finally
@@ -4382,7 +4384,7 @@ Begin
                                 Inc(UpdatedComp);
                             End;
                         End;
-                    Except End;
+                    Except NoteWriteFailed('lock routing: component Moveable'); End;
                     Obj := CompIter.NextPCBObject;
                 End;
             Finally
@@ -4650,8 +4652,8 @@ Begin
                     Via.y := PY;
                     Via.Size := ViaSize;
                     Via.HoleSize := ViaHole;
-                    Try Via.LowLayer := eTopLayer; Except End;
-                    Try Via.HighLayer := eBottomLayer; Except End;
+                    Try Via.LowLayer := eTopLayer; Except NoteWriteFailed('stitching via LowLayer'); End;
+                    Try Via.HighLayer := eBottomLayer; Except NoteWriteFailed('stitching via HighLayer'); End;
                     BindPrimitiveToNet(Net, Via);
                     Board.AddPCBObject(Via);
                     Inc(Placed);
@@ -4773,7 +4775,7 @@ Begin
                         Comp.CommentOn := CommentsOn;
                         Inc(UpdatedComments);
                     End;
-                Except End;
+                Except NoteWriteFailed('NameOn/CommentOn'); End;
                 Obj := Iter.NextPCBObject;
             End;
         Finally
@@ -6578,26 +6580,45 @@ Begin
 
     PcbBeginEdit(0);
     Try
+        { Every write below is read back after the edit closes. }
         If NewName <> '' Then
-            Try LayerObj.Name := NewName; Except End;
+        Begin
+            Try LayerObj.Name := NewName; Except { read back below } End;
+        End;
         If ThickStr <> '' Then
-            Try LayerObj.CopperThickness := MilsToCoordF(StrToFloatDef(ThickStr, 0)); Except End;
+        Begin
+            Try LayerObj.CopperThickness := MilsToCoordF(StrToFloatDef(ThickStr, 0)); Except { read back below } End;
+        End;
 
         If TypeStr = 'none' Then
-            Try LayerObj.Dielectric.DielectricType := eNoDielectric; Except End
+        Begin
+            Try LayerObj.Dielectric.DielectricType := eNoDielectric; Except { read back below } End;
+        End
         Else If TypeStr = 'core' Then
-            Try LayerObj.Dielectric.DielectricType := eCore; Except End
+        Begin
+            Try LayerObj.Dielectric.DielectricType := eCore; Except { read back below } End;
+        End
         Else If TypeStr = 'prepreg' Then
-            Try LayerObj.Dielectric.DielectricType := ePrePreg; Except End
+        Begin
+            Try LayerObj.Dielectric.DielectricType := ePrePreg; Except { read back below } End;
+        End
         Else If TypeStr = 'surface' Then
-            Try LayerObj.Dielectric.DielectricType := eSurfaceMaterial; Except End;
+        Begin
+            Try LayerObj.Dielectric.DielectricType := eSurfaceMaterial; Except { read back below } End;
+        End;
 
         If HeightStr <> '' Then
-            Try LayerObj.Dielectric.DielectricHeight := MilsToCoordF(StrToFloatDef(HeightStr, 0)); Except End;
+        Begin
+            Try LayerObj.Dielectric.DielectricHeight := MilsToCoordF(StrToFloatDef(HeightStr, 0)); Except { read back below } End;
+        End;
         If ConstStr <> '' Then
-            Try LayerObj.Dielectric.DielectricConstant := StrToFloatDef(ConstStr, 1.0); Except End;
+        Begin
+            Try LayerObj.Dielectric.DielectricConstant := StrToFloatDef(ConstStr, 1.0); Except { read back below } End;
+        End;
         If Material <> '' Then
-            Try LayerObj.Dielectric.DielectricMaterial := Material; Except End;
+        Begin
+            Try LayerObj.Dielectric.DielectricMaterial := Material; Except { read back below } End;
+        End;
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
@@ -6822,7 +6843,7 @@ Begin
     Route := '';
     PcbBeginEdit(0);
     Try
-        Try Board.InternalPlaneNetName[TargetLayer] := NetObj.Name; Except End;
+        Try Board.InternalPlaneNetName[TargetLayer] := NetObj.Name; Except { read back below } End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
@@ -6838,7 +6859,7 @@ Begin
     Begin
         PcbBeginEdit(0);
         Try
-            Try LayerObj.Net := NetObj; Except End;
+            Try LayerObj.Net := NetObj; Except { read back below } End;
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
@@ -6889,7 +6910,7 @@ Begin
                 PcbBeginEdit(0);
                 Try
                     Split.BeginModify;
-                    Try Split.Net := NetObj; Except End;
+                    Try Split.Net := NetObj; Except { read back below } End;
                     Split.EndModify;
                     Split.GraphicallyInvalidate;
                 Finally
@@ -7534,7 +7555,7 @@ Begin
             End;
             If Pass <= 2 Then
             Begin
-                Try Board.LayerIsDisplayed[Lyr] := Show; Except End;
+                Try Board.LayerIsDisplayed[Lyr] := Show; Except { read back below } End;
                 Got := Not Show;
                 Try Got := Board.LayerIsDisplayed[Lyr]; Except End;
                 If Got <> Show Then NotApplied := LvAddNote(NotApplied, Item + ': visible')
@@ -7554,7 +7575,7 @@ Begin
                 Got := Not Lock;
                 If MechObj <> Nil Then
                 Begin
-                    Try MechObj.DisplayInSingleLayerMode := Lock; Except End;
+                    Try MechObj.DisplayInSingleLayerMode := Lock; Except { read back below } End;
                     Try Got := MechObj.DisplayInSingleLayerMode; Except End;
                 End;
                 If Got <> Lock Then NotApplied := LvAddNote(NotApplied, Item + ': lock')
@@ -7576,7 +7597,7 @@ Begin
             Unknown := LvAddNote(Unknown, Want)
         Else
         Begin
-            Try Board.CurrentLayer := Lyr; Except End;
+            Try Board.CurrentLayer := Lyr; Except NoteWriteFailed('CurrentLayer'); End;
             WantCur := Lyr;
             Changed := True;
         End;
@@ -7589,7 +7610,7 @@ Begin
             NotApplied := LvAddNote(NotApplied, 'single_layer_mode: no system options')
         Else
         Begin
-            Try Opts.SingleLayerMode := (SlmStr = 'true'); Except End;
+            Try Opts.SingleLayerMode := (SlmStr = 'true'); Except { read back below } End;
             Got := Not (SlmStr = 'true');
             Try Got := Opts.SingleLayerMode; Except End;
             If Got <> (SlmStr = 'true') Then
@@ -7705,7 +7726,7 @@ Begin
         Exit;
     End;
 
-    Try PCBSysOpts.LayerColors[LayerID] := Wanted; Except End;
+    Try PCBSysOpts.LayerColors[LayerID] := Wanted; Except { read back below } End;
 
     { Read back rather than trusting the write, for the same reason the      }
     { mechanical layer kind does: a refused late bound assignment raises     }
@@ -8306,7 +8327,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Body.I_ObjectAddress);
 
-        Try Body.Layer := BodyLayer; Except End;
+        Try Body.Layer := BodyLayer; Except NoteWriteFailed('3D body Layer'); End;
 
         { MOVED, NOT ASSIGNED. Lib_Link3DModel positions a body with
           MoveByXY, which is inherited from IPCB_Primitive and already
@@ -8338,13 +8359,13 @@ Begin
                     Body.EndModify;
                 End;
                 Body.GraphicallyInvalidate;
-            Except End;
+            Except { the move flag in the reply reports it } End;
 
         If Standoff <> 0 Then
             Try
                 Body.StandoffHeight := MilsToCoordF(Standoff);
                 DidStandoff := True;
-            Except End;
+            Except { the standoff flag in the reply reports it } End;
     Finally
         PcbEndEdit(0);
     End;
@@ -11622,7 +11643,7 @@ Begin
                 Track.Width := MilsToCoordF(NewWidth);
                 Track.EndModify;
                 Inc(ModCount);
-            Except End;
+            Except NoteWriteFailed('track Width'); End;
         End;
     Finally
         PcbEndEdit(0);
@@ -13619,7 +13640,7 @@ Begin
 
         { Islands joined to nothing are removed unless asked to keep them. }
         DeadStr := LowerCase(ExtractJsonValue(Params, 'remove_dead'));
-        Try Polygon.RemoveDead := (DeadStr <> 'false'); Except End;
+        Try Polygon.RemoveDead := (DeadStr <> 'false'); Except { the reply reads remove_dead back } End;
 
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -13633,7 +13654,7 @@ Begin
         { Altium names a pour when it pours it; one left without a name is  }
         { given its default name, so it can be poured later by name. Set    }
         { before the polygon joined the board, the name stayed empty.       }
-        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except NoteWriteFailed('polygon default Name'); End;
     Finally
         PcbEndEdit(0);
     End;
@@ -13903,7 +13924,7 @@ Begin
             Polygon.PourOver := ePolygonPourOver_SameNet
         Else
             Polygon.PourOver := ePolygonPourOver_None;
-        Try Polygon.RemoveDead := (DeadStr <> 'false'); Except End;
+        Try Polygon.RemoveDead := (DeadStr <> 'false'); Except { the reply reads remove_dead back } End;
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Polygon.I_ObjectAddress);
@@ -13916,7 +13937,7 @@ Begin
         { Altium names a pour when it pours it; one left without a name is  }
         { given its default name, so it can be poured later by name. Set    }
         { before the polygon joined the board, the name stayed empty.       }
-        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except NoteWriteFailed('polygon default Name'); End;
     Finally
         PcbEndEdit(0);
     End;
@@ -15396,21 +15417,23 @@ Begin
                             NewC := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
                             If NewC = Nil Then Continue;
                             NewC.Board := Board;
+                            { Three ways to load; whether one worked is checked }
+                            { from the pads it brought, and the next is tried.   }
                             If Attempt = 1 Then
                             Begin
-                                Try NewC.LoadFromLibrary('FootPrint=' + Pattern + '|FileName=' + LibPath); Except End;
+                                Try NewC.LoadFromLibrary('FootPrint=' + Pattern + '|FileName=' + LibPath); Except { checked below } End;
                             End;
                             If Attempt = 2 Then
                             Begin
-                                Try NewC.SetState_Pattern(Pattern); Except End;
-                                Try NewC.SourceFootprintLibrary := LibPath; Except End;
-                                Try NewC.LoadCompFromLibrary; Except End;
+                                Try NewC.SetState_Pattern(Pattern); Except { checked below } End;
+                                Try NewC.SourceFootprintLibrary := LibPath; Except { checked below } End;
+                                Try NewC.LoadCompFromLibrary; Except { checked below } End;
                             End;
                             If Attempt = 3 Then
                             Begin
                                 LoadStr := 'SourceLibReference=' + SrcLibRef + '|FootPrint=' + Pattern
                                          + '|SourceComponentLibrary=' + LibPath;
-                                Try NewC.LoadFromLibrary(LoadStr); Except End;
+                                Try NewC.LoadFromLibrary(LoadStr); Except { checked below } End;
                             End;
                             { Side, then turn, then origin, as every placement here. }
                             NewC.Layer := OldLayer;
@@ -15496,28 +15519,28 @@ Begin
                             { Text as placed: absolute, since the origin is shared. }
                             PCBServer.SendMessageToRobots(NewC.I_ObjectAddress,
                                 c_Broadcast, PCBM_BeginModify, c_NoEventData);
-                            Try NewC.NameOn := OldC.NameOn; Except End;
-                            Try NewC.Name.Layer := OldC.Name.Layer; Except End;
-                            Try NewC.Name.Rotation := OldC.Name.Rotation; Except End;
-                            Try NewC.Name.Size := OldC.Name.Size; Except End;
-                            Try NewC.Name.Width := OldC.Name.Width; Except End;
-                            Try NewC.Name.XLocation := OldC.Name.XLocation; Except End;
-                            Try NewC.Name.YLocation := OldC.Name.YLocation; Except End;
-                            Try NewC.CommentOn := OldC.CommentOn; Except End;
-                            Try NewC.Comment.Layer := OldC.Comment.Layer; Except End;
-                            Try NewC.Comment.Rotation := OldC.Comment.Rotation; Except End;
-                            Try NewC.Comment.Size := OldC.Comment.Size; Except End;
-                            Try NewC.Comment.Width := OldC.Comment.Width; Except End;
-                            Try NewC.Comment.XLocation := OldC.Comment.XLocation; Except End;
-                            Try NewC.Comment.YLocation := OldC.Comment.YLocation; Except End;
-                            Try NewC.Moveable := OldC.Moveable; Except End;
+                            Try NewC.NameOn := OldC.NameOn; Except NoteWriteFailed('update footprint: NameOn'); End;
+                            Try NewC.Name.Layer := OldC.Name.Layer; Except NoteWriteFailed('update footprint: designator Layer'); End;
+                            Try NewC.Name.Rotation := OldC.Name.Rotation; Except NoteWriteFailed('update footprint: designator Rotation'); End;
+                            Try NewC.Name.Size := OldC.Name.Size; Except NoteWriteFailed('update footprint: designator Size'); End;
+                            Try NewC.Name.Width := OldC.Name.Width; Except NoteWriteFailed('update footprint: designator Width'); End;
+                            Try NewC.Name.XLocation := OldC.Name.XLocation; Except NoteWriteFailed('update footprint: designator X'); End;
+                            Try NewC.Name.YLocation := OldC.Name.YLocation; Except NoteWriteFailed('update footprint: designator Y'); End;
+                            Try NewC.CommentOn := OldC.CommentOn; Except NoteWriteFailed('update footprint: CommentOn'); End;
+                            Try NewC.Comment.Layer := OldC.Comment.Layer; Except NoteWriteFailed('update footprint: comment Layer'); End;
+                            Try NewC.Comment.Rotation := OldC.Comment.Rotation; Except NoteWriteFailed('update footprint: comment Rotation'); End;
+                            Try NewC.Comment.Size := OldC.Comment.Size; Except NoteWriteFailed('update footprint: comment Size'); End;
+                            Try NewC.Comment.Width := OldC.Comment.Width; Except NoteWriteFailed('update footprint: comment Width'); End;
+                            Try NewC.Comment.XLocation := OldC.Comment.XLocation; Except NoteWriteFailed('update footprint: comment X'); End;
+                            Try NewC.Comment.YLocation := OldC.Comment.YLocation; Except NoteWriteFailed('update footprint: comment Y'); End;
+                            Try NewC.Moveable := OldC.Moveable; Except NoteWriteFailed('update footprint: Moveable'); End;
                             { The schematic link, every Source field as it was. }
-                            Try NewC.SourceUniqueId := SrcUid; Except End;
-                            Try NewC.SourceHierarchicalPath := SrcPath; Except End;
-                            Try NewC.SourceDesignator := SrcDes; Except End;
-                            Try NewC.SourceLibReference := SrcLibRef; Except End;
-                            Try NewC.SourceComponentLibrary := SrcCompLib; Except End;
-                            Try NewC.SourceFootprintLibrary := SrcFpLib; Except End;
+                            Try NewC.SourceUniqueId := SrcUid; Except NoteWriteFailed('update footprint: SourceUniqueId'); End;
+                            Try NewC.SourceHierarchicalPath := SrcPath; Except NoteWriteFailed('update footprint: SourceHierarchicalPath'); End;
+                            Try NewC.SourceDesignator := SrcDes; Except NoteWriteFailed('update footprint: SourceDesignator'); End;
+                            Try NewC.SourceLibReference := SrcLibRef; Except NoteWriteFailed('update footprint: SourceLibReference'); End;
+                            Try NewC.SourceComponentLibrary := SrcCompLib; Except NoteWriteFailed('update footprint: SourceComponentLibrary'); End;
+                            Try NewC.SourceFootprintLibrary := SrcFpLib; Except NoteWriteFailed('update footprint: SourceFootprintLibrary'); End;
                             PCBServer.SendMessageToRobots(NewC.I_ObjectAddress,
                                 c_Broadcast, PCBM_EndModify, c_NoEventData);
 
@@ -15816,18 +15839,24 @@ Begin
 
     PcbBeginEdit(0);
     Try
-        Try Emb.Layer := TargetLayer; Except End;
-        Try Emb.XLocation := MilsToCoordF(X); Except End;
-        Try Emb.YLocation := MilsToCoordF(Y); Except End;
-        Try Emb.DocumentPath := ChildPath; Except End;
-        Try Emb.RowCount := Rows; Except End;
-        Try Emb.ColCount := Cols; Except End;
+        Try Emb.Layer := TargetLayer; Except NoteWriteFailed('embedded board Layer'); End;
+        Try Emb.XLocation := MilsToCoordF(X); Except NoteWriteFailed('embedded board X'); End;
+        Try Emb.YLocation := MilsToCoordF(Y); Except NoteWriteFailed('embedded board Y'); End;
+        Try Emb.DocumentPath := ChildPath; Except NoteWriteFailed('embedded board DocumentPath'); End;
+        Try Emb.RowCount := Rows; Except NoteWriteFailed('embedded board RowCount'); End;
+        Try Emb.ColCount := Cols; Except NoteWriteFailed('embedded board ColCount'); End;
         If RowSpace > 0 Then
-            Try Emb.RowSpacing := MilsToCoordF(RowSpace); Except End;
+        Begin
+            Try Emb.RowSpacing := MilsToCoordF(RowSpace); Except NoteWriteFailed('embedded board RowSpacing'); End;
+        End;
         If ColSpace > 0 Then
-            Try Emb.ColSpacing := MilsToCoordF(ColSpace); Except End;
+        Begin
+            Try Emb.ColSpacing := MilsToCoordF(ColSpace); Except NoteWriteFailed('embedded board ColSpacing'); End;
+        End;
         If (MirrorStr = 'true') Or (MirrorStr = '1') Then
-            Try Emb.MirrorFlag := True; Except End;
+        Begin
+            Try Emb.MirrorFlag := True; Except NoteWriteFailed('embedded board MirrorFlag'); End;
+        End;
 
         Board.AddPCBObject(Emb);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -16035,10 +16064,10 @@ Begin
                                 End;
                                 Pad.Name := 'TP_' + NetName;
                                 BindPrimitiveToNet(Net, Pad);
-                                Try Pad.IsTestpoint_Top := FabTop; Except End;
-                                Try Pad.IsTestpoint_Bottom := FabBot; Except End;
-                                Try Pad.IsAssyTestpoint_Top := AssyTop; Except End;
-                                Try Pad.IsAssyTestpoint_Bottom := AssyBot; Except End;
+                                Try Pad.IsTestpoint_Top := FabTop; Except NoteWriteFailed('testpoint IsTestpoint_Top'); End;
+                                Try Pad.IsTestpoint_Bottom := FabBot; Except NoteWriteFailed('testpoint IsTestpoint_Bottom'); End;
+                                Try Pad.IsAssyTestpoint_Top := AssyTop; Except NoteWriteFailed('testpoint IsAssyTestpoint_Top'); End;
+                                Try Pad.IsAssyTestpoint_Bottom := AssyBot; Except NoteWriteFailed('testpoint IsAssyTestpoint_Bottom'); End;
                                 Board.AddPCBObject(Pad);
 
                                 Inc(Placed);
@@ -16050,7 +16079,7 @@ Begin
                             End;
                         End;
                     End;
-                Except End;
+                Except NoteWriteFailed('place a testpoint'); End;
                 Net := NetIter.NextPCBObject;
             End;
         Finally
@@ -16262,7 +16291,7 @@ Begin
             If PadW > PadH Then Cache.PasteMaskExpansion := -PadW
             Else Cache.PasteMaskExpansion := -PadH;
             Pad.SetState_Cache := Cache;
-        Except End;
+        Except NoteWriteFailed('paste grid: clear the pad paste'); End;
 
         Placed := 0;
         For I := 0 To GridXCnt - 1 Do
@@ -16427,7 +16456,7 @@ Begin
                                     Pad.SetState_Cache := Cache;
                                     Inc(PadsChanged);
                                     CompPads := CompPads + 1;
-                                Except End;
+                                Except NoteWriteFailed('DNP paste: pad paste expansion'); End;
                             End
                             Else
                                 Inc(PadsSkippedTht);
@@ -16665,11 +16694,11 @@ Begin
                         Try OldSrc := Comp.SourceFootprintLibrary; Except End;
                         If OldSrc <> '' Then
                         Begin
-                            Try Comp.SourceFootprintLibrary := ''; Except End;
+                            Try Comp.SourceFootprintLibrary := ''; Except NoteWriteFailed('clear SourceFootprintLibrary'); End;
                             Inc(Cleared);
                         End;
                     End;
-                Except End;
+                Except { a part whose designator cannot be read is skipped } End;
                 Comp := Iter.NextPCBObject;
             End;
         Finally
@@ -17947,7 +17976,7 @@ Begin
                         OtherKind := ReadMechKind(OtherObj);
                         If OtherKind = KindId Then
                         Begin
-                            Try OtherObj.Kind := 0; Except End;
+                            Try OtherObj.Kind := 0; Except NoteWriteFailed('release a layer kind'); End;
                             If Not First Then ClearedJson := ClearedJson + ',';
                             First := False;
                             ClearedJson := ClearedJson
@@ -17958,7 +17987,7 @@ Begin
             End;
         End;
 
-        Try LayerObj.Kind := KindId; Except End;
+        Try LayerObj.Kind := KindId; Except { read back below } End;
 
         If (PartnerKind >= 0) And (PairKind >= 0) And (MechPairs <> Nil) Then
         Begin
@@ -18001,6 +18030,7 @@ Begin
                 Try
                     MechPairs.SetState_LayerPairKind(PairIdx) := PairKind;
                 Except
+                    { read back below }
                 End;
                 PairKindBack := -1;
                 Try
@@ -18020,6 +18050,7 @@ Begin
                         Try
                             MechPairs.SetState_LayerPairKind(PairIdx) := PairKind;
                         Except
+                            { read back below }
                         End;
                         Try
                             PairKindBack := MechPairs.LayerPairKind(PairIdx);
@@ -18819,7 +18850,7 @@ Begin
     UnplacedList := '';
     WasOnline := True;
     Try WasOnline := PCBServer.SystemOptions.DoOnlineDRC; Except End;
-    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except { only makes the moves slower } End;
     PcbBeginEdit(0);
     Try
         For I := 0 To Comps.Count - 1 Do
@@ -18882,7 +18913,7 @@ Begin
         End;
     Finally
         PcbEndEdit(0);
-        Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except End;
+        Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except NoteWriteFailed('restore Online DRC (it may be left off)'); End;
     End;
 
     If Placed + Unplaced > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -19242,7 +19273,7 @@ Begin
         Board.AddPCBObject(Trk); Trk.Selected := True;
         Trk := NewTrack(0, MilsToCoordF(PanH), 0, 0, RailW, MechL);
         Board.AddPCBObject(Trk); Trk.Selected := True;
-        Try Board.LayerIsDisplayed[MechL] := True; Except End;
+        Try Board.LayerIsDisplayed[MechL] := True; Except { display only } End;
 
         If AddTool Then
         Begin
@@ -19352,7 +19383,7 @@ Begin
                         PCBM_BoardRegisteration, Victim.I_ObjectAddress);
                     Board.RemovePCBObject(Victim);
                     Removed := Removed + 1;
-                Except End;
+                Except NoteWriteFailed('remove an invalid object'); End;
             End;
         End;
     Finally
@@ -19520,7 +19551,7 @@ Begin
         Trk := NewTrack(MaxX, MinY, MaxX, MaxY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
         Trk := NewTrack(MaxX, MaxY, MinX, MaxY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
         Trk := NewTrack(MinX, MaxY, MinX, MinY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
-        Try Board.LayerIsDisplayed[MechL] := True; Except End;
+        Try Board.LayerIsDisplayed[MechL] := True; Except { display only } End;
     Finally
         PcbEndEdit(0);
         PcbSelectFilterRestore(Board, FilterWas);
@@ -20080,7 +20111,7 @@ Begin
                         PCBM_BoardRegisteration, NewTxt.I_ObjectAddress);
                     Board.AddPCBObject(NewTxt);
                     Copied := Copied + 1;
-                Except End;
+                Except NoteWriteFailed('copy a designator to the mechanical layer'); End;
                 Obj := Iter.NextPCBObject;
             End;
         Finally
@@ -20864,6 +20895,7 @@ Begin
                 Trk.EndModify;
                 Moved := Moved + 1;
             Except
+                NoteWriteFailed('move a track to the layer');
             End;
         End;
 
@@ -26269,8 +26301,9 @@ Begin
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
     Finally
-        Try ServerDoc.SetFileName(SourcePath); Except End;
-        Try ServerDoc.SetModified(WasModified); Except End;
+        { Left undone, the open board would save over the copy. }
+        Try ServerDoc.SetFileName(SourcePath); Except NoteWriteFailed('point the board back at its own file'); End;
+        Try ServerDoc.SetModified(WasModified); Except NoteWriteFailed('restore the board modified flag'); End;
     End;
     AgeAfter := -1;
     If FileExists(TargetPath) Then
@@ -26395,11 +26428,11 @@ Begin
     Try LibDoc := Client.GetDocumentByPath(MadePath); Except LibDoc := Nil; End;
     If LibDoc <> Nil Then
     Begin
-        Try LibDoc.SetFileName(SavePath); Except End;
+        Try LibDoc.SetFileName(SavePath); Except { the file check below decides } End;
         Try
             LibDoc.SetModified(True);
             LibDoc.DoFileSave('');
-        Except End;
+        Except { the file check below decides } End;
         Saved := FileExists(SavePath);
     End;
 
@@ -26745,11 +26778,11 @@ Begin
     Copied := 0;
     Try Copied := DestLib.GetState_Count - Before; Except Copied := 0; End;
     Saved := False;
-    Try ServerDoc.SetFileName(OutPath); Except End;
+    Try ServerDoc.SetFileName(OutPath); Except { the file check below decides } End;
     Try
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
-    Except End;
+    Except { the file check below decides } End;
     Saved := FileExists(OutPath);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('board', Board.FileName) + ','
@@ -26904,7 +26937,7 @@ Begin
     Refused := 0;
     DrcWasOn := False;
     Try DrcWasOn := PCBServer.SystemOptions.DoOnlineDRC; Except End;
-    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except { only makes the edits slower } End;
     PcbBeginEdit(0);
     Try
         Op := NextBatchOp(Ops);
@@ -26934,7 +26967,7 @@ Begin
         End;
     Finally
         PcbEndEdit(0);
-        Try PCBServer.SystemOptions.DoOnlineDRC := DrcWasOn; Except End;
+        Try PCBServer.SystemOptions.DoOnlineDRC := DrcWasOn; Except NoteWriteFailed('restore Online DRC (it may be left off)'); End;
     End;
     Try Board.GraphicallyInvalidate; Except End;
     If Held > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -28464,7 +28497,7 @@ Begin
                 Else Poly.PourOver := ePolygonPourOver_None;
                 If A2 <> '' Then
                 Begin
-                    Try Poly.Name := A2; Except End;
+                    Try Poly.Name := A2; Except NoteWriteFailed('polygon Name'); End;
                 End;
                 Board.AddPCBObject(Poly);
                 PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -28473,7 +28506,7 @@ Begin
                 { before this; a miss is counted, the pour is still made.  }
                 If StrToIntDef(A6, -1) >= 0 Then
                 Begin
-                    Try Poly.PourIndex := StrToIntDef(A6, -1); Except End;
+                    Try Poly.PourIndex := StrToIntDef(A6, -1); Except { read back on the next line } End;
                     If Poly.PourIndex <> StrToIntDef(A6, -1) Then Inc(PourOrderOff);
                 End;
                 Inc(Created);
@@ -29660,7 +29693,7 @@ Begin
             ByGuid.Values[LsmGuidKey(LGuid)] := LName;
             { the drill pairs name their layers by this id; a stack that  }
             { does not answer it only loses the names there.              }
-            Try ById.Values[IntToStr(LI.GetState_Id)] := LName; Except End;
+            Try ById.Values[IntToStr(LI.GetState_Id)] := LName; Except { a local name list, not the board } End;
             Props := '';
             For I := 0 To PropCount - 1 Do
             Begin

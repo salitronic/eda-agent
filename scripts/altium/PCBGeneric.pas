@@ -911,7 +911,7 @@ Begin
         { index again and the assigned one is lost, while the write answered }
         { success (issue #150). Typing a name in the Polygon Pour dialog     }
         { unticks Auto Naming; do the same, then report what the pour holds. }
-        Try Poly.AutoGenerateName := False; Except End;
+        Try Poly.AutoGenerateName := False; Except NoteWriteFailed('polygon AutoGenerateName (Altium may rename it)'); End;
         Poly.Name := Value;
         Result := Poly.Name = Value;
         Exit;
@@ -981,10 +981,14 @@ Begin
     End;
     OldNet := Obj.Net;
     If OldNet <> Nil Then
-        Try OldNet.RemovePCBObject(Obj); Except End;
+    Begin
+        Try OldNet.RemovePCBObject(Obj); Except NoteWriteFailed('take the object off its old net'); End;
+    End;
     Obj.Net := NetObj;
     If NetObj <> Nil Then
-        Try NetObj.AddPCBObject(Obj); Except End;
+    Begin
+        Try NetObj.AddPCBObject(Obj); Except NoteWriteFailed('add the object to its net'); End;
+    End;
     Result := True;
 End;
 
@@ -1017,9 +1021,9 @@ Var
     GIter : IPCB_GroupIterator;
     Prim  : IPCB_Primitive;
 Begin
-    Try Comp.SetState_UnionIndex := UIndex; Except End;
-    Try Comp.Name.SetState_UnionIndex := UIndex; Except End;
-    Try Comp.Comment.SetState_UnionIndex := UIndex; Except End;
+    Try Comp.SetState_UnionIndex := UIndex; Except NoteWriteFailed('component UnionIndex'); End;
+    Try Comp.Name.SetState_UnionIndex := UIndex; Except NoteWriteFailed('designator UnionIndex'); End;
+    Try Comp.Comment.SetState_UnionIndex := UIndex; Except NoteWriteFailed('comment UnionIndex'); End;
     GIter := Comp.GroupIterator_Create;
     Try
         { The kinds a component owns that carry a union index, never      }
@@ -1034,7 +1038,7 @@ Begin
         While Prim <> Nil Do
         Begin
             Prim.BeginModify;
-            Try Prim.SetState_UnionIndex := UIndex; Except End;
+            Try Prim.SetState_UnionIndex := UIndex; Except NoteWriteFailed('primitive UnionIndex'); End;
             Prim.EndModify;
             Prim := GIter.NextPCBObject;
         End;

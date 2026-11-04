@@ -187,7 +187,12 @@ Begin
     ServerDoc := Nil;
     Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(False); Except End;
+    Try
+        ServerDoc.SetModified(False);
+    Except
+        NoteWriteFailed('clear the modified flag');
+        Exit;
+    End;
     Result := True;
 End;
 
@@ -1759,10 +1764,10 @@ Begin
                 Try
                     If PcbComp.Name.Text = Designator Then
                     Begin
-                        Try PcbComp.Selected := True; Except End;
+                        Try PcbComp.Selected := True; Except NoteWriteFailed('select the part on the board'); End;
                         Found := True;
                     End;
-                Except End;
+                Except { a part whose designator cannot be read is skipped } End;
                 PcbComp := BoardIter.NextPCBObject;
             End;
         Finally
@@ -1855,10 +1860,10 @@ Begin
                             SchComp := SchObj;
                             If SchComp.Designator.Text = Designator Then
                             Begin
-                                Try SchComp.Selection := True; Except End;
+                                Try SchComp.Selection := True; Except NoteWriteFailed('select the part on the sheet'); End;
                                 Break;
                             End;
-                        Except End;
+                        Except { not a component: skipped } End;
                         SchObj := SchIter.NextSchObject;
                     End;
                 Finally
@@ -2229,6 +2234,7 @@ Begin
                             Else
                                 Inc(SkipCount);
                         Except
+                            NoteWriteFailed('annotate: reset a designator');
                         End;
                         Obj := Iterator.NextSchObject;
                     End;
@@ -2360,6 +2366,7 @@ Begin
                     Inc(RenameCount);
                 End;
             Except
+                NoteWriteFailed('annotate: write a designator');
             End;
         End;
 
@@ -6970,6 +6977,7 @@ Begin
                 Inc(Count);
             End;
         Except
+            NoteWriteFailed('DesignatorLocked');
         End;
         Obj := Iterator.NextSchObject;
     End;
