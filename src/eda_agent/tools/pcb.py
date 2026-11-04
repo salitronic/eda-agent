@@ -29,6 +29,7 @@ from ..placement import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from .editor_options import run_options
+from ..layout import pad_relief
 from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
@@ -2326,6 +2327,148 @@ def register_pcb_tools(mcp):
                 style = item.get("rule_style")
                 # Measured on AD 26.11 by switching the rule.
                 item["connection"] = {0: "relief", 1: "direct", 2: "none"}.get(style, str(style))
+        return reply
+
+    def _relief_target(designator: str, pad: str, x: Optional[float],
+                       y: Optional[float]) -> dict[str, str]:
+        params: dict[str, str] = {}
+        if designator.strip():
+            params["designator"] = designator.strip()
+        if pad.strip():
+            params["pad"] = pad.strip()
+        if x is not None and y is not None and not designator.strip():
+            params["x"] = repr(float(x))
+            params["y"] = repr(float(y))
+        return params
+
+    @mcp.tool()
+    async def pcb_pad_relief(
+        designator: str = "", pad: str = "", x: Optional[float] = None,
+        y: Optional[float] = None, style: str = "", spokes: int = 0,
+        width: Optional[float] = None, gap: Optional[float] = None,
+        rotation: int = 0, custom: Optional[bool] = None, read_spokes: bool = False,
+    ) -> dict[str, Any]:
+        """Read or set ONE pad's own thermal relief: how it joins a pour.
+
+        This is the pad's Properties > Thermal Relief, not a design rule.
+        With no value given it reads; with any value it writes the pad
+        (SMD pads only) and reads it back. The pour shows a pad's own
+        relief only where the polygon connect rule lets the pad decide;
+        repour afterwards (pcb_repour_polygons).
+
+        Args:
+            designator: The part, e.g. "C12"; empty for a free pad.
+            pad: The pad name, e.g. "1"; a free pad by name or by x / y.
+            x: A free pad's centre in mils from the board origin (with y).
+            y: See x.
+            style: "rule" (drop the pad's own values), "relief", "direct"
+                or "none" (no connection).
+            spokes: Standard spokes, 2 or 4.
+            width: Spoke (conductor) width in mils.
+            gap: Air gap in mils.
+            rotation: Standard spokes at 45 or 90 degrees.
+            custom: False switches custom spokes off (back to the standard
+                ones); custom spokes are set with pcb_pad_relief_spokes.
+            read_spokes: Also list the custom spoke points. This marks the
+                board modified (one undo step): the list is made sure of
+                by adding and removing a spoke, because reading a list
+                that was never made stops Altium's script.
+
+        Returns:
+            The pad (``x`` / ``y``, ``layer``, ``side``, ``pad_rotation``,
+            ``shape``, ``net``), its relief (``defined`` rule / manual,
+            ``style``, ``spokes``, ``width``, ``gap``, ``rotation``,
+            ``custom``), ``manual_reliefs``, the relief ``outline``
+            (segments: a line's start, or an arc's centre / radius /
+            angles) and, when read, ``custom_spokes``.
+        """
+        params = _relief_target(designator, pad, x, y)
+        values: dict[str, str] = {}
+        if style.strip():
+            values["style"] = style.strip().lower()
+        if spokes:
+            values["spokes"] = str(int(spokes))
+        if width is not None:
+            values["width"] = repr(float(width))
+        if gap is not None:
+            values["gap"] = repr(float(gap))
+        if rotation:
+            values["rotation"] = str(int(rotation))
+        if custom is not None:
+            values["custom"] = "true" if custom else "false"
+        params.update(values)
+        params["action"] = "set" if values else "read"
+        if read_spokes and not values:
+            params["read_spokes"] = "true"
+        return await get_bridge().send_command_async("pcb.pad_relief", params)
+
+    @mcp.tool()
+    async def pcb_pad_relief_spokes(
+        spokes: Union[list[str], str], designator: str = "", pad: str = "",
+        x: Optional[float] = None, y: Optional[float] = None, frame: str = "pad",
+        width: Optional[float] = None, gap: Optional[float] = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Place ONE SMD pad's custom thermal relief spokes, by direction.
+
+        Replaces the pad's custom spoke list and switches the pad to its
+        own relief with custom spokes. Each spoke is resolved from the
+        pad's relief outline, read in the same call; a spoke the outline
+        cannot carry is refused with the reason and nothing is written.
+        The pour shows the spokes only where the polygon connect rule
+        lets the pad decide; repour afterwards.
+
+        Args:
+            spokes: A list (or comma-separated text) of: a side "N", "E",
+                "S", "W", optionally with an offset from -1 to +1 along it
+                ("N:+0.5"; + is east on N / S and north on E / W; 1 puts
+                the spoke's edge at the end of the straight part); a
+                corner "NE", "SE", "SW", "NW"; or an angle in degrees
+                ("30"; 0 = east, counter-clockwise), the way for round
+                pads and oblong ends.
+            designator: The part, e.g. "C12"; empty for a free pad.
+            pad: The pad name; a free pad by name or by x / y.
+            x: A free pad's centre in mils from the board origin (with y).
+            y: See x.
+            frame: "pad" (the names turn with the pad) or "board" (north
+                is the top of the screen).
+            width: Spoke width in mils (also the offset limit's width).
+            gap: Air gap in mils.
+            dry_run: Only resolve where each spoke would go.
+
+        Returns:
+            ``planned`` (per spoke: ``segment``, ``fraction`` and the
+            board point ``x`` / ``y``) and, when written, the pad read
+            back with ``custom_spokes``.
+        """
+        if isinstance(spokes, str):
+            spokes = [s for s in re.split(r"[,\s]+", spokes) if s]
+        if not spokes:
+            return {"ok": False, "reason": "spokes is required"}
+        frame = frame.strip().lower()
+        params = _relief_target(designator, pad, x, y)
+        read = await get_bridge().send_command_async(
+            "pcb.pad_relief", dict(params, action="read"))
+        if not isinstance(read, dict):
+            return read
+        if read.get("side") == "thru":
+            return {"ok": False, "reason": "thru-hole pad: custom spokes are not written",
+                    "pad": read}
+        try:
+            planned = pad_relief.resolve(read, list(spokes), frame, width)
+        except pad_relief.SpokeError as exc:
+            return {"ok": False, "reason": str(exc), "outline": read.get("outline")}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "planned": planned, "pad": read}
+        params["action"] = "spokes"
+        params["points"] = pad_relief.points(planned)
+        if width is not None:
+            params["width"] = repr(float(width))
+        if gap is not None:
+            params["gap"] = repr(float(gap))
+        reply = await get_bridge().send_command_async("pcb.pad_relief", params)
+        if isinstance(reply, dict):
+            reply["planned"] = planned
         return reply
 
     async def _board_regions(params: dict[str, Any]) -> dict[str, Any]:
