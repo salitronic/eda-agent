@@ -12,10 +12,10 @@ touched keeps its bytes. Values are read with the parser in
 
 from __future__ import annotations
 
-import os
 import uuid as _uuid
 from typing import Any, Iterator, Optional
 
+from ..atomicfile import replace_with_retry
 from ..libimport.kicad.sexpr import loads
 
 Span = tuple[int, int]
@@ -158,7 +158,7 @@ def write_file(path: str, text: str) -> None:
     tmp = path + ".eda_agent_tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
 
 
 def walk(node: Any, tag: str) -> Iterator[list]:

@@ -1934,6 +1934,12 @@ def guidance_for(task: str = "", document_kind: str = "",
     # just no longer hide everything else. Tools already named by a
     # curated recipe are not repeated.
     derived: list[dict[str, Any]] = []
+    if task and docs and backend:
+        # Another backend's own tools answer nothing here: with every
+        # backend registered, kicad_lib_copy outranked lib_copy_component
+        # for an Altium caller.
+        others = tuple(f"{b}_" for b in ("kicad", "easyeda") if b != backend)
+        docs = {n: d for n, d in docs.items() if not n.startswith(others)}
     if task and docs:
         named = {t for r in recipes for t in r.get("use", [])}
         derived = [d for d in derived_recipes(task, docs)
