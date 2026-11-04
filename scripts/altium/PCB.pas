@@ -22858,31 +22858,197 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_PlaneConnections - how each pad of a part meets the internal planes,  }
-{ as the board's rules decide it: the connection style (0 relief, 1 direct, }
-{ 2 none, measured on AD 26.11 by switching the rule) and the relief and    }
-{ clearance (conductor width, entries, air gap, expansion, plane clearance). }
-{ The per-layer style the pad answers stayed 0 whatever the rule said, so  }
-{ it is not reported.                                                       }
-{ Params: designator (required), pad (optional, one pad name).              }
+{ PCB_PlaneConnections - how pads and vias meet the internal planes.         }
+{                                                                              }
+{ The connection style comes from the board's rules (0 relief, 1 direct, 2   }
+{ none, measured on AD 26.11 by switching the rule) with the relief and       }
+{ clearance values (conductor width, entries, air gap, expansion, plane       }
+{ clearance). The per-layer style the pad answers stayed 0 whatever the rule }
+{ said, on AD 26.11 and AD 25.8 alike, so it is not reported.                 }
+{                                                                              }
+{ The rule applies to every pad and via, so on its own it does not say       }
+{ whether an object touches a plane at all: an SMD pad answered "relief".    }
+{ plane_contacts lists the planes the object actually passes through (a      }
+{ hole spans every layer, a via the layers it intersects, an SMD pad none),  }
+{ each with the plane's net and whether the object joins it (same net) or    }
+{ only clears it.                                                            }
+{                                                                              }
+{ A pad's hand-edited thermal relief does not show in the rule's values; the }
+{ only sign of one is ManualThermalReliefsCount, reported as manual_reliefs. }
+{                                                                              }
+{ Params: designator (one part's pads), pad (one pad name), or without a     }
+{ designator kind = via | pad (free vias / free pads), net (only that net),  }
+{ limit (most objects reported, default 500).                                }
 {..............................................................................}
+
+{ The net of an internal plane at one point.                                  }
+{                                                                              }
+{ A plane split into regions carries a net per region (IPCB_SplitPlane), and  }
+{ InternalPlaneNetName then answers "(No Net)" for the layer, so every via    }
+{ read as clearing a plane it really joins. The region under the point wins; }
+{ the layer's own net is the fallback, and "(No Net)" reads as no net.        }
+
+Function PlaneNetAt(Board : IPCB_Board; Lyr : TLayer; X : TCoord; Y : TCoord) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Split : IPCB_SplitPlane;
+    Found : Boolean;
+Begin
+    Result := '';
+    Found := False;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSplitPlaneObject));
+        Iter.AddFilter_LayerSet(MkSet(Lyr));
+        Iter.AddFilter_Method(eProcessAll);
+        Split := Iter.FirstPCBObject;
+        While (Split <> Nil) And (Not Found) Do
+        Begin
+            If Split.Layer = Lyr Then
+                If Split.PointInPolygon(X, Y) Then
+                Begin
+                    Found := True;
+                    Try If Split.Net <> Nil Then Result := Split.Net.Name; Except End;
+                End;
+            Split := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If Not Found Then
+        Try Result := Board.InternalPlaneNetName[Lyr]; Except Result := ''; End;
+    If Result = '(No Net)' Then Result := '';
+End;
+
+{ The nets of a plane's split regions, as a JSON string list. }
+
+Function PlaneSplitNets(Board : IPCB_Board; Lyr : TLayer) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Split : IPCB_SplitPlane;
+    NetName : String;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSplitPlaneObject));
+        Iter.AddFilter_LayerSet(MkSet(Lyr));
+        Iter.AddFilter_Method(eProcessAll);
+        Split := Iter.FirstPCBObject;
+        While Split <> Nil Do
+        Begin
+            If Split.Layer = Lyr Then
+            Begin
+                NetName := '';
+                Try If Split.Net <> Nil Then NetName := Split.Net.Name; Except End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '"' + EscapeJsonString(NetName) + '"';
+            End;
+            Split := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ One pad or via as JSON. Via is the same object cast to IPCB_Via, Nil for a }
+{ pad; PlaneList holds the stack's plane layer ids, comma terminated.        }
+
+Function PlaneConnItem(Board : IPCB_Board; Pad : IPCB_Pad; Via : IPCB_Via;
+    PlaneList : String; WithXY : Boolean) : String;
+Var
+    Rule : IPCB_Rule;
+    PadName, NetName, RuleName, ClearName, Contacts, Rest, PlaneNet : String;
+    Lyr : TLayer;
+    Manual : Integer;
+    Crosses : Boolean;
+Begin
+    PadName := '';
+    If Via = Nil Then Try PadName := Pad.Name; Except End;
+    NetName := '';
+    Try If Pad.Net <> Nil Then NetName := Pad.Net.Name; Except End;
+
+    RuleName := '';
+    Rule := Nil;
+    Try Rule := Board.FindDominantRuleForObject(Pad, eRule_PowerPlaneConnectStyle); Except Rule := Nil; End;
+    If Rule <> Nil Then Try RuleName := Rule.Name; Except End;
+    ClearName := '';
+    Rule := Nil;
+    Try Rule := Board.FindDominantRuleForObject(Pad, eRule_PowerPlaneClearance); Except Rule := Nil; End;
+    If Rule <> Nil Then Try ClearName := Rule.Name; Except End;
+
+    Manual := 0;
+    Try Manual := Pad.ManualThermalReliefsCount; Except Manual := 0; End;
+
+    Contacts := '';
+    Rest := PlaneList;
+    While Pos(',', Rest) > 0 Do
+    Begin
+        Lyr := StrToIntDef(Copy(Rest, 1, Pos(',', Rest) - 1), 0);
+        Rest := Copy(Rest, Pos(',', Rest) + 1, Length(Rest));
+        { A hole spans every layer; a via only the layers it intersects. }
+        Crosses := Pad.HoleSize > 0;
+        If Via <> Nil Then
+        Begin
+            Crosses := False;
+            Try Crosses := Via.IntersectLayer(Lyr); Except Crosses := False; End;
+        End;
+        If Crosses Then
+        Begin
+            PlaneNet := PlaneNetAt(Board, Lyr, Pad.X, Pad.Y);
+            If Contacts <> '' Then Contacts := Contacts + ',';
+            Contacts := Contacts + JsonObj(JsonStr('layer', LayerDisplayName(Lyr)) + ','
+                + JsonStr('plane_net', PlaneNet) + ','
+                + JsonBool('joins', (NetName <> '') And (PlaneNet = NetName)));
+        End;
+    End;
+
+    Result := '';
+    If Via = Nil Then Result := JsonStr('pad', PadName) + ',';
+    If WithXY Then
+        Result := Result
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Pad.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Pad.Y - Board.YOrigin))) + ',';
+    Result := JsonObj(Result
+        + JsonStr('net', NetName) + ','
+        + JsonInt('rule_style', Pad.PowerPlaneConnectStyle) + ','
+        + JsonRaw('relief_width_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefConductorWidth))) + ','
+        + JsonInt('relief_entries', Pad.ReliefEntries) + ','
+        + JsonRaw('air_gap_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefAirGap))) + ','
+        + JsonRaw('relief_expansion_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneReliefExpansion))) + ','
+        + JsonRaw('plane_clearance_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneClearance))) + ','
+        + JsonStr('rule', RuleName) + ','
+        + JsonStr('clearance_rule', ClearName) + ','
+        + JsonInt('manual_reliefs', Manual) + ','
+        + JsonRaw('plane_contacts', '[' + Contacts + ']'));
+End;
+
 Function PCB_PlaneConnections(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     GrpIter : IPCB_GroupIterator;
+    Iter : IPCB_BoardIterator;
     Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Prim : IPCB_Primitive;
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
-    DesStr, OnePad, PadName, NetName, Items : String;
-    Count, PlaneCount : Integer;
+    DesStr, OnePad, PadName, NetName, Items, Kind, NetWant, PlaneList, Planes, PlaneNet : String;
+    Count, PlaneCount, Limit, Matched : Integer;
+    Truncated : Boolean;
 Begin
     DesStr := Trim(ExtractJsonValue(Params, 'designator'));
     OnePad := Trim(ExtractJsonValue(Params, 'pad'));
-    If DesStr = '' Then
+    Kind := LowerCase(Trim(ExtractJsonValue(Params, 'kind')));
+    NetWant := Trim(ExtractJsonValue(Params, 'net'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    If Limit < 1 Then Limit := 500;
+    If (DesStr = '') And (Kind <> 'via') And (Kind <> 'pad') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator is required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designator, or kind = via | pad for the free vias / pads, is required');
         Exit;
     End;
     Board := GetPCBBoardAnywhere(0);
@@ -22891,14 +23057,20 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    Comp := Board.GetPcbComponentByRefDes(DesStr);
-    If Comp = Nil Then
+    Comp := Nil;
+    If DesStr <> '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + DesStr);
-        Exit;
+        Comp := Board.GetPcbComponentByRefDes(DesStr);
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + DesStr);
+            Exit;
+        End;
     End;
-    { The internal plane layers in the stack, top first. }
+    { The internal plane layers in the stack, top first, with their nets. }
     PlaneCount := 0;
+    PlaneList := '';
+    Planes := '';
     LayerStack := Nil;
     Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
     If LayerStack <> Nil Then
@@ -22908,49 +23080,118 @@ Begin
         Begin
             Lyr := LayerObj.LayerID;
             If (Lyr >= eInternalPlane1) And (Lyr <= eInternalPlane16) Then
+            Begin
                 Inc(PlaneCount);
+                PlaneList := PlaneList + IntToStr(Lyr) + ',';
+                PlaneNet := '';
+                Try PlaneNet := Board.InternalPlaneNetName[Lyr]; Except PlaneNet := ''; End;
+                If PlaneNet = '(No Net)' Then PlaneNet := '';
+                If Planes <> '' Then Planes := Planes + ',';
+                Planes := Planes + JsonObj(JsonStr('layer', LayerDisplayName(Lyr)) + ','
+                    + JsonStr('name', LayerObj.Name) + ','
+                    + JsonStr('net', PlaneNet) + ','
+                    + JsonRaw('split_nets', '[' + PlaneSplitNets(Board, Lyr) + ']'));
+            End;
             LayerObj := LayerStack.NextLayer(LayerObj);
         End;
     End;
     Items := '';
     Count := 0;
-    GrpIter := Comp.GroupIterator_Create;
-    Try
-        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
-        Pad := GrpIter.FirstPCBObject;
-        While Pad <> Nil Do
-        Begin
-            PadName := '';
-            Try PadName := Pad.Name; Except End;
-            If (OnePad = '') Or (UpperCase(PadName) = UpperCase(OnePad)) Then
+    Matched := 0;
+    Truncated := False;
+    If Comp <> Nil Then
+    Begin
+        GrpIter := Comp.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GrpIter.FirstPCBObject;
+            While Pad <> Nil Do
             Begin
+                PadName := '';
+                Try PadName := Pad.Name; Except End;
                 NetName := '';
                 Try If Pad.Net <> Nil Then NetName := Pad.Net.Name; Except End;
-                If Items <> '' Then Items := Items + ',';
-                Items := Items + JsonObj(JsonStr('pad', PadName) + ','
-                    + JsonStr('net', NetName) + ','
-                    + JsonInt('rule_style', Pad.PowerPlaneConnectStyle) + ','
-                    + JsonRaw('relief_width_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefConductorWidth))) + ','
-                    + JsonInt('relief_entries', Pad.ReliefEntries) + ','
-                    + JsonRaw('air_gap_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefAirGap))) + ','
-                    + JsonRaw('relief_expansion_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneReliefExpansion))) + ','
-                    + JsonRaw('plane_clearance_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneClearance))));
-                Inc(Count);
+                If ((OnePad = '') Or (UpperCase(PadName) = UpperCase(OnePad)))
+                    And ((NetWant = '') Or (NetName = NetWant)) Then
+                Begin
+                    Inc(Matched);
+                    If Count < Limit Then
+                    Begin
+                        If Items <> '' Then Items := Items + ',';
+                        Items := Items + PlaneConnItem(Board, Pad, Nil, PlaneList, False);
+                        Inc(Count);
+                    End
+                    Else Truncated := True;
+                End;
+                Pad := GrpIter.NextPCBObject;
             End;
-            Pad := GrpIter.NextPCBObject;
+        Finally
+            Comp.GroupIterator_Destroy(GrpIter);
         End;
-    Finally
-        Comp.GroupIterator_Destroy(GrpIter);
-    End;
-    If (OnePad <> '') And (Count = 0) Then
+        If (OnePad <> '') And (Count = 0) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND', DesStr + ' has no pad ' + OnePad);
+            Exit;
+        End;
+    End
+    Else
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', DesStr + ' has no pad ' + OnePad);
-        Exit;
+        { Free objects only: a part's pads are read through its designator. }
+        Iter := Board.BoardIterator_Create;
+        Try
+            If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
+            Else Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessFree);
+            Prim := Iter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                NetName := '';
+                Try If Prim.Net <> Nil Then NetName := Prim.Net.Name; Except End;
+                If (NetWant = '') Or (NetName = NetWant) Then
+                Begin
+                    Inc(Matched);
+                    If Count < Limit Then
+                    Begin
+                        { A via is a pad underneath: the plane properties are }
+                        { read through the pad interface.                     }
+                        Pad := Prim;
+                        Via := Nil;
+                        If Kind = 'via' Then Via := Prim;
+                        If Items <> '' Then Items := Items + ',';
+                        Items := Items + PlaneConnItem(Board, Pad, Via, PlaneList, True);
+                        Inc(Count);
+                    End
+                    Else Truncated := True;
+                End;
+                Prim := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
     End;
-    Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonStr('designator', DesStr) + ','
-        + JsonInt('plane_layers', PlaneCount) + ','
-        + JsonRaw('pads', '[' + Items + ']')));
+    If Comp <> Nil Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('designator', DesStr) + ','
+            + JsonInt('plane_layers', PlaneCount) + ','
+            + JsonRaw('planes', '[' + Planes + ']') + ','
+            + JsonInt('matched', Matched) + ','
+            + JsonBool('truncated', Truncated) + ','
+            + JsonRaw('pads', '[' + Items + ']')))
+    Else If Kind = 'via' Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonInt('plane_layers', PlaneCount) + ','
+            + JsonRaw('planes', '[' + Planes + ']') + ','
+            + JsonInt('matched', Matched) + ','
+            + JsonBool('truncated', Truncated) + ','
+            + JsonRaw('vias', '[' + Items + ']')))
+    Else
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonInt('plane_layers', PlaneCount) + ','
+            + JsonRaw('planes', '[' + Planes + ']') + ','
+            + JsonInt('matched', Matched) + ','
+            + JsonBool('truncated', Truncated) + ','
+            + JsonRaw('pads', '[' + Items + ']')));
 End;
 
 {..............................................................................}
