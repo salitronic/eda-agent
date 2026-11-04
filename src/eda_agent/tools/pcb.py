@@ -9032,6 +9032,9 @@ def register_pcb_tools(mcp):
         It also gives ``current_layer`` and ``single_layer_mode``, which is
         enough to put a view back the way it was.
 
+        With a PcbLib in front it reads and changes the library's own
+        view, the footprint being edited, never another open board.
+
         Args:
             show: Layers to display (a list, or text with commas).
             hide: Layers to hide.

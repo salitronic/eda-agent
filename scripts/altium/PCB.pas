@@ -7291,6 +7291,11 @@ End;
 { to nothing in unknown_layers. The reply always lists every layer: the       }
 { legacy range as get_layer_display does, then each ENABLED mechanical layer  }
 { from 17 up. View state only: the document is not marked modified.          }
+{                                                                              }
+{ With a PcbLib in front it acts on the library's own board, the footprint    }
+{ being edited (LvPcbLibInFront). GetPCBBoardAnywhere would answer from some }
+{ other open board then, or refuse when there are several, and hide layers or }
+{ move the current layer of a board the user is not looking at.              }
 {..............................................................................}
 
 Function LvNextItem(Var Rest : String) : String;
@@ -7508,8 +7513,31 @@ Begin
     Result := Result + '"' + EscapeJsonString(Item) + '"';
 End;
 
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is safe to name only after this     }
+{ says yes (see GetPCBBoardAnywhere).                                       }
+Function LvPcbLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
 Function PCB_LayerView(Params : String; RequestId : String) : String;
 Var
+    PcbLib : IPCB_Library;
     Board : IPCB_Board;
     Opts : IPCB_SystemOptions;
     LayerStack : IPCB_LayerStack_V7;
@@ -7519,10 +7547,22 @@ Var
     Rest, Item, Want, Items, NotApplied, Unknown, SlmStr : String;
     Show, Lock, Got, Enabled, Slm, Changed : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { A library in front: its own board, the footprint being edited, and    }
+    { never another open board, also when the library cannot be had.       }
+    PcbLib := Nil;
+    Board := Nil;
+    If LvPcbLibInFront(0) Then
+    Begin
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib <> Nil Then
+            Try Board := PcbLib.Board; Except Board := Nil; End;
+    End
+    Else
+        Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'No PCB document or PCB library is active');
         Exit;
     End;
     Opts := Nil;
@@ -7623,6 +7663,8 @@ Begin
     Begin
         Try Board.ViewManager_UpdateLayerTabs; Except End;
         Try Board.ViewManager_FullUpdate; Except End;
+        If PcbLib <> Nil Then
+            Try PcbLib.RefreshView; Except End;
     End;
 
     { the reply: the legacy range, then every enabled mechanical layer above 16 }
