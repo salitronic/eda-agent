@@ -464,11 +464,12 @@ def test_audit_handles_query_objects_failure_gracefully() -> None:
             return {}
 
     report = audit_schematic(bridge=_ErrBridge())
-    # No data means no violations and no crash.
-    assert report.ok is True
+    # Nothing was read, so nothing was checked: no crash, and no clean bill.
+    assert report.ok is False
     assert report.overlaps == []
-    assert report.wire_crossings == []
-    assert report.stacked_ports == []
+    assert len(report.unread) == 3
+    assert all("forced" in u for u in report.unread)
+    assert report.to_dict()["unread"] == report.unread
 
 
 def test_audit_handles_missing_sheet_enumeration() -> None:
@@ -491,7 +492,9 @@ def test_audit_handles_missing_sheet_enumeration() -> None:
 
     bridge = _NoSheets()
     report = audit_schematic(bridge=bridge)
-    assert report.ok is True
+    # The other sheets went unchecked, and the report says so.
+    assert report.ok is False
+    assert "only the active sheet" in report.unread[0]
     # Falls back to active_doc scope when sheet list is unavailable.
     scopes = [
         p.get("scope", "")
@@ -520,6 +523,7 @@ def test_audit_report_to_dict_round_trip_keys() -> None:
         "wire_crossings",
         "stacked_ports",
         "notes",
+        "unread",
     }
     assert blob["ok"] is True
     assert blob["project_path"] == "C:\\proj\\x.PrjPcb"

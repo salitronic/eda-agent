@@ -144,11 +144,7 @@ def rasterize_svg(
 
     if Path(png_path).exists():
         return {"ok": True, "png_path": png_path}
-    stderr = b""
-    try:
-        stderr = proc.stderr or b""
-    except Exception:
-        pass
+    stderr = proc.stderr or b""
     return {
         "ok": False,
         "reason": "browser produced no PNG",

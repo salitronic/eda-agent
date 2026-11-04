@@ -106,6 +106,9 @@ class SchematicAuditReport(BaseModel):
     wire_crossings: list[WireCrossing] = Field(default_factory=list)
     stacked_ports: list[StackedPorts] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    # Reads that failed, so what they cover was not checked; any entry
+    # keeps ok False.
+    unread: list[str] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +118,7 @@ class SchematicAuditReport(BaseModel):
             "wire_crossings": [v.model_dump() for v in self.wire_crossings],
             "stacked_ports": [v.model_dump() for v in self.stacked_ports],
             "notes": list(self.notes),
+            "unread": list(self.unread),
         }
 
 
@@ -269,12 +273,12 @@ def _query(
     object_type: str,
     properties: str,
     scope: str,
+    unread: list[str],
 ) -> list[dict[str, Any]]:
     """Run query_objects through the bridge and pull out the list.
 
-    Tolerates the various shapes the bridge / pascal handler might
-    return: list of dicts, or ``{"objects": [...]}``. Empty / failure
-    becomes [].
+    Takes a list of dicts or ``{"objects": [...]}``. A failed call
+    returns [] and says so in ``unread``.
     """
     try:
         result = bridge.send_command(
@@ -286,7 +290,8 @@ def _query(
                 "filter": "",
             },
         )
-    except Exception:
+    except Exception as e:  # any bridge failure: record it, check the rest
+        unread.append(f"{object_type} in {scope}: {e}")
         return []
     if isinstance(result, list):
         return [r for r in result if isinstance(r, dict)]
@@ -297,12 +302,14 @@ def _query(
     return []
 
 
-def _list_sheets(bridge: Any, project_path: Optional[str]) -> list[str]:
+def _list_sheets(bridge: Any, project_path: Optional[str],
+                 unread: Optional[list[str]] = None) -> list[str]:
     """Find every .SchDoc in the project (or focused project).
 
     Uses `project.get_project_documents` when available, falls back to
     a single-sheet sentinel ("") so the audit still runs on the active
-    document if document enumeration fails.
+    document if document enumeration fails. A failed enumeration is
+    recorded in ``unread``: the other sheets go unchecked.
     """
     params: dict[str, Any] = {}
     if project_path:
@@ -313,7 +320,10 @@ def _list_sheets(bridge: Any, project_path: Optional[str]) -> list[str]:
         # action name surfaces as an UNKNOWN_ACTION error in the
         # activity feed.
         result = bridge.send_command("project.get_documents", params)
-    except Exception:
+    except Exception as e:  # any bridge failure: audit the active sheet only
+        if unread is not None:
+            unread.append(f"the project's sheet list: {e}; "
+                          "only the active sheet was checked")
         return [""]
 
     # Proj_GetDocuments answers with a BARE JSON ARRAY as its data, and
@@ -602,7 +612,7 @@ def audit_schematic(
         from eda_agent.bridge import get_bridge  # late import, needs Altium
         bridge = get_bridge()
 
-    sheets = _list_sheets(bridge, project_path)
+    sheets = _list_sheets(bridge, project_path, report.unread)
     if not sheets:
         report.notes.append("no schematic sheets found")
         return report
@@ -615,7 +625,8 @@ def audit_schematic(
     for sheet in sheets:
         scope = _doc_scope(sheet) if sheet else "active_doc"
         # Components.
-        comp_rows = _query(bridge, "eSchComponent", _COMPONENT_PROPS, scope)
+        comp_rows = _query(bridge, "eSchComponent", _COMPONENT_PROPS, scope,
+                           report.unread)
         had_bbox = False
         for row in comp_rows:
             box = _row_to_box(row, sheet)
@@ -640,7 +651,7 @@ def audit_schematic(
             )
 
         # Wires.
-        wire_rows = _query(bridge, "eWire", _WIRE_PROPS, scope)
+        wire_rows = _query(bridge, "eWire", _WIRE_PROPS, scope, report.unread)
         unread_wires = 0
         for row in wire_rows:
             wire_counter += 1
@@ -657,7 +668,8 @@ def audit_schematic(
             )
 
         # Power / ground ports.
-        port_rows = _query(bridge, "ePowerObject", _PORT_PROPS, scope)
+        port_rows = _query(bridge, "ePowerObject", _PORT_PROPS, scope,
+                           report.unread)
         for row in port_rows:
             port = _row_to_port(row, sheet)
             if port is None:
@@ -672,5 +684,6 @@ def audit_schematic(
         not report.overlaps
         and not report.wire_crossings
         and not report.stacked_ports
+        and not report.unread
     )
     return report

@@ -567,7 +567,7 @@ def warm_cadquery() -> None:
         subprocess.Popen([sys.executable, "-c", "import cadquery"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=flags)
-    except Exception:
+    except (OSError, ImportError, ValueError):  # a warm-up only; the real import reports
         pass
 
 

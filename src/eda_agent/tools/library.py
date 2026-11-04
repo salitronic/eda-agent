@@ -345,7 +345,7 @@ async def _reload_library(bridge, library_path) -> bool:
             "library.reload_library", {"library_path": library_path},
             timeout=_GEOMETRY_TIMEOUT)
         return bool(isinstance(res, dict) and res.get("reloaded"))
-    except Exception:
+    except Exception:  # False is the answer; each caller reports it
         return False
 
 
@@ -3437,7 +3437,9 @@ def register_library_tools(mcp):
                     res.setdefault("errors", []).append(f"save failed: {why}")
             except Exception as e:
                 res.setdefault("errors", []).append(f"save failed: {e}")
-            await _reload_library(bridge, resolved)
+            if not await _reload_library(bridge, resolved):
+                res.setdefault("errors", []).append(
+                    "reload failed: reads may show the library as it was")
         res["saved"] = saved
         return res
 

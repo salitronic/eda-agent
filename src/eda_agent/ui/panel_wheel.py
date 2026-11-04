@@ -158,7 +158,7 @@ def _run() -> None:
                     user32.PostMessageW(box, WM_VSCROLL,
                                         SB_THUMBPOSITION | (target << 16), 0)
                     return 1
-        except Exception:
+        except Exception:  # a hook that raises stalls every mouse in Windows
             pass
         return user32.CallNextHookEx(None, code, wparam, lparam)
 

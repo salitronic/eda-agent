@@ -552,8 +552,8 @@ def register_generic_tools(mcp):
                     if str(p.get("pin_number")) == str(pin):
                         result["compiled_net"] = p.get("net")
                         break
-            except Exception:
-                pass
+            except Exception as e:  # the pin read stands; say why the net is missing
+                result["compiled_net_unread"] = str(e)
         return result
 
     @mcp.tool()

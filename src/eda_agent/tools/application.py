@@ -122,7 +122,7 @@ def _bundled_script_version() -> Optional[str]:
     try:
         main_pas = get_bundled_scripts_path() / "Main.pas"
         text = main_pas.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except OSError:  # no bundle to compare against; see the docstring
         return None
     m = _VERSION_RE.search(text)
     return m.group(1) if m else None
@@ -130,10 +130,7 @@ def _bundled_script_version() -> Optional[str]:
 
 def _bundled_script_path() -> Optional[str]:
     """The Main.pas that _bundled_script_version reads, as a string."""
-    try:
-        return str(get_bundled_scripts_path() / "Main.pas")
-    except Exception:
-        return None
+    return str(get_bundled_scripts_path() / "Main.pas")
 
 
 def _folder_of(file_path: str) -> str:

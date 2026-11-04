@@ -312,8 +312,7 @@ class AltiumConfig(BaseModel):
             from .schemas import write_schemas_to
             from .schemas import commands  # noqa: F401  (registers commands)
             write_schemas_to(self.workspace_dir)
-        except Exception:
-            # Schema export must not break MCP server startup.
+        except Exception:  # schema export must not stop the server starting
             pass
 
     def write_runtime_config(self) -> None:

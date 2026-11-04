@@ -115,10 +115,7 @@ def _flag(name: str) -> bool:
 
 def _panel_read_only() -> bool:
     from .preferences import edits_read_only
-    try:
-        return edits_read_only()
-    except Exception:
-        return False
+    return edits_read_only()
 
 
 # Deleting and closing, for the Config tab. Generated into StatusForm.pas
@@ -213,10 +210,7 @@ End;
 
 def _panel(check: str) -> bool:
     from . import preferences
-    try:
-        return getattr(preferences, check)()
-    except Exception:
-        return False
+    return getattr(preferences, check)()
 
 
 def readonly_mode() -> bool:

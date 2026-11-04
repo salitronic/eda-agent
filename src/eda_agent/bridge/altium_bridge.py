@@ -145,7 +145,7 @@ def _trace_log(workspace_dir: Path, msg: str) -> None:
         path = workspace_dir / "bridge_trace.log"
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{time.time():.3f} {msg}\n")
-    except Exception:
+    except OSError:  # a trace line is not worth failing a call over
         pass
 
 
@@ -204,7 +204,7 @@ def _make_dir_watcher(directory: Path):
         if not handle or handle == _INVALID_HANDLE:
             return None
         return handle
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller falls back to sleeping
         return None
 
 
@@ -223,7 +223,7 @@ def _wait_dir_change(handle, timeout_ms: float) -> bool:
             _kernel32.FindNextChangeNotification(handle)
             return True
         return False
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller re-checks and waits again
         return False
 
 
@@ -232,7 +232,7 @@ def _close_dir_watcher(handle) -> None:
         return
     try:
         _kernel32.FindCloseChangeNotification(handle)
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the handle is gone either way
         pass
 
 
@@ -355,10 +355,7 @@ def _wants_board_in_view(command: str, now: Optional[float] = None) -> bool:
     """
     if os.environ.get(KEEP_IN_VIEW_ENV, "").strip().lower() not in ("1", "true", "yes"):
         from ..preferences import keep_in_view
-        try:
-            if not keep_in_view():
-                return False
-        except Exception:
+        if not keep_in_view():
             return False
     domain, _, verb = command.partition(".")
     if domain not in ("pcb", "generic") or not verb:
@@ -746,8 +743,8 @@ class AltiumBridge:
         # cleaned without waiting for a full re-attach.
         try:
             self._sweep_orphan_responses()
-        except Exception:
-            pass
+        except OSError as e:  # leftover files cost nothing now; say so in the trace
+            _trace_log(self.config.workspace_dir, f"orphan sweep failed: {e}")
         self._keepalive_stop.clear()
         self._keepalive_thread = threading.Thread(
             target=self._keepalive_loop, daemon=True, name="altium-keepalive"
@@ -1653,13 +1650,13 @@ class AltiumBridge:
         try:
             self.send_command("application.ping", timeout=3.0)
             return True
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return False
 
     def ping_with_version(self) -> Optional[dict[str, Any]]:
         try:
             result = self.send_command("application.ping", timeout=3.0)
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return None
         if isinstance(result, dict):
             return result

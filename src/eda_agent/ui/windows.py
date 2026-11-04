@@ -57,6 +57,7 @@ from typing import Callable, Optional
 from .captions import plain
 
 try:                                            # pragma: no cover - platform
+    import pywintypes
     import win32api
     import win32con
     import win32gui
@@ -179,10 +180,7 @@ def automation_enabled() -> bool:
 def _panel_off() -> bool:
     """Switched off on the Config tab of the Altium panel."""
     from ..preferences import ui_automation_off
-    try:
-        return ui_automation_off()
-    except Exception:
-        return False
+    return ui_automation_off()
 
 
 def _gate(what: str) -> None:
@@ -820,7 +818,7 @@ def capture(hwnd: int) -> Optional[Window]:
                         class_name=win32gui.GetClassName(hwnd),
                         title=win32gui.GetWindowText(hwnd),
                         pid=win32process.GetWindowThreadProcessId(hwnd)[1])
-    except Exception:
+    except pywintypes.error:  # destroyed since IsWindow; see the docstring
         return None
 
     def visit(child, _):
@@ -847,8 +845,7 @@ def capture(hwnd: int) -> Optional[Window]:
 
     try:
         win32gui.EnumChildWindows(hwnd, visit, None)
-    except Exception:
-        # A window with no children raises rather than returning empty.
+    except pywintypes.error:  # a window with no children raises, not returns empty
         pass
     return window
 

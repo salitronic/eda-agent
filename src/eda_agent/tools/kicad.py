@@ -76,9 +76,10 @@ def _report_placeholders(result: dict[str, Any], refs: list[str]) -> None:
 def _resolve_plan_libs(plan):
     """Resolve a plan's real symbols and footprints from KiCad's libraries.
 
-    Returns ``(symbols, part_symbol, mod_texts)``: symbol blocks keyed by
-    lib_id, refdes->lib_id, and refdes->.kicad_mod text. Best-effort -- parts
-    that don't resolve fall back to generated boxes in the emitters.
+    Returns ``(symbols, part_symbol, mod_texts, unread)``: symbol blocks
+    keyed by lib_id, refdes->lib_id, refdes->.kicad_mod text, and why the
+    libraries could not be read (None when they were). Parts that don't
+    resolve fall back to generated boxes in the emitters.
     """
     symbols: dict[str, str] = {}
     part_symbol: dict[str, str] = {}
@@ -102,9 +103,15 @@ def _resolve_plan_libs(plan):
                 if path:
                     with open(path, "r", encoding="utf-8") as fh:
                         mod_texts[p.refdes] = fh.read()
-    except Exception:
-        pass
-    return symbols, part_symbol, mod_texts
+    except Exception as e:  # no KiCad or no libraries: generated boxes, said so
+        return {}, {}, {}, str(e)
+    return symbols, part_symbol, mod_texts, None
+
+
+def _report_unread_libraries(result: dict, unread) -> None:
+    if unread:
+        result["libraries_unread"] = (
+            unread + "; every part was drawn as a generated box")
 
 
 # kicad-cli pcb export formats that write into a directory (vs a single file),
@@ -1281,7 +1288,7 @@ def register_kicad_tools(mcp) -> None:
         nets = [{"name": n.name,
                  "nodes": [{"refdes": pr.refdes, "pin": pr.pin}
                            for pr in n.pins]} for n in plan.nets]
-        symbols, part_symbol, mod_texts = _resolve_plan_libs(plan)
+        symbols, part_symbol, mod_texts, unread = _resolve_plan_libs(plan)
         title = (plan.spec or "")[:80]
         uid = lambda: str(_uuid.uuid4())
 
@@ -1314,6 +1321,7 @@ def register_kicad_tools(mcp) -> None:
             "board": pcb_path, "part_count": len(parts),
             "net_count": len(nets)}
         _report_placeholders(result, placeholders)
+        _report_unread_libraries(result, unread)
         return result
 
     @mcp.tool()
@@ -1347,24 +1355,8 @@ def register_kicad_tools(mcp) -> None:
         nets = [{"name": n.name,
                  "nodes": [{"refdes": pr.refdes, "pin": pr.pin}
                            for pr in n.pins]} for n in plan.nets]
-        # Resolve each part's real symbol from its lib_ref where possible, so
-        # the schematic uses real library symbols instead of generated boxes.
-        symbols: dict[str, str] = {}
-        part_symbol: dict[str, str] = {}
-        try:
-            from ..core.kicad_symbol import (extract_symbol,
-                                             standard_symbol_dirs)
-            sdirs = standard_symbol_dirs(get_kicad_bridge().kicad_cli_path())
-            for p in plan.parts:
-                lid = p.lib_ref
-                if lid and ":" in lid:
-                    part_symbol[p.refdes] = lid
-                    if lid not in symbols:
-                        block = extract_symbol(lid, sdirs)
-                        if block:
-                            symbols[lid] = block
-        except Exception:
-            symbols, part_symbol = {}, {}
+        # Real library symbols where they resolve, generated boxes elsewhere.
+        symbols, part_symbol, _, unread = _resolve_plan_libs(plan)
         sch = build_schematic(parts, nets, uid=lambda: str(_uuid.uuid4()),
                               title=(plan.spec or "")[:80],
                               symbols=symbols, part_symbol=part_symbol)
@@ -1377,6 +1369,7 @@ def register_kicad_tools(mcp) -> None:
         result: dict[str, Any] = {"ok": True, "path": output_path,
                                   "part_count": len(parts),
                                   "net_count": len(nets)}
+        _report_unread_libraries(result, unread)
         if render:
             try:
                 cli = get_kicad_bridge().kicad_cli_path()
@@ -1425,21 +1418,8 @@ def register_kicad_tools(mcp) -> None:
         nets = [{"name": n.name,
                  "nodes": [{"refdes": pr.refdes, "pin": pr.pin}
                            for pr in n.pins]} for n in plan.nets]
-        # Resolve each part's real footprint (.kicad_mod) so the board uses
-        # manufacturable footprints instead of generated boxes where possible.
-        mod_texts: dict[str, str] = {}
-        try:
-            from ..core.kicad_footprint import (find_footprint_file,
-                                                standard_footprint_dirs)
-            dirs = standard_footprint_dirs(get_kicad_bridge().kicad_cli_path())
-            for p in plan.parts:
-                if p.footprint:
-                    path = find_footprint_file(p.footprint, dirs)
-                    if path:
-                        with open(path, "r", encoding="utf-8") as fh:
-                            mod_texts[p.refdes] = fh.read()
-        except Exception:
-            mod_texts = {}
+        # Real library footprints where they resolve, generated boxes elsewhere.
+        _, _, mod_texts, unread = _resolve_plan_libs(plan)
         placeholders: list[str] = []
         pcb = build_pcb(parts, nets, uid=lambda: str(_uuid.uuid4()),
                         title=(plan.spec or "")[:80], mod_texts=mod_texts,
@@ -1454,6 +1434,7 @@ def register_kicad_tools(mcp) -> None:
                                   "part_count": len(parts),
                                   "net_count": len(nets)}
         _report_placeholders(result, placeholders)
+        _report_unread_libraries(result, unread)
         if render:
             try:
                 cli = get_kicad_bridge().kicad_cli_path()
