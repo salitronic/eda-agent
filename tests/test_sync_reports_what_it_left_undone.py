@@ -34,6 +34,11 @@ class _Bridge:
             return {"components": [
                 {"designator": "J2", "footprint": "HDR_2x5"},
                 {"designator": "R1", "footprint": "r0402"}]}
+        if command == "project.get_connectivity_batch":
+            return {"components": [{"designator": "R1", "pins": [
+                {"pin_number": "1", "net": "VCC"}]}]}
+        if command == "pcb.get_pad_properties":
+            return {"pads": [{"component": "R1", "name": "1", "net": "VCC"}]}
         raise AssertionError(command)
 
 
@@ -76,6 +81,9 @@ def test_a_clean_sync_says_nothing(monkeypatch):
 
     bridge.send_command_async = send
     out = asyncio.run(_tools(bridge, monkeypatch)["proj_sync_pcb"]())
-    assert out["after_sync"] == {"footprint_mismatch": [],
-                                 "missing_on_board": [],
-                                 "diff_pairs_removed": []}
+    after = out["after_sync"]
+    assert after["pad_nets"]["complete"] is True
+    del after["pad_nets"]
+    assert after == {"footprint_mismatch": [],
+                     "missing_on_board": [],
+                     "diff_pairs_removed": []}

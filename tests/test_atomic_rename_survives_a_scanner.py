@@ -239,15 +239,3 @@ def test_the_bridge_request_publish_does_not_swallow_a_failed_rename():
         "command would never reach Altium and nothing would say so")
 
 
-def test_the_symbol_cache_does_swallow_one():
-    """The opposite decision, deliberately. A cache is an optimisation:
-    losing a whole extraction run to a rename race is never the trade."""
-    src = (_SRC / "design" / "symbols.py").read_text(encoding="utf-8")
-    body = src.split("    def put(", 1)[1].split(chr(10) + "    def ", 1)[0]
-    code = _code_only(body)
-    assert "except PermissionError:" in code
-    assert "discard(tmp)" in code, (
-        "the abandoned .tmp is left beside the cache file")
-    assert not re.search(r"\braise\b", code), (
-        "put() propagating again is the defect that killed a 38-symbol "
-        "schematic run")

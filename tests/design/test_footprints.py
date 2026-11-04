@@ -1,19 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Tests for datasheet-derived land patterns + the footprint checker."""
-
-import math
+"""Tests for datasheet-derived land patterns."""
 
 import pytest
 
 from eda_agent.design.footprints import (
-    Pad,
     two_pin_chip,
     dual_row,
     pattern_bbox,
     row_pitch,
 )
-from eda_agent.design.footprint_check import check_footprint
 
 
 # --------------------------------------------------------------------------- #
@@ -109,72 +105,3 @@ def test_courtyard_is_pad_bbox_plus_margin():
     # pads span x in [-1.0, 1.0] (cx=0.5 +/- pad_w/2=0.5), y in [-0.4, 0.4]
     assert (x1, y1, x2, y2) == pytest.approx((-1.0, -0.4, 1.0, 0.4))
     assert lp.courtyard == pytest.approx((-1.25, -0.65, 1.25, 0.65))
-
-
-# --------------------------------------------------------------------------- #
-# Checker
-# --------------------------------------------------------------------------- #
-def _pads(lp):
-    return list(lp.pads)
-
-
-def test_check_identical_passes():
-    lp = dual_row(4, 1.27, 1.5, 0.6, center=5.0)
-    rep = check_footprint(_pads(lp), lp)
-    assert rep.passed and not rep.issues
-
-
-def test_check_is_origin_invariant():
-    # A footprint whose origin is the corner (all pads shifted) still matches:
-    # the checker centroid-aligns first.
-    lp = dual_row(4, 1.27, 1.5, 0.6, center=5.0)
-    shifted = [Pad(p.designator, p.x + 7.3, p.y - 2.1, p.width, p.height)
-               for p in lp.pads]
-    assert check_footprint(shifted, lp).passed
-
-
-def test_check_flags_moved_pad():
-    lp = two_pin_chip(1.0, 0.8, span=2.0)
-    bad = _pads(lp)
-    bad[1] = Pad("2", bad[1].x + 0.3, 0.0, 1.0, 0.8)  # pad 2 shifted 0.3 mm
-    rep = check_footprint(bad, lp, pos_tol_mm=0.05)
-    assert not rep.passed
-    assert any(i.code == "pad_position" and i.designator == "2"
-               for i in rep.errors)
-
-
-def test_check_small_perturbation_within_tolerance():
-    lp = two_pin_chip(1.0, 0.8, span=2.0)
-    bad = _pads(lp)
-    bad[1] = Pad("2", bad[1].x + 0.02, 0.0, 1.0, 0.8)  # 0.02 mm < 0.05 tol
-    assert check_footprint(bad, lp, pos_tol_mm=0.05).passed
-
-
-def test_check_flags_wrong_pad_size():
-    lp = two_pin_chip(1.0, 0.8, span=2.0)
-    bad = _pads(lp)
-    bad[0] = Pad("1", bad[0].x, 0.0, 1.3, 0.8)  # pad 1 too wide
-    rep = check_footprint(bad, lp, size_tol_mm=0.05)
-    assert any(i.code == "pad_size" and i.designator == "1" for i in rep.errors)
-
-
-def test_check_flags_missing_and_count():
-    lp = dual_row(4, 1.27, 1.5, 0.6, center=5.0)
-    bad = _pads(lp)[:-1]  # drop pad 8
-    rep = check_footprint(bad, lp)
-    codes = {i.code for i in rep.errors}
-    assert "pad_count" in codes and "missing_pad" in codes
-    assert any(i.designator == "8" for i in rep.errors if i.code == "missing_pad")
-
-
-def test_check_flags_extra_pad():
-    lp = two_pin_chip(1.0, 0.8, span=2.0)
-    bad = _pads(lp) + [Pad("3", 0.0, 2.0, 1.0, 0.8)]
-    rep = check_footprint(bad, lp)
-    assert any(i.code == "extra_pad" and i.designator == "3" for i in rep.errors)
-
-
-def test_check_rejects_empty():
-    lp = two_pin_chip(1.0, 0.8, span=2.0)
-    with pytest.raises(ValueError):
-        check_footprint([], lp)

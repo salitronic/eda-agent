@@ -47,6 +47,19 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
                            "missing_on_board": missing,
                            "diff_pairs_removed": removed}
     problems = []
+    on_both = sorted(d for d in sch if d in pcb)
+    if on_both:
+        from ..core.eco_verify import verify_eco
+        pins = await bridge.send_command_async(
+            "project.get_connectivity_batch", {"designators": "~~".join(on_both)})
+        pads = await bridge.send_command_async("pcb.get_pad_properties", {})
+        nets = verify_eco(_rows(pins, "components"), _rows(pads, "pads"))
+        out["pad_nets"] = nets
+        if nets["unbound_count"] or nets["mismatched_count"]:
+            problems.append(
+                f"{nets['unbound_count']} pad(s) have no net and "
+                f"{nets['mismatched_count']} carry another net than their pin "
+                f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
         problems.append(f"{len(mismatch)} part(s) kept a footprint the "
                         f"schematic no longer uses")
@@ -3583,9 +3596,10 @@ def register_project_tools(mcp):
             false: which button was pressed is unknown). The counts see
             components added or removed only. ``after_sync`` then reads the
             board against the schematic: ``footprint_mismatch`` (the
-            board's footprint is not the schematic's), ``missing_on_board``
-            and ``diff_pairs_removed`` (pairs defined only on the board,
-            which a sync deletes).
+            board's footprint is not the schematic's), ``missing_on_board``,
+            ``diff_pairs_removed`` (pairs defined only on the board, which
+            a sync deletes) and ``pad_nets``: pads left with no net
+            (``unbound``) or another net than their pin (``mismatched``).
         """
         bridge = get_bridge()
         pairs_before = await _pair_names(bridge)
