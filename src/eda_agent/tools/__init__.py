@@ -38,6 +38,9 @@ from .route import register_route_tools
 from .sch_template import register_sch_template_tools
 from .easyeda import register_easyeda_tools
 from .kicad import register_kicad_tools
+from .kicad_board import register_kicad_board_tools
+from .kicad_sch import register_kicad_sch_tools
+from .kicad_lib import register_kicad_lib_tools
 from .eda import register_eda_tools
 from .calc import register_calc_tools, register_physics_calc_tools
 from .plan import register_plan_tools
@@ -315,14 +318,18 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_all_tools(mcp)
     if backend in ("kicad", "both"):
         register_kicad_tools(mcp)
+        register_kicad_board_tools(mcp)
+        register_kicad_sch_tools(mcp)
+        register_kicad_lib_tools(mcp)
     # The engineering calculators (pcb_calc_*) are pure physics and
     # EDA-independent. Altium's register_all_tools already defines them, so add
     # them only for a KiCad-only server to reach calculator parity without
     # double-registering under "both".
     if backend == "easyeda":
         register_easyeda_tools(mcp)
-        # The plan-building half of the design family; EasyEDA draws the
-        # plan with its own template tools.
+    if backend in ("easyeda", "kicad"):
+        # The plan-building half of the design family. EasyEDA draws the
+        # plan with its own template tools, KiCad with kicad_generate_*.
         register_offline_design_tools(mcp)
     if backend in ("kicad", "easyeda"):
         register_calc_tools(mcp)
@@ -364,6 +371,9 @@ __all__ = [
     "register_backend",
     "register_easyeda_tools",
     "register_kicad_tools",
+    "register_kicad_board_tools",
+    "register_kicad_sch_tools",
+    "register_kicad_lib_tools",
     "register_eda_tools",
     "register_calc_tools",
     "register_physics_calc_tools",

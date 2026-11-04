@@ -228,6 +228,18 @@ _UI_AUTOMATION_PARAGRAPHS = {
 }
 
 
+#: The units sentence. KiCad's tools take millimetres, as its files and API
+#: do, and every distance argument names its unit.
+_UNITS = {
+    "altium": "Coordinates are in mils throughout.\n",
+    "easyeda": "Coordinates are in mils throughout.\n",
+    "kicad": ("Coordinates are in millimetres on KiCad, as in its files: every\n"
+              "distance argument says so (x_mm, width_mm).\n"),
+    "both": ("Coordinates are in mils, except on the kicad_ tools, which take\n"
+             "millimetres and say so in each argument (x_mm, width_mm).\n"),
+}
+
+
 def build_server_instructions(
     toolset: str = DEFAULT_TOOLSET, backend: str = DEFAULT_BACKEND
 ) -> str:
@@ -284,9 +296,9 @@ def build_server_instructions(
         "category.\n"
         "\n"
         + ui
-        + engine + items +
-        "Coordinates are in mils throughout, on every backend.\n"
-        "\n"
+        + engine + items
+        + _UNITS.get((backend or DEFAULT_BACKEND).strip().lower(), _UNITS["altium"])
+        + "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
         "the user what is new and ask; call server_update(apply=True) only\n"
         "after they agree.\n"
