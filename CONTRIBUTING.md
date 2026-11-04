@@ -54,6 +54,16 @@ Pascal side; the workspace pointer lives at
 - `EDA_AGENT_INTEGRATION=1 pytest` adds the live-Altium tests
 - `python tests/test_cross_validate.py` runs the offline Pascal validator
   (requires Free Pascal in PATH)
+- `python scripts/check.py` runs the fast checks before a push: the Pascal
+  lint, the generated command rules, the repo-wide guards (copyright
+  lines, dispatch tables, declared imports, docs counts) and the tests
+  that name what your branch changed. Run
+  `git config core.hooksPath .githooks` once and the pre-push hook runs it
+  for you.
+
+The command rules (read-only, deleting, closing) live in
+`src/eda_agent/safety.py`. `StatusForm.pas` carries a generated copy: edit
+the Python, then run `python scripts/altium/sync_rules.py`.
 
 **A plain `pytest` does not touch a running Altium.** The nine tests
 under `tests/integration/` drive a real session, and they are skipped at
@@ -125,7 +135,8 @@ from a table naming a tool nobody wrote.
   `app_ping` names any unit still running an older compile in
   `stale_units`.
 - Add or update tests when behaviour changes.
-- Run `pytest --ignore=tests/integration` locally before requesting review.
+- Run `python scripts/check.py` before pushing, and
+  `pytest --ignore=tests/integration` before requesting review.
 
 ## Commit messages
 

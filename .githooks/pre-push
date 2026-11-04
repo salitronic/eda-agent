@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fast checks before a push; see scripts/check.py.
+exec python scripts/check.py
