@@ -1874,6 +1874,24 @@ Begin
     Result := UpperCase(StripChar(Trim(S), ' '));
 End;
 
+{ The legacy layer whose canonical token is Wanted (upper case, no spaces),  }
+{ or eNoLayer. GetLayerFromString is a case-sensitive Case, so 'midlayer3'   }
+{ or 'multilayer' missed and went on to the user names (issue #211); the    }
+{ legacy ids are 1 (TopLayer) to 74 (MultiLayer), and 80 leaves room.       }
+Function CanonicalLayerByName(Wanted : String) : TLayer;
+Var
+    I : Integer;
+Begin
+    Result := eNoLayer;
+    If (Wanted = '') Or (Wanted = 'UNKNOWN') Then Exit;
+    For I := 1 To 80 Do
+        If UpperCase(GetLayerString(I)) = Wanted Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+End;
+
 Function ResolveLayerIdInStack(LayerStack : IPCB_LayerStack_V7; LayerName : String) : TLayer;
 Var
     Obj : IPCB_LayerObject_V7;
@@ -1888,6 +1906,12 @@ Begin
 
     Candidate := GetLayerFromString(Stripped);
     If UpperCase(GetLayerString(Candidate)) = Wanted Then
+    Begin
+        Result := Candidate;
+        Exit;
+    End;
+    Candidate := CanonicalLayerByName(Wanted);
+    If Candidate <> eNoLayer Then
     Begin
         Result := Candidate;
         Exit;

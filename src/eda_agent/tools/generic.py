@@ -442,8 +442,12 @@ def register_generic_tools(mcp):
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
                 (a value that is not a number matches no < > <= >=);
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
-                character, case ignored), "Net!~VCC*" excludes by one. The
-                same grammar holds for obj_modify, obj_delete and obj_select.
+                character, case ignored), "Net!~VCC*" excludes by one. A
+                PCB Layer (Layer1, Layer2) takes the internal name
+                ("Mechanical21") or the board's own name ("FluidGon"), in
+                any case; a ~ pattern meets either, and a name that is no
+                layer is refused. The same grammar holds for obj_modify,
+                obj_delete and obj_select.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
