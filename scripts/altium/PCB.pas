@@ -9102,8 +9102,8 @@ End;
 {   x_center,y_center,radius,start_angle,end_angle,width,layer,net,keepout   }
 { in decimal mils and degrees. A field left empty takes the call's own       }
 { 'width' / 'layer' / 'net' / 'keepout' param, else the PCB_PlaceArc         }
-{ default (width 10, start 0, end 360, no net; keepout on for the Keep-Out   }
-{ layer). No layer at all, or "current", is the editor's CURRENT layer, read }
+{ default (width 10, start 0, end 360, no net, TopLayer; keepout on for the  }
+{ Keep-Out layer). "current" (any case) is the editor's CURRENT layer, read  }
 { once and named in the reply (a click on another layer tab between calls    }
 { moves it). An unknown layer or net skips that arc and is named.            }
 {..............................................................................}
@@ -9151,7 +9151,7 @@ Begin
     LastNetName := '';
     LastNet := Nil;
     Remaining := ArcsStr;
-    { No layer (or "current") = the editor's current layer, read once. }
+    { "current" = the editor's current layer, read once; no layer = TopLayer. }
     Try CurLayer := Board.CurrentLayer; Except CurLayer := eNoLayer; End;
     OnCurrent := 0;
 
@@ -9231,7 +9231,7 @@ Begin
                 Continue;
             End;
 
-            ArcLayer := ListRowLayer(Board, LayerStr, CurLayer, CurLayer, LayerCache);
+            ArcLayer := ListRowLayer(Board, LayerStr, eTopLayer, CurLayer, LayerCache);
             If ArcLayer = eNoLayer Then
             Begin
                 Inc(Failed);
@@ -9283,8 +9283,7 @@ Begin
 
             Board.AddPCBObject(Arc);
             Inc(Placed);
-            If (LayerStr = '') Or (LowerCase(Trim(LayerStr)) = 'current') Then
-                Inc(OnCurrent);
+            If LowerCase(Trim(LayerStr)) = 'current' Then Inc(OnCurrent);
         End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
@@ -9311,8 +9310,8 @@ End;
 {   x_size, y_size (60 mil), hole_size (0 = SMD), hole_length (a slot when    }
 {   above hole_size, along the pad's X), hole_rotation, plated=false,        }
 {   mask_expansion, paste_expansion (manual, through the pad cache),         }
-{   layer (empty or "current" = the editor's current layer, named in the    }
-{   reply), net, units (mil / mm, for every length)                          }
+{   layer (default TopLayer; "current" = the editor's current layer, named  }
+{   in the reply), net, units (mil / mm, for every length)                   }
 { and 'pads' is a pipe-separated list of x,y,rotation,name,layer,net, the    }
 { last four optional (a row's layer / net override the template's). A pad   }
 { with a hole goes on MultiLayer, as Lib_AddFootprintPads does. An unknown   }
@@ -9408,7 +9407,7 @@ Begin
     LastNetName := '';
     LastNet := Nil;
     Remaining := PadsStr;
-    { No layer (or "current") = the editor's current layer, read once. }
+    { "current" = the editor's current layer, read once; no layer = TopLayer. }
     Try CurLayer := Board.CurrentLayer; Except CurLayer := eNoLayer; End;
     OnCurrent := 0;
 
@@ -9471,7 +9470,7 @@ Begin
             If NetStr = '' Then NetStr := DefNet;
 
             If HoleSize > 0 Then PadLayer := eMultiLayer
-            Else PadLayer := ListRowLayer(Board, LayerStr, CurLayer, CurLayer, LayerCache);
+            Else PadLayer := ListRowLayer(Board, LayerStr, eTopLayer, CurLayer, LayerCache);
             If PadLayer = eNoLayer Then
             Begin
                 Inc(Failed);
@@ -9581,8 +9580,7 @@ Begin
 
             Board.AddPCBObject(Pad);
             Inc(Placed);
-            If (HoleSize <= 0) And ((LayerStr = '')
-                Or (LowerCase(Trim(LayerStr)) = 'current')) Then
+            If (HoleSize <= 0) And (LowerCase(Trim(LayerStr)) = 'current') Then
                 Inc(OnCurrent);
         End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,

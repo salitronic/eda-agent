@@ -8193,10 +8193,10 @@ def register_pcb_tools(mcp):
                 start_angle (default 0), end_angle (default 360),
                 and optionally its own width, layer, net, keepout
             width: Line width for every arc that gives none (default 10)
-            layer: Layer for every arc that gives none. Empty (or
-                "current") = the editor's CURRENT layer, set with
-                pcb_layer_view current_layer; it is read once per call and
-                named in the reply, since a click on another layer tab
+            layer: Layer for every arc that gives none (default
+                "TopLayer"). "current" = the editor's CURRENT layer, set
+                with pcb_layer_view current_layer; it is read once per call
+                and named in the reply, since a click on another layer tab
                 between calls moves it.
             net: Net for every arc that gives none (empty = no net); an
                 arc on a net the board does not have is skipped
@@ -8270,8 +8270,9 @@ def register_pcb_tools(mcp):
             plated: False for a non-plated hole
             mask_expansion, paste_expansion: Manual solder / paste mask
                 expansion (omitted = the board's rules)
-            layer: Copper layer of an SMD pad. Empty (or "current") = the
-                editor's CURRENT layer, read once and named in the reply.
+            layer: Copper layer of an SMD pad (default "TopLayer").
+                "current" = the editor's CURRENT layer, read once and named
+                in the reply.
             net: Net for every pad that gives none; a pad on a net the
                 board does not have is skipped
             units: "mil" (default) or "mm" for every length

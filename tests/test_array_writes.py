@@ -109,14 +109,15 @@ def test_a_row_layer_is_current_empty_or_a_cached_name():
     assert "Else Result := ResolveLayerIdCached(Board, LayerStr, Cache);" in body
 
 
-@pytest.mark.parametrize("name,empty", [("PCB_PlaceTracks", "eTopLayer"),
-                                        ("PCB_PlaceArcs", "CurLayer"),
-                                        ("PCB_PlacePads", "CurLayer")])
-def test_what_a_row_with_no_layer_gets(name, empty):
-    """Tracks keep the top layer they always had; the new lists take the
-    current layer."""
+@pytest.mark.parametrize("name", ["PCB_PlaceTracks", "PCB_PlaceArcs",
+                                  "PCB_PlacePads"])
+def test_a_row_with_no_layer_goes_on_the_top_layer(name):
+    """Every list puts a row with no layer on the top layer, as the track and
+    via lists always have; the current layer is asked for by name."""
     rows = _loop(_pcb()[name])
-    assert f"ListRowLayer(Board, LayerStr, {empty}, CurLayer, LayerCache)" in rows
+    assert "ListRowLayer(Board, LayerStr, eTopLayer, CurLayer, LayerCache)" in rows
+    # only a row that named "current" counts as placed there
+    assert "(LayerStr = '')" not in rows[rows.index("Inc(Placed)"):]
 
 
 @pytest.mark.parametrize("name", ("PCB_PlaceTracks", "PCB_PlaceArcs", "PCB_PlacePads"))
