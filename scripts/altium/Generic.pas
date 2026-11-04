@@ -6025,7 +6025,7 @@ Begin
     Try Found.GraphicallyInvalidate; Except End;
     Try SchDoc.GraphicallyInvalidate; Except End;
 
-    MarkDocDirtyByPath(SchDoc.DocumentName);
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(Designator) + '",'
@@ -6879,7 +6879,7 @@ Begin
       26.11); ExtractTemplate.pas calls it after the same writes. }
     SchDoc.UpdateDocumentProperties;
     SchDoc.GraphicallyInvalidate;
-    MarkDocDirtyByPath(SchDoc.DocumentName);
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Data := '{"success":true,"style":"' + EscapeJsonString(StyleStr) + '"';
     Try Data := Data + ',"use_custom":' + BoolToJsonStr(SchDoc.UseCustomSheet); Except End;
@@ -7265,10 +7265,7 @@ Begin
     SchDoc.GraphicallyInvalidate;
 
     { Explicitly flag the IServerDocument dirty so save_all flushes it.    }
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -8030,10 +8027,7 @@ Begin
     SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"text":"' + EscapeJsonString(Text) +
@@ -8579,10 +8573,7 @@ Begin
     SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     FontRead := 0;
     Try FontRead := PowerObj.FontId; Except End;
@@ -11578,6 +11569,7 @@ Begin
     If Target = Nil Then Exit;
 
     Try Before := Target.ModelName; Except End;
+    SchBeginModify(Comp);
     SchBeginModify(Target);
     Try Target.ModelName := NewName; Except { read back below } End;
     LinkCount := 0;
@@ -11592,8 +11584,21 @@ Begin
         End;
     End;
     SchEndModify(Target);
+    { The renamed model is taken off current and put back, each in its own }
+    { modify: renamed in place, the name read back while the compiled part }
+    { and the save kept the old footprint (2026-11-04). Altium's own        }
+    { release manager script changes a placed footprint the same way.      }
+    SchBeginModify(Target);
+    Try Target.IsCurrent := False; Except NoteWriteFailed('footprint model IsCurrent off'); End;
+    SchEndModify(Target);
+    SchBeginModify(Target);
+    Try Target.IsCurrent := True; Except NoteWriteFailed('footprint model IsCurrent on'); End;
+    SchEndModify(Target);
+    SchEndModify(Comp);
     Try After := Target.ModelName; Except End;
-    Result := (After = NewName);
+    IsCur := False;
+    Try IsCur := Target.IsCurrent; Except End;
+    Result := (After = NewName) And IsCur;
 End;
 
 {..............................................................................}
@@ -11758,10 +11763,7 @@ Begin
     End;
 
     { Flag the server doc dirty so save_all flushes it. }
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesigStr) + '",'
@@ -13764,10 +13766,9 @@ Begin
         OpsList.Free;
     End;
 
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    { Through the one helper, so the edit is recorded as well as flagged: }
+    { a bare SetModified left the save reporting nothing to write.        }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
@@ -13901,10 +13902,9 @@ Begin
         OpsList.Free;
     End;
 
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    { Through the one helper, so the edit is recorded as well as flagged: }
+    { a bare SetModified left the save reporting nothing to write.        }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
@@ -15736,10 +15736,7 @@ Begin
         DesigList.Free;
     End;
 
-    Try
-        SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except NoteWriteFailed('mark document modified (save may skip it)'); End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"total":' + IntToStr(Total) +
