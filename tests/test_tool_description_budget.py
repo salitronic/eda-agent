@@ -19,12 +19,12 @@ from mcp.server.fastmcp import FastMCP
 from eda_agent.tools import register_backend
 
 # Characters of description plus input schema over the full listing.
-BUDGET = {"altium": 890_463, "easyeda": 370_386, "kicad": 189_782}
+BUDGET = {"altium": 893_910, "easyeda": 370_386, "kicad": 189_782}
 
 # One tool's description. Those already longer are capped at their size.
 TOOL_LIMIT = 3_000
 OVER_LIMIT = {
-    "obj_modify": 7_021, "pcb_apply_geometry_map": 6_566, "obj_query": 5_208,
+    "obj_modify": 7_021, "pcb_apply_geometry_map": 6_566, "obj_query": 5_355,
     "pcb_set_rule_properties": 4_975, "audit": 4_945, "pcb_calc": 4_556,
     "pcb_plan_placement": 4_171, "lib_set_pad_properties": 3_714,
     "lib_create_footprint_from_package": 3_229, "sch_editor_options": 3_223,
