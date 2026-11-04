@@ -87,7 +87,7 @@ async def test_import_placement_nothing_valid_sends_nothing(monkeypatch):
 @pytest.mark.asyncio
 async def test_teardrops_both_hit_one_handler(monkeypatch):
     from eda_agent.tools import answering
-    monkeypatch.setattr(answering, "driver", lambda title, steps: None)
+    monkeypatch.setattr(answering, "driver", lambda title, steps, on_the_way=None: None)
     b = RecBridge()
     tools = _pcb(monkeypatch, b)
     await tools["pcb_add_teardrops"]()

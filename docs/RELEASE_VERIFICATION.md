@@ -1,4 +1,4 @@
-# Release verification: 2026.11.04.15
+# Release verification: 2026.11.04.16
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -243,6 +243,7 @@ works elsewhere cannot be an undeclared identifier:
 | 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
+| 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -418,7 +419,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.04.15`, `version_match` =
+Expect `altium_script_version` = `2026.11.04.16`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3690,6 +3691,45 @@ tracks, `obj_query` every track with its geometry (over 500 KB), then
 `app_ping`. The ping answers in under a second, and the status window
 still shows an error row for a failed call such as `obj_query` with an
 unknown object type.
+
+## 68. Footprint copy, footprint repoint and sync report what happened
+
+Three calls answered success and changed nothing (measured on scratch
+copies, 2026-11-04):
+
+* `lib_copy_footprint` with `source_library` written with forward
+  slashes missed the open library, loaded a hidden second copy and copied
+  into that (`primitives_realigned` -1, the copy gone after a save).
+  Request keys ending in `library` or `_file`, and `destination`, now get
+  the same backslash spelling as `*path` keys; the footprint copy, move
+  and rotate open a closed library as a document instead of loading it
+  out of sight; the copy is read back before success.
+* `sch_set_components_parameters` with `Footprint` renamed the model and
+  read the name back while the compiled part kept the old footprint. The
+  renamed model is now taken off current and put back, each in its own
+  modify, as Altium's release manager script does; the compiled part
+  reads the new footprint. The sheet is marked through
+  `MarkDocDirtyByPath`, so the save reports `was_modified` true; five
+  more handlers had the same bare `SetModified`.
+* `proj_sync_pcb` gave no reason when a part kept its footprint. Before
+  closing the change order it ticks Only Show Errors and reads the rows
+  by OCR into `change_order.failed_lines`; a `footprint_mismatch` row that
+  one of them explains carries it as `eco_line`. "Comparator Results ...
+  Continue and create ECO?", which blocked the sync, is answered Yes and
+  listed in `change_order.passed`.
+
+Live check after the deploy, on scratch copies only:
+
+1. `lib_copy_footprint` within an open PcbLib, `source_library` written
+   with `/`: the copy is listed by `lib_get_footprints` and its pads
+   match the source. Into a PcbLib that is not open: it opens, and after
+   `app_save_document` and a close the copy is still listed.
+2. On a part with a footprint model, `sch_set_components_parameters`
+   `Footprint` = another library footprint, save (`was_modified` true),
+   `proj_get_component_info_many`: `footprint` is the new name.
+3. Point that part at a footprint no library has and run
+   `proj_sync_pcb`: `after_sync.footprint_mismatch` carries an `eco_line`
+   with "Footprint Not Found".
 
 ## Still open, and not blocking
 

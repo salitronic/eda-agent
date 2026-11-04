@@ -45,7 +45,7 @@ class _Bridge:
 def _tools(bridge, monkeypatch, driver=None):
     monkeypatch.setattr(project, "get_bridge", lambda: bridge)
     from eda_agent.tools import answering
-    monkeypatch.setattr(answering, "driver", lambda title, steps: driver)
+    monkeypatch.setattr(answering, "driver", lambda title, steps, on_the_way=None: driver)
     tools = {}
 
     class _Mcp:
@@ -68,6 +68,27 @@ def test_the_reply_names_what_the_sync_did_not_do(monkeypatch):
     assert after["missing_on_board"] == ["C9"]
     assert after["diff_pairs_removed"] == ["USB_CONN", "USB_MCU"]
     assert "warning" in after
+
+
+def test_a_mismatch_carries_the_change_order_line_that_explains_it(monkeypatch):
+    """The ECO ran, the part kept its old footprint and nothing said why
+    (NLC, 2026-11-04). The failed line read off the dialog now rides on
+    the mismatch it explains."""
+    import contextlib
+    import threading
+
+    bridge = _Bridge()
+    bridge.expecting = lambda title: contextlib.nullcontext()
+    rows = ["Add Components(1)",
+            "Change T J2 To Board.PcbDoc Footprint Not Found JST SH 4"]
+    driver = (lambda: {"appeared": True, "done": [], "closed": True,
+                       "read_filtered": True, "read": rows}, threading.Event())
+    out = asyncio.run(_tools(bridge, monkeypatch, driver)["proj_sync_pcb"]())
+    assert out["change_order"]["failed_lines"] == [rows[1]]
+    assert "read" not in out["change_order"]
+    (row,) = out["after_sync"]["footprint_mismatch"]
+    assert row["eco_line"] == rows[1]
+    assert "eco_line" in out["after_sync"]["warning"]
 
 
 def test_a_clean_sync_says_nothing(monkeypatch):
@@ -100,7 +121,7 @@ def test_automatic_change_orders_are_driven_while_the_call_waits(monkeypatch):
 
     @contextlib.contextmanager
     def expecting(title):
-        seen["expected"] = title
+        seen.setdefault("expected", []).append(title)
         yield
 
     bridge.expecting = expecting
@@ -108,6 +129,7 @@ def test_automatic_change_orders_are_driven_while_the_call_waits(monkeypatch):
     driver = (lambda: {"appeared": True, "executed": True,
                        "finished": True, "closed": True}, stop)
     out = asyncio.run(_tools(bridge, monkeypatch, driver)["proj_sync_pcb"]())
-    assert seen["expected"] == "Engineering Change Order"
+    assert seen["expected"] == ["Engineering Change Order", "Comparator Results",
+                                "No Differences"]
     assert out["change_order"]["closed"] is True
     assert stop.is_set()

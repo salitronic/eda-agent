@@ -39,7 +39,16 @@ class Press:
     closes: bool = False
 
 
-Step = Union[Check, Press]
+@dataclass(frozen=True)
+class Read:
+    """Read the dialog's text by OCR, as screen rows, into ``read``.
+    ``show`` names a view filter to tick first (the change order's Only
+    Show Errors); ``read_filtered`` says whether it took. A filter that
+    does not take is noted and never cancels: it changes only the view."""
+    show: str = ""
+
+
+Step = Union[Check, Press, Read]
 
 
 def _find(pid: int, title: str):
@@ -73,8 +82,13 @@ def _set(dialog, step: Check) -> dict[str, Any]:
 
 def answer(pid: int, title: str, steps: list[Step],
            stop: Optional[threading.Event] = None, appear_within: float = 60.0,
-           run_within: float = 300.0, poll: float = 0.1) -> dict[str, Any]:
+           run_within: float = 300.0, poll: float = 0.1,
+           on_the_way: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Wait for the dialog titled ``title`` and run ``steps`` on it.
+
+    ``on_the_way`` maps the title of a dialog that can come up first to
+    the button that carries on to ``title``; each one pressed is listed in
+    ``passed``.
 
     Returns ``appeared``, ``done`` (the steps that ran), ``closed`` and a
     ``reason`` when something did not happen.
@@ -89,14 +103,15 @@ def answer(pid: int, title: str, steps: list[Step],
         owned = False
     try:
         return _answer(pid, title, steps, stop or threading.Event(),
-                       appear_within, run_within, poll)
+                       appear_within, run_within, poll, on_the_way or {})
     finally:
         if owned:
             comtypes.CoUninitialize()
 
 
 def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
-            appear_within: float, run_within: float, poll: float) -> dict[str, Any]:
+            appear_within: float, run_within: float, poll: float,
+            on_the_way: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {"dialog": title, "appeared": False, "done": [],
                            "closed": False}
     deadline = time.monotonic() + appear_within
@@ -105,6 +120,13 @@ def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
         dialog = _find(pid, title)
         if dialog is not None:
             break
+        for first, caption in on_the_way.items():
+            before = _find(pid, first)
+            button = before.find_button(caption) if before is not None else None
+            if button is not None and button.enabled:
+                windows.click(button)
+                out.setdefault("passed", []).append(
+                    {"dialog": before.title, "pressed": caption})
         time.sleep(poll)
     if dialog is None:
         out["reason"] = f"{title!r} did not appear"
@@ -127,6 +149,14 @@ def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
             out["closed"] = True
             out["reason"] = f"{title!r} closed before {step}"
             return out
+        if isinstance(step, Read):
+            from . import ocr
+            if step.show:
+                out["read_filtered"] = bool(_set(current, Check(step.show)).get("ok"))
+                time.sleep(0.5)                  # the grid repaints
+            out["read"] = ocr.read_window_rows(dialog.hwnd)
+            out["done"].append("read")
+            continue
         if isinstance(step, Check):
             result = _set(current, step)
             if not result.get("ok"):

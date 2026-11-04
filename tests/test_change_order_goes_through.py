@@ -63,11 +63,81 @@ def altium(monkeypatch):
     return fake
 
 
-def test_execute_then_close_once_the_run_has_finished(altium):
+#: Rows OCR made of a change order with Only Show Errors ticked (measured
+#: on AD 26.11, 2026-11-04): the headings, two failed lines, the buttons.
+_ROWS = ["Engineering Change Order x",
+         "Modifications Status",
+         "Enable Action Affected Object Affected Document Check Done Message",
+         "Add Components(5)",
+         "Add T DIO To Blinker555_v4.PcbDoc Footprint Not Found D041_SElF",
+         "IMI Add T D12 To Blinker555_v4.PcbDoc Footprint Not Found",
+         "Validate Changes Execute Changes Report Changes... Only Show Errors Close"]
+
+
+@pytest.fixture
+def grid(monkeypatch):
+    from eda_agent.ui import dialog_answer, ocr
+    shown = []
+    monkeypatch.setattr(dialog_answer, "_set",
+                        lambda dialog, step: shown.append(step.label) or {"ok": True})
+    monkeypatch.setattr(ocr, "read_window_rows", lambda hwnd: list(_ROWS))
+    return shown
+
+
+def test_execute_then_close_once_the_run_has_finished(altium, grid):
     out = change_order.drive(1, threading.Event(), poll=0.001)
     assert altium.pressed == ["Execute Changes", "Close"]
+    assert grid == ["Only Show Errors"]
     assert out == {"dialog": "Engineering Change Order", "appeared": True,
-                   "done": ["Execute Changes", "Close"], "closed": True}
+                   "done": ["Execute Changes", "read", "Close"], "closed": True,
+                   "read_filtered": True, "read": _ROWS}
+
+
+def test_the_failed_lines_are_the_rows_left_by_the_filter(altium, grid):
+    out = change_order.drive(1, threading.Event(), poll=0.001)
+    lines = change_order.failed_lines(out)
+    assert lines == [_ROWS[4], _ROWS[5]]
+    # The schematic's exact name finds its line past OCR's 0/O, l/I slips.
+    assert change_order.failure_for("DO-41_SEIF", lines) == _ROWS[4]
+    assert change_order.failure_for("SOT23_N_SEIF", lines) == ""
+
+
+def test_a_line_with_its_name_cut_off_is_found_by_designator():
+    """Measured: OCR left "Footprint Not Found" with no name on R50's row."""
+    line = "Modify -Y [R50) In Blinker555_v4.PcbDoc Footprint Not Found"
+    assert change_order.failure_for("NO_SUCH_FP", [line], "R50") == line
+    assert change_order.failure_for("NO_SUCH_FP", [line], "R5") == ""
+    assert change_order.failure_for("NO_SUCH_FP", ["Add R50 Unknown Pin"], "R50") == ""
+
+
+def test_icon_noise_and_the_split_title_are_not_lines():
+    out = {"read_filtered": True,
+           "read": ["Order x", "Add -e CI-1 to NetC1_1 Unknown Pin. \u0007 Pin CI-1"]}
+    assert change_order.failed_lines(out) == [
+        "Add -e CI-1 to NetC1_1 Unknown Pin. Pin CI-1"]
+
+
+def test_no_failed_lines_are_claimed_when_the_filter_did_not_take():
+    assert change_order.failed_lines({"read_filtered": False, "read": _ROWS}) == []
+
+
+def test_the_comparator_question_on_the_way_is_answered(monkeypatch):
+    """"Continue and create ECO?" blocked the sync until a person pressed
+    Yes; it is pressed, and recorded, on the way to the change order."""
+    pressed = []
+
+    class _Question:
+        hwnd, title = 7, "Comparator Results (24 Differences)"
+
+        def find_button(self, caption):
+            return _Button(caption) if caption in ("Yes", "No", "Cancel") else None
+
+    monkeypatch.setattr(windows, "dialogs", lambda pid: [] if pressed else [_Question()])
+    monkeypatch.setattr(windows, "click", lambda b: pressed.append(b.text))
+    out = change_order.drive(1, threading.Event(), appear_within=0.05, poll=0.001)
+    assert pressed == ["Yes"]
+    assert out["passed"] == [{"dialog": "Comparator Results (24 Differences)",
+                              "pressed": "Yes"}]
 
 
 def test_nothing_is_pressed_when_no_change_order_appears(monkeypatch):

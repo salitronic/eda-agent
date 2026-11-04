@@ -366,3 +366,14 @@ def test_the_title_only_tier_runs_after_every_message_pattern():
     assert source.index("_KINDS") < source.index("_TITLE_ONLY_KINDS"), (
         "matching the caption before the message would let an error "
         "captioned Information be clicked past")
+
+
+def test_ocr_words_are_grouped_into_screen_rows():
+    """A grid read line by line comes back split by column, so a message
+    lost the row it belongs to. Words are placed by position instead."""
+    from eda_agent.ui import ocr
+
+    words = ["40\t200\t20\tAdd", "700\t202\t20\tFootprint", "860\t201\t20\tNot",
+             "300\t199\t20\tD10", "40\t240\t20\tAdd", "300\t241\t20\tR50",
+             "bad line"]
+    assert ocr.rows_from_words(words) == ["Add D10 Footprint Not", "Add R50"]

@@ -32,7 +32,30 @@ async def _pair_names(bridge) -> set:
             if isinstance(p, dict) and p.get("name")}
 
 
-async def _after_sync(bridge, pairs_before: set) -> dict:
+def _record_change_order(result, driven) -> list[str]:
+    """Put what was done to the change order on the reply, with the lines
+    that failed and the raw rows moved out of the way; the failed lines."""
+    if not isinstance(result, dict) or driven is None:
+        return []
+    failed = change_order.failed_lines(driven)
+    rows = driven.pop("read", None)
+    filtered = driven.pop("read_filtered", None)
+    if filtered:
+        driven["failed_lines"] = failed
+        driven["failed_lines_note"] = (
+            "read from the dialog by OCR with Only Show Errors ticked: the "
+            "rows that fit in the dialog, a long line sometimes split in "
+            "two, names with 0/O and 1/l slips")
+    elif rows is not None:
+        driven["failed_lines"] = None
+        driven["failed_lines_note"] = (
+            "Only Show Errors could not be ticked, so which lines failed "
+            "was not read")
+    result["change_order"] = driven
+    return failed
+
+
+async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
     """What a schematic-to-board sync left undone, read from both sides."""
     bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
     board = await bridge.send_command_async("pcb.get_components", {})
@@ -43,6 +66,10 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
     mismatch = [{"designator": d, "schematic": fp, "board": pcb[d]}
                 for d, fp in sorted(sch.items())
                 if d in pcb and fp and pcb[d] and fp.lower() != pcb[d].lower()]
+    for row in mismatch:
+        line = change_order.failure_for(row["schematic"], list(failed), row["designator"])
+        if line:
+            row["eco_line"] = line
     missing = sorted(d for d in sch if d not in pcb)
     removed = sorted(pairs_before - await _pair_names(bridge))
     out: dict[str, Any] = {"footprint_mismatch": mismatch,
@@ -63,8 +90,12 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
                 f"{nets['mismatched_count']} carry another net than their pin "
                 f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
-        problems.append(f"{len(mismatch)} part(s) kept a footprint the "
-                        f"schematic no longer uses")
+        explained = sum(1 for row in mismatch if row.get("eco_line"))
+        problems.append(
+            f"{len(mismatch)} part(s) kept a footprint the schematic no longer "
+            f"uses" + (f"; for {explained} the change order says why "
+                       f"(eco_line), typically a footprint it found in no "
+                       f"library it searches" if explained else ""))
     if missing:
         problems.append(f"{len(missing)} schematic part(s) are not on the board")
     if removed:
@@ -3592,16 +3623,19 @@ def register_project_tools(mcp):
             board: ``footprint_mismatch``, ``missing_on_board``,
             ``diff_pairs_removed`` (board-only pairs a sync deletes) and
             ``pad_nets`` (pads ``unbound`` or ``mismatched`` to their pin).
+            ``change_order.failed_lines`` are the lines that failed, read
+            from the dialog by OCR (names can carry 0/O, 1/l slips); a
+            mismatch that one of them explains carries it as ``eco_line``.
         """
         bridge = get_bridge()
         pairs_before = await _pair_names(bridge)
         result, driven = await send_answering(
-            bridge, "project.update_pcb", {}, change_order.TITLE, change_order.STEPS)
-        if isinstance(result, dict) and driven is not None:
-            result["change_order"] = driven
+            bridge, "project.update_pcb", {}, change_order.TITLE, change_order.STEPS,
+            on_the_way=change_order.ON_THE_WAY)
+        failed = _record_change_order(result, driven)
         if isinstance(result, dict):
             try:
-                result["after_sync"] = await _after_sync(bridge, pairs_before)
+                result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
             except Exception as exc:            # noqa: BLE001 - a report only
                 result["after_sync"] = {"error": f"not read: {exc}"}
         return result
@@ -3620,9 +3654,8 @@ def register_project_tools(mcp):
         bridge = get_bridge()
         result, driven = await send_answering(
             bridge, "project.update_schematic", {},
-            change_order.TITLE, change_order.STEPS)
-        if isinstance(result, dict) and driven is not None:
-            result["change_order"] = driven
+            change_order.TITLE, change_order.STEPS, on_the_way=change_order.ON_THE_WAY)
+        _record_change_order(result, driven)
         return result
 
     @mcp.tool()

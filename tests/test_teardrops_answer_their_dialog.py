@@ -32,7 +32,7 @@ def _run(monkeypatch, tool, **kwargs):
     bridge = _Bridge()
     seen = {}
 
-    def driver(title, steps):
+    def driver(title, steps, on_the_way=None):
         seen["title"], seen["steps"] = title, steps
         return (lambda: {"appeared": True, "done": [], "closed": True}), threading.Event()
 
