@@ -16,6 +16,8 @@ New tools should match the family they belong to rather than invent a third
 shape.
 """
 
+from typing import Any
+
 from .application import (
     register_application_tools,
     register_meta_tools,
@@ -228,10 +230,41 @@ def register_backend(
         name = _register_minimal(mcp, backend)
     else:
         name = _register_full(mcp, backend)
+    _drop_schema_titles(mcp)
     # The canned requests go on the real server under either toolset: a
     # minimal server hides tools, not the prompts a user picks from.
     register_request_prompts(mcp, name)
     return name
+
+
+def _without_titles(schema: Any) -> Any:
+    """A JSON schema without the "title" keywords pydantic generates.
+
+    Each one repeats its property's name ("layer" -> "Layer") and is sent
+    with every tool listing. A property that is itself called "title" is
+    a name under "properties", not the keyword, and is kept.
+    """
+    if isinstance(schema, list):
+        return [_without_titles(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+            out[key] = {name: _without_titles(sub) for name, sub in value.items()}
+        else:
+            out[key] = _without_titles(value)
+    return out
+
+
+def _drop_schema_titles(mcp) -> None:
+    manager = getattr(mcp, "_tool_manager", None)
+    if manager is None:
+        return
+    for tool in manager.list_tools():
+        tool.parameters = _without_titles(tool.parameters)
 
 
 def _register_minimal(mcp, backend: str) -> str:
