@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Mouse-wheel scrolling for the Config tab of the bridge panel in Altium.
 
 Altium's script engine never runs a script form's wheel events, so the

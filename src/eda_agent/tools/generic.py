@@ -603,7 +603,10 @@ def register_generic_tools(mcp):
                 OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
                 SolderMaskExpansionMode (Altium's numbers: from the rule or
                 manual), PasteMaskUsePercent, PasteMaskPercent and
-                PasteMaskEnabled; on tracks, arcs and vias IsPreRoute
+                PasteMaskEnabled; on any board object DetailString,
+                DRCError, UniqueID and IsElectricalPrim (reads); on any
+                schematic object DescriptionString, IdentifierString and
+                ErrorString (reads); on tracks, arcs and vias IsPreRoute
                 (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
