@@ -89,13 +89,22 @@ _QUEUE_FRESH_S = 5.0
 #: the failure this exists to remove. Checking on an interval catches it
 #: whenever it turns up.
 #:
-#: The first check is delayed so ordinary calls never pay for it. MEASURED
-#: on this workspace, the compile-bound reads are the slowest legitimate
-#: handlers and return in about a second, so a 3 second grace leaves
-#: headroom. After that the cost is one Win32 window enumeration per
-#: interval, against a call that is already stalled.
-_DIALOG_PROBE_AFTER = 3.0
-_DIALOG_PROBE_EVERY = 3.0
+#: One look costs about 60 ms (a Toolhelp scan for Altium's pid and a
+#: Win32 window enumeration), so it starts after a second and repeats
+#: every half second. A dialog counts as blocking the call only when the
+#: same one is seen on two looks in a row, so a progress window Altium
+#: opens and closes by itself never stops a call.
+_DIALOG_PROBE_AFTER = 1.0
+_DIALOG_PROBE_EVERY = 0.5
+
+
+def _blocking_signature(report: Optional[dict]) -> str:
+    """The dialogs blocking Altium, as one comparable string; '' if none."""
+    if not report or not report.get("blocked"):
+        return ""
+    return "|".join(sorted(
+        f"{d.get('hwnd')}:{d.get('title')}" for d in report.get("dialogs") or []
+        if isinstance(d, dict))) or "blocked"
 
 # Thread pool for blocking I/O
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -924,6 +933,8 @@ class AltiumBridge:
         first_appearance: Optional[float] = None
         parse_errors = 0
         next_dialog_probe = start + _DIALOG_PROBE_AFTER
+        #: The blocking dialogs the last look saw; see _DIALOG_PROBE_EVERY.
+        last_blocked = ""
 
         while True:
             poll_count += 1
@@ -958,7 +969,10 @@ class AltiumBridge:
                         and maintenance_in_progress(workspace_dir)
                         and self._request_path(request_id).exists()):
                     continue
-                if early and early.get("blocked"):
+                seen = _blocking_signature(early)
+                confirmed = bool(seen) and seen == last_blocked
+                last_blocked = seen
+                if confirmed:
                     waited = now - start
                     _trace_log(
                         workspace_dir,

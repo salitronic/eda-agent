@@ -171,6 +171,33 @@ def _scan_process_names_native(wanted_upper: set) -> Optional[bool]:
         return None
 
 
+def _native_process_pids(wanted_upper: set) -> Optional[list[tuple[int, str]]]:
+    """``(pid, name)`` of every running process with a wanted name, via the
+    Toolhelp snapshot (milliseconds). None if the native path is unavailable.
+    """
+    if _th_kernel32 is None:
+        return None
+    try:
+        snap = _th_kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == _th_invalid_handle:
+            return None
+        try:
+            found: list[tuple[int, str]] = []
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            ok = _th_kernel32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                if entry.szExeFile.upper() in wanted_upper:
+                    found.append((int(entry.th32ProcessID), entry.szExeFile))
+                ok = _th_kernel32.Process32NextW(snap, ctypes.byref(entry))
+            return found
+        finally:
+            _th_kernel32.CloseHandle(snap)
+    except Exception as e:
+        logger.debug("native process scan failed: %s", e)
+        return None
+
+
 @dataclass
 class AltiumProcessInfo:
     """Information about a running Altium process."""
@@ -237,6 +264,24 @@ class AltiumProcessManager:
                         exe_path="",
                         cmdline=None,
                     ))
+            return out
+        # Native: find the Altium pids by name in milliseconds, then read
+        # exe and cmdline for those alone. Asking psutil for every
+        # process's exe took 3.6 s with 870 processes running, and the
+        # dialog probe paid it on every look.
+        native = _native_process_pids(wanted)
+        if native is not None:
+            for pid, name in native:
+                try:
+                    proc = psutil.Process(pid)
+                    out.append(AltiumProcessInfo(
+                        pid=pid, name=name,
+                        exe_path=proc.exe() or "",
+                        cmdline=proc.cmdline(),
+                    ))
+                except (psutil.NoSuchProcess, psutil.AccessDenied,
+                        psutil.ZombieProcess):
+                    continue
             return out
         for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
             try:
