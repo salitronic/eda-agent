@@ -492,7 +492,10 @@ def test_a_close_that_resolves_to_another_document_closes_nothing():
 def test_screenshots_stay_at_size_and_only_the_recogniser_enlarges():
     from eda_agent.ui import ocr
     assert inspect.signature(ocr.capture_png).parameters["enlarge"].default == 1
-    assert "capture_png(hwnd, png, enlarge=2)" in inspect.getsource(ocr.read_window_text)
+    # Both readers (lines and screen rows) capture through _recognise.
+    assert "_recognise(" in inspect.getsource(ocr.read_window_text)
+    assert "_recognise(" in inspect.getsource(ocr.read_window_rows)
+    assert "capture_png(hwnd, png, enlarge=2)" in inspect.getsource(ocr._recognise)
 
 
 def test_zoom_to_the_document_is_for_a_schematic_only():
