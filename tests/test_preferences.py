@@ -40,7 +40,7 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, EcoMode, WorkspaceDir : String;
+    UiAutomationMode, KeepInViewMode, DialogMode, WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
 var P, Q : Integer;
@@ -132,7 +132,7 @@ def test_python_reads_the_same_file(tmp_path):
     assert preferences.preferences(tmp_path) == {
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
-        "ui_automation": "on", "keep_in_view": "off", "change_orders": "auto"}
+        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -173,8 +173,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("DeleteRefused", "'deleting', 'refused'"),
                          ("CloseAllowed", "'closing', 'allowed'"),
                          ("CloseRefused", "'closing', 'refused'"),
-                         ("EcoAuto", "'change_orders', 'auto'"),
-                         ("EcoManual", "'change_orders', 'manual'")):
+                         ("EcoAuto", "'dialogs', 'auto'"),
+                         ("EcoManual", "'dialogs', 'manual'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -191,21 +191,21 @@ def test_one_tab_shows_at_a_time():
 
 def test_the_agent_settings_are_kept_and_default_to_permissive(tmp_path):
     out = _run(tmp_path, [
-        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', EcoMode);",
-        "  EditsMode := 'readonly'; UiAutomationMode := 'off'; KeepInViewMode := 'on'; EcoMode := 'manual';",
+        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', DialogMode);",
+        "  EditsMode := 'readonly'; UiAutomationMode := 'off'; KeepInViewMode := 'on'; DialogMode := 'manual';",
         "  StorePreferences(0);",
-        "  EditsMode := ''; UiAutomationMode := ''; KeepInViewMode := ''; EcoMode := '';",
-        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', EcoMode);",
+        "  EditsMode := ''; UiAutomationMode := ''; KeepInViewMode := ''; DialogMode := '';",
+        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', DialogMode);",
     ])
     assert out == ["allowed on off auto", "readonly off on manual"]
     assert preferences.edits_read_only(tmp_path)
     assert preferences.ui_automation_off(tmp_path)
     assert preferences.keep_in_view(tmp_path)
-    assert not preferences.change_orders_auto(tmp_path)
+    assert not preferences.dialogs_auto(tmp_path)
 
 
-def test_change_orders_default_to_automatic(tmp_path):
-    assert preferences.change_orders_auto(tmp_path)
+def test_dialogs_default_to_automatic(tmp_path):
+    assert preferences.dialogs_auto(tmp_path)
 
 
 def test_the_permissions_are_refused_where_every_request_passes():

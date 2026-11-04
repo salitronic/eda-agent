@@ -9,6 +9,8 @@ from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
 from ..export.variant_bom import apply_variant, find_variant
+from ..ui import change_order
+from .answering import send_answering
 
 
 def _rows(result: Any, key: str) -> list:
@@ -28,23 +30,6 @@ async def _pair_names(bridge) -> set:
         return set()
     return {str(p.get("name")) for p in _rows(pairs, "pairs")
             if isinstance(p, dict) and p.get("name")}
-
-
-def _change_order_driver():
-    """``(run, stop)`` that executes and closes the change order an Update
-    PCB opens, or None when the Config tab leaves it to the user, menus
-    and dialogs are switched off, or Altium's process cannot be named."""
-    from ..preferences import change_orders_auto
-    if not change_orders_auto():
-        return None
-    from .uiauto import _altium_pid
-    pid, problem = _altium_pid()
-    if problem:
-        return None
-    import threading
-    from ..ui.change_order import drive
-    stop = threading.Event()
-    return (lambda: drive(pid, stop)), stop
 
 
 async def _after_sync(bridge, pairs_before: set) -> dict:
@@ -3596,47 +3581,24 @@ def register_project_tools(mcp):
     async def proj_sync_pcb() -> dict[str, Any]:
         """Push schematic changes to the PCB (Design > Update PCB Document).
 
-        Opens the Engineering Change Order. With Update PCB set to
-        Automatic on the panel's Config tab (the default) this tool
-        executes and closes it; ``change_order`` says what happened. Set
-        to Manual, or with menus and dialogs switched off, the dialog
-        waits for the user and the bridge is blocked until it closes
-        (``app_list_open_dialogs`` reads it meanwhile). It focuses the
-        PCB first so the update runs schematic to board (refuses with
-        WRONG_FOCUS if it cannot).
+        With Dialogs Automatic (Config tab) the tool executes and closes
+        the change order (``change_order``); otherwise it waits for the
+        user and blocks the bridge (``app_list_open_dialogs`` reads it).
+        Focuses the PCB first (WRONG_FOCUS if it cannot).
 
         Returns:
-            success, pcb_path, before/after mapping counts,
-            components_added_to_pcb, components_removed_from_pcb,
-            components_in_sync, dialog_outcome_verified, and when
-            automatic ``change_order`` (appeared, executed, finished,
-            closed, reason). The counts see
-            components added or removed only. ``after_sync`` then reads the
-            board against the schematic: ``footprint_mismatch`` (the
-            board's footprint is not the schematic's), ``missing_on_board``,
-            ``diff_pairs_removed`` (pairs defined only on the board, which
-            a sync deletes) and ``pad_nets``: pads left with no net
-            (``unbound``) or another net than their pin (``mismatched``).
+            success, pcb_path, mapping counts, components added, removed
+            and in sync, ``change_order``, and ``after_sync`` read from the
+            board: ``footprint_mismatch``, ``missing_on_board``,
+            ``diff_pairs_removed`` (board-only pairs a sync deletes) and
+            ``pad_nets`` (pads ``unbound`` or ``mismatched`` to their pin).
         """
         bridge = get_bridge()
         pairs_before = await _pair_names(bridge)
-        driver = _change_order_driver()
-        if driver is None:
-            result = await bridge.send_command_async("project.update_pcb", {})
-        else:
-            import asyncio
-            from ..ui.change_order import TITLE
-            run, stop = driver
-            pressing = asyncio.get_running_loop().run_in_executor(None, run)
-            try:
-                with bridge.expecting(TITLE):
-                    result = await bridge.send_command_async(
-                        "project.update_pcb", {}, timeout=360.0)
-            finally:
-                stop.set()
-            driven = await pressing
-            if isinstance(result, dict):
-                result["change_order"] = driven
+        result, driven = await send_answering(
+            bridge, "project.update_pcb", {}, change_order.TITLE, change_order.STEPS)
+        if isinstance(result, dict) and driven is not None:
+            result["change_order"] = driven
         if isinstance(result, dict):
             try:
                 result["after_sync"] = await _after_sync(bridge, pairs_before)
@@ -3646,21 +3608,21 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:
-        """Push PCB changes back to schematic (back-annotate ECO). Attempts silent execution.
+        """Push PCB changes back to schematic (back-annotate ECO).
 
-        Design > Update Schematic, compiled before and after with the
-        change reported. Older Altium versions may still show a dialog
-        (``dialog_may_have_opened``).
+        Design > Update Schematic, compiled before and after. A change
+        order it opens is answered as in proj_sync_pcb.
 
         Returns:
-            Dictionary with success, pcb_path, before/after mapping counts,
-            components_added_to_schematic, components_removed_from_schematic,
-            in_sync, and dialog_may_have_opened flag.
+            success, pcb_path, mapping counts, components added and
+            removed, in_sync, ``change_order``.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "project.update_schematic", {}
-        )
+        result, driven = await send_answering(
+            bridge, "project.update_schematic", {},
+            change_order.TITLE, change_order.STEPS)
+        if isinstance(result, dict) and driven is not None:
+            result["change_order"] = driven
         return result
 
     @mcp.tool()

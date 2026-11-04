@@ -9,6 +9,7 @@ import pytest
 
 from eda_agent.bridge import altium_bridge
 from eda_agent.ui import change_order
+from eda_agent.ui import windows
 
 
 class _Button:
@@ -57,22 +58,22 @@ class _Altium:
 @pytest.fixture
 def altium(monkeypatch):
     fake = _Altium()
-    monkeypatch.setattr(change_order.windows, "dialogs", fake.dialogs)
-    monkeypatch.setattr(change_order.windows, "click", fake.click)
-    monkeypatch.setattr(change_order.windows, "wait_for_close", fake.wait_for_close)
+    monkeypatch.setattr(windows, "dialogs", fake.dialogs)
+    monkeypatch.setattr(windows, "click", fake.click)
     return fake
 
 
 def test_execute_then_close_once_the_run_has_finished(altium):
     out = change_order.drive(1, threading.Event(), poll=0.001)
     assert altium.pressed == ["Execute Changes", "Close"]
-    assert out == {"appeared": True, "executed": True, "finished": True, "closed": True}
+    assert out == {"dialog": "Engineering Change Order", "appeared": True,
+                   "done": ["Execute Changes", "Close"], "closed": True}
 
 
 def test_nothing_is_pressed_when_no_change_order_appears(monkeypatch):
-    monkeypatch.setattr(change_order.windows, "dialogs", lambda pid: [])
+    monkeypatch.setattr(windows, "dialogs", lambda pid: [])
     pressed = []
-    monkeypatch.setattr(change_order.windows, "click", pressed.append)
+    monkeypatch.setattr(windows, "click", pressed.append)
     out = change_order.drive(1, threading.Event(), appear_within=0.05, poll=0.001)
     assert pressed == [] and out["appeared"] is False
 

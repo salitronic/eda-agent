@@ -20,8 +20,9 @@ away a command that deletes or removes, or that closes a document or
 project (default ``allowed``). ``ui_automation`` is ``off`` to refuse menus,
 dialogs and keystrokes (default ``on``). ``keep_in_view`` is ``on`` to fit
 the board or sheet in view after each edit (default ``off``).
-``change_orders`` is ``manual`` to leave the change order an Update PCB opens
-for the user (default ``auto``: proj_sync_pcb executes and closes it). Each also
+``dialogs`` is ``manual`` to leave the dialogs tools open (the change order,
+the Teardrops options) for the user (default ``auto``: the tool answers
+them). Each also
 has an environment variable in the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
 """
@@ -46,7 +47,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "closing": ("allowed", "refused"),
     "ui_automation": ("on", "off"),
     "keep_in_view": ("off", "on"),
-    "change_orders": ("auto", "manual"),
+    "dialogs": ("auto", "manual"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -112,6 +113,7 @@ def keep_in_view(workspace: Optional[Path] = None) -> bool:
     return preferences(workspace)["keep_in_view"] == "on"
 
 
-def change_orders_auto(workspace: Optional[Path] = None) -> bool:
-    """True when proj_sync_pcb executes and closes the change order itself."""
-    return preferences(workspace)["change_orders"] == "auto"
+def dialogs_auto(workspace: Optional[Path] = None) -> bool:
+    """True when a tool answers the dialog it opens (the change order, the
+    Teardrops options) itself."""
+    return preferences(workspace)["dialogs"] == "auto"

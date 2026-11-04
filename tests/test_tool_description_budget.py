@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from eda_agent.tools import register_backend
 
 # Characters of description plus input schema over the full listing.
-BUDGET = {"altium": 890_668, "easyeda": 370_386, "kicad": 80_878}
+BUDGET = {"altium": 890_463, "easyeda": 370_386, "kicad": 80_878}
 
 # One tool's description. Those already longer are capped at their size.
 TOOL_LIMIT = 3_000

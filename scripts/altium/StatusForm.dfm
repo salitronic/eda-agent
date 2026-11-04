@@ -1319,7 +1319,7 @@ object StatusForm: TStatusForm
         Width = 340
         Height = 16
         AutoSize = False
-        Caption = 'CHANGE ORDERS'
+        Caption = 'DIALOGS'
         Font.Charset = DEFAULT_CHARSET
         Font.Color = $00FFB363
         Font.Height = -11
@@ -1333,7 +1333,7 @@ object StatusForm: TStatusForm
         Width = 150
         Height = 16
         AutoSize = False
-        Caption = 'Update PCB'
+        Caption = 'Tool dialogs'
         Font.Charset = DEFAULT_CHARSET
         Font.Color = $00E5E5E5
         Font.Height = -12

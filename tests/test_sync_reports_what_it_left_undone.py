@@ -44,7 +44,8 @@ class _Bridge:
 
 def _tools(bridge, monkeypatch, driver=None):
     monkeypatch.setattr(project, "get_bridge", lambda: bridge)
-    monkeypatch.setattr(project, "_change_order_driver", lambda: driver)
+    from eda_agent.tools import answering
+    monkeypatch.setattr(answering, "driver", lambda title, steps: driver)
     tools = {}
 
     class _Mcp:

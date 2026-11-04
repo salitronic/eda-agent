@@ -548,9 +548,10 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
-    Tip := 'What happens to the Engineering Change Order an Update PCB '
-        + 'opens. Automatic: the AI executes and closes it, then reads the '
-        + 'board back. Manual: the dialog waits for you.';
+    Tip := 'What happens to a dialog a tool opens, such as the Engineering '
+        + 'Change Order or the Teardrops options. Automatic: the AI answers '
+        + 'it as the tool was asked, then reads the result back. Manual: the '
+        + 'dialog waits for you.';
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
 End;
 
@@ -906,14 +907,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
-        PaintOption(opt_EcoAuto, EcoMode <> 'manual');
-        PaintOption(opt_EcoManual, EcoMode = 'manual');
-        If EcoMode = 'manual' Then
-            lbl_CfgEcoHint.Caption := 'The change order waits for you to '
-                + 'execute and close it.'
+        PaintOption(opt_EcoAuto, DialogMode <> 'manual');
+        PaintOption(opt_EcoManual, DialogMode = 'manual');
+        If DialogMode = 'manual' Then
+            lbl_CfgEcoHint.Caption := 'A dialog a tool opens waits for you '
+                + 'to answer it.'
         Else
-            lbl_CfgEcoHint.Caption := 'The AI executes and closes the change '
-                + 'order, then checks the board against the schematic.';
+            lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
+                + 'open: change orders, teardrops.';
     Except End;
 End;
 
@@ -1363,7 +1364,7 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
-        Else If Setting = 'change_orders' Then EcoMode := Choice;
+        Else If Setting = 'dialogs' Then DialogMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1389,10 +1390,10 @@ Procedure opt_CloseRefusedClick(Sender : TObject);
 Begin ChooseAgentSetting('closing', 'refused'); End;
 
 Procedure opt_EcoAutoClick(Sender : TObject);
-Begin ChooseAgentSetting('change_orders', 'auto'); End;
+Begin ChooseAgentSetting('dialogs', 'auto'); End;
 
 Procedure opt_EcoManualClick(Sender : TObject);
-Begin ChooseAgentSetting('change_orders', 'manual'); End;
+Begin ChooseAgentSetting('dialogs', 'manual'); End;
 
 Procedure opt_AutoOnClick(Sender : TObject);
 Begin ChooseAgentSetting('ui_automation', 'on'); End;

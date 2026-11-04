@@ -1050,6 +1050,44 @@ _TESTPOINT_SETTINGS = {
 }
 
 
+async def _teardrop_count(bridge) -> Optional[int]:
+    """Teardrop objects on the active board; None if any count failed."""
+    total = 0
+    for kind in ("eRegionObject", "eTrackObject", "eArcObject"):
+        reply = await bridge.send_command_async(
+            "generic.get_object_count",
+            {"object_type": kind, "scope": "active_doc", "filter": "TearDrop=true"})
+        if not isinstance(reply, dict) or not isinstance(reply.get("count"), int):
+            return None
+        total += reply["count"]
+    return total
+
+
+async def _teardrops(action: str, scope: str,
+                     options: dict[str, Optional[bool]]) -> dict[str, Any]:
+    """Run the Teardrops dialog for ``action`` (Add or Remove)."""
+    from ..ui.dialog_answer import Check, Press
+    from .answering import send_answering
+    where = {"all": "All", "selected": "Selected only"}.get(scope.strip().lower())
+    if where is None:
+        return {"ok": False, "reason": "scope is 'all' or 'selected'"}
+    steps = [Check(action), Check(where)]
+    steps += [Check(label, bool(on)) for label, on in options.items() if on is not None]
+    steps += [Check("Generate report", False), Press("OK", closes=True)]
+    bridge = get_bridge()
+    before = await _teardrop_count(bridge)
+    result, driven = await send_answering(
+        bridge, "pcb.teardrops", {}, "Teardrops", steps)
+    if not isinstance(result, dict):
+        return result
+    result["teardrops_before"] = before
+    result["teardrops_after"] = await _teardrop_count(bridge)
+    if driven is not None:
+        result["dialog"] = driven
+        result.pop("note", None)
+    return result
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -3537,27 +3575,43 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
-    async def pcb_add_teardrops() -> dict[str, Any]:
-        """Add teardrops with Altium's own Teardrops command.
+    async def pcb_add_teardrops(
+        scope: str = "all",
+        via_th_pads: Optional[bool] = None,
+        smd_pads: Optional[bool] = None,
+        tracks: Optional[bool] = None,
+        t_junctions: Optional[bool] = None,
+        force: Optional[bool] = None,
+        adjust_size: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Add teardrops through Altium's Teardrops dialog.
 
-        Opens Altium's modal Teardrop dialog, which no script parameter
-        suppresses: choose Add, the scope and the settings there, then OK.
-        The reply comes when the dialog closes, and the bridge waits until
-        then; app_ui and app_press_dialog_button can answer it meanwhile. The selection is not changed. A later repour can
-        delete teardrops, so count them after it.
+        With Dialogs Automatic (Config tab) the tool sets Add, the scope
+        and the options given, then OK; None keeps the dialog's value.
+        Otherwise the dialog waits for the user. A repour can delete them.
+
+        Args:
+            scope: "all" or "selected".
+            via_th_pads, smd_pads, tracks, t_junctions: Objects to treat.
+            force: Place even where a rule is broken.
+            adjust_size: Shrink one that would not fit.
+
+        Returns:
+            ``teardrops_before``, ``teardrops_after``, ``dialog``.
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async("pcb.teardrops", {})
+        return await _teardrops("Add", scope, {
+            "Via/TH Pad": via_th_pads, "SMD Pad": smd_pads, "Tracks": tracks,
+            "T-Junction": t_junctions, "Force teardrops": force,
+            "Adjust teardrop size": adjust_size})
 
     @mcp.tool()
-    async def pcb_remove_teardrops() -> dict[str, Any]:
-        """Remove teardrops board-wide.
+    async def pcb_remove_teardrops(scope: str = "all") -> dict[str, Any]:
+        """Remove teardrops, as pcb_add_teardrops with Remove.
 
-        Opens the same modal Teardrop dialog as `pcb_add_teardrops`; choose
-        Remove and confirm it in Altium.
+        Args:
+            scope: "all" or "selected".
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async("pcb.teardrops", {})
+        return await _teardrops("Remove", scope, {})
 
     @mcp.tool()
     async def pcb_autoplace_silkscreen(

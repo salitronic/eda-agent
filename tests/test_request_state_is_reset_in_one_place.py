@@ -33,7 +33,7 @@ SESSION = {
     "PumpInTick", "PumpFinalised", "PumpQuitting", "PumpTicked",
     # Config tab settings.
     "SavingOff", "ValueFormat", "ValueUnit", "EditsMode", "DeletingMode",
-    "ClosingMode", "UiAutomationMode", "KeepInViewMode", "EcoMode",
+    "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode",
     # Save passes and the documents edited this session.
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
