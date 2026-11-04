@@ -1585,6 +1585,41 @@ Begin
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
+{..............................................................................}
+{ Per-request state, set back to its starting value in one place.             }
+{                                                                              }
+{ The unit-level variables below describe ONE request or one item of a bulk  }
+{ call. Each is reset here and nowhere else at the start of its run, so a     }
+{ variable added later is listed here or it carries over into the next        }
+{ request. Session-lifetime variables (the pump, the dashboard, the config,   }
+{ the save pass, the JSON index) are not reset; the test that pins this list  }
+{ names them.                                                                 }
+{                                                                              }
+{ Not here: the next-step note and the last error, which the pump clears      }
+{ before it restores the session's document, because that step can note one. }
+{..............................................................................}
+Procedure ResetItemState(Dummy : Integer);
+Begin
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
+    LibScopeName := '';
+    LibScopePart := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
+    SavesHeld := 0;
+    HeldFiles := '';
+End;
+
+Procedure ResetRequestState(Dummy : Integer);
+Begin
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchBulkHold := False;
+    ResetPropertyDiag(0);
+    ResetItemState(0);
+End;
+
 Function ProcessOne(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -1609,15 +1644,7 @@ Begin
         Exit;
     End;
 
-    SheetsSeen := 0;
-    SheetsSkipped := 0;
-    LibScopeName := '';
-    LibScopePart := 0;
-    BoardFallbackPath := '';
-    BoardFallbackFrom := '';
-    BoardMissWhy := '';
-    SavesHeld := 0;
-    HeldFiles := '';
+    ResetItemState(0);
     Result := SavingRefusal(Command, Params, RequestId);
     If Result <> '' Then Exit;
     Case Category Of
@@ -1744,11 +1771,9 @@ End;
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Begin
-    { A handler that crashed mid-edit leaves the count up, and every later }
-    { edit would then skip PreProcess. Each request starts from none open. }
-    PcbEditDepth := 0;
-    SchEditOpen := '|';
-    SchBulkHold := False;
+    { A handler that crashed mid-edit leaves the edit count up, and every   }
+    { later edit would then skip PreProcess. Each request starts clean.     }
+    ResetRequestState(0);
     SchReleaseHeld(0);
     If ExtractJsonValue(Params, 'bulk_count') <> '' Then
         Result := ProcessBulk(Command, Params, RequestId)
@@ -1790,55 +1815,67 @@ Begin
     Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
 End;
 
+{ BEGIN COMMAND RULES, generated from safety.py: edit the Python. }
+
+{ The verb of a command: lower case, after the first dot. }
+Function CommandVerb(Command : String) : String;
+Var
+    Verb : String;
+Begin
+    Verb := LowerCase(Trim(Command));
+    If Pos('.', Verb) > 0 Then Verb := Copy(Verb, Pos('.', Verb) + 1, Length(Verb));
+    Result := Verb;
+End;
+
 Function CommandIsReadOnly(Command : String) : Boolean;
 Var
     Verb : String;
-    DotPos : Integer;
 Begin
-    Verb := LowerCase(Trim(Command));
-    DotPos := Pos('.', Verb);
-    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
-
+    Verb := CommandVerb(Command);
     Result := ActionHasPrefix(Verb, 'get_')
-           Or ActionHasPrefix(Verb, 'list_')
-           Or ActionHasPrefix(Verb, 'query')
-           Or ActionHasPrefix(Verb, 'read_')
-           Or ActionHasPrefix(Verb, 'find_')
-           Or ActionHasPrefix(Verb, 'count')
-           Or ActionHasPrefix(Verb, 'audit_')
-           Or ActionHasPrefix(Verb, 'check_')
-           Or ActionHasPrefix(Verb, 'calc_')
-           Or ActionHasPrefix(Verb, 'export_')
-           Or ActionHasPrefix(Verb, 'render_')
-           Or ActionHasPrefix(Verb, 'probe_')
-           Or ActionHasPrefix(Verb, 'inspect_')
-           Or ActionHasPrefix(Verb, 'diff_')
-           Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping')
-           Or (Verb = 'format_value');
+        Or ActionHasPrefix(Verb, 'list_')
+        Or ActionHasPrefix(Verb, 'query')
+        Or ActionHasPrefix(Verb, 'read_')
+        Or ActionHasPrefix(Verb, 'find_')
+        Or ActionHasPrefix(Verb, 'count')
+        Or ActionHasPrefix(Verb, 'audit_')
+        Or ActionHasPrefix(Verb, 'check_')
+        Or ActionHasPrefix(Verb, 'calc_')
+        Or ActionHasPrefix(Verb, 'export_')
+        Or ActionHasPrefix(Verb, 'render_')
+        Or ActionHasPrefix(Verb, 'probe_')
+        Or ActionHasPrefix(Verb, 'inspect_')
+        Or ActionHasPrefix(Verb, 'diff_')
+        Or ActionHasPrefix(Verb, 'compare_')
+        Or (Verb = 'ping')
+        Or (Verb = 'format_value');
 End;
 
-{ Deleting and Closing documents on the Config tab. A command deletes when its
-  verb is delete_*, remove_*, batch_delete, unroute or a clear_*source*library,
-  or when its action is delete or remove (pcb.embedded_data, component
-  parameters). It closes when it is application.close_document or
-  project.close. MIRRORED in safety.py, pinned by a test. }
 Function CommandDeletes(Command : String; Params : String) : Boolean;
 Var
     Verb, Op : String;
 Begin
-    Verb := LowerCase(Copy(Command, Pos('.', Command) + 1, Length(Command)));
-    Op := LowerCase(ExtractJsonValue(Params, 'action'));
-    Result := ActionHasPrefix(Verb, 'delete_') Or ActionHasPrefix(Verb, 'remove_')
-        Or (Verb = 'batch_delete') Or (Verb = 'unroute')
-        Or ((Pos('clear_', Verb) = 1) And (Pos('source', Verb) > 0))
-        Or (Op = 'delete') Or (Op = 'remove');
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Result := ActionHasPrefix(Verb, 'delete_')
+        Or ActionHasPrefix(Verb, 'remove_')
+        Or (Verb = 'batch_delete')
+        Or (Verb = 'unroute')
+        Or (ActionHasPrefix(Verb, 'clear_') And (Pos('source', Verb) > 0))
+        Or (Op = 'delete')
+        Or (Op = 'remove');
 End;
 
 Function CommandCloses(Command : String) : Boolean;
+Var
+    Cmd : String;
 Begin
-    Result := (Command = 'application.close_document') Or (Command = 'project.close');
+    Cmd := LowerCase(Trim(Command));
+    Result := (Cmd = 'application.close_document')
+        Or (Cmd = 'project.close');
 End;
+
+{ END COMMAND RULES }
 
 Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
 Begin
@@ -2422,6 +2459,10 @@ Begin
     { stopped the loop on "Undeclared identifier". Start with none held.   }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
+    JsonIdxDoc0 := ''; JsonIdxDoc1 := ''; JsonIdxDoc2 := ''; JsonIdxDoc3 := '';
+    JsonIdx0 := ''; JsonIdx1 := ''; JsonIdx2 := ''; JsonIdx3 := '';
+    JsonIdxNext := 0;
+    JsonNestedSeen := '';
 
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';

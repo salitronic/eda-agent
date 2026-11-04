@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.9';
+    SCRIPT_VERSION = '2026.11.04.10';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -193,6 +193,15 @@ Var
     { ObjectId-checking should have ruled out. Surfaced via application.ping }
     { as cast_errors so a non-zero value at session end isn't invisible.     }
     CastErrorCount : Integer;
+
+    { The last four JSON documents read by key, each with its index of
+      top-level keys. See JsonIndexOf. }
+    JsonIdxDoc0, JsonIdxDoc1, JsonIdxDoc2, JsonIdxDoc3 : String;
+    JsonIdx0, JsonIdx1, JsonIdx2, JsonIdx3 : String;
+    JsonIdxNext : Integer;
+    { Keys asked for that were present only below the top level, each
+      wrapped in '|'. See ExtractJsonValue. }
+    JsonNestedSeen : String;
 
     { Tracks the most recently created/selected library component so the    }
     { Lib_Add* primitive helpers can target it directly. SchLib's           }
@@ -1855,7 +1864,10 @@ Begin
         Result := StringReplace(Value, '/', '\', -1);
 End;
 
-Function ExtractJsonValue(Json : String; Key : String) : String;
+{ The first value stored under Key at ANY depth. For a handler reading its   }
+{ own reply, where the field sits inside the data or error object. A        }
+{ request is read with ExtractJsonValue, which takes top-level keys only.   }
+Function JsonValueAnywhere(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
     SearchKey : String;
@@ -1950,6 +1962,173 @@ Begin
             End;
         End;
     End;
+End;
+
+{..............................................................................}
+{ Reading a JSON object by its top-level keys.                                 }
+{                                                                              }
+{ A document is parsed once into an index of its top-level keys and the span  }
+{ of each value, written as |key=start,end|key=start,end|, and keys are       }
+{ looked up there. A key of the same name inside a nested object or array is  }
+{ not a top-level key, so it is never read in its place: parameters holding   }
+{ an items array whose entries carry "layer" have no "layer" of their own.    }
+{ The first of two equal top-level keys wins. A key holding a bar or an equals }
+{ sign is not indexed, and no caller asks for one.                            }
+{..............................................................................}
+Function JsonBuildIndex(Json : String) : String;
+Var
+    I, N, Depth, StrStart, ValStart, LastNonWs : Integer;
+    Ch, Key, Keys : String;
+    InStr, ExpectKey, InValue : Boolean;
+Begin
+    Keys := '|';
+    N := Length(Json);
+    Depth := 0;
+    InStr := False;
+    ExpectKey := False;
+    InValue := False;
+    Key := '';
+    StrStart := 0;
+    ValStart := 0;
+    LastNonWs := 0;
+    I := 1;
+    While I <= N Do
+    Begin
+        Ch := Copy(Json, I, 1);
+        If InStr Then
+        Begin
+            If Ch = '\' Then
+                I := I + 1
+            Else If Ch = '"' Then
+            Begin
+                InStr := False;
+                LastNonWs := I;
+                If (Depth = 1) And ExpectKey Then
+                Begin
+                    Key := Copy(Json, StrStart + 1, I - StrStart - 1);
+                    ExpectKey := False;
+                End;
+            End;
+        End
+        Else If (Ch <> ' ') And (Ch <> #9) And (Ch <> #10) And (Ch <> #13) Then
+        Begin
+            If InValue And (ValStart = 0) Then ValStart := I;
+            If Ch = '"' Then
+            Begin
+                InStr := True;
+                StrStart := I;
+            End
+            Else If (Ch = '{') Or (Ch = '[') Then
+            Begin
+                Inc(Depth);
+                If (Depth = 1) And (Ch = '{') Then ExpectKey := True;
+                LastNonWs := I;
+            End
+            Else If (Depth = 1) And (Ch = ':') And (Key <> '') And (Not InValue) Then
+            Begin
+                InValue := True;
+                ValStart := 0;
+            End
+            Else If (Depth = 1) And ((Ch = ',') Or (Ch = '}')) Then
+            Begin
+                If InValue And (ValStart > 0) And (Pos('|', Key) = 0)
+                    And (Pos('=', Key) = 0)
+                    And (Pos('|' + Key + '=', Keys) = 0) Then
+                    Keys := Keys + Key + '=' + IntToStr(ValStart) + ','
+                        + IntToStr(LastNonWs) + '|';
+                InValue := False;
+                Key := '';
+                If Ch = ',' Then
+                    ExpectKey := True
+                Else
+                    Break;
+            End
+            Else If (Ch = '}') Or (Ch = ']') Then
+            Begin
+                Dec(Depth);
+                LastNonWs := I;
+            End
+            Else
+                LastNonWs := I;
+        End;
+        I := I + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The index of a document, from the last four read or freshly built. A     }
+{ handler reads many keys from one set of parameters, often between reads  }
+{ of an item, so each document is parsed once.                             }
+Function JsonIndexOf(Json : String) : String;
+Var
+    Keys : String;
+Begin
+    If Json = JsonIdxDoc0 Then Keys := JsonIdx0
+    Else If Json = JsonIdxDoc1 Then Keys := JsonIdx1
+    Else If Json = JsonIdxDoc2 Then Keys := JsonIdx2
+    Else If Json = JsonIdxDoc3 Then Keys := JsonIdx3
+    Else
+    Begin
+        Keys := JsonBuildIndex(Json);
+        If JsonIdxNext = 1 Then
+        Begin
+            JsonIdxDoc1 := Json;
+            JsonIdx1 := Keys;
+        End
+        Else If JsonIdxNext = 2 Then
+        Begin
+            JsonIdxDoc2 := Json;
+            JsonIdx2 := Keys;
+        End
+        Else If JsonIdxNext = 3 Then
+        Begin
+            JsonIdxDoc3 := Json;
+            JsonIdx3 := Keys;
+        End
+        Else
+        Begin
+            JsonIdxDoc0 := Json;
+            JsonIdx0 := Keys;
+        End;
+        If JsonIdxNext >= 3 Then JsonIdxNext := 0 Else JsonIdxNext := JsonIdxNext + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The value of a top-level key: a string unescaped, any other value (number, }
+{ true, false, null, object or array) as its JSON text, '' when the key is   }
+{ not a top-level key of the object.                                         }
+Function ExtractJsonValue(Json : String; Key : String) : String;
+Var
+    Keys, Span, Value : String;
+    P, S, E : Integer;
+Begin
+    Result := '';
+    If (Key = '') Or (Pos('"' + Key + '"', Json) = 0) Then Exit;
+    Keys := JsonIndexOf(Json);
+    P := Pos('|' + Key + '=', Keys);
+    If P = 0 Then
+    Begin
+        { The name is in the text but not as a top-level key: nested, or a
+          string value. Logged once per key, so a caller that meant a
+          nested value shows up in activity.log. }
+        If Pos('|' + Key + '|', JsonNestedSeen) = 0 Then
+        Begin
+            JsonNestedSeen := JsonNestedSeen + '|' + Key + '|';
+            AppendLog(FormatLogStamp(0) + ',0,_json_key_not_top_level,' + Key);
+        End;
+        Exit;
+    End;
+    Span := Copy(Keys, P + Length(Key) + 2, Length(Keys));
+    Span := Copy(Span, 1, Pos('|', Span) - 1);
+    S := StrToIntDef(Copy(Span, 1, Pos(',', Span) - 1), 0);
+    E := StrToIntDef(Copy(Span, Pos(',', Span) + 1, Length(Span)), 0);
+    If (S <= 0) Or (E < S) Then Exit;
+    If Copy(Json, S, 1) = '"' Then
+        Value := CanonicalPathValue(Key, UnescapeJsonString(Copy(Json, S + 1, E - S - 1)))
+    Else
+        Value := Copy(Json, S, E - S + 1);
+    Result := Value;
 End;
 
 {..............................................................................}

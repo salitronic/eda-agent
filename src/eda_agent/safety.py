@@ -78,23 +78,23 @@ def refuse_process(process_name: str) -> str | None:
 # Read-only mode
 # ---------------------------------------------------------------------------
 #
-# MIRRORS CommandIsReadOnly IN StatusForm.pas, AND THE TWO ARE PINNED
-# TOGETHER BY A TEST. The Pascal copy decides when to invalidate a cached
-# netlist; this one decides whether a command may run at all. They must
-# agree, because a verb one of them thinks is a read and the other thinks
-# is a write is either a stale netlist or an unenforced limit.
+# THE ONE SOURCE OF THE COMMAND RULES. StatusForm.pas carries the same
+# rules as Pascal, generated from these tables by pascal_command_rules()
+# (scripts/altium/sync_rules.py writes them; build.py and a test refuse a
+# stale copy). The Pascal copy decides when to invalidate a cached netlist
+# and enforces the Config tab for any client; this one decides whether a
+# command may run at all. Edit the tables here, never the Pascal.
 #
-# THE UNKNOWN CASE COUNTS AS A WRITE, which is the same polarity the
-# Pascal chose and the right one here for a different reason: a command
-# this list has never heard of, and every command added later, is refused
-# in read-only mode rather than quietly permitted.
+# THE UNKNOWN CASE COUNTS AS A WRITE: a command these lists have never
+# heard of, and every command added later, is refused in read-only mode
+# and invalidates the netlist rather than being quietly permitted.
 READONLY_VERB_PREFIXES = (
     "get_", "list_", "query", "read_", "find_", "count", "audit_",
     "check_", "calc_", "export_", "render_", "probe_", "inspect_",
     "diff_", "compare_",
 )
 
-READONLY_VERBS_EXACT = ("ping",)
+READONLY_VERBS_EXACT = ("ping", "format_value")
 
 
 def command_is_read_only(command: str) -> bool:
@@ -121,9 +121,14 @@ def _panel_read_only() -> bool:
         return False
 
 
-# MIRRORS CommandDeletes / CommandCloses IN StatusForm.pas, pinned by a test.
+# Deleting and closing, for the Config tab. Generated into StatusForm.pas
+# with the read-only rules above.
 _DELETE_VERB_PREFIXES = ("delete_", "remove_")
 _DELETE_VERBS_EXACT = ("batch_delete", "unroute")
+#: A clear_ verb that names a source (clear_source_library and kin).
+_DELETE_CLEAR_PREFIX, _DELETE_CLEAR_WORD = "clear_", "source"
+#: The action argument of a command that deletes through an action.
+_DELETE_ACTIONS = ("delete", "remove")
 _CLOSE_COMMANDS = ("application.close_document", "project.close")
 
 
@@ -132,13 +137,78 @@ def command_deletes(command: str, params: dict | None = None) -> bool:
     verb = (command or "").strip().lower().split(".", 1)[-1]
     action = str((params or {}).get("action", "")).strip().lower()
     return (verb.startswith(_DELETE_VERB_PREFIXES) or verb in _DELETE_VERBS_EXACT
-            or (verb.startswith("clear_") and "source" in verb)
-            or action in ("delete", "remove"))
+            or (verb.startswith(_DELETE_CLEAR_PREFIX) and _DELETE_CLEAR_WORD in verb)
+            or action in _DELETE_ACTIONS)
 
 
 def command_closes(command: str) -> bool:
     """Does this command close a document or a project?"""
     return (command or "").strip().lower() in _CLOSE_COMMANDS
+
+
+#: The markers around the generated rules in StatusForm.pas.
+PASCAL_RULES_BEGIN = "{ BEGIN COMMAND RULES, generated from safety.py: edit the Python. }"
+PASCAL_RULES_END = "{ END COMMAND RULES }"
+
+
+def pascal_command_rules() -> str:
+    """CommandIsReadOnly, CommandDeletes and CommandCloses as DelphiScript.
+
+    The same rules as command_is_read_only, command_deletes and
+    command_closes, from the same tables. Uses ActionHasPrefix and
+    ExtractJsonValue, which StatusForm.pas defines before the region.
+    """
+    def either(terms: list[str]) -> str:
+        return "\n        Or ".join(terms)
+
+    read_only = either(
+        [f"ActionHasPrefix(Verb, '{p}')" for p in READONLY_VERB_PREFIXES]
+        + [f"(Verb = '{v}')" for v in READONLY_VERBS_EXACT])
+    deletes = either(
+        [f"ActionHasPrefix(Verb, '{p}')" for p in _DELETE_VERB_PREFIXES]
+        + [f"(Verb = '{v}')" for v in _DELETE_VERBS_EXACT]
+        + [f"(ActionHasPrefix(Verb, '{_DELETE_CLEAR_PREFIX}') "
+           f"And (Pos('{_DELETE_CLEAR_WORD}', Verb) > 0))"]
+        + [f"(Op = '{a}')" for a in _DELETE_ACTIONS])
+    closes = either([f"(Cmd = '{c}')" for c in _CLOSE_COMMANDS])
+    return f"""{PASCAL_RULES_BEGIN}
+
+{{ The verb of a command: lower case, after the first dot. }}
+Function CommandVerb(Command : String) : String;
+Var
+    Verb : String;
+Begin
+    Verb := LowerCase(Trim(Command));
+    If Pos('.', Verb) > 0 Then Verb := Copy(Verb, Pos('.', Verb) + 1, Length(Verb));
+    Result := Verb;
+End;
+
+Function CommandIsReadOnly(Command : String) : Boolean;
+Var
+    Verb : String;
+Begin
+    Verb := CommandVerb(Command);
+    Result := {read_only};
+End;
+
+Function CommandDeletes(Command : String; Params : String) : Boolean;
+Var
+    Verb, Op : String;
+Begin
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Result := {deletes};
+End;
+
+Function CommandCloses(Command : String) : Boolean;
+Var
+    Cmd : String;
+Begin
+    Cmd := LowerCase(Trim(Command));
+    Result := {closes};
+End;
+
+{PASCAL_RULES_END}"""
 
 
 def _panel(check: str) -> bool:

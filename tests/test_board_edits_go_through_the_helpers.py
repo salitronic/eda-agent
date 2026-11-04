@@ -110,7 +110,10 @@ def test_the_bulk_loop_holds_schematic_edits_and_lets_go_after():
     assert body.index("Finally") < release, "the held edit must close on every path"
     command = code[code.index("Function ProcessCommand("):]
     command = command[:command.index("End;")]
-    assert "SchReleaseHeld(0)" in command and "SchEditOpen := '|'" in command
+    assert "SchReleaseHeld(0)" in command and "ResetRequestState(0)" in command
+    reset = code[code.index("Procedure ResetRequestState("):]
+    reset = reset[:reset.index("End;")]
+    assert "SchEditOpen := '|'" in reset and "SchBulkHold := False" in reset
 
 
 def test_the_open_edit_list_pops_the_last_edit_on_a_document(tmp_path):

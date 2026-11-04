@@ -31,8 +31,9 @@ def test_each_scope_clears_the_symbol_the_last_one_named():
         "a batch applies scopes op by op: a plain scope after a symbol's must "
         "not walk that symbol")
     assert "LibScopeName := CompName;" in body and "LibScopePart := PartId;" in body
-    one = load(SCRIPTS / "StatusForm.pas")["ProcessOne"]
-    assert "LibScopeName := '';" in one
+    status = load(SCRIPTS / "StatusForm.pas")
+    assert "ResetItemState(0);" in status["ProcessOne"]
+    assert "LibScopeName := '';" in status["ResetItemState"]
 
 
 def test_the_walk_is_the_named_symbol_fetched_through_the_library():

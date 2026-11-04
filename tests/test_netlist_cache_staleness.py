@@ -25,20 +25,12 @@ wrong, the shared cache under all of them was.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.test_cross_validate import (          # noqa: F401  (fixture)
-    fpc_executable,
-    read_outputs,
-    write_inputs,
-)
-
 SCRIPTS = Path(__file__).parent.parent / "scripts" / "altium"
 MAIN = SCRIPTS / "Main.pas"
-CROSS_VALIDATOR = Path(__file__).parent / "cross_validate_pascal.pas"
 
 
 def _dispatch_unit() -> Path:
@@ -133,16 +125,9 @@ def test_the_invalidation_also_covers_the_exception_path():
 # The classifier. Unknown must mean write.
 # ---------------------------------------------------------------------------
 
-def command_is_read_only(command: str) -> bool:
-    """Python mirror of the Pascal, cross-validated below."""
-    action = command.strip().lower()
-    dot = action.find(".")
-    if dot >= 0:
-        action = action[dot + 1:]
-    prefixes = ("get_", "list_", "query", "read_", "find_", "count",
-                "audit_", "check_", "calc_", "export_", "render_",
-                "probe_", "inspect_", "diff_", "compare_")
-    return action.startswith(prefixes) or action == "ping"
+# The rules are in eda_agent.safety; the Pascal is generated from them, and
+# test_preferences.py runs the compiled Pascal against them on every command.
+from eda_agent.safety import command_is_read_only  # noqa: E402
 
 
 @pytest.mark.parametrize("command", [
@@ -187,69 +172,6 @@ def test_the_classifier_has_no_catch_all_true():
     assert "True" not in assignments, (
         "CommandIsReadOnly assigns Result := True outside the prefix "
         "expression, which would treat some unknown command as a read")
-
-
-# ---------------------------------------------------------------------------
-# The copy in the cross-validator must not drift from the original.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("name", ["ActionHasPrefix", "CommandIsReadOnly"])
-def test_the_cross_validated_copy_matches_the_real_source(name):
-    """A hand-maintained copy passes in exactly the case that matters.
-
-    cross_validate_pascal.pas holds copies of the real functions so Free
-    Pascal can run them. If the original changes and the copy does not,
-    the cross-validation goes on proving the OLD function correct and
-    reports success, which is worse than not running.
-    """
-    original = _function_source(
-        DISPATCHER.read_text(encoding="utf-8", errors="replace"), name)
-    copy = _function_source(
-        CROSS_VALIDATOR.read_text(encoding="utf-8", errors="replace"), name)
-
-    def flat(text):
-        return re.sub(r"\s+", " ", text).strip()
-
-    assert flat(original) == flat(copy), (
-        f"{name} in cross_validate_pascal.pas has drifted from "
-        f"Dispatcher.pas, so the cross-validation is checking a stale copy")
-
-
-def test_pascal_and_python_agree_on_the_classifier(fpc_executable, tmp_path):
-    """The real Pascal, compiled and run, against the mirror above.
-
-    The mirror is what the parametrized tests exercise; without this it
-    would only prove the mirror self-consistent, which says nothing about
-    what Altium runs.
-    """
-    commands = [
-        "generic.set_component_part_id", "project.get_nets",
-        "generic.query_objects", "pcb.place_via", "application.ping",
-        "library.rename_component", "audit.audit_find_via_antennas",
-        "project.export_bom", "generic.unknown_future_tool",
-        "no_namespace", "", "PROJECT.GET_NETS", "  project.get_nets  ",
-        "pcb.render_svg", "generic.compare_documents",
-    ]
-    cases = [("CommandIsReadOnly", [c]) for c in commands]
-
-    input_file = tmp_path / "cv_in.txt"
-    output_file = tmp_path / "cv_out.txt"
-    write_inputs(cases, str(input_file))
-
-    result = subprocess.run(
-        [fpc_executable, str(input_file), str(output_file)],
-        capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, f"{result.stdout} {result.stderr}"
-
-    pascal = read_outputs(str(output_file))
-    assert len(pascal) == len(commands)
-
-    mismatches = []
-    for command, got in zip(commands, pascal):
-        want = "true" if command_is_read_only(command) else "false"
-        if got != want:
-            mismatches.append(f"  {command!r}: Pascal {got!r}, Python {want!r}")
-    assert not mismatches, "classifier disagrees:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------

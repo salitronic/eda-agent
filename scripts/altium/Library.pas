@@ -20698,7 +20698,7 @@ End;
 
 Function ResponseField(Response : String; Key : String) : String;
 Begin
-    Result := ExtractJsonValue(Response, Key);
+    Result := JsonValueAnywhere(Response, Key);
 End;
 
 { Which library actions only LOOK, and so must leave the active document  }

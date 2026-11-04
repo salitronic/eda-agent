@@ -23,14 +23,12 @@ import pytest
 
 from eda_agent.safety import (
     READONLY_ENV,
-    READONLY_VERB_PREFIXES,
     command_is_read_only,
     refuse_command,
     refuse_process,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STATUS_FORM = REPO_ROOT / "scripts" / "altium" / "StatusForm.pas"
 
 
 # --------------------------------------------------------------------------
@@ -95,28 +93,8 @@ def test_the_flag_is_off_by_default(monkeypatch):
     assert refuse_command("generic.modify_objects") is None
 
 
-# --------------------------------------------------------------------------
-# the twin
-# --------------------------------------------------------------------------
-
-def test_the_python_and_pascal_readonly_lists_agree():
-    """``CommandIsReadOnly`` in StatusForm.pas is the other copy.
-
-    The Pascal one decides when to invalidate a cached netlist; the
-    Python one decides whether a command may run at all. A verb that one
-    calls a read and the other calls a write is either a stale netlist
-    or an unenforced limit, and neither announces itself.
-    """
-    src = STATUS_FORM.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"Function CommandIsReadOnly.*?\nEnd;", src, re.DOTALL)
-    assert m, "CommandIsReadOnly is gone from StatusForm.pas"
-    pascal = set(re.findall(r"ActionHasPrefix\(Verb,\s*'([a-z_]+)'\)", m.group(0)))
-    python = set(READONLY_VERB_PREFIXES)
-    assert pascal, "the Pascal prefix scan found nothing; it has changed shape"
-    assert pascal == python, (
-        f"the two read-only lists have drifted.\n"
-        f"  only in Pascal: {sorted(pascal - python)}\n"
-        f"  only in Python: {sorted(python - pascal)}")
+# The Pascal copy of these rules is generated from safety.py; the fpc test
+# in test_preferences.py runs both on every dispatched command.
 
 
 # --------------------------------------------------------------------------

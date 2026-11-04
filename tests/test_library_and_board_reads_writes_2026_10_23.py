@@ -62,8 +62,10 @@ def test_a_board_found_by_walking_is_named_on_the_reply():
     assert "BoardFallbackPath := Path;" in body[walk:]
     # ProcessOne: each item of a bulk call is a request of its own.
     process = _fn("StatusForm.pas", "ProcessOne")
-    assert "BoardFallbackPath := '';" in process
-    assert process.index("BoardFallbackPath := '';") < process.index("Case Category Of")
+    status = _src("StatusForm.pas")
+    reset = status[status.index("Procedure ResetItemState("):]
+    assert "BoardFallbackPath := '';" in reset[:reset.index("End;")]
+    assert process.index("ResetItemState(0);") < process.index("Case Category Of")
     assert "Result := BoardFallbackNote(Result);" in process
     note = _fn("StatusForm.pas", "BoardFallbackNote")
     assert '"board_used":"' in note and "EscapeJsonString(BoardFallbackPath)" in note

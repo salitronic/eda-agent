@@ -28,6 +28,12 @@ OUTPUT = os.path.join(SCRIPT_DIR, 'Altium_MCP.pas')
 
 
 # Lint gate. Walks the same FILES list before producing the merged unit.
+import sync_rules
+if sync_rules.main(['--check']):
+    print('\nbuild aborted: run python scripts/altium/sync_rules.py first.',
+          file=sys.stderr)
+    sys.exit(1)
+
 if '--skip-lint' not in sys.argv:
     from lint import run_lint
     error_count = run_lint([os.path.join(SCRIPT_DIR, f) for f in FILES])

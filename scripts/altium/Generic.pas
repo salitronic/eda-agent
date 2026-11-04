@@ -4296,7 +4296,7 @@ Begin
         Result := ModReply;
         Exit;
     End;
-    Matched := StrToIntDef(ExtractJsonValue(ModReply, 'matched'), 0);
+    Matched := StrToIntDef(JsonValueAnywhere(ModReply, 'matched'), 0);
 
     If FilterStr = '' Then ReadFilter := SelProp + '=true'
     Else ReadFilter := FilterStr + '|' + SelProp + '=true';
@@ -4309,7 +4309,7 @@ Begin
 
     SelCount := -1;
     If ExtractJsonValue(ReadReply, 'success') = 'true' Then
-        SelCount := StrToIntDef(ExtractJsonValue(ReadReply, 'count'), -1);
+        SelCount := StrToIntDef(JsonValueAnywhere(ReadReply, 'count'), -1);
 
     If SelCount < 0 Then
     Begin
@@ -4688,11 +4688,11 @@ Begin
             Else
                 OpResult := ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
 
-            OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+            OpMatched := StrToIntDef(JsonValueAnywhere(OpResult, 'matched'), 0);
             TotalMatched := TotalMatched + OpMatched;
             If Pos('"success":false', OpResult) > 0 Then
             Begin
-                Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
+                Note := 'failed: ' + JsonValueAnywhere(OpResult, 'code');
             End
             Else
             Begin
@@ -12090,15 +12090,15 @@ Begin
             { A delete that stopped part way still removed what it counted:
               read matched on a failure too, or the reply says nothing was
               deleted and the caller repeats it. }
-            OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+            OpMatched := StrToIntDef(JsonValueAnywhere(OpResult, 'matched'), 0);
             If Pos('"partial":true', OpResult) > 0 Then
             Begin
-                Note := 'partial: ' + ExtractJsonValue(OpResult, 'delete_error');
+                Note := 'partial: ' + JsonValueAnywhere(OpResult, 'delete_error');
                 Inc(OpsPartial);
             End
             Else If Pos('"success":false', OpResult) > 0 Then
             Begin
-                Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
+                Note := 'failed: ' + JsonValueAnywhere(OpResult, 'code');
             End
             Else
             Begin
