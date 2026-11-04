@@ -1825,14 +1825,14 @@ End;
   project.close. MIRRORED in safety.py, pinned by a test. }
 Function CommandDeletes(Command : String; Params : String) : Boolean;
 Var
-    Verb, Action : String;
+    Verb, Op : String;
 Begin
     Verb := LowerCase(Copy(Command, Pos('.', Command) + 1, Length(Command)));
-    Action := LowerCase(ExtractJsonValue(Params, 'action'));
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
     Result := ActionHasPrefix(Verb, 'delete_') Or ActionHasPrefix(Verb, 'remove_')
         Or (Verb = 'batch_delete') Or (Verb = 'unroute')
         Or ((Pos('clear_', Verb) = 1) And (Pos('source', Verb) > 0))
-        Or (Action = 'delete') Or (Action = 'remove');
+        Or (Op = 'delete') Or (Op = 'remove');
 End;
 
 Function CommandCloses(Command : String) : Boolean;

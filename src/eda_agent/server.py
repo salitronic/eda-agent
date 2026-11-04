@@ -549,6 +549,10 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # eda-agent is then reported on the next tool reply and by app_ping and
     # app_context, never installed unasked.
     updates.start_background_check()
+    # Altium never runs the panel's own wheel events, so the server scrolls
+    # the Config tab while the cursor is over it.
+    from .ui import panel_wheel
+    panel_wheel.start()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
     if duplicate:
