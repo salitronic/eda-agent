@@ -17065,13 +17065,24 @@ Begin
         + ',"vias":[' + Items + ']}');
 End;
 
+{ How many entries a comma terminated list holds ("3,7," is 2). }
+
+Function PairListCount(L : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(L) Do
+        If L[I] = ',' Then Result := Result + 1;
+End;
+
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     LayerStack : IPCB_LayerStack_V7;
     LayerObj, OtherObj : IPCB_LayerObject_V7;
     LayerName, KindStr, ClearedJson, PartnerName : String;
-    PairKindJson, PartnerJson : String;
+    PairKindJson, PartnerJson, Released : String;
     TargetLayer, Lyr, PartnerLayer, TopL, BotL : TLayer;
     KindId, Readback, OtherKind, N : Integer;
     PartnerKind, PairKind, PairIdx, PairKindBack : Integer;
@@ -17194,6 +17205,7 @@ Begin
     ClearedJson := '';
     First := True;
     PairApplied := False;
+    Released := '';
 
     PcbBeginEdit(0);
     Try
@@ -17275,6 +17287,31 @@ Begin
                 Except
                     PairKindBack := -1;
                 End;
+                { A pair kind belongs to one pair, as a single kind belongs  }
+                { to one layer, so it is refused while another pair holds   }
+                { it. Take it off that pair and write again, or put it back }
+                { when the second write is refused too.                      }
+                If (PairKindBack >= 0) And (PairKindBack <> PairKind) Then
+                Begin
+                    Released := ReleasePairKindHolders(MechPairs, PairKind, PairIdx);
+                    If Released <> '' Then
+                    Begin
+                        Try
+                            MechPairs.SetState_LayerPairKind(PairIdx) := PairKind;
+                        Except
+                        End;
+                        Try
+                            PairKindBack := MechPairs.LayerPairKind(PairIdx);
+                        Except
+                            PairKindBack := -1;
+                        End;
+                        If (PairKindBack >= 0) And (PairKindBack <> PairKind) Then
+                        Begin
+                            RestorePairKindHolders(MechPairs, PairKind, Released);
+                            Released := '';
+                        End;
+                    End;
+                End;
                 { A build that will not report the pair kind back must not  }
                 { read as a failure, so only a value that came back         }
                 { DIFFERENT counts as refused.                              }
@@ -17326,6 +17363,8 @@ Begin
         + '"paired":' + BoolToJsonStr(PairApplied) + ','
         + '"pair_kind":' + PairKindJson + ','
         + '"partner_layer":' + PartnerJson + ','
+        { How many other pairs gave the pair kind up for this one. }
+        + '"pairs_released":' + IntToStr(PairListCount(Released)) + ','
         + '"cleared_from":[' + ClearedJson + ']}');
 End;
 
@@ -17426,9 +17465,11 @@ Var
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
-    JsonItems, NameStr, CountedStr : String;
+    JsonItems, NameStr, CountedStr, EnabledList, Rest, PartnerJson : String;
     First, Disp, Enabled, WantAll : Boolean;
-    Count, KindId, Num, Prims, Occupied : Integer;
+    Count, KindId, Num, Prims, Occupied, Other : Integer;
+    MechPairs : IPCB_MechanicalLayerPairs;
+    OtherLyr : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -17453,6 +17494,26 @@ Begin
     First := True;
     Count := 0;
     Occupied := 0;
+
+    { THE PAIRS. A layer whose kind is carried by a layer PAIR (Assembly,    }
+    { Courtyard ...) reads "Not Set" on its own, so without the partner the }
+    { reply cannot say which layers belong together. PairDefined is the     }
+    { reliable read (LayerPair(i) is noted broken), so the enabled layers   }
+    { are listed first and each one is tested against the others.          }
+    MechPairs := Nil;
+    Try MechPairs := Board.MechanicalPairs; Except MechPairs := Nil; End;
+    EnabledList := '';
+    For Num := 1 To MechScanLimit Do
+    Begin
+        Lyr := MechLayerFromNumber(Num);
+        If Lyr = eNoLayer Then Continue;
+        LayerObj := Nil;
+        Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
+        If LayerObj = Nil Then Continue;
+        Enabled := False;
+        Try Enabled := LayerObj.MechanicalLayerEnabled; Except Enabled := False; End;
+        If Enabled Then EnabledList := EnabledList + IntToStr(Num) + ',';
+    End;
 
     { ENABLED, NOT DISPLAYED. This reported only layers the view happened to }
     { be showing, so a layer carrying the whole fabrication drawing was      }
@@ -17484,6 +17545,25 @@ Begin
         If WantAll Then Prims := PCB_CountPrimitivesOnLayer(Board, Lyr);
         If Prims > 0 Then Occupied := Occupied + 1;
 
+        { The enabled layer joined to this one; null when it is unpaired. }
+        PartnerJson := 'null';
+        If MechPairs <> Nil Then
+        Begin
+            Rest := EnabledList;
+            While (Pos(',', Rest) > 0) And (PartnerJson = 'null') Do
+            Begin
+                Other := StrToIntDef(Copy(Rest, 1, Pos(',', Rest) - 1), -1);
+                Rest := Copy(Rest, Pos(',', Rest) + 1, Length(Rest));
+                If (Other > 0) And (Other <> Num) Then
+                Begin
+                    OtherLyr := MechLayerFromNumber(Other);
+                    If OtherLyr <> eNoLayer Then
+                        If PairIsDefined(MechPairs, Lyr, OtherLyr) Then
+                            PartnerJson := '"Mechanical' + IntToStr(Other) + '"';
+                End;
+            End;
+        End;
+
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems
@@ -17494,6 +17574,7 @@ Begin
             + '"displayed":' + BoolToJsonStr(Disp) + ','
             + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
             + '"kind_id":' + IntToStr(KindId) + ','
+            + '"partner_layer":' + PartnerJson + ','
             + '"primitive_count":' + IntToStr(Prims) + '}';
         Inc(Count);
     End;

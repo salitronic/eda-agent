@@ -14295,6 +14295,59 @@ Begin
     End;
 End;
 
+{ Take a PAIR kind off every other pair holding it.                          }
+{                                                                              }
+{ A pair kind belongs to one pair at a time, as a layer kind belongs to one    }
+{ layer: giving "Assembly" to one pair while another already carries it reads  }
+{ back unchanged and raises nothing. The layer kinds were always released from }
+{ their old holder; the pair kinds never were, so a paired kind already in use }
+{ elsewhere was refused. Returns the indexes it cleared, comma terminated, so  }
+{ a write that is still refused can put them back.                             }
+
+Function ReleasePairKindHolders(MechPairs : IPCB_MechanicalLayerPairs;
+    PairKind : Integer; KeepIdx : Integer) : String;
+Var
+    I, N, K : Integer;
+Begin
+    Result := '';
+    If MechPairs = Nil Then Exit;
+    { Not Set is the one pair kind any number of pairs may share. }
+    If PairKind <= 0 Then Exit;
+    N := 0;
+    Try N := MechPairs.Count; Except N := 0; End;
+    For I := 0 To N - 1 Do
+        If I <> KeepIdx Then
+        Begin
+            K := -1;
+            Try K := MechPairs.LayerPairKind(I); Except K := -1; End;
+            If K = PairKind Then
+            Begin
+                Try MechPairs.SetState_LayerPairKind(I) := 0; Except End;
+                Result := Result + IntToStr(I) + ',';
+            End;
+        End;
+End;
+
+{ Give a pair kind back to the pairs ReleasePairKindHolders took it from, so  }
+{ a write that still does not take leaves the board as it was.                }
+
+Procedure RestorePairKindHolders(MechPairs : IPCB_MechanicalLayerPairs;
+    PairKind : Integer; Released : String);
+Var
+    Remaining : String;
+    I : Integer;
+Begin
+    If MechPairs = Nil Then Exit;
+    Remaining := Released;
+    While Pos(',', Remaining) > 0 Do
+    Begin
+        I := StrToIntDef(Copy(Remaining, 1, Pos(',', Remaining) - 1), -1);
+        Remaining := Copy(Remaining, Pos(',', Remaining) + 1, Length(Remaining));
+        If I >= 0 Then
+            Try MechPairs.SetState_LayerPairKind(I) := PairKind; Except End;
+    End;
+End;
+
 { Join two mechanical layers and give the PAIR its kind.                      }
 {                                                                              }
 { AddPair APPENDS WITHOUT CHECKING, so calling it for a pair that already      }
@@ -14311,6 +14364,7 @@ Function JoinAndKindPair(MechPairs : IPCB_MechanicalLayerPairs;
     TopL : TLayer; BotL : TLayer; PairKind : Integer) : Boolean;
 Var
     PairIdx, KindBack : Integer;
+    Released : String;
 Begin
     Result := False;
     If MechPairs = Nil Then Exit;
@@ -14328,6 +14382,19 @@ Begin
     Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except End;
     KindBack := -1;
     Try KindBack := MechPairs.LayerPairKind(PairIdx); Except KindBack := -1; End;
+    { Refused while another pair holds the kind: take it off that pair and  }
+    { write once more, putting it back if the second write fails as well.   }
+    If (KindBack >= 0) And (KindBack <> PairKind) Then
+    Begin
+        Released := ReleasePairKindHolders(MechPairs, PairKind, PairIdx);
+        If Released <> '' Then
+        Begin
+            Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except End;
+            Try KindBack := MechPairs.LayerPairKind(PairIdx); Except KindBack := -1; End;
+            If (KindBack >= 0) And (KindBack <> PairKind) Then
+                RestorePairKindHolders(MechPairs, PairKind, Released);
+        End;
+    End;
     { A build that will not report the pair kind back must not read as a    }
     { failure, so only a value that came back DIFFERENT counts as refused.  }
     Result := (KindBack = PairKind) Or (KindBack < 0);
