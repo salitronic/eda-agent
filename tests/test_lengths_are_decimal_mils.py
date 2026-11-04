@@ -63,6 +63,7 @@ _NOT_LENGTHS = {
     ("Generic.pas", "Gen_PlaceLine", "line_width"),
     ("Library.pas", "Lib_AddFootprintPad", "corner_radius"),   # percent
     ("Library.pas", "Lib_AddFootprintPads", "corner_radius"),
+    ("PCB.pas", "PCB_PlacePads", "corner_radius"),             # percent
     # x / y here are internal coordinates (TCoord) relative to the
     # footprint origin, already whole numbers.
     ("Library.pas", "Lib_SetDesignator", "x"),
