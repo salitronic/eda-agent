@@ -96,6 +96,7 @@ Begin
             (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Then Result := 5
     Else If (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
             (PropName = 'IsBGA') Or (PropName = 'LockStrings') Or
+            (PropName = 'PrimitiveLock') Or
             (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
             (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
@@ -271,6 +272,7 @@ Begin
         Else If PropName = 'EnablePartSwapping' Then Result := BoolToJsonStr(Comp.EnablePartSwapping)
         Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA)
         Else If PropName = 'LockStrings' Then Result := BoolToJsonStr(Comp.LockStrings)
+        Else If PropName = 'PrimitiveLock' Then Result := BoolToJsonStr(Comp.PrimitiveLock)
         Else If PropName = 'NameAutoPosition' Then Result := IntToStr(Comp.NameAutoPosition)
         Else If PropName = 'CommentAutoPosition' Then Result := IntToStr(Comp.CommentAutoPosition)
         Else If PropName = 'FootprintDescription' Then Result := Comp.FootprintDescription
@@ -352,7 +354,8 @@ Begin
         (PropName = 'ClipAcuteCorners') Or (PropName = 'MitreCorners') Or
         (PropName = 'IgnoreViolations') Or (PropName = 'ArcPourMode') Or
         (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
-        (PropName = 'LockStrings') Or (PropName = 'Inverted') Or
+        (PropName = 'LockStrings') Or (PropName = 'PrimitiveLock') Or
+        (PropName = 'Inverted') Or
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
@@ -533,6 +536,7 @@ Begin
         If PropName = 'EnablePinSwapping' Then Comp.EnablePinSwapping := B
         Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B
         Else If PropName = 'LockStrings' Then Comp.LockStrings := B
+        Else If PropName = 'PrimitiveLock' Then Comp.PrimitiveLock := B
         { Change*Autoposition moves the text to the anchor as well as       }
         { recording it; writing NameAutoPosition alone leaves it where it is. }
         Else If PropName = 'NameAutoPosition' Then Comp.ChangeNameAutoposition(N)
@@ -2487,7 +2491,7 @@ Begin
         + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
         + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
         + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
-        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, '
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, PrimitiveLock, '
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
