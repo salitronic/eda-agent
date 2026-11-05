@@ -98,6 +98,15 @@ def test_a_command_that_moved_the_focus_takes_the_session_with_it():
     assert ab.next_session_doc("A", "pcb.focus_board", {}, r) == "B"
 
 
+def test_a_report_opened_in_altiums_browser_is_not_adopted():
+    # The IPC batch generator opens its HTML report; adopted, every later
+    # call reopened it and Altium put another file:/// in front.
+    page = r"file:///C:\out\IPC Compliant Footprint Wizard - Batch Report.html"
+    r = _reply(active_document_changed={"from": r"C:\a\Pads.PcbLib", "to": page})
+    assert ab.next_session_doc(r"C:\a\Pads.PcbLib", "generic.run_process", {}, r) \
+        == r"C:\a\Pads.PcbLib"
+
+
 def test_focusing_what_is_already_in_front_still_chooses_it():
     r = _reply(data={"success": True, "file_path": "C"})
     assert ab.next_session_doc("A", "application.set_active_document",

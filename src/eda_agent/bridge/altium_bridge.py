@@ -492,6 +492,11 @@ def next_session_doc(current: str, command: str, params: dict,
     """
     moved = response.active_document_changed or {}
     if isinstance(moved, dict) and moved.get("to"):
+        # A report opened in Altium's browser (file:///...html) is not a
+        # document; adopting it made every later call reopen the address
+        # with another file:/// in front.
+        if "://" in str(moved["to"]):
+            return current
         return str(moved["to"])
     if command == "application.set_active_document" and response.success:
         data = response.data if isinstance(response.data, dict) else {}

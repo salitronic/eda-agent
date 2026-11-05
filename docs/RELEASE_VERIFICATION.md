@@ -3776,11 +3776,20 @@ build, on a scratch board and a scratch PcbLib:
   footprint and `pcb_layer_view` read and wrote the library's own
   board (Mechanical16 hidden, then shown, both read back).
 
+* `lib_ipc_batch_template` read the 38 templates Altium installs under
+  ProgramData (family code in A1, columns, legend); "QFP" is found in
+  the PQFP file, whose code differs from its name.
+* `lib_generate_ipc_batch` on tables filled from TI package drawings:
+  RGT0016C (VQFN-16, 4222419/E) gave 17 pads at 0.50 mm pitch, terminal
+  pads 0.25 mm wide and a 1.68 mm thermal pad, with one STEP body
+  extracted and checksummed; DBZ0003A (SOT-23, 4214838/F), a family the
+  old check refused, gave 3 pads at 0.95 / 1.9 mm. Altium's reports: no
+  errors, only its pad-trimming warnings. Afterwards the session's
+  document stayed the library, not the generator's HTML report.
+
 Not run live here: the status window's double-click (an interface
-action), and `lib_generate_ipc_batch`, which needs a table in Altium's
-batch template; the contributor ran it on AD 24.0.1.36. Its designator
-removal is now off unless asked for, and it writes nothing of its own
-into the output folder.
+action). The generator's designator removal is off unless asked for,
+and it writes nothing of its own into the output folder.
 
 ## 71. A rule or room name already on the board is refused
 

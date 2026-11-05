@@ -45,6 +45,11 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.source = self.root / 'input.csv'
         self.source.write_text('QFN,,\nFootprintName,DensityLevel,Other\nQFN20,N,\n')
         self.output = self.root / 'result'
+        # As on a machine without Altium's templates; the template checks
+        # have their own tests below.
+        none = patch('eda_agent.design.ipc_templates.template_folders', return_value=[])
+        none.start()
+        self.addCleanup(none.stop)
 
     async def run_fake(self, fake, **kwargs):
         with patch.object(ipc_batch, 'get_bridge', return_value=fake), patch.object(
@@ -104,9 +109,11 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['stage'], 'preflight')
 
     async def test_csv_bad_density(self):
-        self.source.write_text('QFN,,\nFootprintName,DensityLevel,Other\nQFN20,,\n')
+        # DensityLevel may be left blank (Altium's default); a wrong letter is refused.
+        self.source.write_text('QFN,,\nFootprintName,DensityLevel,Other\nQFN20,X,\n')
         result = await self.run_fake(FakeBridge(self.output))
         self.assertEqual(result['stage'], 'preflight')
+        self.assertIn('DensityLevel', result['reason'])
 
 
 class ModelExportTests(unittest.TestCase):
@@ -130,3 +137,63 @@ class ModelExportTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# A template as ipc_templates reads one, cut down.
+_QFN = {"family": "QFN", "file": "QFN.xls",
+        "columns": ["FootprintName", "Dmin", "Dmax", "PitchD", "Pin1", "DensityLevel", "X"],
+        "legend": [{"name": "FootprintName", "required": "Optional", "format": "String",
+                    "description": "", "sheet": "Legend - Package"},
+                   {"name": "Dmin, Dmax", "required": "Yes", "format": "Real",
+                    "description": "body", "sheet": "Legend - Package"},
+                   {"name": "PitchD", "required": "Yes", "format": "Real",
+                    "description": "pitch", "sheet": "Legend - Package"},
+                   {"name": "X", "required": "Yes", "format": "Real",
+                    "description": "pad width", "sheet": "Legend - Footprint"}]}
+
+
+def test_required_columns_are_the_package_ones():
+    from eda_agent.design.ipc_templates import required_columns
+    # "Dmin, Dmax" names two; the footprint legend's X is the generator's to work out.
+    assert required_columns(_QFN) == ["Dmin", "Dmax", "PitchD"]
+
+
+def test_a_table_is_checked_against_its_family():
+    from eda_agent.design.ipc_templates import table_problems
+    good = [["QFN"], ["FootprintName", "Dmin", "Dmax", "PitchD", "DensityLevel"],
+            ["Q1", "2.9", "3.1", "0.5", "N"]]
+    assert table_problems(good, _QFN, {"QFN", "SOT23", "DIP"}) == ([], 1)
+    problems, _ = table_problems(
+        [["QFN"], ["FootprintName", "Dmin", "PitchD", "Dmaks", "DensityLevel"],
+         ["Q1", "2.9", "", "3", "X"]], _QFN, {"QFN"})
+    text = " | ".join(problems)
+    for bit in ("no columns ['Dmaks']", "required column Dmax is missing",
+                "PitchD is empty on row(s) [3]", "DensityLevel is L, N or M"):
+        assert bit in text, (bit, text)
+
+
+def test_any_installed_family_is_accepted_and_others_named():
+    from eda_agent.design.ipc_templates import table_problems
+    rows = [["SOT23"], ["FootprintName"], ["S1"]]
+    assert table_problems(rows, None, {"QFN", "SOT23"}) == ([], 1)
+    problems, _ = table_problems([["SOT-23"], ["FootprintName"], ["S1"]], None,
+                                 {"QFN", "SOT23"})
+    assert "families are QFN, SOT23" in problems[0]
+    # With no templates installed, Altium alone judges the family.
+    assert table_problems(rows, None, set()) == ([], 1)
+
+
+def test_the_installed_templates_read(tmp_path):
+    from eda_agent.design import ipc_templates
+    folders = ipc_templates.template_folders()
+    if not folders:
+        import pytest
+        pytest.skip("Altium's IPC Footprint Generator templates are not installed here")
+    rows = ipc_templates.families(folders[0])
+    assert len(rows) > 10 and not any(r.get("error") for r in rows)
+    qfn = ipc_templates.find_template(folders[0], "qfn")
+    assert qfn["family"] == "QFN" and "PitchD" in qfn["columns"]
+    assert {"Dmin", "Dmax", "PitchD", "Pin1"} <= set(ipc_templates.required_columns(qfn))
+    # The code in A1 can differ from the file name.
+    assert ipc_templates.find_template(folders[0], "QFP")["file"].endswith(
+        "PQFP (Plastic Quad Flat Pack).xls")

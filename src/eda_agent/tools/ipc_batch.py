@@ -30,21 +30,46 @@ def _path(value: str, label: str) -> Path:
     return path.resolve()
 
 
-def _check_csv(path: Path) -> int:
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
-    if len(rows) < 3 or not rows[0] or rows[0][0] not in {"QFN", "QFP", "SOP"}:
-        raise ValueError("CSV needs native QFN/QFP/SOP type in A1, headers in row 2 and data")
-    columns = len(rows[1])
-    if "FootprintName" not in rows[1] or "DensityLevel" not in rows[1]:
-        raise ValueError("CSV is not a native IPC batch template")
-    data = [row for row in rows[2:] if any(cell.strip() for cell in row)]
-    if not data or any(len(row) != columns for row in data):
-        raise ValueError("CSV has no data or inconsistent column counts")
-    density = rows[1].index("DensityLevel")
-    if any(row[density] not in {"L", "N", "M"} for row in data):
-        raise ValueError("Each DensityLevel must be L, N or M")
-    return len(data)
+def _table_rows(path: Path) -> list[list[str]] | None:
+    """The table's cells as text: a CSV, or an .xls's Data sheet; None
+    for a format read only by Altium (.xlsx)."""
+    if path.suffix.lower() == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            return [[c.strip() for c in row] for row in csv.reader(handle)]
+    if path.suffix.lower() == ".xls":
+        import xlrd
+        try:
+            book = xlrd.open_workbook(str(path))
+        except Exception as exc:                          # noqa: BLE001
+            raise ValueError(f"{path.name} could not be read as .xls: {exc}") from None
+        sheet = book.sheet_by_name("Data") if "Data" in book.sheet_names() \
+            else book.sheet_by_index(0)
+        text = lambda v: (str(int(v)) if v.is_integer() else repr(v)) \
+            if isinstance(v, float) else str(v).strip()  # noqa: E731
+        return [[text(c.value) for c in sheet.row(r)] for r in range(sheet.nrows)]
+    return None
+
+
+def _check_table(path: Path) -> int | None:
+    """The table's footprint count, after checking it against its
+    family's installed template; ValueError names every problem."""
+    from ..design import ipc_templates
+    rows = _table_rows(path)
+    if rows is None:
+        return None
+    folders = ipc_templates.template_folders()
+    known: set[str] = set()
+    template = None
+    if folders:
+        known = {f["family"] for f in ipc_templates.families(folders[0]) if f.get("family")}
+        if rows and rows[0] and rows[0][0].strip():
+            template = ipc_templates.find_template(folders[0], rows[0][0])
+            if template and template["family"].lower() != rows[0][0].strip().lower():
+                template = None
+    problems, count = ipc_templates.table_problems(rows, template, known)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return count
 
 
 def _report(path: Path) -> dict:
@@ -73,7 +98,7 @@ async def generate_ipc_batch(input_file: str, output_dir: str, *,
             raise ValueError("input_file must be an existing CSV/XLS/XLSX file")
         if not 10 <= timeout <= 600:
             raise ValueError("timeout must be between 10 and 600 seconds")
-        expected = _check_csv(source) if source.suffix.lower() == ".csv" else None
+        expected = _check_table(source)
         if out.exists() and (not out.is_dir() or any(out.iterdir())):
             raise ValueError("output_dir must be new or empty; existing outputs are never overwritten")
         out.mkdir(parents=True, exist_ok=True)
@@ -168,13 +193,16 @@ def register_ipc_batch_tools(mcp):
                                      require_step: bool = True,
                                      remove_designator: bool = False,
                                      timeout: float = 120.0) -> dict:
-        """Make PcbLibs from an IPC footprint batch table (Altium's
-        QFN/QFP/SOP template) with Altium's own batch generator.
+        """Make PcbLibs from an IPC footprint batch table with Altium's
+        own batch generator, for any package family it has a template
+        for (lib_ipc_batch_template gives the columns).
 
-        Every footprint is read back: pad count, the table's row count,
-        errors in Altium's report, and with require_step its STEP body,
-        extracted and checksummed. Naming follows Altium's saved batch
-        preferences.
+        A .csv or .xls table is checked against its family's template
+        first: the family in A1, every column name, the required package
+        columns filled. Every footprint is then read back: pad count, the
+        table's row count, errors in Altium's report, and with
+        require_step its STEP body, extracted and checksummed. Naming
+        follows Altium's saved batch preferences.
 
         Args:
             input_file: Absolute path of the .csv, .xls or .xlsx table.
@@ -190,3 +218,37 @@ def register_ipc_batch_tools(mcp):
         """
         return await generate_ipc_batch(input_file, output_dir,
             require_step=require_step, remove_designator=remove_designator, timeout=timeout)
+
+    @mcp.tool()
+    async def lib_ipc_batch_template(family: str = "") -> dict:
+        """Altium's template for an IPC footprint batch table, the input
+        of lib_generate_ipc_batch.
+
+        With no family it lists the families installed. With one (its
+        code, e.g. "QFN", "QFP", "SOT23", or the start of the template's
+        file name) it gives the template's path, the ``columns`` in order
+        (row 2 of the table, the family code going in A1), the
+        ``required`` package columns and the ``legend``: what each column
+        measures, its format and whether it is required. Fill rows from
+        the part's datasheet package drawing, in mm.
+
+        Returns:
+            ``folder`` and ``families``, or ``family``, ``file``,
+            ``columns``, ``required`` and ``legend``.
+        """
+        from ..design import ipc_templates
+        folders = ipc_templates.template_folders()
+        if not folders:
+            return {"ok": False, "reason": "no IPC Footprint Generator templates are "
+                    "installed under ProgramData\Altium; the IPC Footprint Generator "
+                    "extension is part of Altium Designer's installation"}
+        if not family.strip():
+            return {"ok": True, "folder": str(folders[0]),
+                    "families": ipc_templates.families(folders[0])}
+        template = ipc_templates.find_template(folders[0], family)
+        if template is None:
+            known = [f["family"] for f in ipc_templates.families(folders[0])]
+            return {"ok": False, "reason": f"no template for {family!r}",
+                    "families": known}
+        return {"ok": True, **template,
+                "required": ipc_templates.required_columns(template)}
