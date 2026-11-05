@@ -280,7 +280,7 @@ def test_api_live_decisions_returns_what_came_after_since(client):
 
 def test_the_page_has_the_layout_tab_wired_to_the_endpoints(client):
     c, _ = client
-    html = c.get("/").get_data(as_text=True)
+    html = c.get("/classic").get_data(as_text=True)
     assert 'data-tab="layout"' in html and 'data-pane="layout"' in html
     assert "/api/live" in html and "/api/live/decisions" in html
     assert 'name === "layout"' in html and "loadLayout" in html

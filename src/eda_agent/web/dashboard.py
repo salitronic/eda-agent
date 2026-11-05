@@ -430,47 +430,36 @@ class ActivityTailer:
             self.entries.append(parsed)
         self._broadcast({"type": "entry", "entry": parsed.to_dict()})
 
+    def read_new(self, offset: int) -> int:
+        """Take in every complete line after ``offset`` and return the
+        offset after the last one; a partial line waits for its end.
+
+        Bytes, and readline rather than iteration: a text file refuses
+        tell() inside a for loop, and the error left the offset where it
+        was, so one line was read again and again, hundreds of times."""
+        if self.log_path.stat().st_size < offset:
+            offset = 0                    # truncated or rotated: replay
+        with open(self.log_path, "rb") as f:
+            f.seek(offset)
+            while True:
+                raw = f.readline()
+                if not raw.endswith(b"\n"):
+                    break
+                offset = f.tell()
+                self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        return offset
+
     def _run(self) -> None:
         offset = 0
-        # Initial backfill: read everything that's there so the UI has
-        # session context immediately on first paint.
-        try:
-            if self.log_path.exists():
-                with open(self.log_path, "rb") as f:
-                    while True:
-                        raw = f.readline()
-                        if not raw.endswith(b"\n"):
-                            break
-                        offset = f.tell()
-                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
-        except OSError as e:
-            logger.debug("dashboard tailer initial read failed: %s", e)
-
         while not self._stop.is_set():
             try:
                 if not self.log_path.exists():
                     time.sleep(0.5)
                     continue
-                size = self.log_path.stat().st_size
-                if size < offset:
-                    # Truncated or rotated. Replay from scratch.
-                    offset = 0
-                if size == offset:
+                if self.log_path.stat().st_size == offset:
                     time.sleep(0.3)
                     continue
-                # Bytes, and readline rather than iteration: a text file
-                # refuses tell() inside a for loop, and the error left the
-                # offset where it was, so one line was read again and again.
-                with open(self.log_path, "rb") as f:
-                    f.seek(offset)
-                    while True:
-                        raw = f.readline()
-                        if not raw.endswith(b"\n"):
-                            # End, or a partial line: keep the position
-                            # before it and retry.
-                            break
-                        offset = f.tell()
-                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+                offset = self.read_new(offset)
             except OSError as e:
                 logger.debug("dashboard tailer read failed: %s", e)
                 time.sleep(0.5)

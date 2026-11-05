@@ -97,7 +97,7 @@ def test_footprint_policy_never_calls_per_footprint(client, monkeypatch):
 def test_index_page_wires_footprint_panel(client):
     # The tab, pane, loader and endpoint are all inlined and the 9k-line page
     # still serves (guards against gross corruption of the file).
-    html = client.get("/").get_data(as_text=True)
+    html = client.get("/classic").get_data(as_text=True)
     assert 'data-tab="footprints"' in html
     assert 'data-pane="footprints"' in html
     assert "loadFootprints" in html

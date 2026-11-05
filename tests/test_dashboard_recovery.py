@@ -38,7 +38,7 @@ def test_index_page_wires_recovery_banner(client):
     # Sanity that the inlined HTML/JS for the banner is present and the page
     # still serves (guards against gross corruption of the 9k-line file).
     c, _ = client
-    html = c.get("/").get_data(as_text=True)
+    html = c.get("/classic").get_data(as_text=True)
     assert 'id="recovery-banner"' in html
     assert "pollRecovery" in html
     assert "/api/recovery" in html

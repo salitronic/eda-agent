@@ -9681,9 +9681,9 @@ def register_pcb_tools(mcp):
             ``deleted``. The board is marked modified after a write or a
             delete; save it to keep the change.
 
-        Name and text are Latin-1 (U+0000 to U+00FF): the bridge carries
-        no more into Altium, so other characters are refused here rather
-        than stored changed. Encode them first, for example as JSON with
+        Name and text are Latin-1 (U+0000 to U+00FF): an embedded record
+        holds 8-bit text, so other characters are refused here rather than
+        stored changed. Encode them first, for example as JSON with
         ``ensure_ascii=True``.
         """
         act = action.strip().lower() if isinstance(action, str) else ""
@@ -9699,8 +9699,8 @@ def register_pcb_tools(mcp):
             if wide:
                 return {"ok": False, "reason": (
                     f"{label} holds {len(wide)} character(s) beyond Latin-1 "
-                    f"(first {wide[0]!r}, U+{ord(wide[0]):04X}); the bridge "
-                    f"would store them changed. Encode them first, e.g. JSON "
+                    f"(first {wide[0]!r}, U+{ord(wide[0]):04X}); an embedded "
+                    f"record holds 8-bit text and would store them changed. Encode them first, e.g. JSON "
                     f"with ensure_ascii=True")}
         ask: dict[str, str] = {"action": act}
         if act != "list":

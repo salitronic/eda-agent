@@ -45,6 +45,8 @@ SESSION = {
     "JsonNestedSeen",
     # Session slots and queue notes between callers.
     "SlotSession", "SlotStartTick", "QueueNoteTick",
+    # The tool call holding the turn, and when its last command finished.
+    "HoldCall", "HoldStartTick", "LastDoneTick", "JustPicked",
     # Dashboard.
     "HidePingsFlag", "OnlySlowFlag", "AlwaysOnTopFlag", "PausedFlag",
     "RenewRequested", "SpinnerFrame", "InFlightCommand", "InFlightStartMs",
