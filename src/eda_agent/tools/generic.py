@@ -606,7 +606,8 @@ def register_generic_tools(mcp):
                 ClipAcuteCorners, MitreCorners, IgnoreViolations and
                 ArcPourMode on a pour; EnablePinSwapping and
                 EnablePartSwapping on a part (IsBGA reads); also on a
-                part LockStrings, NameAutoPosition and CommentAutoPosition
+                part LockStrings, PrimitiveLock (its own primitives),
+                NameAutoPosition and CommentAutoPosition
                 (Altium's anchor numbers), FootprintDescription, DefaultPCB3DModel
                 (PackageSpecificHash reads), SourceDescription,
                 JumpersVisible, ChannelOffset and GroupNum; on a board
