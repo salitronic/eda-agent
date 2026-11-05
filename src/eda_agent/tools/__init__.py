@@ -27,6 +27,7 @@ from .update import register_update_tools
 from .uiauto import register_uiauto_tools
 from .project import register_project_tools
 from .library import register_library_tools
+from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
 from .pcb import register_pcb_tools
 from .review import register_review_tools
@@ -199,6 +200,7 @@ def register_all_tools(mcp):
     register_application_tools(mcp)
     register_project_tools(mcp)
     register_library_tools(mcp)
+    register_ipc_batch_tools(mcp)
     register_generic_tools(mcp)
     register_pcb_tools(mcp)
     register_review_tools(mcp)
@@ -399,6 +401,7 @@ __all__ = [
     "register_request_prompts",
     "register_project_tools",
     "register_library_tools",
+    "register_ipc_batch_tools",
     "register_generic_tools",
     "register_pcb_tools",
     "register_review_tools",

@@ -28,6 +28,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from ..units import MILS_PER_MM
+
 RULE_TYPES = {
     "clearance", "width", "via_size", "differential_pairs",
     "solder_mask_expansion", "paste_mask_expansion", "vias_under_smd",
@@ -178,8 +180,8 @@ def plan_board_rules(targets: list[dict], board: list[dict]) -> dict[str, Any]:
         gap = have.get("gap_mm")
         if (rule.get("rule_type", "clearance") == "clearance" and "value" in rule
                 and isinstance(gap, (int, float))
-                and abs(gap / 0.0254 - float(rule["value"])) > 0.01):
-            differs.append({"field": "value", "board": round(gap / 0.0254, 3),
+                and abs(gap * MILS_PER_MM - float(rule["value"])) > 0.01):
+            differs.append({"field": "value", "board": round(gap * MILS_PER_MM, 3),
                             "policy": rule["value"]})
         row = {"name": have.get("name", rule["name"]), "write": args, "differs": differs}
         if note:
