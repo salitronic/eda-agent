@@ -209,9 +209,27 @@ def test_a_side_exactly_between_two_is_refused_not_guessed():
         pad_relief.resolve(_turned(45), ["N"], frame="board")
 
 
+def test_points_never_use_exponent_notation():
+    # Seen live: a via a hair off 90 degrees gave fraction 3e-06, which
+    # Altium's script refused.
+    assert pad_relief.points([{"segment": 1, "fraction": 3e-06}]) == "1:0.000003"
+    assert "e" not in pad_relief.points([{"segment": 1, "fraction": 1e-9}])
+
+
+def test_a_spoke_as_wide_as_the_pad_is_refused():
+    # Seen live: 39 mil spokes on a 35 mil via poured as one blob.
+    pad = dict(_round(), size_x=30, size_y=30)
+    assert _at(pad, ["0"], width=29.9)
+    for w in (30, 39.37):
+        with pytest.raises(pad_relief.SpokeError, match="not narrower than the pad"):
+            pad_relief.resolve(pad, ["0"], width=w)
+    with pytest.raises(pad_relief.SpokeError, match="not narrower"):
+        pad_relief.resolve(dict(_rect(), size_x=20, size_y=30, width=20), ["N"])
+
+
 def test_points_are_segment_and_fraction_pairs():
     got = pad_relief.resolve(_rect(), ["N", "SW"])
-    assert pad_relief.points(got) == "3:0.5;1:0.0"
+    assert pad_relief.points(got) == "3:0.500000;1:0.000000"
 
 
 # --- the Pascal handler ----------------------------------------------------
@@ -239,7 +257,7 @@ def test_the_style_map_matches_altium_25():
     assert "Else If Style = 'none' Then StyleN := 2" in body
     rec = _units()["PadReliefRecord"]
     assert "If D.Rotation = 0 Then S := S + ',' + JsonInt('rotation', 45)" in rec
-    body_set = body[body.index("Pad.ThermalReliefData[Item] := D") - 600:]
+    body_set = body[body.index("Obj.ThermalReliefData[Item] := D") - 600:]
     assert "If RotS = '45' Then D.Rotation := 0;" in body_set
     assert "If RotS = '90' Then D.Rotation := 1;" in body_set
 
@@ -262,19 +280,64 @@ def test_a_thru_hole_pad_is_refused_before_any_write():
 
 def test_a_spoke_write_adds_before_it_clears_and_replaces_the_list():
     body = _units()["PCB_PadRelief"]
-    add = body.index("Pad.AddCustomRelief(L, 0, 0.5);")
-    clear = body.index("Pad.ClearCustomRelief(L);")
-    assert body.index("D.UseCustomRelief := True;") < body.index("Pad.ThermalReliefData[Item] := D;") < add < clear
-    assert clear < body.index("Pad.AddCustomRelief(L, Edge, Frac);")
+    add = body.index("Obj.AddCustomRelief(L, 0, Spare);")
+    clear = body.index("Obj.ClearCustomRelief(L);")
+    assert body.index("D.UseCustomRelief := True;") < body.index("Obj.ThermalReliefData[Item] := D;") < add < clear
+    assert clear < body.index("Obj.AddCustomRelief(L, Edge, Frac);")
 
 
 def test_the_custom_list_is_only_read_where_this_call_made_it():
     body = _units()["PCB_PadRelief"]
-    read = body.index("PadReliefSpokes(Board, Pad, L)")
+    read = body.index("PadReliefSpokes(Board, Obj, L)")
     guard = body.rfind("If IsSmd And (SegCount > 0) And D.UseCustomRelief", 0, read)
     assert guard > 0 and "((Action = 'spokes') Or ReadSpokes)" in body[guard:read]
-    probe = body.index("Pad.RemoveCustomRelief(L, 0, 0.5);")
-    assert body.index("Pad.AddCustomRelief(L, 0, 0.5);", body.index("Else If ReadSpokes")) < probe
+    probe = body.index("Obj.RemoveCustomRelief(L, 0, Spare);")
+    assert body.index("Obj.AddCustomRelief(L, 0, Spare);", body.index("Else If ReadSpokes")) < probe
+
+
+def test_a_spoke_not_narrower_than_the_pad_is_refused_before_any_write():
+    body = _units()["PCB_PadRelief"]
+    guard = body.index("If SpokeW >= PadMin Then")
+    assert guard < body.index("PcbBeginEdit(0);")
+    assert "If CoordToMilsF(Pad.TopYSize) < PadMin Then PadMin := CoordToMilsF(Pad.TopYSize);" in body
+    assert "If WidthS <> '' Then SpokeW := Width;" in body
+    # Only where spokes will be poured: the style the pad ends up with.
+    assert "If (Action <> 'read') And (Style <> 'rule') And (FinalStyle = 0) Then" in body
+    assert "If Action = 'spokes' Then FinalStyle := 0;" in body
+
+
+def test_a_via_is_a_free_via_named_by_x_and_y_with_a_layer_for_its_spokes():
+    body = _units()["PCB_PadRelief"]
+    assert "If IsVia And ((Des <> '') Or (PadName <> '') Or (XS = '') Or (YS = '')) Then" in body
+    assert "If (Not IsVia) And (LayerS <> '') Then" in body
+    assert "Via := PadReliefFindVia(Board, XS, YS, Count)" in body
+    assert "If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer" in body
+    assert "Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1" in body
+    find = _units()["PadReliefFindVia"]
+    assert "Iter.AddFilter_ObjectSet(MkSet(eViaObject));" in find
+    assert "Iter.AddFilter_Method(eProcessFree);" in find
+
+
+def test_a_via_says_which_layers_its_record_covers():
+    # Measured: on a top-middle-bottom via the empty key reaches the
+    # MIDDLE record only; a simple via has one record for every layer.
+    body = _units()["PCB_PadRelief"]
+    simple = body.index("If Via.Mode = 0 Then")
+    assert body.index("Scope := 'all layers';", simple) < body.index("Else If Via.Mode = 1 Then")
+    tmb = body.index("Else If Via.Mode = 1 Then")
+    assert "Scope := 'inner layers';" in body[tmb:tmb + 200]
+    assert "PadMin := CoordToMilsF(Via.Size)" in body
+
+
+def test_the_throwaway_spoke_avoids_every_wanted_spot():
+    # Live: a spoke wanted at segment 0 / 0.5 (where the throwaway sat) was
+    # dropped; a read's add + remove there would delete a real spoke.
+    body = _units()["PCB_PadRelief"]
+    assert "Spare := PadReliefSpare(Points);" in body
+    assert "Spare := PadReliefSpare('');" in body
+    spare = _units()["PadReliefSpare"]
+    assert "If (Edge = 0) And (Abs(Frac - Want) < 0.0001) Then Used := True;" in spare
+    assert "0.5;" not in spare
 
 
 def test_an_ambiguous_pad_is_refused():
@@ -324,6 +387,19 @@ def test_no_value_reads_and_any_value_writes(monkeypatch):
                           "width": "4.0", "gap": "4.0", "rotation": "45", "action": "set"}
 
 
+def test_a_via_and_its_layer_are_passed(monkeypatch):
+    _, sent = _tool(monkeypatch, "pcb_pad_relief", x=1840.5512, y=5354.3307, kind="via",
+                    layer="mid", width=10)
+    assert sent[0][1] == {"kind": "via", "layer": "mid", "x": "1840.5512", "y": "5354.3307",
+                          "width": "10.0", "action": "set"}
+    via = dict(_round(), size_x=35.4, size_y=35.4, side="via")
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=via, x=0, y=0, kind="via",
+                        layer="bottom", spokes=["-22.5", "22.5"], frame="board")
+    assert [s[1]["action"] for s in sent] == ["read", "spokes"]
+    assert all(s[1]["kind"] == "via" and s[1]["layer"] == "bottom" for s in sent)
+    assert sent[1][1]["points"] == "3:0.750000;0:0.250000"
+
+
 def test_a_free_pad_is_found_by_x_and_y(monkeypatch):
     _, sent = _tool(monkeypatch, "pcb_pad_relief", x=1929.1339, y=6456.6929)
     assert sent[0][1] == {"x": "1929.1339", "y": "6456.6929", "action": "read"}
@@ -333,7 +409,7 @@ def test_spokes_are_resolved_from_the_read_and_written_as_points(monkeypatch):
     reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_rect(),
                         designator="C1", pad="1", spokes="N, SW", gap=4)
     assert [s[1]["action"] for s in sent] == ["read", "spokes"]
-    assert sent[1][1]["points"] == "3:0.5;1:0.0"
+    assert sent[1][1]["points"] == "3:0.500000;1:0.000000"
     assert sent[1][1]["gap"] == "4.0"
     assert [p["segment"] for p in reply["planned"]] == [3, 1]
 

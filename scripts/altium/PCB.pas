@@ -30212,6 +30212,38 @@ Begin
     End;
 End;
 
+{ The free via at exact x / y (mils from the board origin). }
+Function PadReliefFindVia(Board : IPCB_Board; XS, YS : String; Var Count : Integer) : IPCB_Via;
+Var
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    X, Y : Double;
+Begin
+    Result := Nil;
+    Count := 0;
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessFree);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            If (Abs(CoordToMilsF(Via.X - Board.XOrigin) - X) < 0.001)
+                And (Abs(CoordToMilsF(Via.Y - Board.YOrigin) - Y) < 0.001) Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Via;
+            End;
+            Via := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 { The relief record as JSON members. }
 Function PadReliefRecord(D : Variant) : String;
 Var
@@ -30235,7 +30267,7 @@ Begin
 End;
 
 { The relief outline as a JSON array, mils from the board origin. }
-Function PadReliefOutline(Board : IPCB_Board; Pad : IPCB_Pad; L : TLayer;
+Function PadReliefOutline(Board : IPCB_Board; Pad : Variant; L : TLayer;
     Var SegCount : Integer) : String;
 Var
     Shp : Variant;
@@ -30268,7 +30300,7 @@ End;
 
 { The custom spoke points, mils from the board origin. Only call it once an  }
 { add has made sure the list exists.                                          }
-Function PadReliefSpokes(Board : IPCB_Board; Pad : IPCB_Pad; L : TLayer) : String;
+Function PadReliefSpokes(Board : IPCB_Board; Pad : Variant; L : TLayer) : String;
 Var
     CRI, Loc : Variant;
     K, N : Integer;
@@ -30320,6 +30352,36 @@ Begin
     Frac := StrToFloatDef(Trim(Copy(Tok, P + 1, Length(Tok))), -1);
 End;
 
+{ Where the throwaway spoke goes (segment 0): a fraction none of the wanted }
+{ points use. A spoke added at the spot of one just cleared is dropped, and  }
+{ a read's add + remove at a real spoke's spot would delete it, so the       }
+{ default is an odd fraction no one picks by hand.                           }
+Function PadReliefSpare(Points : String) : Double;
+Var
+    Rest : String;
+    Edge, K : Integer;
+    Frac, Want : Double;
+    Used : Boolean;
+Begin
+    Result := 0.123457;
+    For K := 0 To 3 Do
+    Begin
+        If K = 0 Then Want := 0.123457
+        Else If K = 1 Then Want := 0.876543
+        Else If K = 2 Then Want := 0.314159
+        Else Want := 0.687213;
+        Used := False;
+        Rest := Points;
+        While PadReliefTake(Rest, Edge, Frac) Do
+            If (Edge = 0) And (Abs(Frac - Want) < 0.0001) Then Used := True;
+        If Not Used Then
+        Begin
+            Result := Want;
+            Exit;
+        End;
+    End;
+End;
+
 { Params: designator + pad, or pad / x + y for a free pad; action = read     }
 { (default) | set | spokes.                                                    }
 {   read:   read_spokes = true also lists the custom spokes (it adds and      }
@@ -30329,19 +30391,25 @@ End;
 {           style rule drops the pad's own values and takes no other value.  }
 {   spokes: points = "segment:fraction;..." on the relief outline, replacing  }
 {           the custom list; width / gap optional.                            }
-{ Writes are SMD pads only: a thru-hole pad has one relief per plane layer,  }
-{ which this record does not name.                                            }
+{ kind = via: a free via by exact x + y; layer = top (default) | mid |      }
+{ bottom | a layer name picks the spoke list. A simple via has one record    }
+{ for every layer; on a top-middle-bottom via the record this key reaches   }
+{ is the MIDDLE one (every inner layer): top and bottom records need the    }
+{ key's layer field, which stops the script. Spokes are per layer on both.  }
+{ Writes are SMD pads and vias only: a thru-hole pad has one relief per     }
+{ plane layer, which this record does not name.                              }
 Function PCB_PadRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Pad : IPCB_Pad;
-    Item, D : Variant;
+    Via : IPCB_Via;
+    Obj, Item, D : Variant;
     Des, PadName, XS, YS, Action, Style, SpokesS, WidthS, GapS, RotS, CustomS : String;
-    Points, Rest, Body, Outline, Net, Side : String;
+    Points, Rest, Body, Outline, Net, Side, Kind, LayerS, ModeS, Scope : String;
     L : TLayer;
-    Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge : Integer;
-    Width, Gap, Frac : Double;
-    IsSmd, ReadSpokes : Boolean;
+    Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge, FinalStyle : Integer;
+    Width, Gap, Frac, PadMin, SpokeW, Spare : Double;
+    IsSmd, ReadSpokes, IsVia : Boolean;
 Begin
     Des := Trim(ExtractJsonValue(Params, 'designator'));
     PadName := Trim(ExtractJsonValue(Params, 'pad'));
@@ -30357,10 +30425,31 @@ Begin
     CustomS := LowerCase(Trim(ExtractJsonValue(Params, 'custom')));
     Points := Trim(ExtractJsonValue(Params, 'points'));
     ReadSpokes := LowerCase(ExtractJsonValue(Params, 'read_spokes')) = 'true';
+    Kind := LowerCase(Trim(ExtractJsonValue(Params, 'kind')));
+    If Kind = '' Then Kind := 'pad';
+    LayerS := Trim(ExtractJsonValue(Params, 'layer'));
+    IsVia := Kind = 'via';
 
     If (Action <> 'read') And (Action <> 'set') And (Action <> 'spokes') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is read, set or spokes');
+        Exit;
+    End;
+    If (Kind <> 'pad') And (Kind <> 'via') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'kind is pad or via');
+        Exit;
+    End;
+    If IsVia And ((Des <> '') Or (PadName <> '') Or (XS = '') Or (YS = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'a via is named by x + y only (a free via)');
+        Exit;
+    End;
+    If (Not IsVia) And (LayerS <> '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'layer is for vias; a pad''s relief is on its own layer');
         Exit;
     End;
     If (Des <> '') And (PadName = '') Then
@@ -30474,21 +30563,45 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    Pad := PadReliefFind(Board, Des, PadName, XS, YS, Count);
+    If IsVia Then
+        Via := PadReliefFindVia(Board, XS, YS, Count)
+    Else
+        Pad := PadReliefFind(Board, Des, PadName, XS, YS, Count);
     If Count = 0 Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no pad ' + Des + ' ' + PadName + ' ' + XS + ' ' + YS);
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no ' + Kind + ' ' + Des + ' ' + PadName + ' ' + XS + ' ' + YS);
         Exit;
     End;
     If Count > 1 Then
     Begin
         Result := BuildErrorResponse(RequestId, 'AMBIGUOUS',
-            IntToStr(Count) + ' pads match; name a free pad by x + y');
+            IntToStr(Count) + ' ' + Kind + 's match; name a free one by x + y');
         Exit;
     End;
 
-    L := Pad.Layer;
-    IsSmd := (L = eTopLayer) Or (L = eBottomLayer);
+    If IsVia Then
+    Begin
+        Obj := Via;
+        L := eTopLayer;
+        If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer
+        Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1
+        Else If (LayerS <> '') And (LowerCase(LayerS) <> 'top') Then
+            L := ResolveLayerId(Board, LayerS);
+        If Not (((L >= eTopLayer) And (L <= eBottomLayer))
+            Or ((L >= eInternalPlane1) And (L <= eInternalPlane16))) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+            Exit;
+        End;
+        IsSmd := True;
+    End
+    Else
+    Begin
+        Obj := Pad;
+        L := Pad.Layer;
+        IsSmd := (L = eTopLayer) Or (L = eBottomLayer);
+    End;
     If (Action <> 'read') And Not IsSmd Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
@@ -30497,7 +30610,35 @@ Begin
     End;
     SegCount := 0;
     Outline := '[]';
-    If IsSmd Then Outline := PadReliefOutline(Board, Pad, L, SegCount);
+    If IsSmd Then Outline := PadReliefOutline(Board, Obj, L, SegCount);
+    { A spoke as wide as the pad, or wider, has no edge to leave from: the  }
+    { pour then makes a blob of it. Checked wherever spokes will be poured: }
+    { the width given, else the record's own.                               }
+    If IsVia Then
+        PadMin := CoordToMilsF(Via.Size)
+    Else
+    Begin
+        PadMin := CoordToMilsF(Pad.TopXSize);
+        If CoordToMilsF(Pad.TopYSize) < PadMin Then PadMin := CoordToMilsF(Pad.TopYSize);
+    End;
+    Item := TPadViaThermalReliefItem;
+    D := Obj.ThermalReliefData[Item];
+    { The style the pad ends up with: spokes are poured only for relief. }
+    FinalStyle := D.ConnectStyle;
+    If StyleN >= 0 Then FinalStyle := StyleN;
+    If Action = 'spokes' Then FinalStyle := 0;
+    SpokeW := CoordToMilsF(D.ConductorWidth);
+    If WidthS <> '' Then SpokeW := Width;
+    If (Action <> 'read') And (Style <> 'rule') And (FinalStyle = 0) Then
+    Begin
+        If SpokeW >= PadMin Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a spoke ' + FloatToJsonStr(SpokeW) + ' mil wide is not narrower than the pad ('
+                + FloatToJsonStr(PadMin) + ' mil): give a smaller width');
+            Exit;
+        End;
+    End;
     If (Action = 'spokes') And (MaxEdge >= SegCount) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
@@ -30511,12 +30652,12 @@ Begin
     Begin
         PcbBeginEdit(0);
         Try
-            Pad.BeginModify;
+            Obj.BeginModify;
             If Style = 'rule' Then
-                Pad.SetAllThermalReliefsToRule
+                Obj.SetAllThermalReliefsToRule
             Else
             Begin
-                D := Pad.ThermalReliefData[Item];
+                D := Obj.ThermalReliefData[Item];
                 D.DefinedType := 1;
                 If StyleN >= 0 Then D.ConnectStyle := StyleN;
                 If Entries > 0 Then D.Entries := Entries;
@@ -30530,61 +30671,98 @@ Begin
                     D.ConnectStyle := 0;
                     D.UseCustomRelief := True;
                 End;
-                Pad.ThermalReliefData[Item] := D;
+                Obj.ThermalReliefData[Item] := D;
                 If Action = 'spokes' Then
                 Begin
-                    { The add makes sure the list exists before the clear. }
-                    Pad.AddCustomRelief(L, 0, 0.5);
-                    Pad.ClearCustomRelief(L);
+                    { The add makes sure the list exists before the clear; }
+                    { at a spot no wanted spoke uses.                        }
+                    Spare := PadReliefSpare(Points);
+                    Obj.AddCustomRelief(L, 0, Spare);
+                    Obj.ClearCustomRelief(L);
                     Rest := Points;
                     While PadReliefTake(Rest, Edge, Frac) Do
-                        Pad.AddCustomRelief(L, Edge, Frac);
+                        Obj.AddCustomRelief(L, Edge, Frac);
                 End;
             End;
-            Pad.EndModify;
-            Pad.GraphicallyInvalidate;
+            Obj.EndModify;
+            Obj.GraphicallyInvalidate;
         Finally
             PcbEndEdit(0);
         End;
     End
     Else If ReadSpokes And IsSmd And (SegCount > 0) Then
     Begin
-        D := Pad.ThermalReliefData[Item];
+        D := Obj.ThermalReliefData[Item];
         If D.UseCustomRelief Then
         Begin
             PcbBeginEdit(0);
             Try
-                Pad.BeginModify;
-                Pad.AddCustomRelief(L, 0, 0.5);
-                Pad.RemoveCustomRelief(L, 0, 0.5);
-                Pad.EndModify;
+                Obj.BeginModify;
+                Spare := PadReliefSpare('');
+                Obj.AddCustomRelief(L, 0, Spare);
+                Obj.RemoveCustomRelief(L, 0, Spare);
+                Obj.EndModify;
             Finally
                 PcbEndEdit(0);
             End;
         End;
     End;
 
-    D := Pad.ThermalReliefData[Item];
+    D := Obj.ThermalReliefData[Item];
     Net := '';
-    Try If Pad.Net <> Nil Then Net := Pad.Net.Name; Except End;
-    If L = eTopLayer Then Side := 'top'
-    Else If L = eBottomLayer Then Side := 'bottom'
-    Else Side := 'thru';
-    Body := JsonStr('designator', Des) + ',' + JsonStr('pad', Pad.Name) + ','
-        + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Pad.X - Board.XOrigin))) + ','
-        + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Pad.Y - Board.YOrigin))) + ','
-        + JsonStr('layer', LayerDisplayName(L)) + ','
-        + JsonStr('side', Side) + ','
-        + JsonRaw('pad_rotation', FloatToJsonStr(Pad.Rotation)) + ','
-        + JsonStr('shape', LmShapeName(Pad.TopShape)) + ','
-        + JsonStr('net', Net) + ','
+    Try If Obj.Net <> Nil Then Net := Obj.Net.Name; Except End;
+    If IsVia Then
+    Begin
+        { Via mode 0 simple, 1 top-middle-bottom, 2 full stack. }
+        ModeS := 'full stack';
+        Scope := 'unknown';
+        If Via.Mode = 0 Then
+        Begin
+            ModeS := 'simple';
+            Scope := 'all layers';
+        End
+        Else If Via.Mode = 1 Then
+        Begin
+            ModeS := 'top-middle-bottom';
+            Scope := 'inner layers';
+        End;
+        Body := JsonStr('kind', 'via') + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Via.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Via.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', 'via') + ','
+            + JsonStr('mode', ModeS) + ','
+            + JsonStr('record_scope', Scope) + ','
+            + JsonRaw('pad_rotation', '0') + ','
+            + JsonStr('shape', 'round') + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Via.HoleSize))) + ',';
+    End
+    Else
+    Begin
+        If L = eTopLayer Then Side := 'top'
+        Else If L = eBottomLayer Then Side := 'bottom'
+        Else Side := 'thru';
+        Body := JsonStr('kind', 'pad') + ',' + JsonStr('designator', Des) + ','
+            + JsonStr('pad', Pad.Name) + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Pad.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Pad.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', Side) + ','
+            + JsonRaw('pad_rotation', FloatToJsonStr(Pad.Rotation)) + ','
+            + JsonStr('shape', LmShapeName(Pad.TopShape)) + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Pad.TopXSize))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Pad.TopYSize))) + ',';
+    End;
+    Body := Body + JsonStr('net', Net) + ','
         + PadReliefRecord(D) + ','
-        + JsonInt('manual_reliefs', Pad.ManualThermalReliefsCount) + ','
+        + JsonInt('manual_reliefs', Obj.ManualThermalReliefsCount) + ','
         + JsonRaw('outline', Outline);
     { The custom list is read only where this call made sure it exists. }
     If IsSmd And (SegCount > 0) And D.UseCustomRelief
         And ((Action = 'spokes') Or ReadSpokes) Then
-        Body := Body + ',' + JsonRaw('custom_spokes', PadReliefSpokes(Board, Pad, L));
+        Body := Body + ',' + JsonRaw('custom_spokes', PadReliefSpokes(Board, Obj, L));
     Result := BuildSuccessResponse(RequestId, '{' + Body + '}');
 End;
 

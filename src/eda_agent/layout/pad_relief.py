@@ -228,6 +228,11 @@ def resolve(pad: dict[str, Any], spokes: list[str], frame: str = "pad",
     cx, cy = float(pad["x"]), float(pad["y"])
     rot = float(pad.get("pad_rotation") or 0.0) if frame == "pad" else 0.0
     w = float(width if width is not None else pad.get("width") or 0.0)
+    sizes = [float(pad[k]) for k in ("size_x", "size_y") if pad.get(k) is not None]
+    if sizes and w >= min(sizes):
+        # A spoke as wide as the pad has no edge to leave from: a blob.
+        raise SpokeError(f"a spoke {w:g} mil wide is not narrower than the pad "
+                         f"({min(sizes):g} mil): give a smaller width")
     out = []
     for token in spokes:
         name, offset = parse(token)
@@ -245,4 +250,5 @@ def resolve(pad: dict[str, Any], spokes: list[str], frame: str = "pad",
 
 def points(resolved: list[dict[str, Any]]) -> str:
     """The ``points`` parameter of ``pcb.pad_relief`` action spokes."""
-    return ";".join(f"{r['segment']}:{r['fraction']!r}" for r in resolved)
+    # Plain decimals: Altium's script reads no exponent ("3e-06" is refused).
+    return ";".join(f"{r['segment']}:{r['fraction']:.6f}" for r in resolved)
