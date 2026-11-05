@@ -11,6 +11,7 @@ so a restart shows as a new id, and "slow" takes a second to answer.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -212,6 +213,7 @@ def test_a_script_version_bump_is_watched_too(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: tmp_path)
     before = devproxy.script_version_stamp()
     assert list(before) == [str(main)]
-    time.sleep(0.05)
     main.write_text("SCRIPT_VERSION = '2';\n")
+    later = main.stat().st_mtime_ns + 1_000_000_000
+    os.utime(main, ns=(later, later))
     assert devproxy.script_version_stamp() != before
