@@ -27,6 +27,34 @@ STEPS = [Press("Execute Changes", until_greyed=True), Read(show="Only Show Error
 #: change, Altium says so and only OK closes it.
 ON_THE_WAY = {"Comparator Results": "Yes", "No Differences": "OK"}
 
+#: Tools > Update From Libraries / Update From PCB Libraries, as the menu
+#: runs them: a process the bridge can run, so neither the menu nor the
+#: focus is touched.
+LIBRARY_UPDATE = {"schematic": "LibrarySynch", "pcb": "PCBLibrarySynch"}
+LIBRARY_PROCESS = "WorkspaceManager:DocumentOptions"
+
+
+def library_update_params(target: str) -> dict[str, str]:
+    """generic.run_process's request for one of the two library updates."""
+    return {"process": LIBRARY_PROCESS,
+            "params": "ObjectKind=Project|Action=" + LIBRARY_UPDATE[target]}
+
+
+def library_on_the_way():
+    """The dialogs the library updates raise before and while the change
+    order runs, measured on AD 26.11: the schematic wizard (Finish takes
+    its options as set), the board's layer options (Update All Footprints
+    goes straight to the change order), the count of footprints no
+    library has (Yes updates the rest; the sentence is kept), and the
+    attributes to update when the change order executes (OK keeps
+    Altium's choice)."""
+    from .dialog_answer import Pass
+    return {"Update From Library": "Finish",
+            "Update From PCB Libraries - Options": "Update All Footprints (Create ECO)",
+            "Confirm": Pass("Yes", says="not found in librar"),
+            "Component(s) Update Options": "OK",
+            **ON_THE_WAY}
+
 #: Rows of the dialog that are not change lines: its title (OCR can split
 #: it, leaving "Order x"), the column headings, a group heading such as
 #: "Add Components(5)" and the buttons.

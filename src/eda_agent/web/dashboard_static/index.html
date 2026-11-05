@@ -1230,6 +1230,29 @@ main > section.full-bleed {
   to   { background:transparent; }
 }
 .live-status-line { font-feature-settings:"tnum"; }
+.board-actions { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:var(--s-1) var(--s-3);
+  align-items:center; padding:var(--s-1) var(--s-3); border-bottom:1px solid var(--border);
+  background:var(--bg-elev); font-size:var(--fs-xs); }
+.board-actions .ba-group { display:flex; gap:3px; align-items:center; }
+.board-actions .ba-label { color:var(--text-dim); margin-right:2px; }
+.board-actions button { font-size:var(--fs-xs); padding:2px 7px; }
+.board-actions button:disabled { opacity:0.35; cursor:default; }
+.board-actions .ba-status { margin-left:auto; color:var(--text-mute); }
+.board-actions .ba-status.bad { color:var(--err); }
+.live-checks-filter { display:flex; flex-wrap:wrap; gap:4px; padding:var(--s-1) var(--s-3);
+  border-bottom:1px solid var(--border); font-size:var(--fs-xs); }
+.live-checks-filter button { font-size:var(--fs-xs); padding:1px 8px; border-radius:10px;
+  opacity:0.55; }
+.live-checks-filter button.on { opacity:1; }
+.live-check-item { padding:var(--s-1) var(--s-3) var(--s-1) calc(var(--s-3) - 3px);
+  border-bottom:1px solid var(--row-border); border-left:3px solid transparent;
+  font-size:var(--fs-sm); cursor:pointer; }
+.live-check-item:hover { background:var(--bg-hover, rgba(127,127,127,0.10)); }
+.live-check-item.error { border-left-color:var(--err); }
+.live-check-item.warning { border-left-color:var(--warn); }
+.live-check-item.info { border-left-color:var(--accent); }
+.live-check-item.focus { background:rgba(122,162,247,0.18); }
+.live-check-item .meta { color:var(--text-dim); font-size:var(--fs-xs); }
 @media (max-width: 760px) {
   .live-body { flex-direction:column; }
   .live-log { flex:0 0 38%; border-left:none; border-top:1px solid var(--border); }
@@ -1266,7 +1289,8 @@ main > section.full-bleed {
 </header>
 
 <nav class="tabs" id="tabs">
-  <button data-tab="drawing" class="active">Drawing</button>
+  <button data-tab="board" class="active" title="The board in front in Altium, kept current as you work, with its layout checks">Board</button>
+  <button data-tab="drawing">Drawing</button>
   <button data-tab="layout" title="The board as the layout engines change it, with every decision logged before it is acted on">Layout</button>
   <button data-tab="project">Project</button>
   <button data-tab="components">Components<span class="tab-count" data-count-for="components"></span></button>
@@ -1402,10 +1426,43 @@ main > section.full-bleed {
       <span class="live-status-line" id="live-status"></span>
       <span class="hint" id="live-progress" style="color:var(--text-dim);"></span>
       <div class="toolbar-right row-actions">
+        <label class="hint" hidden title="Draw the board in front in Altium, kept current as it changes, with its layout checks">
+          <input type="checkbox" id="live-altium"> follow Altium</label>
+        <button id="live-pin" hidden title="Read only this board, even while another document is in front">pin</button>
+        <button id="live-refresh" hidden title="Read the whole board again now">refresh</button>
         <label class="hint" title="Lines for the connections copper does not make yet">
           <input type="checkbox" id="live-rats" checked> ratsnest</label>
         <button id="live-fit" title="Fit the board to the view (or focus the board and press 0)">fit</button>
       </div>
+    </div>
+    <div class="board-actions" id="board-actions" hidden>
+      <span class="ba-group" title="Parts selected in Altium">
+        <span class="ba-label">Parts</span>
+        <button data-action="align" data-args='{"mode":"left"}' data-need="2" title="Line the selected parts up on the leftmost">align left</button>
+        <button data-action="align" data-args='{"mode":"right"}' data-need="2" title="Line the selected parts up on the rightmost">right</button>
+        <button data-action="align" data-args='{"mode":"top"}' data-need="2" title="Line the selected parts up on the topmost">top</button>
+        <button data-action="align" data-args='{"mode":"bottom"}' data-need="2" title="Line the selected parts up on the bottommost">bottom</button>
+        <button data-action="align" data-args='{"mode":"center_y"}' data-need="2" title="Put the selected parts' centres on one horizontal line">centre row</button>
+        <button data-action="align" data-args='{"mode":"center_x"}' data-need="2" title="Put the selected parts' centres on one vertical line">centre column</button>
+        <button data-action="distribute" data-args='{"axis":"x"}' data-need="3" title="Space the selected parts evenly left to right, between the outer two">spread across</button>
+        <button data-action="distribute" data-args='{"axis":"y"}' data-need="3" title="Space the selected parts evenly bottom to top, between the outer two">spread up</button>
+        <button data-action="rotate" data-args='{"degrees":90}' data-need="1" title="Turn each selected part 90 degrees">rotate 90</button>
+        <button data-action="flip" data-need="1" title="Move each selected part to the other side">flip side</button>
+        <button data-action="snap" data-args='{"grid":25}' data-need="1" title="Put each selected part on the 25 mil grid">snap 25</button>
+      </span>
+      <span class="ba-group" title="Nets of the tracks, pads or vias selected in Altium">
+        <span class="ba-label">Nets</span>
+        <button data-action="route" data-need="net" title="Route the selected nets with eda-agent's router (shown in Altium as it goes)">route</button>
+        <button data-action="unroute" data-need="net" title="Remove the copper of the selected nets">unroute</button>
+        <button data-action="tidy" data-need="net" title="Clean up the selected nets' tracks: stubs, overlaps, needless bends">tidy</button>
+      </span>
+      <span class="ba-group" title="The whole board">
+        <span class="ba-label">Board</span>
+        <button data-action="teardrops" title="Add teardrops">teardrops</button>
+        <button data-action="repour" title="Repour every polygon">repour</button>
+        <button data-action="drc" title="Run Altium's design rule check">DRC</button>
+      </span>
+      <span class="ba-status" id="board-action-status"></span>
     </div>
     <div class="live-body">
       <div class="live-stage" id="live-stage">
@@ -1417,10 +1474,12 @@ main > section.full-bleed {
         <div id="live-legend" class="live-legend" hidden></div>
       </div>
       <aside class="live-log">
-        <div class="live-log-head">Decisions <span class="count" id="live-log-count"></span></div>
+        <div class="live-log-head"><span id="live-log-title">Decisions</span> <span class="count" id="live-log-count"></span></div>
+        <div class="live-checks-filter" id="live-checks-filter" hidden></div>
         <div class="live-log-list" id="live-log-list">
           <div class="empty">No decisions logged yet.</div>
         </div>
+        <div class="live-log-list" id="live-checks-list" hidden></div>
       </aside>
     </div>
   </section>
@@ -2210,8 +2269,11 @@ function showTab(name) {
   $$("nav.tabs button").forEach(function(b){
     if (b.dataset.tab) b.classList.toggle("active", b.dataset.tab === name);
   });
+  // Board and Layout share one pane: the board in front in Altium, or
+  // what the layout engines publish.
+  const pane = name === "board" ? "layout" : name;
   $$("main > section").forEach(function(s){
-    s.hidden = s.dataset.pane !== name;
+    s.hidden = s.dataset.pane !== pane;
   });
   // Show skeleton loaders in every empty body until the real data
   // arrives. Done only on FIRST visit to a tab (data not yet cached) so
@@ -2288,7 +2350,7 @@ function showSub(name) {
 async function loadTab(name) {
   let p;
   if (name === "drawing")    p = loadDrawing();
-  else if (name === "layout")     p = loadLayout();
+  else if (name === "layout" || name === "board") p = loadLayout();
   else if (name === "project")    p = loadProject();
   else if (name === "components") p = loadComponents();
   else if (name === "nets")       p = loadNets();
@@ -2354,7 +2416,7 @@ async function refreshActive() {
       try { await fetch("/api/refresh/pcb", {method:"POST"}); } catch (e) {}
       return await renderDrawing();
     }
-    if (state.activeTab === "layout") {
+    if (liveTabOpen()) {
       liveState.version = null;     // ask for the whole board again
       return await pollLive();
     }
@@ -8843,6 +8905,15 @@ const liveState = {
   wired: false,
   animTimer: null,
   frame: 0,
+  // "altium": the board in front in Altium, from the cockpit; "engine":
+  // what the layout engines publish.
+  source: (function(){ try { return localStorage.getItem("liveSource") || "engine"; }
+                       catch (e) { return "engine"; } })(),
+  cockpit: {
+    state: null, checksVersion: -1, findings: [], focus: null,
+    show: {error: true, warning: true, info: false},
+    selParts: new Set(), selNets: new Set(),
+  },
 };
 
 function liveTheme() {
@@ -8997,7 +9068,7 @@ function liveStrokeItem(ctx, list, it, color, extra, px) {
 
 function liveDraw() {
   const cv = $("#live-canvas"), stage = $("#live-stage");
-  if (!cv || !stage || state.activeTab !== "layout") return;
+  if (!cv || !stage || !liveTabOpen()) return;
   const dpr = window.devicePixelRatio || 1;
   const W = stage.clientWidth, H = stage.clientHeight;
   const cw = Math.max(1, Math.round(W * dpr)), ch = Math.max(1, Math.round(H * dpr));
@@ -9155,6 +9226,7 @@ function liveDraw() {
   if (liveState.hover) {
     liveStrokeItem(ctx, liveState.hover.list, liveState.hover.item, th.accent, 2.5 * px, px);
   }
+  if (liveState.source === "altium") cockpitOverlay(ctx, snap, th, px);
   // Labels in screen space: block names always, part designators when
   // the part is big enough on screen to carry one.
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -9194,7 +9266,7 @@ function liveTick() {
   liveState.ghosts = liveState.ghosts.filter(function(g){ return now - g.t <= LIVE_FADE_MS; });
   liveDraw();
   clearTimeout(liveState.animTimer);
-  if ((liveState.glow.size || liveState.ghosts.length) && state.activeTab === "layout") {
+  if ((liveState.glow.size || liveState.ghosts.length) && liveTabOpen()) {
     liveState.animTimer = setTimeout(liveTick, 250);
   }
 }
@@ -9494,9 +9566,12 @@ function liveApplyDecisions(d) {
 }
 
 async function pollLive() {
-  if (state.activeTab !== "layout" || liveState.busy) return;
+  if (!liveTabOpen() || liveState.busy) return;
   liveState.busy = true;
   try {
+    // Nobody is looking at a hidden page: no calls into Altium for it.
+    // The cockpit's worker stops 20 s after the last one.
+    if (liveState.source === "altium") { if (!document.hidden) await cockpitPoll(); return; }
     const q = liveState.version == null ? "" : "?since=" + liveState.version;
     const r = await fetchJSON("/api/live" + q);
     if (r && r.ok) liveApply(r);
@@ -9507,8 +9582,301 @@ async function pollLive() {
   }
 }
 
+/* ---------------- Cockpit: the board in front in Altium ---------------- */
+
+const COCKPIT_SEV = {error: "#err", warning: "#warn", info: "#accent"};
+
+function cockpitVisible() {
+  const ck = liveState.cockpit;
+  return ck.findings.filter(function(f){ return ck.show[f.severity]; });
+}
+
+// Where a finding is: its own point, else the middle of the parts it names.
+function cockpitWhere(f) {
+  if (f.at) return f.at;
+  const snap = liveState.snap;
+  if (!snap) return null;
+  const refs = new Set(f.refs || []);
+  const hits = (snap.components || []).filter(function(c){ return refs.has(c.ref); });
+  if (!hits.length) return null;
+  const x = hits.reduce(function(a, c){ return a + (c.bbox[0] + c.bbox[2]) / 2; }, 0) / hits.length;
+  const y = hits.reduce(function(a, c){ return a + (c.bbox[1] + c.bbox[3]) / 2; }, 0) / hits.length;
+  return [x, y];
+}
+
+function cockpitOverlay(ctx, snap, th, px) {
+  const ck = liveState.cockpit;
+  if (ck.selParts.size) {
+    (snap.components || []).forEach(function(c){
+      if (ck.selParts.has(c.ref)) liveStrokeItem(ctx, "components", c, th.accent, 3 * px, px);
+    });
+  }
+  if (ck.selNets.size) {
+    ["tracks", "arcs", "pads", "vias"].forEach(function(list){
+      (snap[list] || []).forEach(function(it){
+        if (it.net && ck.selNets.has(it.net)) liveStrokeItem(ctx, list, it, th.accent, 2 * px, px);
+      });
+    });
+  }
+  const warn = getComputedStyle(document.documentElement).getPropertyValue("--warn").trim() || "#e0af68";
+  cockpitVisible().forEach(function(f){
+    const at = cockpitWhere(f);
+    if (!at) return;
+    const focus = f === ck.focus;
+    ctx.beginPath();
+    ctx.arc(at[0], at[1], (focus ? 12 : 6) * px, 0, 2 * Math.PI);
+    ctx.lineWidth = (focus ? 3 : 1.5) * px;
+    ctx.strokeStyle = f.severity === "error" ? th.err : (f.severity === "warning" ? warn : th.accent);
+    ctx.stroke();
+  });
+}
+
+async function cockpitPost(url, body) {
+  return fetchJSON(url, {method: "POST", headers: {"Content-Type": "application/json"},
+                         body: JSON.stringify(body || {})});
+}
+
+// Show a finding: centre it here, and in Altium zoom to it (a part is
+// cross-probed, a net highlighted).
+function cockpitShow(f) {
+  const ck = liveState.cockpit, v = liveState.view, stage = $("#live-stage");
+  ck.focus = f;
+  const at = cockpitWhere(f);
+  if (at && v && stage) {
+    // Close enough to see it: about 800 mil across the view.
+    v.s = Math.max(v.s, Math.min(stage.clientWidth, stage.clientHeight) / 800);
+    v.ox = stage.clientWidth / 2 - at[0] * v.s;
+    v.oy = stage.clientHeight / 2 + at[1] * v.s;
+  }
+  liveRequestDraw();
+  cockpitPaintChecks();
+  if (at) cockpitPost("/api/cockpit/goto", {x: at[0], y: at[1], span: 400});
+  else if ((f.refs || []).length) cockpitPost("/api/cockpit/goto", {part: f.refs[0]});
+}
+
+function cockpitPaintChecks() {
+  const ck = liveState.cockpit, list = $("#live-checks-list"), bar = $("#live-checks-filter");
+  if (!list || !bar) return;
+  const counts = {error: 0, warning: 0, info: 0};
+  ck.findings.forEach(function(f){ counts[f.severity] = (counts[f.severity] || 0) + 1; });
+  bar.innerHTML = "";
+  ["error", "warning", "info"].forEach(function(sev){
+    const b = el("button", {class: ck.show[sev] ? "on" : "",
+                            title: "Show or hide findings of this severity"},
+                 counts[sev] + " " + sev + (counts[sev] === 1 ? "" : "s"));
+    b.addEventListener("click", function(){ ck.show[sev] = !ck.show[sev];
+                                            cockpitPaintChecks(); liveRequestDraw(); });
+    bar.appendChild(b);
+  });
+  const pend = ck.state && ck.state.checks_pending && ck.state.checks_pending.length;
+  if (pend) bar.appendChild(el("span", {class: "hint"}, "checking..."));
+  const count = $("#live-log-count");
+  if (count) count.textContent = String(counts.error + counts.warning);
+  list.innerHTML = "";
+  const shown = cockpitVisible();
+  if (!shown.length) {
+    list.appendChild(el("div", {class: "empty"},
+      ck.findings.length ? "Nothing at the severities shown." : "No findings."));
+    return;
+  }
+  const order = {error: 0, warning: 1, info: 2};
+  shown.slice().sort(function(a, b){ return order[a.severity] - order[b.severity]; })
+    .slice(0, 500).forEach(function(f){
+      const row = el("div", {class: "live-check-item " + f.severity + (f === ck.focus ? " focus" : "")},
+        el("div", {class: "meta"}, f.check + " · " + String(f.kind).replace(/_/g, " ")),
+        el("div", {class: "text"}, f.text));
+      row.addEventListener("click", function(){ cockpitShow(f); });
+      list.appendChild(row);
+    });
+}
+
+function cockpitPaintStatus(s) {
+  const boardEl = $("#live-board"), pr = $("#live-progress"), pin = $("#live-pin");
+  if (!boardEl) return;
+  if (!s || !s.ok) {
+    // A server from before the cockpit answers 404: it holds the port
+    // until the session that started it restarts.
+    const old = s && /404/.test(String(s.reason || ""));
+    if (pr) pr.textContent = old
+      ? "The dashboard server on this port is older than this page and has no live board. It is replaced when the eda-agent session that started it restarts."
+      : "the dashboard could not reach the cockpit";
+    return;
+  }
+  const name = function(f){ return String(f || "").split(/[\\/]/).pop(); };
+  if (!s.board && !liveState.snap) boardEl.textContent = "no board in front in Altium";
+  if (liveState.snap) boardEl.textContent = name(s.shown || s.file) + (s.pinned ? " (pinned)" : "");
+  const sel = s.selected || {};
+  const bits = [s.error || s.activity];
+  if ((sel.parts || []).length) bits.push("selected: " + sel.parts.slice(0, 8).join(", ")
+                                          + (sel.parts.length > 8 ? "..." : ""));
+  if ((sel.nets || []).length) bits.push("nets: " + sel.nets.slice(0, 4).join(", "));
+  if (s.read_seconds) bits.push("read " + s.read_seconds + " s");
+  if (!s.copper_walked) bits.push("copper changes by count; refresh after moving copper");
+  if (pr) pr.textContent = bits.filter(Boolean).join(" · ");
+  if (pin) {
+    pin.textContent = s.pinned ? "unpin" : "pin";
+    pin.title = s.pinned ? "Follow the board in front again"
+                         : "Read only this board, even while another document is in front";
+  }
+}
+
+async function cockpitPoll() {
+  const ck = liveState.cockpit;
+  const s = await fetchJSON("/api/cockpit/state");
+  ck.state = s && s.ok ? s : null;
+  if (ck.state) {
+    const sel = s.selected || {};
+    ck.selParts = new Set(sel.parts || []);
+    ck.selNets = new Set(sel.nets || []);
+    if (s.view_version !== liveState.version) {
+      const q = liveState.version == null ? "" : "?since=" + liveState.version;
+      const r = await fetchJSON("/api/cockpit/view" + q);
+      if (r && r.ok) liveApply(r);
+    }
+    if (s.checks_version !== ck.checksVersion) {
+      const c = await fetchJSON("/api/cockpit/checks");
+      if (c && c.ok) {
+        ck.findings = c.findings || [];
+        ck.checksVersion = c.version;
+        if (ck.focus && ck.findings.indexOf(ck.focus) < 0) ck.focus = null;
+      }
+    }
+    cockpitPaintChecks();
+  }
+  cockpitPaintStatus(s);
+  boardActionsPaint();
+  liveRequestDraw();
+}
+
+/* ---------------- Board actions: tools on the selection ---------------- */
+
+function boardActionsPaint() {
+  const bar = $("#board-actions");
+  if (!bar || bar.hidden) return;
+  const ck = liveState.cockpit, sel = (ck.state && ck.state.selected) || {};
+  const parts = (sel.parts || []).length, nets = (sel.nets || []).length;
+  const running = !!liveState.actionRunning;
+  bar.querySelectorAll("button[data-action]").forEach(function(b){
+    const need = b.dataset.need || "";
+    let ok = true;
+    if (need === "net") ok = nets > 0;
+    else if (need) ok = parts >= Number(need);
+    b.disabled = running || !ok || !(ck.state && ck.state.board);
+  });
+}
+
+async function boardActionRun(button) {
+  const status = $("#board-action-status");
+  let args = {};
+  try { args = JSON.parse(button.dataset.args || "{}"); } catch (e) {}
+  liveState.actionRunning = true;
+  boardActionsPaint();
+  status.classList.remove("bad");
+  status.textContent = button.textContent + "...";
+  const r = await cockpitPost("/api/board/action", {action: button.dataset.action, args: args});
+  if (!r || !r.ok) {
+    status.classList.add("bad");
+    status.textContent = (r && r.reason) || "the action did not start";
+    liveState.actionRunning = false;
+    boardActionsPaint();
+    return;
+  }
+  for (let i = 0; i < 1200; i++) {
+    await new Promise(function(res){ setTimeout(res, 500); });
+    const st = await fetchJSON("/api/board/action/status");
+    if (!st || !st.ok || st.state === "running") continue;
+    const bad = (st.problems || []).length;
+    status.classList.toggle("bad", !!bad);
+    status.textContent = button.textContent + (bad ? ": " + st.problems.join("; ")
+      : " done in " + st.seconds + " s; Ctrl+Z in Altium undoes it");
+    break;
+  }
+  liveState.actionRunning = false;
+  boardActionsPaint();
+}
+
+function boardActionsWire() {
+  const bar = $("#board-actions");
+  if (!bar || bar.dataset.wired) return;
+  bar.dataset.wired = "1";
+  bar.querySelectorAll("button[data-action]").forEach(function(b){
+    b.addEventListener("click", function(){ if (!b.disabled) boardActionRun(b); });
+  });
+}
+
+// Switch between the board in front in Altium and the engines' publishes.
+function cockpitSetSource(src) {
+  liveState.source = src;
+  try { localStorage.setItem("liveSource", src); } catch (e) {}
+  const altium = src === "altium";
+  liveState.version = null; liveState.snap = null; liveState.head = null;
+  liveState.view = null; liveState.glow.clear(); liveState.ghosts = [];
+  liveState.cockpit.checksVersion = -1; liveState.cockpit.findings = [];
+  liveState.cockpit.focus = null;
+  const box = $("#live-altium");
+  if (box) box.checked = altium;
+  ["#live-pin", "#live-refresh", "#live-checks-filter", "#live-checks-list",
+   "#board-actions"].forEach(function(id){
+    const n = $(id); if (n) n.hidden = !altium;
+  });
+  const logList = $("#live-log-list"); if (logList) logList.hidden = altium;
+  const title = $("#live-log-title"); if (title) title.textContent = altium ? "Checks" : "Decisions";
+  const empty = $("#live-empty");
+  if (empty) empty.textContent = altium
+    ? "Waiting for a board: bring a PcbDoc to the front in Altium. A large board takes a few seconds to read."
+    : "No layout has been published yet. The board appears here when a placement or routing job starts, or when design_live_snapshot publishes one.";
+  livePaintStatus();
+  liveDraw();
+  pollLive();
+}
+
+function cockpitWire() {
+  if (liveState.cockpitWired) return;
+  liveState.cockpitWired = true;
+  const box = $("#live-altium");
+  if (box) box.addEventListener("change", function(){
+    cockpitSetSource(box.checked ? "altium" : "engine"); });
+  const pin = $("#live-pin");
+  if (pin) pin.addEventListener("click", async function(){
+    const s = liveState.cockpit.state || {};
+    await cockpitPost("/api/cockpit/pin", {file: s.pinned ? "" : (s.shown || s.file || "")});
+    pollLive();
+  });
+  const refresh = $("#live-refresh");
+  if (refresh) refresh.addEventListener("click", function(){
+    cockpitPost("/api/cockpit/refresh", {}); });
+  // A click on the board (not a drag) shows that part or net in Altium.
+  const cv = $("#live-canvas");
+  let down = null;
+  if (cv) {
+    cv.addEventListener("mousedown", function(ev){ down = {x: ev.clientX, y: ev.clientY}; });
+    cv.addEventListener("mouseup", function(ev){
+      if (!down || liveState.source !== "altium" || !liveState.view) return;
+      const moved = Math.hypot(ev.clientX - down.x, ev.clientY - down.y);
+      down = null;
+      if (moved > 4) return;
+      const w = liveWorld(ev), hit = liveHit(w.x, w.y);
+      if (!hit) return;
+      const it = hit.item;
+      if (hit.list === "components") cockpitPost("/api/cockpit/goto", {part: it.ref});
+      else if (hit.list === "pads" && it.comp) cockpitPost("/api/cockpit/goto", {part: it.comp, net: it.net || ""});
+      else if (it.net) cockpitPost("/api/cockpit/goto", {net: it.net});
+    });
+  }
+  cockpitSetSource(liveState.source);
+}
+
+// The Board tab and the Layout tab draw on the same canvas.
+function liveTabOpen() {
+  return state.activeTab === "layout" || state.activeTab === "board";
+}
+
 function loadLayout() {
   liveWire();
+  cockpitWire();
+  boardActionsWire();
+  const want = state.activeTab === "board" ? "altium" : "engine";
+  if (liveState.source !== want) cockpitSetSource(want);
   liveTick();       // draws, and restarts the fading if a change still glows
   return pollLive();
 }
@@ -10270,6 +10638,8 @@ window.addEventListener("DOMContentLoaded", function dlPlaceholder(){
     showTab(hashTab);
   } else if (persisted && persisted.tab && persisted.tab !== "drawing") {
     showTab(persisted.tab);
+  } else if (!persisted || !persisted.tab) {
+    showTab("board");
   }
   setInterval(pollLive, 1000);
   loadDrawing();

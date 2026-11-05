@@ -436,10 +436,13 @@ class ActivityTailer:
         # session context immediately on first paint.
         try:
             if self.log_path.exists():
-                with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        self._ingest(line.rstrip("\n"))
-                    offset = f.tell()
+                with open(self.log_path, "rb") as f:
+                    while True:
+                        raw = f.readline()
+                        if not raw.endswith(b"\n"):
+                            break
+                        offset = f.tell()
+                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
         except OSError as e:
             logger.debug("dashboard tailer initial read failed: %s", e)
 
@@ -455,14 +458,19 @@ class ActivityTailer:
                 if size == offset:
                     time.sleep(0.3)
                     continue
-                with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
+                # Bytes, and readline rather than iteration: a text file
+                # refuses tell() inside a for loop, and the error left the
+                # offset where it was, so one line was read again and again.
+                with open(self.log_path, "rb") as f:
                     f.seek(offset)
-                    for line in f:
-                        if not line.endswith("\n"):
-                            # Partial line, keep position before it and retry.
+                    while True:
+                        raw = f.readline()
+                        if not raw.endswith(b"\n"):
+                            # End, or a partial line: keep the position
+                            # before it and retry.
                             break
-                        self._ingest(line.rstrip("\n"))
                         offset = f.tell()
+                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             except OSError as e:
                 logger.debug("dashboard tailer read failed: %s", e)
                 time.sleep(0.5)
@@ -784,6 +792,26 @@ def install_origin_guard(app) -> None:
         return None
 
 
+def code_stamp() -> float:
+    """When this copy of eda-agent last changed: the newest modification
+    time of its Python files and the page. A dashboard with a newer stamp
+    takes the port over from an older one (see server.py)."""
+    root = Path(__file__).resolve().parents[1]
+    newest = 0.0
+    static = Path(__file__).parent / "dashboard_static"
+    for path in list(root.rglob("*.py")) + [static / "index.html", static / "workbench.html"]:
+        try:
+            newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    return round(newest, 3)
+
+
+#: Set by whoever serves the app (server.py): stops this dashboard so a
+#: newer one can take the port.
+SHUTDOWN: dict[str, Any] = {}
+
+
 def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     if workspace_dir is None:
         workspace_dir = get_config().workspace_dir
@@ -854,7 +882,17 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     app.config["WORKSPACE_DIR"] = str(workspace_dir)
     app.config["TAILER"] = tailer
 
+    from .workbench import register as _register_workbench
+    _register_workbench(app)
+
     @app.route("/")
+    def workbench_page() -> Response:
+        page = _HTML_PATH.parent / "workbench.html"
+        resp = Response(page.read_text(encoding="utf-8"), mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return resp
+
+    @app.route("/classic")
     def index() -> Response:
         if not _HTML_PATH.exists():
             return Response(
@@ -1110,6 +1148,31 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             "totals": totals,
             "_failed": failed,
         })
+
+    started_stamp = code_stamp()
+
+    @app.route("/api/dashboard/info")
+    def dashboard_info() -> Response:
+        """Who serves this page: process and code stamp."""
+        import os as _os
+        return jsonify({"ok": True, "pid": _os.getpid(), "code": started_stamp})
+
+    @app.route("/api/dashboard/yield", methods=["POST"])
+    def dashboard_yield() -> Response:
+        """Stop serving when the caller's code is newer, so it can take
+        the port. An equal or older caller is refused."""
+        from flask import request as _req
+        body = _req.get_json(silent=True) or {}
+        try:
+            theirs = float(body.get("code") or 0)
+        except (TypeError, ValueError):
+            theirs = 0.0
+        stop = SHUTDOWN.get("stop")
+        if theirs <= started_stamp or stop is None:
+            return jsonify({"ok": False, "code": started_stamp,
+                            "reason": "not newer" if stop else "cannot stop from here"})
+        threading.Timer(0.3, stop).start()
+        return jsonify({"ok": True, "yielding": True, "code": started_stamp})
 
     @app.route("/api/health")
     def health() -> Response:
@@ -1412,6 +1475,156 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         if data is None:
             return jsonify({"ok": False, "reason": "altium-not-running"})
         return jsonify({"ok": True, "data": data})
+
+    # -----------------------------------------------------------------
+    # Cockpit: the board in front, kept current, and its checks.
+    # -----------------------------------------------------------------
+
+    @app.route("/api/cockpit/state")
+    def cockpit_state() -> Response:
+        from .cockpit import get_cockpit
+        cockpit = get_cockpit()
+        cockpit.touch()
+        return jsonify({"ok": True, **cockpit.snapshot()})
+
+    @app.route("/api/cockpit/view")
+    def cockpit_view() -> Response:
+        """The board in front as the Layout tab draws it, shaped like
+        /api/live: ``since`` the version the page has gives ``unchanged``."""
+        from flask import request as _req
+        from .cockpit import get_cockpit
+        cockpit = get_cockpit()
+        cockpit.touch()
+        memo = cockpit.memo
+        if memo is None or memo.view is None:
+            return jsonify({"ok": True, "version": 0, "empty": True})
+        head = {"version": cockpit.view_version, "time": memo.view_time,
+                "note": "", "kind": "altium"}
+        since = _req.args.get("since", type=int)
+        if since is not None and since == cockpit.view_version:
+            return jsonify({"ok": True, "unchanged": True, **head})
+        return jsonify({"ok": True, **head, "snapshot": memo.view, "diff": memo.diff})
+
+    @app.route("/api/cockpit/checks")
+    def cockpit_checks() -> Response:
+        from .cockpit import get_cockpit
+        cockpit = get_cockpit()
+        cockpit.touch()
+        return jsonify({"ok": True, "version": cockpit.checks_version,
+                        "pending": cockpit.checks_pending,
+                        "summary": cockpit.summary, "findings": cockpit.findings})
+
+    @app.route("/api/board/action", methods=["POST"])
+    def board_action() -> Response:
+        """Run one Board-page action on the selection in Altium: ``action``
+        (align, distribute, rotate, flip, snap, route, unroute, tidy,
+        teardrops, repour, drc) and its ``args``. Only on the board the page
+        shows, while it is in front; one action at a time."""
+        from flask import request as _req
+        from .board_actions import after, get_runner, plan
+        from .cockpit import get_cockpit
+        body = _req.get_json(silent=True) or {}
+        cockpit = get_cockpit()
+        memo = cockpit.memo
+        runner = get_runner()
+        if runner.busy():
+            return jsonify({"ok": False, "reason": "another action is still running"})
+        try:
+            front = cockpit.send("pcb.cockpit_state", {"copper": "false"}, 10.0, urgent=True)
+        except Exception as e:                            # noqa: BLE001
+            return jsonify({"ok": False, "reason": f"Altium did not answer: {e}"})
+        if memo is None or not isinstance(front, dict) \
+                or str(front.get("file", "")).lower() != memo.file.lower():
+            return jsonify({"ok": False, "reason": "the board shown here is not in front "
+                            "in Altium; bring it to the front first"})
+        action = str(body.get("action") or "")
+        try:
+            calls = plan(action, body.get("args") or {}, front.get("selected") or {},
+                         memo.view, memo.file)
+        except ValueError as e:
+            return jsonify({"ok": False, "reason": str(e)})
+
+        def done(name):
+            if after(name) == "refresh":
+                cockpit.ask_refresh()
+        reply = runner.start(action, calls, done)
+        cockpit.touch()
+        return jsonify(reply)
+
+    @app.route("/api/board/action/status")
+    def board_action_status() -> Response:
+        from .board_actions import get_runner
+        return jsonify({"ok": True, **get_runner().snapshot()})
+
+    @app.route("/api/cockpit/pin", methods=["POST"])
+    def cockpit_pin() -> Response:
+        """Pin the cockpit to one board (``file``), or follow the board in
+        front again (empty)."""
+        from flask import request as _req
+        from .cockpit import get_cockpit
+        body = _req.get_json(silent=True) or {}
+        cockpit = get_cockpit()
+        cockpit.pin(str(body.get("file") or ""))
+        return jsonify({"ok": True, "pinned": cockpit.pinned})
+
+    @app.route("/api/cockpit/refresh", methods=["POST"])
+    def cockpit_refresh() -> Response:
+        """Read the whole board again at the next poll."""
+        from .cockpit import get_cockpit
+        cockpit = get_cockpit()
+        cockpit.ask_refresh()
+        cockpit.touch()
+        return jsonify({"ok": True})
+
+    @app.route("/api/cockpit/goto", methods=["POST"])
+    def cockpit_goto() -> Response:
+        """Show a place, a part or a net in Altium, on the board the cockpit
+        shows and only while it is in front: ``x``/``y`` (mils) zoom there,
+        ``part`` selects that part and zooms to it, ``net`` highlights it.
+        Never moves the focus to another document."""
+        from flask import request as _req
+        from .cockpit import get_cockpit
+        body = _req.get_json(silent=True) or {}
+        cockpit = get_cockpit()
+        memo = cockpit.memo
+        out: dict[str, Any] = {"ok": True}
+        try:
+            # Showing it in Altium means bringing it to the front first.
+            if memo is None:
+                return jsonify({"ok": False, "reason": "no board has been read yet"})
+            front = cockpit.send("pcb.cockpit_state", {"copper": "false"}, 10.0, urgent=True)
+            if not isinstance(front, dict) \
+                    or str(front.get("file", "")).lower() != memo.file.lower():
+                cockpit.send("pcb.focus_board", {"board_path": memo.file}, 30.0, urgent=True)
+
+            def zoom(x0, y0, x1, y1):
+                return cockpit.send("pcb.view", {
+                    "action": "set", "left": f"{x0:.4f}", "bottom": f"{y0:.4f}",
+                    "right": f"{x1:.4f}", "top": f"{y1:.4f}"}, 10.0, urgent=True)
+
+            part = str(body.get("part") or "")
+            if part:
+                comp = next((c for c in (memo.view or {}).get("components") or []
+                             if c.get("ref") == part), None)
+                if comp is None:
+                    return jsonify({"ok": False, "reason": f"{part} is not on this board"})
+                cockpit.send("generic.deselect_all", {}, 10.0, urgent=True)
+                out["select"] = cockpit.send("generic.select_objects", {
+                    "object_type": "eComponentObject", "filter": f"Designator={part}"}, 10.0, urgent=True)
+                x0, y0, x1, y1 = comp["bbox"]
+                half = max(150.0, 1.5 * max(x1 - x0, y1 - y0))
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                out["view"] = zoom(cx - half, cy - half, cx + half, cy + half)
+            elif body.get("x") is not None and body.get("y") is not None:
+                x, y = float(body["x"]), float(body["y"])
+                half = max(20.0, float(body.get("span") or 300.0)) / 2
+                out["view"] = zoom(x - half, y - half, x + half, y + half)
+            if body.get("net"):
+                out["net"] = cockpit.send("generic.highlight_net", {
+                    "net_name": str(body["net"]), "clear_existing": "true"}, 10.0, urgent=True)
+        except Exception as e:                            # noqa: BLE001
+            return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+        return jsonify(out)
 
     @app.route("/api/action/clear_highlights", methods=["POST"])
     def action_clear_highlights() -> Response:

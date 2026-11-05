@@ -407,6 +407,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_pad_relief_spokes": "KiCad has no custom spoke points on a pad",
     "lib_generate_ipc_batch": "Altium's IPC footprint batch generator",
     "lib_ipc_batch_template": "Altium's IPC footprint batch generator",
+    "proj_update_from_libraries": "KiCad updates symbols and footprints from libraries in its own editors",
     "pcb_apply_policy_rules": "applies Altium design rules; KiCad's live in its project file",
     "proj_apply_policy_erc": "Altium's ERC matrix; KiCad's ERC severities live in its project file",
     "design_apply_policy": "applies Altium design rules and the Altium ERC matrix",

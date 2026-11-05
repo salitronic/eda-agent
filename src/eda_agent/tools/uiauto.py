@@ -198,9 +198,10 @@ def register_uiauto_tools(mcp):
         menu_may_steal_focus: bool = False,
         first_step_timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Drive Tools > Update From Libraries, ECO included.
+        """Drive Tools > Update From Libraries, ECO included, from the GUI.
 
-        THIS PRESSES BUTTONS IN THE GUI: the wizard has no API. Each
+        proj_update_from_libraries does the same through the bridge, with
+        no menu or focus taken; use this for a wizard already open. Each
         dialog is read and answered by the role of its buttons; it STOPS
         on an error, an unexpected question or unknown buttons. The end
         presses EXECUTE CHANGES on the ECO, which is not undoable here:
@@ -235,13 +236,11 @@ def register_uiauto_tools(mcp):
                 f"launch must be already_open or menu, not {launch!r}")}
         if launch == "menu" and not menu_may_steal_focus:
             return {"ok": False, "reason": (
-                "launch='menu' has to drive Altium's menu bar with real "
-                "keyboard and mouse input, because nothing scriptable "
-                "opens this wizard: the bridge's menu call reports "
-                "success and invokes nothing, and Altium's menus expose "
-                "no working accessible action. That means bringing "
-                "Altium to the front and briefly moving the pointer, so "
-                "it is not done unless asked. Pass "
+                "launch='menu' drives Altium's menu bar with real "
+                "keyboard and mouse input, which brings Altium to the "
+                "front and briefly moves the pointer, so it is not done "
+                "unless asked. proj_update_from_libraries runs the same "
+                "update through the bridge without either. Pass "
                 "menu_may_steal_focus=True, or open Tools > "
                 + _MENUS[target].split("|", 1)[1] +
                 " yourself and use launch='already_open'.")}

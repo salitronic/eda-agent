@@ -7090,6 +7090,179 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_CockpitState - what the dashboard's cockpit polls: the document in      }
+{ front, a stamp of the parts and one of the copper that change when anything }
+{ moves, and what is selected. Reads only; touches PCBServer only when a PCB  }
+{ is in front (see GetPCBBoardAnywhere).                                      }
+{..............................................................................}
+
+{ The copper stamp: the count and the walked sums, or "n:<count>" when the }
+{ copper was only counted (the Python keeps its last walked stamp then).    }
+Function CopperWalk(N : Integer; K1, K2, K3 : Double; Walked : Boolean) : String;
+Begin
+    If Walked Then
+        Result := IntToStr(N) + ':' + FloatToJsonStr(K1) + ':' + FloatToJsonStr(K2)
+            + ':' + FloatToJsonStr(K3)
+    Else
+        Result := 'n:' + IntToStr(N);
+End;
+
+Function PCB_CockpitState(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Obj : IPCB_Primitive;
+    Counter : IPCB_PrimitiveCounter;
+    DocPath, Kind, Ref, NetName, SelComps, SelNets, SeenNets : String;
+    CompN, CopperN, I, SelCount, NetCount : Integer;
+    C1, C2, C3, K1, K2, K3 : Double;
+Begin
+    DocPath := CurrentFocusedDocPath(0);
+    Kind := '';
+    Try
+        Workspace := GetWorkspace;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Kind := UpperCase(Doc.DM_DocumentKind);
+    Except Kind := ''; End;
+    { With a PCB in front the wrapper returns that board; with anything   }
+    { else in front none is read.                                         }
+    Board := Nil;
+    If Kind = 'PCB' Then
+        Try Board := GetPCBBoardAnywhere(0); Except Board := Nil; End;
+    If Board = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+            + ',' + JsonStr('kind', Kind) + ',"board":false}');
+        Exit;
+    End;
+
+    { Parts: position, rotation and side, weighted by their order so a swap }
+    { of two parts changes the stamp too. The selection flag is read in the }
+    { same pass, so a selection made by a script is seen as well.           }
+    C1 := 0; C2 := 0; C3 := 0; CompN := 0; SelComps := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            CompN := CompN + 1;
+            C1 := C1 + Comp.X * CompN;
+            C2 := C2 + Comp.Y * CompN;
+            C3 := C3 + (Comp.Rotation + Comp.Layer * 1000) * CompN;
+            If Comp.Selected Then
+            Begin
+                Ref := '';
+                Try Ref := Comp.Name.Text; Except Ref := ''; End;
+                If SelComps <> '' Then SelComps := SelComps + ',';
+                SelComps := SelComps + '"' + EscapeJsonString(Ref) + '"';
+            End;
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Copper drawn on the board: tracks, arcs and vias. Walking it is most }
+    { of this call's time, so only when asked; otherwise the counts alone,  }
+    { which still change when copper is added or deleted.                    }
+    K1 := 0; K2 := 0; K3 := 0; CopperN := 0;
+    If LowerCase(ExtractJsonValue(Params, 'copper')) = 'false' Then
+    Begin
+        Counter := Nil;
+        Try Counter := Board.GetPrimitiveCounter; Except Counter := Nil; End;
+        If Counter <> Nil Then
+            Try
+                CopperN := Counter.GetObjectCount(eTrackObject)
+                    + Counter.GetObjectCount(eArcObject) + Counter.GetObjectCount(eViaObject);
+            Except CopperN := -1; End;
+    End
+    Else
+    Begin
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            CopperN := CopperN + 1;
+            { A part's own primitives move with it; the parts stamp has them. }
+            { Counted all the same, so the count matches the counter's.       }
+            If Obj.InComponent Then
+            Begin
+                Obj := Iter.NextPCBObject;
+                Continue;
+            End;
+            If Obj.ObjectId = eTrackObject Then
+            Begin
+                Track := Obj;
+                K1 := K1 + (Track.X1 + Track.X2) * CopperN;
+                K2 := K2 + (Track.Y1 + Track.Y2) * CopperN;
+                K3 := K3 + (Track.Width + Track.Layer * 1000) * CopperN;
+            End
+            Else If Obj.ObjectId = eArcObject Then
+            Begin
+                Arc := Obj;
+                K1 := K1 + (Arc.XCenter + Arc.StartAngle) * CopperN;
+                K2 := K2 + (Arc.YCenter + Arc.EndAngle) * CopperN;
+                K3 := K3 + (Arc.Radius + Arc.LineWidth + Arc.Layer * 1000) * CopperN;
+            End
+            Else
+            Begin
+                Via := Obj;
+                K1 := K1 + Via.X * CopperN;
+                K2 := K2 + Via.Y * CopperN;
+                K3 := K3 + Via.Size * CopperN;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    End;
+
+    { Nets of whatever else is selected: tracks, pads, vias, arcs. }
+    SelNets := ''; SeenNets := '|'; NetCount := 0;
+    SelCount := Board.SelectecObjectCount;
+    For I := 0 To SelCount - 1 Do
+    Begin
+        Obj := Board.SelectecObject[I];
+        If Obj = Nil Then Continue;
+        If Obj.ObjectId = eComponentObject Then Continue;
+        NetName := '';
+        Try
+            If Obj.InNet Then NetName := Obj.Net.Name;
+        Except NetName := ''; End;
+        If (NetName = '') Or (Pos('|' + NetName + '|', SeenNets) > 0) Then Continue;
+        If NetCount >= 200 Then Break;
+        SeenNets := SeenNets + NetName + '|';
+        NetCount := NetCount + 1;
+        If SelNets <> '' Then SelNets := SelNets + ',';
+        SelNets := SelNets + '"' + EscapeJsonString(NetName) + '"';
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+        + ',' + JsonStr('kind', Kind) + ',"board":true'
+        + ',' + JsonStr('parts_stamp', IntToStr(CompN) + ':' + FloatToJsonStr(C1)
+            + ':' + FloatToJsonStr(C2) + ':' + FloatToJsonStr(C3))
+        + ',' + JsonStr('copper_stamp', CopperWalk(CopperN, K1, K2, K3,
+            LowerCase(ExtractJsonValue(Params, 'copper')) <> 'false'))
+        + ',"parts":' + IntToStr(CompN) + ',"copper":' + IntToStr(CopperN)
+        + ',"selected":{"parts":[' + SelComps + '],"nets":[' + SelNets
+        + '],"count":' + IntToStr(SelCount) + '}}');
+End;
+
+{..............................................................................}
 { Layer colour conversion.                                                    }
 {                                                                              }
 { Altium carries a colour as a Windows TColor, which is $00BBGGRR: the byte   }
@@ -8804,6 +8977,7 @@ End;
 
 Function PCB_PlaceTracks(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Track : IPCB_Track;
     TracksStr, TrackStr, Remaining, Field : String;
@@ -8820,10 +8994,14 @@ Var
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
     F0, F1, F2, F3, F4, F5, F6, Token : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -8994,6 +9172,7 @@ End;
 
 Function PCB_PlaceVias(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Via : IPCB_Via;
     ViasStr, ViaStr, Remaining, Token, BadLayers, BadNets : String;
@@ -9004,10 +9183,14 @@ Var
     F0, F1, F2, F3, F4, F5, F6 : String;
     LayerCache, LastNetName : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -9173,6 +9356,7 @@ End;
 
 Function PCB_PlaceArcs(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Arc : IPCB_Arc;
     ArcsStr, ArcStr, Remaining, Token : String;
@@ -9187,10 +9371,14 @@ Var
     { the return slot in DelphiScript (see PCB_PlaceTracks).             }
     F0, F1, F2, F3, F4, F5, F6, F7, F8 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -9384,6 +9572,7 @@ End;
 
 Function PCB_PlacePads(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Pad : IPCB_Pad;
     PadsStr, PadStr, Remaining, Token, UnitsStr : String;
@@ -9398,10 +9587,14 @@ Var
     Cache : TPadCache;
     F0, F1, F2, F3, F4, F5 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -31037,6 +31230,7 @@ Begin
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
+        'cockpit_state':           Result := PCB_CockpitState(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'layer_view':              Result := PCB_LayerView(Params, RequestId);
         'view':                    Result := PCB_View(Params, RequestId);

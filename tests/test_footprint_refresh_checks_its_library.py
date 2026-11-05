@@ -140,3 +140,102 @@ def test_the_first_loader_names_the_library_file():
     assert body.index(
         "NewC.LoadFromLibrary('FootPrint=' + Pattern + '|FileName=' + LibPath);") \
         < body.index("If Attempt = 2 Then") and first < body.index("If Attempt = 2 Then")
+
+
+def _intlib_tool(monkeypatch, tmp_path, with_source=True):
+    """Parts whose own library is an IntLib in "Project Outputs for X",
+    with (or without) the source X.PcbLib one folder up."""
+    pkg = tmp_path / "SELibrary_X"
+    out_dir = pkg / "Project Outputs for SELibrary_X"
+    out_dir.mkdir(parents=True)
+    intlib = out_dir / "SELibrary_X.IntLib"
+    intlib.write_text("integrated")
+    source = pkg / "SELibrary_X.PcbLib"
+    if with_source:
+        source.write_text("library")
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, dict(params or {})))
+            if command == "library.get_footprints":
+                return {"footprints": [{"name": "P_C1"}]}
+            if command == "pcb.update_footprints_from_library":
+                return {"board": "B.PcbDoc", "items": [
+                    {"designator": d, "ok": True, "pattern": "P_" + d,
+                     "library": params["library_path"] or str(intlib)}
+                    for d in params["designators"].split("|")]}
+            return {"focused": True}
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: _Bridge())
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def reg(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return reg
+
+        def __getattr__(self, n):
+            return lambda *a, **k: (lambda fn: fn)
+
+    pcb_tools.register_pcb_tools(_Mcp())
+    return tools["pcb_update_footprints_from_library"], sent, str(intlib), str(source)
+
+
+def test_an_integrated_library_is_never_opened(monkeypatch, tmp_path):
+    # Opening an IntLib makes Altium ask Install / Extract / Import, which
+    # blocked the bridge. Its source PcbLib one folder up is used instead.
+    tool, sent, intlib, source = _intlib_tool(monkeypatch, tmp_path)
+    out = asyncio.run(tool(["C1"]))
+    touched = [p.get("library_path") for c, p in sent if "library_path" in p]
+    assert intlib not in touched
+    assert ("library.get_footprints", {"library_path": source}) in sent
+    real = [p for c, p in sent if c == "pcb.update_footprints_from_library"
+            and p["dry_run"] == "false"]
+    assert real and real[0]["library_path"] == source
+    assert out["updated"] == 0 or out["items"]
+
+
+def test_an_integrated_library_without_its_source_is_refused(monkeypatch, tmp_path):
+    tool, sent, intlib, source = _intlib_tool(monkeypatch, tmp_path, with_source=False)
+    out = asyncio.run(tool(["C1"]))
+    assert not any(c == "library.get_footprints" for c, _ in sent)
+    assert _real_runs(sent) == []
+    assert "integrated library" in out["items"][0]["reason"]
+
+
+def test_a_library_named_without_a_folder_is_found_beside_the_board(monkeypatch, tmp_path):
+    board = tmp_path / "B.PcbDoc"
+    (tmp_path / "Own.PcbLib").write_text("library")
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, dict(params or {})))
+            if command == "library.get_footprints":
+                return {"footprints": [{"name": "P_C1"}]}
+            if command == "pcb.update_footprints_from_library":
+                return {"board": str(board), "items": [
+                    {"designator": "C1", "ok": True, "pattern": "P_C1",
+                     "library": params["library_path"] or "Own.PcbLib"}]}
+            return {"focused": True}
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: _Bridge())
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def reg(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return reg
+
+        def __getattr__(self, n):
+            return lambda *a, **k: (lambda fn: fn)
+
+    pcb_tools.register_pcb_tools(_Mcp())
+    out = asyncio.run(tools["pcb_update_footprints_from_library"](["C1"], dry_run=True))
+    assert out["would_update"] == 1
+    assert out["items"][0]["library"] == str(tmp_path / "Own.PcbLib")

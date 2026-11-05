@@ -51,6 +51,22 @@ class Read:
 Step = Union[Check, Press, Read]
 
 
+@dataclass(frozen=True)
+class Pass:
+    """A dialog that can come up on the way, and the button that carries
+    on, pressed only when the dialog's text (read by OCR) contains
+    ``says``. For a title as common as "Confirm", where the text is what
+    tells one question from another. What it said goes into ``passed``."""
+    caption: str
+    says: str = ""
+
+
+def _letters(text: str) -> str:
+    """Letters and digits only, with the pairs OCR confuses made one."""
+    import re
+    return re.sub(r"[^0-9a-z]", "", text.lower()).translate(str.maketrans("oils", "0115"))
+
+
 def _find(pid: int, title: str):
     for dialog in windows.dialogs(pid):
         if title.lower() in (dialog.title or "").lower():
@@ -83,7 +99,7 @@ def _set(dialog, step: Check) -> dict[str, Any]:
 def answer(pid: int, title: str, steps: list[Step],
            stop: Optional[threading.Event] = None, appear_within: float = 60.0,
            run_within: float = 300.0, poll: float = 0.1,
-           on_the_way: Optional[dict[str, str]] = None) -> dict[str, Any]:
+           on_the_way: Optional[dict[str, Union[str, "Pass"]]] = None) -> dict[str, Any]:
     """Wait for the dialog titled ``title`` and run ``steps`` on it.
 
     ``on_the_way`` maps the title of a dialog that can come up first to
@@ -111,22 +127,18 @@ def answer(pid: int, title: str, steps: list[Step],
 
 def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
             appear_within: float, run_within: float, poll: float,
-            on_the_way: dict[str, str]) -> dict[str, Any]:
+            on_the_way: dict[str, Union[str, Pass]]) -> dict[str, Any]:
     out: dict[str, Any] = {"dialog": title, "appeared": False, "done": [],
                            "closed": False}
+    heard: dict[int, str] = {}           # what a text-matched dialog said, by window
+    pressed: dict[int, float] = {}       # when each window was last pressed
     deadline = time.monotonic() + appear_within
     dialog = None
     while not stop.is_set() and time.monotonic() < deadline:
         dialog = _find(pid, title)
         if dialog is not None:
             break
-        for first, caption in on_the_way.items():
-            before = _find(pid, first)
-            button = before.find_button(caption) if before is not None else None
-            if button is not None and button.enabled:
-                windows.click(button)
-                out.setdefault("passed", []).append(
-                    {"dialog": before.title, "pressed": caption})
+        _pass(pid, on_the_way, heard, out, pressed)
         time.sleep(poll)
     if dialog is None:
         out["reason"] = f"{title!r} did not appear"
@@ -181,6 +193,10 @@ def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
             end = time.monotonic() + run_within
             while time.monotonic() < end:
                 time.sleep(poll * 2)
+                # A run can raise its own question (Update From PCB
+                # Libraries asks which attributes to update when the
+                # change order executes).
+                _pass(pid, on_the_way, heard, out, pressed)
                 again = _fresh(pid, dialog.hwnd)
                 button = again.find_button(step.caption) if again else None
                 if button is None or not button.enabled:
@@ -195,6 +211,38 @@ def _answer(pid: int, title: str, steps: list[Step], stop: threading.Event,
                 out["reason"] = f"{step.caption!r} did not close {title!r}"
             return out
     return out
+
+
+def _pass(pid: int, on_the_way: dict[str, Union[str, Pass]],
+          heard: dict[int, str], out: dict[str, Any],
+          pressed: dict[int, float]) -> None:
+    """Press the button that carries on in any dialog of ``on_the_way``
+    that is open, a text-matched one only when its text matches."""
+    for first, carry_on in on_the_way.items():
+        before = _find(pid, first)
+        if before is None:
+            continue
+        want = carry_on if isinstance(carry_on, Pass) else Pass(carry_on)
+        said = ""
+        if want.says:
+            said = heard.get(before.hwnd)
+            if said is None:
+                from . import ocr
+                said = heard[before.hwnd] = " ".join(ocr.read_window_rows(before.hwnd))
+            if _letters(want.says) not in _letters(said):
+                continue
+        # Once per window: a dialog can take a moment to close, and a
+        # second press could land on whatever replaces it.
+        if time.monotonic() - pressed.get(before.hwnd, -10.0) < 2.0:
+            continue
+        button = before.find_button(want.caption)
+        if button is not None and button.enabled:
+            windows.click(button)
+            pressed[before.hwnd] = time.monotonic()
+            entry = {"dialog": before.title, "pressed": want.caption}
+            if said:
+                entry["said"] = said
+            out.setdefault("passed", []).append(entry)
 
 
 def _gone(pid: int, hwnd: int, poll: float, within: float = 10.0) -> bool:

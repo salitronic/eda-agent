@@ -19,7 +19,7 @@ from ..ui.dialog_answer import Step, answer
 
 
 def driver(title: str, steps: list[Step],
-           on_the_way: Optional[dict[str, str]] = None):
+           on_the_way: Optional[dict[str, Any]] = None):
     """``(run, stop)`` that answers the dialog, or None when it is left to
     the user or Altium's process cannot be named. ``on_the_way`` is passed
     to ``dialog_answer.answer``."""
@@ -36,7 +36,7 @@ def driver(title: str, steps: list[Step],
 
 async def send_answering(bridge, command: str, params: dict, title: str,
                          steps: list[Step], timeout: float = 360.0,
-                         on_the_way: Optional[dict[str, str]] = None,
+                         on_the_way: Optional[dict[str, Any]] = None,
                          ) -> tuple[Any, Optional[dict]]:
     """The command's reply, and what was done to its dialog (None when the
     dialog was left to the user). ``on_the_way``: dialogs that can come up

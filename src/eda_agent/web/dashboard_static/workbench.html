@@ -1,0 +1,1616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>eda-agent workbench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* The engineering drawing sheet: drafting film, blue-black ink, a red pen
+   for problems, a blue pencil for proposals, amber for the assembly line.
+   Bahnschrift is Windows' DIN 1451, the lettering of engineering drawings. */
+:root {
+  --film:#E8EBE5; --paper:#F5F6F2; --paper2:#EEF0EB; --ink:#1C2A35; --ink2:#46535D; --ink3:#7C868D;
+  --rule:#C9CFC8; --rule2:#DDE1DB;
+  --red:#C8321E; --blue:#2459B8; --amber:#C77A12; --green:#2E7D4F;
+  --mask:#1F533A;
+  --f:"Bahnschrift", "DIN Alternate", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --mono:"Cascadia Mono", Consolas, monospace;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+}
+* { box-sizing:border-box; }
+html, body { margin:0; height:100%; background:var(--film); color:var(--ink); overflow:hidden;
+  font:400 13px/1.4 var(--f); font-variant-numeric:tabular-nums; }
+button, input, select, textarea { font:inherit; color:inherit; }
+button { background:var(--paper); border:1px solid var(--rule); border-radius:3px; padding:4px 10px;
+  cursor:pointer; line-height:1.3; }
+button:hover:not(:disabled) { border-color:var(--ink2); }
+button:disabled { color:var(--ink3); cursor:default; background:var(--paper2); }
+button.go { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+button.go:hover:not(:disabled) { background:#2C3E4C; }
+button.go:disabled { background:var(--rule); border-color:var(--rule); color:var(--paper); }
+button.quiet { border-color:transparent; background:none; color:var(--ink2); padding:3px 6px; }
+button.quiet:hover:not(:disabled) { color:var(--ink); border-color:var(--rule); }
+input, select, textarea { background:#fff; border:1px solid var(--rule); border-radius:3px; padding:4px 7px; }
+:focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
+kbd { font:600 11px var(--f); border:1px solid var(--rule); border-bottom-width:2px; border-radius:3px;
+  padding:0 4px; background:var(--paper); color:var(--ink2); }
+
+#app { display:grid; height:100vh; grid-template-rows:44px 1fr 26px;
+  grid-template-columns:268px 1fr 352px; grid-template-areas:"rail rail rail" "nav sheet side" "foot foot foot"; }
+
+/* Rail */
+#rail { grid-area:rail; display:flex; align-items:stretch; gap:var(--s4); padding:0 var(--s3);
+  background:var(--ink); color:var(--paper); }
+#rail .mark { display:flex; align-items:center; gap:var(--s2); font-weight:600; font-size:14px;
+  font-stretch:semi-condensed; white-space:nowrap; max-width:330px; }
+#rail .mark svg { flex:0 0 auto; }
+#rail .mark span { overflow:hidden; text-overflow:ellipsis; }
+#picker { position:relative; }
+#boardbtn { display:flex; align-items:center; gap:var(--s2); background:none; border:1px solid transparent; color:var(--paper);
+  font:600 14px var(--f); font-stretch:semi-condensed; max-width:340px; padding:4px 8px; }
+#boardbtn:hover { border-color:#4B5F6E; }
+#boardbtn span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#boardbtn .caret { color:#AEB8BF; font-size:10px; }
+.menu.boards { position:absolute; left:0; top:40px; z-index:20; background:var(--paper); color:var(--ink);
+  border:1px solid var(--rule); border-radius:4px; width:420px; box-shadow:0 12px 30px rgba(28,42,53,.25); padding:6px 0; }
+.menu.boards[hidden] { display:none; }
+.menu.boards .bh { padding:4px 12px 6px; color:var(--ink3); font-size:12px; }
+.menu.boards .brow { display:flex; align-items:baseline; gap:var(--s2); padding:6px 12px; cursor:pointer; font-weight:400; }
+.menu.boards .brow:hover { background:var(--paper2); }
+.menu.boards .brow[aria-selected="true"] { box-shadow:inset 3px 0 0 var(--blue); background:#E6EDF8; }
+.menu.boards .brow b { font-weight:600; }
+.menu.boards .brow small { color:var(--ink3); margin-left:auto; white-space:nowrap; }
+.menu.boards .path { color:var(--ink3); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#titleblock .last button { margin-left:6px; padding:1px 8px; font-size:12px; }
+#modes { display:flex; align-items:stretch; }
+#modes button { background:none; border:none; border-radius:0; color:#AEB8BF; padding:0 13px; font-size:14px; }
+#modes button:hover { color:var(--paper); }
+#modes button[aria-pressed="true"] { color:var(--paper); box-shadow:inset 0 -3px 0 #9CC3FF; }
+#rail .end { margin-left:auto; display:flex; align-items:center; gap:var(--s2); }
+#rail .end button { background:none; color:#C9D2D8; border-color:#3B4D5B; }
+#rail .end button:hover { color:var(--paper); border-color:#7F93A3; }
+#rail .end kbd { background:none; color:#C9D2D8; border-color:#4B5F6E; }
+#settings { position:relative; }
+#settings .menu { position:absolute; right:0; top:34px; z-index:20; background:var(--paper); color:var(--ink);
+  border:1px solid var(--rule); border-radius:4px; padding:var(--s3); width:280px;
+  box-shadow:0 12px 30px rgba(28,42,53,.25); display:grid; gap:var(--s2); }
+#settings .menu[hidden] { display:none; }
+#settings label { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+
+/* Navigator */
+#nav { grid-area:nav; display:flex; flex-direction:column; min-height:0; background:var(--paper);
+  border-right:1px solid var(--rule); }
+.seg { display:grid; grid-template-columns:repeat(3,1fr); margin:var(--s2); border:1px solid var(--rule); border-radius:4px; overflow:hidden; }
+.seg button { border:none; border-radius:0; background:none; padding:5px 0; color:var(--ink2); }
+.seg button + button { border-left:1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background:var(--ink); color:var(--paper); }
+#q { margin:0 var(--s2) var(--s2); }
+#navlist { flex:1; overflow:auto; border-top:1px solid var(--rule2); }
+.row { display:flex; align-items:baseline; gap:var(--s2); padding:3px var(--s3); cursor:pointer; white-space:nowrap;
+  font-stretch:semi-condensed; }
+.row:hover { background:var(--paper2); }
+.row[aria-selected="true"] { background:#DCE6F5; box-shadow:inset 3px 0 0 var(--blue); }
+.row .k { font-weight:600; min-width:52px; overflow:hidden; text-overflow:ellipsis; }
+.row .v { flex:1; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; }
+.row .z { color:var(--ink3); font-size:12px; min-width:24px; text-align:right; }
+.row.hiddenp { opacity:.5; }
+.grouph { padding:var(--s2) var(--s3) 2px; color:var(--ink3); font-size:12px; font-weight:600; }
+.sev { display:inline-block; width:12px; text-align:center; font-size:10px; }
+.sev.error { color:var(--red); } .sev.warning { color:var(--amber); } .sev.info { color:var(--blue); }
+.st { display:inline-block; width:9px; height:9px; border-radius:50%; border:2px solid; flex:0 0 9px; position:relative; top:1px; }
+.st.open { border-color:var(--red); } .st.partly { border-color:var(--amber); background:linear-gradient(90deg,var(--amber) 50%,transparent 50%); }
+.st.routed { border-color:var(--green); background:var(--green); } .st.single { border-color:var(--rule); }
+.count { font-size:11px; color:var(--red); font-weight:600; }
+
+/* Sheet */
+#sheet { grid-area:sheet; position:relative; min-width:0; min-height:0; }
+#cv { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+#legend { position:absolute; left:var(--s3); top:var(--s3); display:flex; flex-wrap:wrap; gap:4px; max-width:62%; }
+#legend label { display:flex; align-items:center; gap:5px; background:rgba(245,246,242,.92); border:1px solid var(--rule);
+  border-radius:3px; padding:1px 7px 1px 5px; font-size:12px; cursor:pointer; user-select:none; }
+#legend label.off { color:var(--ink3); text-decoration:line-through; }
+#legend input { position:absolute; opacity:0; pointer-events:none; }
+#legend i { width:10px; height:10px; border-radius:2px; display:inline-block; }
+#zoom { position:absolute; left:var(--s3); bottom:var(--s3); display:flex; gap:4px; }
+#zoom button { background:rgba(245,246,242,.94); width:30px; padding:3px 0; }
+#coords { position:absolute; left:120px; bottom:calc(var(--s3) + 5px); color:var(--ink2); font-size:12px; pointer-events:none; }
+#titleblock { position:absolute; right:var(--s3); bottom:var(--s3); background:var(--paper); border:1.5px solid var(--ink);
+  display:grid; grid-template-columns:auto auto auto auto; font-size:12px; min-width:330px; }
+#titleblock > div { border-right:1px solid var(--ink); border-bottom:1px solid var(--ink); padding:3px 8px; }
+#titleblock > div:nth-child(4n) { border-right:none; }
+#titleblock .h { color:var(--ink3); font-size:11px; display:block; }
+#titleblock .v { font-size:15px; font-weight:600; }
+#titleblock .name { grid-column:1 / span 4; border-right:none; font-size:14px; font-weight:600; display:flex; gap:var(--s2); align-items:center; }
+#titleblock .name span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:360px; }
+#titleblock .last { grid-column:1 / span 4; border-bottom:none; border-right:none; color:var(--ink2); }
+#titleblock [data-go] { cursor:pointer; } #titleblock [data-go]:hover { background:var(--paper2); }
+#titleblock .bad .v { color:var(--red); } #titleblock .warn .v { color:var(--amber); } #titleblock .ok .v { color:var(--green); }
+#proposal { position:absolute; left:50%; top:var(--s3); transform:translateX(-50%); background:var(--paper);
+  border:1.5px dashed var(--blue); color:var(--blue); padding:4px 12px; border-radius:3px; font-weight:600; display:none; }
+#empty { position:absolute; inset:0; z-index:2; background:var(--film); display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:var(--s2); text-align:center; color:var(--ink2); padding:40px; }
+#empty b { font-size:18px; color:var(--ink); }
+#pane { position:absolute; inset:0; background:var(--film); overflow:auto; padding:var(--s4) var(--s5); z-index:3; }
+#pane[hidden], #empty[hidden], #titleblock[hidden] { display:none; }
+
+/* Side */
+#side { grid-area:side; overflow:auto; background:var(--paper); border-left:1px solid var(--rule); min-height:0; }
+.block { padding:var(--s3) var(--s4); border-bottom:1px solid var(--rule2); }
+.block h2 { margin:0 0 var(--s2); font-size:15px; font-weight:600; display:flex; align-items:baseline; gap:var(--s2); }
+.block h2 small { margin-left:auto; color:var(--ink3); font-weight:400; font-size:12px; }
+.hint { color:var(--ink2); font-size:12px; }
+.actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:var(--s2); }
+.kv { display:grid; grid-template-columns:max-content 1fr; gap:2px var(--s3); }
+.kv dt { color:var(--ink3); } .kv dd { margin:0; }
+.ident { font-size:24px; font-weight:600; line-height:1.1; font-stretch:semi-condensed; }
+.figures { display:flex; gap:var(--s5); margin:var(--s2) 0; }
+.figures div { display:flex; flex-direction:column; }
+.figures span { color:var(--ink3); font-size:12px; }
+.figures b { font-size:22px; font-weight:600; }
+.good { color:var(--green); } .bad { color:var(--red); } .amber { color:var(--amber); } .pencil { color:var(--blue); }
+.result { margin-top:var(--s2); padding:6px 9px; border-left:3px solid var(--ink3); background:var(--paper2); font-size:12px; }
+.result.ok { border-color:var(--green); } .result.fail { border-color:var(--red); } .result.run { border-color:var(--blue); }
+.list .row { padding-left:0; padding-right:0; }
+.pins { max-height:240px; overflow:auto; margin-top:4px; }
+.pins div { display:flex; gap:var(--s2); cursor:pointer; padding:1px 0; }
+.pins div:hover { color:var(--blue); }
+.pins span:first-child { min-width:64px; color:var(--ink3); }
+.prob { display:flex; gap:6px; padding:4px 0; cursor:pointer; border-bottom:1px solid var(--rule2); font-size:12px; }
+.prob:hover { color:var(--blue); }
+.prob .z { margin-left:auto; color:var(--ink3); }
+.meter { height:5px; background:var(--rule2); border-radius:3px; overflow:hidden; margin:6px 0; }
+.meter i { display:block; height:100%; background:var(--green); }
+.spin { display:inline-block; width:10px; height:10px; border:2px solid var(--blue); border-right-color:transparent;
+  border-radius:50%; animation:spin .8s linear infinite; vertical-align:-1px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+select.wide { width:100%; }
+label.check { display:flex; align-items:center; gap:6px; margin-top:6px; color:var(--ink2); }
+details summary { cursor:pointer; color:var(--ink2); }
+
+/* Library and tools pane */
+.panehead { display:flex; align-items:flex-end; gap:var(--s5); margin-bottom:var(--s3); flex-wrap:wrap; }
+.panehead .figures { margin:0; }
+.panehead input { width:320px; margin-left:auto; }
+.chipset { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:var(--s3); }
+.chipset button { font-size:12px; padding:2px 9px; }
+.chipset button[aria-pressed="true"] { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+.chipset button.missing { border-color:var(--red); }
+table.grid { width:100%; border-collapse:collapse; background:var(--paper); border:1px solid var(--rule); font-size:12px; }
+table.grid th { text-align:left; font-weight:600; color:var(--ink2); padding:6px 8px; border-bottom:1.5px solid var(--ink);
+  position:sticky; top:calc(-1 * var(--s4)); background:var(--paper); white-space:nowrap; }
+table.grid td { padding:5px 8px; border-bottom:1px solid var(--rule2); vertical-align:top; cursor:pointer; }
+table.grid tr:hover td { background:var(--paper2); }
+table.grid tr[aria-selected="true"] td { background:#FBF0DA; }
+table.grid td.n { white-space:nowrap; }
+table.grid td.m { color:var(--ink2); max-width:210px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+table.grid .sub { color:var(--ink3); }
+table.grid a { color:var(--blue); }
+.issue { white-space:nowrap; }
+.tools { display:grid; grid-template-columns:300px 1fr; gap:var(--s4); height:100%; }
+.tools .list { overflow:auto; background:var(--paper); border:1px solid var(--rule); }
+.tools .list .row { padding:4px var(--s3); }
+.tools form { background:var(--paper); border:1px solid var(--rule); padding:var(--s4); overflow:auto; }
+.tools .field { display:grid; grid-template-columns:200px 1fr; gap:var(--s3); align-items:start; margin-bottom:var(--s2); }
+.tools .field label { padding-top:5px; }
+.tools .field small { color:var(--ink3); display:block; }
+.tools pre { font:12px/1.45 var(--mono); background:var(--paper2); border:1px solid var(--rule2); padding:var(--s2); overflow:auto; max-height:46vh; white-space:pre-wrap; }
+.tools .desc { white-space:pre-wrap; color:var(--ink2); font-size:12px; max-height:140px; overflow:auto; margin-bottom:var(--s3); }
+.tag { font-size:11px; border:1px solid var(--amber); color:var(--amber); border-radius:3px; padding:0 4px; }
+
+/* Footer, drawer, overlays */
+#foot { grid-area:foot; display:flex; align-items:center; gap:var(--s4); padding:0 var(--s3); background:var(--paper);
+  border-top:1px solid var(--rule); font-size:12px; color:var(--ink2); }
+#msg { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); }
+#msg.fail { color:var(--red); }
+#lastcall { cursor:pointer; max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#lastcall.fail { color:var(--red); }
+#drawer { position:fixed; left:0; right:0; bottom:26px; height:40vh; background:var(--paper); border-top:1.5px solid var(--ink);
+  z-index:8; display:flex; flex-direction:column; }
+#drawer[hidden] { display:none; }
+#drawer header { display:flex; align-items:center; gap:var(--s3); padding:6px var(--s3); border-bottom:1px solid var(--rule); }
+#drawer header b { font-size:14px; }
+#drawer header .sp { flex:1; }
+#actlist { flex:1; overflow:auto; font:12px/1.55 var(--mono); }
+#actlist .ar { display:grid; grid-template-columns:96px 320px 80px 1fr; gap:var(--s3); padding:0 var(--s3); border-bottom:1px solid var(--rule2); }
+#actlist .ar.fail { color:var(--red); } #actlist .ar.slow .d { color:var(--amber); }
+#actlist .d { text-align:right; } #actlist .t { color:var(--ink3); }
+.overlay { position:fixed; inset:0; background:rgba(28,42,53,.35); z-index:30; }
+.overlay[hidden] { display:none; }
+.overlay .box { width:600px; margin:11vh auto 0; background:var(--paper); border:1.5px solid var(--ink); border-radius:4px;
+  box-shadow:0 24px 60px rgba(28,42,53,.35); overflow:hidden; }
+#palq { width:100%; border:none; border-bottom:1px solid var(--rule); border-radius:0; padding:12px 14px; font-size:16px; outline:none; }
+#pallist { max-height:52vh; overflow:auto; }
+#pallist .it { display:flex; gap:var(--s3); padding:6px 14px; cursor:pointer; }
+#pallist .it[aria-selected="true"] { background:#DCE6F5; }
+#pallist .it .t { color:var(--ink3); min-width:70px; }
+#help .box { padding:var(--s4) var(--s5); }
+#help h2 { margin:0 0 var(--s3); font-size:17px; }
+#help dl { display:grid; grid-template-columns:max-content 1fr; gap:6px var(--s4); margin:0; }
+#help dd { margin:0; color:var(--ink2); }
+#fault { position:fixed; top:54px; left:50%; transform:translateX(-50%); z-index:25; background:var(--paper);
+  border:1.5px solid var(--red); padding:10px 14px; max-width:620px; font-size:12px; }
+#fault[hidden] { display:none; }
+#fault b { color:var(--red); }
+.asm .now { font-size:24px; font-weight:600; line-height:1.15; }
+.asm .refs { font-size:17px; font-weight:600; margin:6px 0; }
+.asm .row.done .k, .asm .row.done .v { text-decoration:line-through; color:var(--ink3); }
+.dec { font-size:12px; padding:3px 0; border-bottom:1px solid var(--rule2); }
+.dec span { color:var(--ink3); margin-right:6px; }
+@media (max-width: 1100px) { #app { grid-template-columns:220px 1fr 300px; } #titleblock { min-width:0; } }
+@media (max-width: 820px) {
+  #app { grid-template-columns:1fr; grid-template-rows:44px 46vh 1fr 26px; grid-template-areas:"rail" "sheet" "side" "foot"; }
+  #nav { display:none; } #modes button { padding:0 7px; } #rail .mark { max-width:120px; }
+}
+@media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="rail">
+    <div class="mark" id="picker">
+      <button id="boardbtn" aria-haspopup="true" aria-expanded="false" title="Choose the board to show. It stays here whatever you open in Altium.">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="1" width="16" height="16" rx="2" fill="#1F533A" stroke="#9FB7A7"/><rect x="4" y="4" width="4" height="4" fill="#D9B45A"/><rect x="10" y="10" width="4" height="4" fill="#D9B45A"/><path d="M8 6h3v6" stroke="#8FC79A" stroke-width="1.5" fill="none"/></svg>
+      <span id="boardname">No board</span><span class="caret" aria-hidden="true">&#9662;</span></button>
+      <div class="menu boards" id="boardmenu" hidden></div>
+    </div>
+    <nav id="modes" aria-label="Modes">
+      <button data-mode="place" title="Place parts (1)">Place</button>
+      <button data-mode="route" title="Route nets (2)">Route</button>
+      <button data-mode="review" title="Work through the problems (3)">Review</button>
+      <button data-mode="library" title="Where each part comes from (4)">Library</button>
+      <button data-mode="assemble" title="Hand assembly, line by line (5)">Assemble</button>
+      <button data-mode="engines" title="What the placer and router are doing (6)">Engines</button>
+      <button data-mode="tools" title="Run any tool (7)">Tools</button>
+    </nav>
+    <div class="end">
+      <button id="find" title="Find a part, net, problem or command">Find <kbd>Ctrl K</kbd></button>
+      <button id="helpbtn" title="Keyboard shortcuts">?</button>
+      <div id="settings">
+        <button id="setbtn" aria-haspopup="true" aria-expanded="false">Settings</button>
+        <div class="menu" hidden>
+          <label>Language <select id="lang"><option value="auto">Altium</option></select></label>
+          <label>Units <select id="units"><option value="mil">mil</option><option value="mm">mm</option></select></label>
+          <label class="check"><input type="checkbox" id="mirror"> Selecting here selects and zooms in Altium too</label>
+          <label class="check"><input type="checkbox" id="follow"> Follow the board in front in Altium</label>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <aside id="nav" aria-label="Navigator">
+    <div class="seg" role="group">
+      <button data-list="parts">Parts</button>
+      <button data-list="nets">Nets</button>
+      <button data-list="problems">Problems</button>
+    </div>
+    <input id="q" placeholder="Filter (/)" autocomplete="off" aria-label="Filter">
+    <div id="navlist" role="listbox" aria-label="Items"></div>
+  </aside>
+
+  <main id="sheet">
+    <canvas id="cv" aria-label="The board"></canvas>
+    <div id="legend"></div>
+    <div id="proposal"></div>
+    <div id="zoom"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">&minus;</button><button id="zfit" title="Fit the board (F)">Fit</button></div>
+    <div id="coords"></div>
+    <div id="titleblock" hidden></div>
+    <div id="empty"></div>
+    <div id="pane" hidden></div>
+  </main>
+
+  <aside id="side" aria-label="Details and tools">
+    <section class="block" id="inspector"></section>
+    <div id="tools"></div>
+  </aside>
+
+  <footer id="foot"><span id="msg" role="status"></span><span id="lastcall" title="The last call to Altium. Click for the log (L)"></span><span id="state"></span></footer>
+</div>
+
+<div id="drawer" hidden>
+  <header><b>Activity</b><span id="actrate"></span><span class="sp"></span>
+    <input id="actq" placeholder="Filter commands" autocomplete="off" aria-label="Filter commands">
+    <label class="check" style="margin:0"><input type="checkbox" id="actbad"> Errors and slow calls only</label>
+    <button id="actclose">Close</button></header>
+  <div id="actlist"></div>
+</div>
+<div id="fault" hidden></div>
+<div class="overlay" id="pal" hidden><div class="box"><input id="palq" placeholder="Part, net, problem or command" autocomplete="off" aria-label="Find"><div id="pallist" role="listbox"></div></div></div>
+<div class="overlay" id="help" hidden><div class="box">
+  <h2>Keyboard</h2>
+  <dl>
+    <dt><kbd>1</kbd> to <kbd>7</kbd></dt><dd>Change mode</dd>
+    <dt><kbd>Ctrl K</kbd></dt><dd>Find a part, net, problem or command</dd>
+    <dt><kbd>/</kbd></dt><dd>Filter the list</dd>
+    <dt><kbd>N</kbd> <kbd>Shift N</kbd></dt><dd>Next and previous problem</dd>
+    <dt><kbd>S</kbd></dt><dd>Show the selection in Altium</dd>
+    <dt><kbd>F</kbd></dt><dd>Fit the board</dd>
+    <dt><kbd>Enter</kbd></dt><dd>In Route, plan routes for the selected net</dd>
+    <dt><kbd>Ctrl Enter</kbd></dt><dd>Apply the proposal on the board</dd>
+    <dt><kbd>Space</kbd></dt><dd>In Assemble, mark the line placed and go to the next</dd>
+    <dt><kbd>L</kbd></dt><dd>Open the activity log</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Clear the selection, close a window</dd>
+  </dl>
+</div></div>
+
+<script>
+"use strict";
+/* ================================================================ language */
+// T("Line {0} of {1}", a, b): the translation of the English text, with
+// the values put where that language wants them. Static text in the page
+// is translated in place, keeping the English to switch back to.
+let TABLE = {}, LANG = "en";
+function T(key, ...vals) {
+  const out = Object.prototype.hasOwnProperty.call(TABLE, key) ? TABLE[key] : key;
+  return vals.length ? out.replace(/\{(\d)\}/g, (_, n) => vals[+n] == null ? "" : vals[+n]) : out;
+}
+function translateStatic(root) {
+  const walk = el => {
+    for (const a of ["title", "placeholder", "aria-label"]) {
+      if (!el.hasAttribute || !el.hasAttribute(a)) continue;
+      if (el.__en == null) el.__en = {};
+      if (!(a in el.__en)) el.__en[a] = el.getAttribute(a);
+      el.setAttribute(a, T(el.__en[a]));
+    }
+    for (const c of el.childNodes) {
+      if (c.nodeType === 3) {
+        if (c.__en == null) c.__en = c.nodeValue;
+        const k = c.__en.trim();
+        if (k) c.nodeValue = c.__en.replace(k, T(k));
+      } else if (c.nodeType === 1 && !["SCRIPT", "STYLE", "svg", "CANVAS"].includes(c.tagName)
+                 && !["navlist", "tools", "inspector", "pane", "legend", "titleblock", "empty", "actlist", "pallist", "msg", "lastcall", "state", "boardname", "proposal", "coords", "actrate", "boardmenu"].includes(c.id)) {
+        walk(c);
+      }
+    }
+  };
+  walk(root);
+}
+async function setLanguage(choice) {
+  const info = S.langInfo || {};
+  LANG = choice === "auto" ? (info.language || "en") : choice;
+  TABLE = LANG === "en" ? {} : (await get("/api/i18n/" + encodeURIComponent(LANG))) || {};
+  document.documentElement.lang = LANG;
+  translateStatic(document.body);
+  repaintAll();
+}
+
+/* ================================================================ basics */
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const num = (v, d) => v == null || v === "" ? "-" : Number(v).toLocaleString(LANG, {maximumFractionDigits: d == null ? 0 : d});
+const store = {get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+               set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
+const baseName = p => String(p || "").split(/[\\/]/).pop();
+const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools"];
+
+const S = {
+  mode: store.get("wb.mode", "place"), list: store.get("wb.list", "parts"),
+  units: store.get("wb.units", "mil"), mirror: store.get("wb.mirror", false), hidden: store.get("wb.layers", {}),
+  state: null, board: null, version: -1, checksVersion: -1, checksPending: [],
+  problems: [], parts: [], nets: [], partsBy: {}, netsBy: {}, compBy: {},
+  sel: null, multi: new Set(), view: null, hover: null, mouse: null,
+  preview: null, previewKind: null, previewFor: null, lastResult: null,
+  lib: null, libPick: new Set(), libFilter: "", libOnly: "", libShown: [],
+  policy: null, live: null, decisions: [], decSeq: 0, asmAt: 0,
+  tools: null, tool: null, toolFilter: "", toolResult: null,
+};
+
+async function get(url) { try { const r = await fetch(url, {cache: "no-store"}); return await r.json(); } catch (e) { return null; } }
+async function post(url, body) {
+  try {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+    return await r.json();
+  } catch (e) { return {ok: false, reason: T("The dashboard did not answer.")}; }
+}
+function say(text, fail) { const m = $("#msg"); m.textContent = text || ""; m.classList.toggle("fail", !!fail); }
+
+/* Lengths in the units the engineer picked. */
+function len(mils, d) {
+  if (mils == null) return "-";
+  return S.units === "mm" ? num(mils * 0.0254, d == null ? 2 : d + 1) + " mm" : num(mils, d == null ? 0 : d) + " mil";
+}
+function xy(x, y) { return S.units === "mm" ? `${num(x * 0.0254, 2)}, ${num(y * 0.0254, 2)} mm` : `${num(x, 1)}, ${num(y, 1)} mil`; }
+
+/* ================================================================ zones */
+// The drawing frame's zones, 1.. across and A.. down, over the board's
+// extent. Everything named on the page carries its zone.
+function zones(b) {
+  b = b || S.drawnBoard; if (!b) return null;
+  const [x0, y0, x1, y1] = b.bbox, w = Math.max(x1 - x0, 1), h = Math.max(y1 - y0, 1);
+  const cols = w >= h ? 8 : Math.max(3, Math.round(8 * w / h)), rows = h >= w ? 8 : Math.max(3, Math.round(8 * h / w));
+  return {x0, y0, x1, y1, cols, rows, zw: w / cols, zh: h / rows};
+}
+function zoneOf(x, y, b) {
+  const z = zones(b || S.board); if (!z || x == null) return "";
+  const c = Math.min(z.cols, Math.max(1, Math.floor((x - z.x0) / z.zw) + 1));
+  const r = Math.min(z.rows, Math.max(1, Math.floor((z.y1 - y) / z.zh) + 1));
+  return String.fromCharCode(64 + r) + c;
+}
+const partZone = ref => { const c = S.compBy[ref]; return c ? zoneOf(c.x, c.y) : ""; };
+
+/* ================================================================ polling */
+async function poll() {
+  const st = await get("/api/wb/state");
+  if (st && st.ok) {
+    const was = S.state && S.state.engine && S.state.engine.state;
+    S.state = st;
+    if (was && st.engine && st.engine.state !== was) engineChanged(was, st.engine);
+    const ck = st.cockpit;
+    if (ck.view_version !== S.version) await loadBoard();
+    if (ck.checks_version !== S.checksVersion) await loadProblems();
+    if (st.engine && st.engine.state === "proposed" && S.previewFor !== st.engine.job_id) await loadPreview();
+    if ((!st.engine || !st.engine.state) && S.preview) { S.preview = null; S.previewFor = null; }
+    if (S.mode === "library" || (S.mode === "assemble" && (!S.lib || S.lib.state === "reading"))) await pollLibrary();
+    if (S.mode === "engines") await pollLive(false);
+    actionFinished(st.action);
+    $("#follow").checked = !!st.cockpit.follow;
+    paintTitle(); paintTools(); paintEmpty(); draw();
+  } else {
+    $("#state").textContent = T("The dashboard is not answering.");
+  }
+  setTimeout(poll, document.hidden ? 4000 : 1000);
+}
+
+async function loadBoard() {
+  const r = await get("/api/wb/board?since=" + S.version);
+  if (!r || !r.ok) return;
+  S.version = r.version;
+  if (r.unchanged) return;
+  if (r.empty) { S.board = null; index(); paintNav(); if (S.mode !== "engines") useDrawn(false); return; }
+  const first = !S.board || S.board.board !== r.board.board;
+  S.board = r.board; S.diff = r.diff; S.diffAt = performance.now();
+  const [p, n] = await Promise.all([get("/api/wb/parts"), get("/api/wb/nets")]);
+  S.parts = (p && p.parts) || []; S.nets = (n && n.nets) || [];
+  index();
+  if (first) { S.view = store.get("wb.view:" + S.board.board, null); }
+  if (S.mode !== "engines") useDrawn(first && !S.view);
+  paintNav(); paintInspector();
+}
+
+async function loadProblems() {
+  const r = await get("/api/wb/problems");
+  if (!r || !r.ok) return;
+  S.checksVersion = r.version; S.problems = r.problems || []; S.checksPending = r.pending || [];
+  const [p, n] = await Promise.all([get("/api/wb/parts"), get("/api/wb/nets")]);
+  if (p && p.parts) S.parts = p.parts;
+  if (n && n.nets) S.nets = n.nets;
+  index(); paintNav(); paintInspector();
+}
+
+async function loadPreview() {
+  const r = await get("/api/wb/engine/preview");
+  if (!r || !r.ok || !r.preview) return;
+  S.preview = r.preview; S.previewKind = r.kind; S.previewFor = S.state.engine.job_id;
+}
+
+function index() {
+  S.partsBy = {}; S.netsBy = {}; S.compBy = {};
+  for (const p of S.parts) S.partsBy[p.ref] = p;
+  for (const n of S.nets) S.netsBy[n.net] = n;
+  if (S.board) for (const c of S.board.components) S.compBy[c.ref] = c;
+}
+
+/* Problems the engineer has accepted, per board. */
+function waiveKey() { return "wb.waived:" + ((S.board && S.board.board) || ""); }
+function waived() { return new Set(store.get(waiveKey(), [])); }
+const probKey = f => f.check + "|" + f.text;
+function liveProblems() { const w = waived(); return S.problems.filter(f => !w.has(probKey(f))); }
+
+/* ================================================================ title block */
+function paintTitle() {
+  const st = S.state, tb = $("#titleblock");
+  const ck = st ? st.cockpit : {};
+  const shown = ck.shown || ck.pinned || "";
+  const loading = ck.loading;
+  $("#boardname").textContent = loading ? T("Loading {0}", baseName(loading)) : shown ? baseName(shown) : T("Choose a board");
+  $("#boardbtn").title = shown || T("Choose the board to show. It stays here whatever you open in Altium.");
+  if (!st || !S.board || S.mode === "library" || S.mode === "tools") { tb.hidden = true; return; }
+  const sm = st.summary || {}, live = liveProblems();
+  const errs = live.filter(f => f.severity === "error").length, warns = live.filter(f => f.severity === "warning").length;
+  const hiddenN = S.problems.length - live.length;
+  let last = ck.error ? T("Altium did not answer: {0}", ck.error) : activityText(ck);
+  if (S.checksPending.length) last = T("Checking {0}", S.checksPending.join(", "));
+  const away = !ck.loading && !ck.in_front && !ck.follow;
+  const html = `<div class="name"><span>${esc(baseName(shown))}</span>${ck.pinned ? `<span class="hint" style="flex:0">${esc(T("Kept on this board"))}</span>` : ""}</div>
+    <div class="${sm.routed === sm.nets ? "ok" : ""}" data-go="route"><span class="h">${esc(T("Nets routed"))}</span><span class="v">${num(sm.routed)} / ${num(sm.nets)}</span></div>
+    <div class="${sm.missing_connections ? "warn" : "ok"}" data-go="route"><span class="h">${esc(T("Open connections"))}</span><span class="v">${num(sm.missing_connections)}</span></div>
+    <div class="${errs ? "bad" : "ok"}" data-go="review"><span class="h">${esc(T("Errors"))}</span><span class="v">${num(errs)}</span></div>
+    <div class="${warns ? "warn" : ""}" data-go="review"><span class="h">${esc(T("Warnings"))}</span><span class="v">${num(warns)}</span></div>
+    <div class="last">${S.checksPending.length || ck.loading ? '<span class="spin"></span> ' : ""}${esc(away ? T("Not in front in Altium. Changes made there show here when you read it again.") : last)}${hiddenN ? " " + esc(T("({0} hidden)", hiddenN)) : ""}${away ? `<button data-reread>${esc(T("Read it again"))}</button>` : ""}</div>`;
+  if (tb.innerHTML !== html) tb.innerHTML = html;
+  tb.hidden = false;
+  $("#state").textContent = T("{0} parts", num(sm.parts));
+}
+function activityText(ck) {
+  const a = ck.activity || "";
+  if (a === "up to date") return T("Up to date, read in {0} s", num(ck.read_seconds, 1));
+  if (a === "no board in front") return T("No board in front in Altium");
+  if (a === "not in front") return T("Not in front in Altium");
+  if (a === "bringing the board to the front") return T("Reading it from Altium");
+  if (a === "waiting for the change to settle") return T("Waiting for the change to settle");
+  if (a.startsWith("reading")) return T("Reading the board");
+  if (a.startsWith("checking")) return T("Checking the board");
+  if (a === "idle") return T("Idle");
+  return a;
+}
+
+function paintEmpty() {
+  const e = $("#empty"), ck = S.state ? S.state.cockpit : null;
+  let html = "";
+  if (S.mode === "library" || S.mode === "tools") html = "";
+  else if (S.mode === "engines" && !S.drawnBoard) html = `<b>${esc(T("No layout published yet"))}</b><span>${esc(T("When the placer or router runs, from this page or the AI, its work shows here as it goes."))}</span>`;
+  else if (!S.drawnBoard) {
+    if (!S.state) html = `<b>${esc(T("Connecting"))}</b>`;
+    else if (ck.error) html = `<b>${esc(T("Altium is not answering"))}</b><span>${esc(T("Check that Altium is running and the eda-agent script is started."))}</span>`;
+    else if (ck.loading || ck.board) html = `<b><span class="spin"></span> ${esc(T("Reading the board"))}</b>`;
+    else html = `<b>${esc(T("Choose a board"))}</b><span>${esc(T("Pick one of the boards open in Altium from the list at the top left. It stays here whatever you open in Altium."))}</span><button data-pick>${esc(T("Open boards"))}</button>`;
+  }
+  e.hidden = !html;
+  if (e.innerHTML !== html) e.innerHTML = html;
+}
+
+/* ================================================================ navigator */
+function setList(name) {
+  S.list = name; store.set("wb.list", name);
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.list === name)));
+  paintNav();
+}
+
+function paintNav() {
+  const q = $("#q").value.trim().toLowerCase();
+  const has = (...xs) => !q || xs.some(x => String(x || "").toLowerCase().includes(q));
+  const isSel = (k, id) => S.sel && S.sel.kind === k && S.sel.id === id;
+  const out = [];
+  if (S.list === "parts") {
+    for (const p of S.parts) {
+      if (!has(p.ref, p.footprint, p.comment, (p.nets || []).join(" "))) continue;
+      out.push(`<div class="row" role="option" aria-selected="${isSel("part", p.ref)}" data-kind="part" data-id="${esc(p.ref)}">
+        <span class="k">${esc(p.ref)}</span><span class="v">${esc(p.comment || p.footprint)}</span>
+        ${p.problems ? `<span class="count">${p.problems}</span>` : ""}<span class="z">${esc(partZone(p.ref))}</span></div>`);
+      if (out.length > 4000) break;
+    }
+  } else if (S.list === "nets") {
+    for (const n of S.nets) {
+      if (!has(n.net)) continue;
+      out.push(`<div class="row" role="option" aria-selected="${isSel("net", n.net)}" data-kind="net" data-id="${esc(n.net)}">
+        <span class="st ${n.status}" title="${esc(netState(n.status))}"></span><span class="k" style="flex:1">${esc(n.net)}</span>
+        ${n.problems ? `<span class="count">${n.problems}</span>` : ""}<span class="z">${n.pads}</span></div>`);
+      if (out.length > 4000) break;
+    }
+  } else {
+    const w = waived(), order = {error: 0, warning: 1, info: 2};
+    const list = S.problems.filter(f => (S.showHidden || !w.has(probKey(f))) && has(f.text, f.check, f.kind))
+      .sort((a, b) => order[a.severity] - order[b.severity] || a.check.localeCompare(b.check));
+    let last = "";
+    for (const f of list) {
+      if (f.check !== last) { out.push(`<div class="grouph">${esc(checkName(f.check))}</div>`); last = f.check; }
+      out.push(`<div class="row ${w.has(probKey(f)) ? "hiddenp" : ""}" role="option" aria-selected="${isSel("problem", f.id)}" data-kind="problem" data-id="${f.id}">
+        ${sevMark(f.severity)}<span class="v" style="color:var(--ink)">${esc(f.text)}</span><span class="z">${f.at ? esc(zoneOf(f.at[0], f.at[1])) : ""}</span></div>`);
+      if (out.length > 4000) break;
+    }
+    const nHidden = S.problems.length - liveProblems().length;
+    if (nHidden) out.push(`<div class="grouph"><button class="quiet" data-showhidden>${esc(S.showHidden ? T("Leave out the {0} hidden problems", nHidden) : T("Show the {0} hidden problems", nHidden))}</button></div>`);
+  }
+  if (!out.length) out.push(`<div class="hint" style="padding:var(--s3)">${esc(S.board ? T("Nothing matches the filter.") : T("No board read yet."))}</div>`);
+  $("#navlist").innerHTML = out.join("");
+}
+const sevMark = s => `<span class="sev ${s}" title="${esc(T(s === "error" ? "Error" : s === "warning" ? "Warning" : "Advice"))}">${s === "error" ? "&#9679;" : s === "warning" ? "&#9650;" : "&#9675;"}</span>`;
+function netState(s) { return T({open: "Not routed", partly: "Partly routed", routed: "Routed", single: "One pad only"}[s] || s); }
+function checkName(c) {
+  return T({placement: "Placement", drc: "Clearance", corners: "Corners", pad_entry: "Pad entries", connectivity: "Connections",
+            planes: "Pours", rotation: "Rotation", loops: "Loops"}[c] || c);
+}
+
+/* ================================================================ selection */
+function select(kind, id, opts) {
+  opts = opts || {};
+  S.sel = kind ? {kind, id} : null;
+  paintNav(); paintInspector(); clearTools(); draw();
+  if (!kind) return;
+  if (opts.zoom) zoomTo(kind, id);
+  if (S.mirror && !opts.quiet) showInAltium();
+  const row = document.querySelector('#navlist .row[aria-selected="true"]');
+  if (row) row.scrollIntoView({block: "nearest"});
+}
+
+async function showInAltium() {
+  if (!S.sel) return;
+  const {kind, id} = S.sel;
+  let body = null;
+  if (kind === "part") body = {part: id};
+  else if (kind === "net") body = {net: id};
+  else { const f = S.problems[id]; if (f && f.at) { body = {x: f.at[0], y: f.at[1], span: 300}; const n = (f.refs || []).find(r => S.netsBy[r]); if (n) body.net = n; } }
+  if (!body) return;
+  const r = await post("/api/cockpit/goto", body);
+  if (r && !r.ok) refused(r.reason);
+  else say(T("Shown in Altium."));
+}
+
+/* A refusal says why; a board that is not in front gets the way out. */
+function refused(reason) {
+  if (/not in front/i.test(reason || "")) {
+    S.lastResult = {kind: "fail", text: T("This board is not in front in Altium."), fix: "focus"};
+    say(T("This board is not in front in Altium."), true);
+  } else {
+    S.lastResult = {kind: "fail", text: reason || T("It did not start.")};
+    say(reason || T("It did not start."), true);
+  }
+  clearTools();
+}
+async function bringToFront() {
+  say(T("Bringing the board to the front..."));
+  const r = await post("/api/wb/focus");
+  S.lastResult = r && r.ok ? {kind: "ok", text: T("The board is in front. Try again.")} : {kind: "fail", text: (r && r.reason) || T("It did not start.")};
+  say(S.lastResult.text, !(r && r.ok)); clearTools();
+}
+
+function nextProblem(step) {
+  const order = {error: 0, warning: 1, info: 2};
+  const list = liveProblems().filter(f => f.severity !== "info")
+    .sort((a, b) => order[a.severity] - order[b.severity] || a.check.localeCompare(b.check));
+  if (!list.length) { say(T("No problems left.")); return; }
+  const at = S.sel && S.sel.kind === "problem" ? list.findIndex(f => f.id === S.sel.id) : -1;
+  const f = list[(at + step + list.length) % list.length];
+  if (S.list !== "problems") setList("problems");
+  select("problem", f.id, {zoom: true});
+  say(T("Problem {0} of {1}", list.indexOf(f) + 1, list.length));
+}
+
+function paintInspector() {
+  const el = $("#inspector");
+  if (!S.sel) {
+    el.innerHTML = `<h2>${esc(T("Selection"))}</h2><p class="hint">${esc(T("Click a part, net or problem on the board or in the list. N goes to the next problem."))}</p>`;
+    return;
+  }
+  const {kind, id} = S.sel, b = S.board;
+  if (kind === "part") {
+    const p = S.partsBy[id];
+    if (!p) { el.innerHTML = `<p class="hint">${esc(T("{0} is not on this board.", id))}</p>`; return; }
+    const pads = (b.pads || []).filter(x => x.comp === id), probs = liveProblems().filter(f => (f.refs || []).includes(id));
+    el.innerHTML = `<div class="ident">${esc(id)}</div><p class="hint" style="margin:2px 0 8px">${esc(p.comment || "")}</p>
+      <dl class="kv"><dt>${esc(T("Footprint"))}</dt><dd>${esc(p.footprint)}</dd>
+      <dt>${esc(T("Zone"))}</dt><dd>${esc(partZone(id))}</dd>
+      <dt>${esc(T("Position"))}</dt><dd>${xy(p.x, p.y)}, ${num(p.rot)}&deg;</dd>
+      <dt>${esc(T("Side"))}</dt><dd>${esc(T(p.side === "bottom" ? "Bottom" : "Top"))}${p.locked ? ", " + esc(T("locked")) : ""}</dd>
+      <dt>${esc(T("Pads"))}</dt><dd>${esc(T("{0} on {1} nets", p.pads, p.nets.length))}</dd></dl>
+      <div class="actions"><button data-do="altium">${esc(T("Show in Altium"))}</button><button data-do="zoomsel">${esc(T("Zoom to it"))}</button></div>
+      ${probs.map(f => `<div class="prob" data-prob="${f.id}">${sevMark(f.severity)}<span>${esc(f.text)}</span></div>`).join("")}
+      <div class="pins">${pads.map(x => `<div data-net="${esc(x.net)}"><span>${esc(x.name)}</span><span>${esc(x.net || T("no net"))}</span></div>`).join("")}</div>`;
+  } else if (kind === "net") {
+    const n = S.netsBy[id];
+    if (!n) { el.innerHTML = `<p class="hint">${esc(T("There is no net {0} on this board.", id))}</p>`; return; }
+    const pads = (b.pads || []).filter(x => x.net === id && x.comp), probs = liveProblems().filter(f => (f.refs || []).includes(id));
+    const routable = n.status === "open" || n.status === "partly";
+    el.innerHTML = `<div class="ident">${esc(id)}</div>
+      <dl class="kv" style="margin-top:6px"><dt>${esc(T("State"))}</dt><dd><span class="st ${n.status}"></span> ${esc(netState(n.status))}</dd>
+      <dt>${esc(T("Pads"))}</dt><dd>${esc(T("{0} on {1} parts", n.pads, n.parts))}</dd>
+      <dt>${esc(T("Copper"))}</dt><dd>${len(n.length)}${n.layers.length ? ", " + esc(n.layers.join(", ")) : ""}</dd>
+      <dt>${esc(T("Vias"))}</dt><dd>${n.vias}</dd></dl>
+      <div class="actions">${routable ? `<button class="go" data-do="plannet">${esc(T("Plan routes"))}</button>` : ""}<button data-do="altium">${esc(T("Highlight in Altium"))}</button><button data-do="zoomsel">${esc(T("Zoom to it"))}</button></div>
+      ${probs.map(f => `<div class="prob" data-prob="${f.id}">${sevMark(f.severity)}<span>${esc(f.text)}</span></div>`).join("")}
+      <div class="pins">${pads.map(x => `<div data-part="${esc(x.comp)}"><span>${esc(x.comp)}.${esc(x.name)}</span><span>${esc(partZone(x.comp))}</span></div>`).join("")}</div>`;
+  } else {
+    const f = S.problems[id];
+    if (!f) { el.innerHTML = `<p class="hint">${esc(T("That problem has been fixed."))}</p>`; return; }
+    const isHidden = waived().has(probKey(f));
+    el.innerHTML = `<h2>${sevMark(f.severity)} ${esc(checkName(f.check))}</h2><p style="margin:0 0 6px">${esc(f.text)}</p>
+      ${f.at ? `<dl class="kv"><dt>${esc(T("Zone"))}</dt><dd>${esc(zoneOf(f.at[0], f.at[1]))}</dd><dt>${esc(T("Position"))}</dt><dd>${xy(f.at[0], f.at[1])}</dd></dl>` : ""}
+      <div class="actions">${f.at ? `<button data-do="altium">${esc(T("Show in Altium"))}</button><button data-do="zoomsel">${esc(T("Zoom to it"))}</button>` : ""}
+        <button data-do="waive">${esc(isHidden ? T("Show this problem again") : T("Hide this problem"))}</button><button data-do="next">${esc(T("Next problem"))} <kbd>N</kbd></button></div>
+      <div class="actions">${(f.refs || []).map(r => `<button class="quiet" data-ref="${esc(r)}">${esc(r)}</button>`).join("")}</div>`;
+  }
+}
+
+/* ================================================================ mode panels */
+function clearTools() { $("#tools").dataset.html = ""; }
+function paintTools() {
+  if (!S.state) return;
+  let html = "";
+  if (S.mode === "place") html = placerBlock() + partActionsBlock();
+  else if (S.mode === "route") html = plannerBlock() + routeQueueBlock() + netActionsBlock();
+  else if (S.mode === "review") html = reviewBlock();
+  else if (S.mode === "library") html = libraryBlock();
+  else if (S.mode === "assemble") html = assembleBlock();
+  else if (S.mode === "engines") html = enginesBlock();
+  else if (S.mode === "tools") html = toolsSideBlock();
+  const el = $("#tools");
+  if (el.dataset.html === html) return;
+  const keep = {};
+  el.querySelectorAll("select, input[type=checkbox]").forEach(i => { if (i.id) keep[i.id] = i.type === "checkbox" ? i.checked : i.value; });
+  el.innerHTML = html; el.dataset.html = html;
+  for (const [k, v] of Object.entries(keep)) { const i = document.getElementById(k); if (!i) continue; if (i.type === "checkbox") i.checked = v; else if ([...i.options].some(o => o.value === v && !o.disabled)) i.value = v; }
+}
+
+function resultLine() {
+  const r = S.lastResult, a = S.state && S.state.action;
+  if (a && a.state === "running") return `<div class="result run"><span class="spin"></span> ${esc(actionName(a.action))}</div>`;
+  if (!r) return "";
+  return `<div class="result ${r.kind}">${esc(r.text)}${r.fix === "focus" ? ` <button data-do="focus">${esc(T("Bring it to the front"))}</button>` : ""}</div>`;
+}
+function actionName(a) {
+  return T({align: "Aligning", distribute: "Spreading", rotate: "Rotating", flip: "Flipping", snap: "Snapping to the grid",
+            unroute: "Unrouting", tidy: "Tidying tracks", teardrops: "Adding teardrops", repour: "Repouring",
+            drc: "Running Altium's DRC", "update footprints": "Updating footprints from the library",
+            "update from libraries": "Updating from the libraries"}[a] || a);
+}
+let lastAction = null;
+function actionFinished(a) {
+  if (!a || !a.action || a.state === "running") { lastAction = a && a.state === "running" ? a.started : lastAction; return; }
+  if (lastAction !== a.started) return;
+  lastAction = null;
+  const failed = a.state === "failed";
+  S.lastResult = failed ? {kind: "fail", text: T("{0} failed: {1}", actionName(a.action), (a.problems || []).join("; "))}
+    : {kind: "ok", text: T("{0}: done in {1} s. Ctrl+Z in Altium undoes it.", actionName(a.action), num(a.seconds, 1))};
+  say(S.lastResult.text, failed); clearTools();
+}
+
+async function runAction(action, args) {
+  S.lastResult = null;
+  const r = await post("/api/wb/action", {action, args: args || {}});
+  if (!r || !r.ok) return refused(r && r.reason);
+  lastAction = "pending"; say(actionName(action)); clearTools();
+}
+
+/* -- the placer and the route planner -------------------------------- */
+function engineBlock(kind) {
+  const e = S.state.engine || {}, mine = e.kind === kind;
+  const other = e.kind && !mine && ["running", "proposed", "applying"].includes(e.state);
+  const sel = S.state.cockpit.selected || {};
+  const what = kind === "place" ? "parts" : "nets", nSel = (sel[what] || []).length;
+  const title = kind === "place" ? T("Placer") : T("Route planner");
+  let body = "";
+  if (!mine || !e.state || e.state === "applied" || e.state === "failed") {
+    const pick = S.sel && S.sel.kind === (kind === "place" ? "part" : "net") ? S.sel.id : "";
+    body += `<select class="wide" id="scope-${kind}" aria-label="${esc(T("What to work on"))}">
+      ${nSel ? `<option value="selection">${esc(kind === "place" ? T("The {0} parts selected in Altium", nSel) : T("The {0} nets selected in Altium", nSel))}</option>` : ""}
+      ${pick ? `<option value="picked">${esc(T("Only {0}", pick))}</option>` : ""}
+      <option value="all">${esc(kind === "place" ? T("Every movable part") : T("Every net still open"))}</option></select>`;
+    if (kind === "place") body += `<label class="check"><input type="checkbox" id="compact"> ${esc(T("Pack the parts tighter"))}</label>`;
+    body += `<div class="actions"><button class="go" data-engine="${kind}" ${other || !S.board ? "disabled" : ""}>${esc(kind === "place" ? T("Propose a placement") : T("Plan routes"))}</button></div>`;
+    if (other) body += `<p class="hint">${esc(T("Wait for the other proposal to be applied or discarded."))}</p>`;
+    else if (mine && e.state === "applied") body += `<div class="result ok">${esc(kind === "place" ? T("Placement applied. Ctrl+Z in Altium undoes it.") : T("Routes applied. Ctrl+Z in Altium undoes it."))}</div>`;
+    else if (mine && e.state === "failed") body += `<div class="result fail">${esc(e.error || (e.applied && e.applied.error) || T("It failed."))}</div>`;
+    else body += `<p class="hint">${esc(kind === "place" ? T("Works it out in the background and draws it on the board in blue. Altium is not touched until you apply it.") : T("Routes in the background and draws the copper on the board in blue. Altium is not touched until you apply it."))}</p>`;
+  } else if (e.state === "running") {
+    body += `<div class="result run"><span class="spin"></span> ${esc(kind === "place" ? T("Placing, {0} s", num(e.seconds)) : T("Routing, {0} s", num(e.seconds)))}</div>
+      <div class="actions"><button data-engine-do="drop">${esc(T("Stop waiting"))}</button></div>`;
+  } else if (e.state === "proposed") {
+    const s = e.summary || {};
+    if (kind === "place") {
+      const b = s.wirelength_before, a = s.wirelength_after, pct = b ? Math.round(100 * (a - b) / b) : 0;
+      body += `<div class="figures"><div><span>${esc(T("Parts moved"))}</span><b>${num(s.moves)}</b></div>
+        <div><span>${esc(T("Wire length"))}</span><b class="${pct < 0 ? "good" : pct > 0 ? "bad" : ""}">${pct > 0 ? "+" : ""}${pct}%</b></div>
+        <div><span>${esc(T("Overlaps"))}</span><b class="${s.overlaps ? "bad" : "good"}">${num(s.overlaps)}</b></div></div>
+        <p class="hint">${esc(T("{0} before, {1} after.", len(b), len(a)))}${s.failed && s.failed.length ? " " + esc(T("No place found for {0}.", s.failed.join(", "))) : ""}</p>
+        ${pct > 0 ? `<div class="result fail">${esc(T("This proposal makes the connections longer."))}</div>` : ""}`;
+    } else {
+      const c = s.completion == null ? null : Math.round(100 * s.completion);
+      body += `<div class="figures"><div><span>${esc(T("Tracks"))}</span><b>${num(s.tracks)}</b></div><div><span>${esc(T("Vias"))}</span><b>${num(s.vias)}</b></div>
+        <div><span>${esc(T("Complete"))}</span><b class="${c === 100 ? "good" : ""}">${c == null ? "-" : c + "%"}</b></div></div>
+        ${c != null ? `<div class="meter"><i style="width:${c}%"></i></div>` : ""}
+        ${s.unrouted_nets ? `<p class="hint bad">${esc(T("{0} nets left open.", num(s.unrouted_nets)))}</p>` : ""}
+        ${s.violations ? `<p class="hint bad">${esc(T("{0} clearance violations.", num(s.violations)))}</p>` : ""}`;
+    }
+    body += `<div class="actions"><button class="go" data-engine-do="apply">${esc(T("Apply to Altium"))} <kbd>Ctrl Enter</kbd></button><button data-engine-do="drop">${esc(T("Discard"))}</button></div>
+      ${(s.notes || []).length ? `<details style="margin-top:8px"><summary>${esc(T("{0} notes from the engine", s.notes.length))}</summary>${s.notes.map(n => `<p class="hint">${esc(n)}</p>`).join("")}</details>` : ""}`;
+  } else if (e.state === "applying") {
+    body += `<div class="result run"><span class="spin"></span> ${esc(T("Writing to Altium"))}</div>`;
+  }
+  return `<section class="block"><h2>${esc(title)}${mine && e.state === "proposed" ? `<small class="pencil">${esc(T("Shown on the board in blue"))}</small>` : ""}</h2>${body}</section>`;
+}
+const placerBlock = () => engineBlock("place");
+const plannerBlock = () => engineBlock("route");
+
+function engineChanged(was, e) {
+  if (e.state === "proposed") say(T("The proposal is ready. Check it on the board, then apply or discard it."));
+  else if (e.state === "applied") say(T("Applied to Altium."));
+  else if (e.state === "failed") say(e.error || T("It failed."), true);
+  clearTools();
+}
+
+async function startEngine(kind, nets) {
+  const scope = (document.getElementById("scope-" + kind) || {}).value || "all";
+  const body = {kind};
+  if (nets) body.nets = nets;
+  else if (scope === "selection") body.selection = true;
+  else if (scope === "picked" && S.sel) body[kind === "place" ? "parts" : "nets"] = [S.sel.id];
+  if (kind === "place" && $("#compact") && $("#compact").checked) body.compact = true;
+  const r = await post("/api/wb/engine", body);
+  if (!r || !r.ok) return refused(r && r.reason);
+  say(kind === "place" ? T("Working out a placement...") : T("Planning routes..."));
+}
+async function engineDo(what) {
+  if (what === "apply" && !(S.state.engine && S.state.engine.state === "proposed")) return;
+  const r = await post("/api/wb/engine", {do: what});
+  if (r && !r.ok) return refused(r.reason);
+  if (what === "apply") say(T("Writing to Altium..."));
+  else { S.preview = null; S.previewFor = null; say(T("Proposal discarded.")); }
+  clearTools(); draw();
+}
+
+/* -- actions on Altium's selection ----------------------------------- */
+const PART_ACTIONS = [
+  [["align", {mode: "left"}, 2, "Left"], ["align", {mode: "right"}, 2, "Right"], ["align", {mode: "top"}, 2, "Top"], ["align", {mode: "bottom"}, 2, "Bottom"],
+   ["align", {mode: "center_y"}, 2, "On one row"], ["align", {mode: "center_x"}, 2, "In one column"]],
+  [["distribute", {axis: "x"}, 3, "Spread across"], ["distribute", {axis: "y"}, 3, "Spread up"]],
+  [["rotate", {degrees: 90}, 1, "Rotate 90°"], ["flip", {}, 1, "Other side"], ["snap", {grid: 25}, 1, "Onto the 25 mil grid"]],
+];
+function actionButtons(list, ok) {
+  return list.map(([a, args, need, label]) => `<button data-action="${a}" data-args='${esc(JSON.stringify(args))}' ${ok(need) ? "" : "disabled"}>${esc(T(label))}</button>`).join("");
+}
+function partActionsBlock() {
+  const sel = S.state.cockpit.selected || {}, n = (sel.parts || []).length;
+  const running = S.state.action && S.state.action.state === "running";
+  const ok = need => !running && S.board && n >= need;
+  return `<section class="block"><h2>${esc(T("Parts selected in Altium"))}<small>${esc(T("{0} selected", n))}</small></h2>
+    ${n ? "" : `<p class="hint">${esc(T("Select parts in Altium to line them up, spread, turn or flip them."))}</p>`}
+    <div class="hint" style="margin-top:6px">${esc(T("Line up"))}</div><div class="actions" style="margin-top:3px">${actionButtons(PART_ACTIONS[0], ok)}</div>
+    <div class="actions">${actionButtons(PART_ACTIONS[1], ok)}${actionButtons(PART_ACTIONS[2], ok)}</div>${resultLine()}</section>`;
+}
+function routeQueueBlock() {
+  const open = S.nets.filter(n => n.status === "open" || n.status === "partly");
+  return `<section class="block"><h2>${esc(T("Still open"))}<small>${esc(T("{0} nets", open.length))}</small></h2>
+    ${open.length ? `<p class="hint">${esc(T("Pick a net and press Enter to plan its routes."))}</p><div class="list">${open.slice(0, 60).map(n => `<div class="row" data-kind="net" data-id="${esc(n.net)}" aria-selected="${!!(S.sel && S.sel.id === n.net)}"><span class="st ${n.status}"></span><span class="k" style="flex:1">${esc(n.net)}</span><span class="z">${esc(T("{0} pads", n.pads))}</span></div>`).join("")}</div>
+      ${open.length > 60 ? `<p class="hint">${esc(T("{0} more in the Nets list.", open.length - 60))}</p>` : ""}
+      <div class="actions"><button data-do="planall">${esc(T("Plan routes for every open net"))}</button></div>`
+      : `<div class="result ok">${esc(T("Every net is routed."))}</div>`}</section>`;
+}
+function netActionsBlock() {
+  const sel = S.state.cockpit.selected || {}, n = (sel.nets || []).length;
+  const running = S.state.action && S.state.action.state === "running";
+  return `<section class="block"><h2>${esc(T("Nets selected in Altium"))}<small>${esc(T("{0} selected", n))}</small></h2>
+    <div class="actions">${actionButtons([["unroute", {}, 0, "Unroute"], ["tidy", {}, 0, "Tidy the tracks"]], () => !running && S.board && n)}</div>
+    <h2 style="margin-top:14px">${esc(T("Whole board"))}</h2>
+    <div class="actions">${actionButtons([["teardrops", {}, 0, "Add teardrops"], ["repour", {}, 0, "Repour"], ["drc", {}, 0, "Run Altium's DRC"]], () => !running && S.board)}</div>${resultLine()}</section>`;
+}
+
+/* -- review ------------------------------------------------------------ */
+function reviewBlock() {
+  const live = liveProblems(), by = {error: 0, warning: 0, info: 0}, checks = {};
+  for (const f of live) { by[f.severity]++; checks[f.check] = (checks[f.check] || 0) + 1; }
+  const running = S.state.action && S.state.action.state === "running";
+  return `<section class="block"><h2>${esc(T("Problems"))}${S.checksPending.length ? '<small><span class="spin"></span></small>' : ""}</h2>
+    <div class="figures"><div><span>${esc(T("Errors"))}</span><b class="${by.error ? "bad" : "good"}">${by.error}</b></div>
+      <div><span>${esc(T("Warnings"))}</span><b class="${by.warning ? "amber" : ""}">${by.warning}</b></div><div><span>${esc(T("Advice"))}</span><b>${by.info}</b></div></div>
+    <div class="actions"><button class="go" data-do="next">${esc(T("Next problem"))} <kbd>N</kbd></button></div>
+    <dl class="kv" style="margin-top:10px">${Object.entries(checks).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<dt>${esc(checkName(k))}</dt><dd>${v}</dd>`).join("")}</dl>
+    <p class="hint">${esc(T("The board is checked again each time it changes in Altium. Hide a problem you have accepted; it stays hidden for this board."))}</p></section>
+    <section class="block"><h2>${esc(T("Altium"))}</h2><div class="actions"><button data-do="refresh">${esc(T("Read the board again"))}</button>${actionButtons([["drc", {}, 0, "Run Altium's DRC"]], () => !running && S.board)}</div>${resultLine()}</section>`;
+}
+
+/* ================================================================ library */
+async function pollLibrary(start) {
+  const r = await get("/api/wb/library"); if (!r) return;
+  const was = S.lib && S.lib.state; S.lib = r;
+  if (start && r.state === "empty") return readLibrary();
+  if (r.state !== was || r.state === "reading") paintPane();
+  if (S.mode === "assemble" && r.state === "ready" && was !== "ready") { asmLight(); clearTools(); }
+}
+async function readLibrary() {
+  const r = await post("/api/wb/library/read");
+  if (r && !r.ok) say(r.reason, true);
+  S.lib = {state: "reading", step: "the BOM"}; paintPane();
+}
+function libStep(s) { return T({"the BOM": "the BOM", "where each footprint comes from": "where each footprint comes from", "the parts' parameters": "the parts' parameters"}[s] || s || ""); }
+function libRows() {
+  const L = S.lib, q = S.libFilter.toLowerCase();
+  let rows = (L.rows || []).filter(r => !S.libOnly || r.source === S.libOnly);
+  if (q) rows = rows.filter(r => [r.designators.join(" "), r.comment, r.lib_ref, r.footprint, r.mpn, r.maker, r.supplier, r.source,
+    r.issues.map(i => i.text).join(" ")].join(" ").toLowerCase().includes(q));
+  return rows;
+}
+function issueText(i) {
+  let m;
+  if (i.text === "no footprint") return T("No footprint");
+  if (i.text === "the footprint model names no library") return T("The footprint names no library");
+  if (i.text === "no manufacturer part number") return T("No manufacturer part number");
+  if (i.text === "no datasheet link") return T("No datasheet link");
+  if ((m = /^Altium does not find (.+) in (.+)$/.exec(i.text))) return T("Altium does not find {0} in {1}", m[1], m[2]);
+  if ((m = /^(.+) is used with (\d+) footprints$/.exec(i.text))) return T("{0} is used with {1} footprints", m[1], m[2]);
+  if ((m = /^(.+) comes from (\d+) library parts; could be one$/.exec(i.text))) return T("{0} comes from {1} library parts; one would do", m[1], m[2]);
+  return i.text;
+}
+function paintPane() {
+  const pane = $("#pane");
+  pane.hidden = !(S.mode === "library" || S.mode === "tools");
+  if (S.mode === "tools") return paintToolsPane();
+  if (pane.hidden) return;
+  const L = S.lib || {};
+  if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
+  if (L.state === "failed") { pane.innerHTML = `<div style="padding:30px"><p class="bad">${esc(L.error)}</p><button data-lib="read">${esc(T("Try again"))}</button></div>`; return; }
+  const rows = libRows(), pct = (a, b) => b ? Math.round(100 * a / b) + "%" : "-";
+  const focus = document.activeElement && document.activeElement.id === "libq";
+  const allOn = rows.length && rows.every(r => r.designators.every(d => S.libPick.has(d)));
+  pane.innerHTML = `<div class="panehead"><div class="figures">
+      <div><span>${esc(T("Parts"))}</span><b>${num(L.parts)}</b></div><div><span>${esc(T("Different parts"))}</span><b>${num(L.kinds)}</b></div>
+      <div><span>${esc(T("With an MPN"))}</span><b class="${L.with_mpn === L.parts ? "good" : ""}">${pct(L.with_mpn, L.parts)}</b></div>
+      <div><span>${esc(T("With a datasheet"))}</span><b class="${L.with_datasheet === L.parts ? "good" : ""}">${pct(L.with_datasheet, L.parts)}</b></div>
+      <div><span>${esc(T("Errors"))}</span><b class="${L.counts.error ? "bad" : "good"}">${L.counts.error}</b></div>
+      <div><span>${esc(T("Warnings"))}</span><b class="${L.counts.warning ? "amber" : ""}">${L.counts.warning}</b></div></div>
+      <input id="libq" placeholder="${esc(T("Filter parts, values, MPNs, issues"))}" value="${esc(S.libFilter)}" aria-label="${esc(T("Filter"))}"></div>
+    <div class="chipset"><button data-libonly="" aria-pressed="${!S.libOnly}">${esc(T("Every library"))}</button>${(L.libraries || []).map(l =>
+      `<button data-libonly="${esc(l.library)}" aria-pressed="${S.libOnly === l.library}" class="${l.missing ? "missing" : ""}" title="${esc((l.paths || []).join(" ; ") || l.name)}">${esc(l.name === "(no library)" ? T("No library") : l.name)} ${l.parts}${l.missing ? " " + esc(T("({0} not found)", l.missing)) : ""}</button>`).join("")}</div>
+    ${L.models_read === false ? `<p class="bad">${esc(T("Altium gave no model links, so where the footprints come from is unknown."))}</p>` : ""}
+    <table class="grid"><thead><tr><th><input type="checkbox" data-liball aria-label="${esc(T("Pick every line shown"))}" ${allOn ? "checked" : ""}></th>
+      <th>${esc(T("Parts"))}</th><th>${esc(T("Qty"))}</th><th>${esc(T("Comment"))}</th><th>${esc(T("Library part"))}</th><th>${esc(T("Footprint"))}</th>
+      <th>${esc(T("Footprint library"))}</th><th>${esc(T("MPN"))}</th><th>${esc(T("Supplier"))}</th><th>${esc(T("Issues"))}</th></tr></thead><tbody>
+    ${rows.map((r, i) => { const on = r.designators.every(d => S.libPick.has(d)); return `<tr data-librow="${i}" aria-selected="${on}">
+      <td><input type="checkbox" ${on ? "checked" : ""} aria-label="${esc(r.designators.join(", "))}"></td>
+      <td class="n">${esc(r.designators.join(", "))}</td><td>${r.qty}</td><td>${esc(r.comment)}</td>
+      <td class="m" title="${esc(r.lib_ref)}">${esc(r.lib_ref)}${r.symbol_library ? `<div class="sub">${esc(r.symbol_library)}</div>` : ""}</td>
+      <td class="m" title="${esc(r.footprint)}">${esc(r.footprint)}</td>
+      <td class="m" title="${esc(r.library_file || r.library)}">${r.found ? "" : '<span class="bad">&#9650; </span>'}${esc(r.source === "(no library)" ? T("No library") : r.source)}</td>
+      <td class="m" title="${esc(r.maker)}">${r.datasheet && /^https?:/i.test(r.datasheet) ? `<a href="${esc(r.datasheet)}" target="_blank" rel="noopener" title="${esc(T("Open the datasheet"))}">${esc(r.mpn || T("Datasheet"))}</a>` : esc(r.mpn)}</td>
+      <td class="m">${esc(r.supplier)}</td>
+      <td>${r.issues.map(x => `<div class="issue">${sevMark(x.severity)} ${esc(issueText(x))}</div>`).join("")}</td></tr>`; }).join("")}
+    </tbody></table>
+    <p class="hint">${esc(T("Read at {0}, in {1} s. Pick lines to light their parts on the board and to update them from their library.", L.read_at ? new Date(L.read_at * 1000).toLocaleTimeString(LANG) : "", num(L.seconds, 1)))}</p>`;
+  S.libShown = rows;
+  if (focus) { const q = $("#libq"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+}
+function libraryBlock() {
+  const n = S.libPick.size, pol = S.policy, running = S.state.action && S.state.action.state === "running";
+  let polHtml = "";
+  if (pol === "running") polHtml = `<div class="result run"><span class="spin"></span> ${esc(T("Checking every footprint"))}</div>`;
+  else if (pol && pol.available === false) polHtml = `<div class="result fail">${esc(T("No PcbLib is open in Altium. Open one, then check it."))}</div>`;
+  else if (pol) {
+    const f = pol.findings || [];
+    polHtml = `<p class="hint">${esc(T("{0}: {1} footprints, {2} follow the library's own conventions.", baseName(pol.library_path), num(pol.footprint_count), num(pol.clean_count)))}</p>
+      ${f.slice(0, 80).map(x => `<div class="prob">${sevMark(x.severity)}<span><b>${esc(x.footprint)}</b> ${esc(x.message || x.dimension || "")}</span></div>`).join("") || `<div class="result ok">${esc(T("Every footprint follows the library's own conventions."))}</div>`}`;
+  }
+  return `<section class="block"><h2>${esc(T("Picked lines"))}<small>${esc(T("{0} parts", n))}</small></h2>
+      <div class="actions"><button class="go" data-lib="update" ${n && !running && S.board ? "" : "disabled"} title="${esc(T("Replaces each placed part with a fresh copy of its footprint from its PcbLib, keeping position, side, nets and links."))}">${esc(T("Update their footprints from the library"))}</button></div>
+      <div class="actions"><button data-lib="show" ${n ? "" : "disabled"}>${esc(T("Show on the board"))}</button><button data-lib="pickerrors">${esc(T("Pick every line with an error"))}</button><button data-lib="clear" ${n ? "" : "disabled"}>${esc(T("Clear"))}</button></div>${resultLine()}</section>
+    <section class="block"><h2>${esc(T("Whole project"))}</h2>
+      <div class="actions"><button data-lib="sch" ${running ? "disabled" : ""}>${esc(T("Update the schematic from its libraries"))}</button><button data-lib="pcb" ${running ? "disabled" : ""}>${esc(T("Update the board from its PCB libraries"))}</button><button data-lib="read" ${S.lib && S.lib.state === "reading" ? "disabled" : ""}>${esc(T("Read the project again"))}</button></div>
+      <p class="hint">${esc(T("Altium's own Update From Libraries. Its dialogs are answered for you."))}</p></section>
+    <section class="block"><h2>${esc(T("Footprint library check"))}</h2>
+      <div class="actions"><button data-lib="audit" ${pol === "running" ? "disabled" : ""}>${esc(T("Check the open PcbLib"))}</button></div>
+      <p class="hint">${esc(T("Works out the library's own conventions (layers, heights, pad shapes) and lists every footprint that breaks them."))}</p>${polHtml}</section>`;
+}
+async function libDo(what) {
+  if (what === "update") {
+    const r = await post("/api/wb/library/update", {designators: [...S.libPick]});
+    if (!r || !r.ok) return refused(r && r.reason);
+    lastAction = "pending"; say(actionName("update footprints"));
+  } else if (what === "show") { S.multi = new Set(S.libPick); setMode("place"); fit(); }
+  else if (what === "clear") { S.libPick.clear(); S.multi.clear(); paintPane(); }
+  else if (what === "pickerrors") { for (const r of S.lib.rows || []) if (r.worst === 0) r.designators.forEach(d => S.libPick.add(d)); S.multi = new Set(S.libPick); paintPane(); }
+  else if (what === "sch" || what === "pcb") {
+    const r = await post("/api/wb/library/update", {target: what === "sch" ? "schematic" : "pcb"});
+    if (!r || !r.ok) return refused(r && r.reason);
+    lastAction = "pending"; say(actionName("update from libraries"));
+  } else if (what === "read") readLibrary();
+  else if (what === "audit") { S.policy = "running"; clearTools(); paintTools(); S.policy = (await get("/api/footprint-policy")) || {available: false}; }
+  clearTools(); paintTools(); draw();
+}
+
+/* ================================================================ assemble */
+function asmKey() { return "wb.asm:" + ((S.board && S.board.board) || ""); }
+function asmDone() { return new Set(store.get(asmKey(), [])); }
+const lineKey = l => l.designators.join(",");
+function asmLines() {
+  const rows = (S.lib && S.lib.rows) || [], tall = /^(J|P|CN|USB|SW|BT|K|T|F|X|Y|H|MH|LS|BZ)\d/i;
+  return rows.map(r => { const c = S.compBy[r.designators[0]]; return {...r, on: !!c, side: c && c.side === "bottom" ? 1 : 0,
+      area: c ? (c.bbox[2] - c.bbox[0]) * (c.bbox[3] - c.bbox[1]) : 0, tall: tall.test(r.designators[0]) ? 1 : 0}; })
+    .filter(r => r.on).sort((a, b) => a.side - b.side || a.tall - b.tall || a.area - b.area || a.designators[0].localeCompare(b.designators[0], undefined, {numeric: true}));
+}
+function asmLine() { const l = asmLines(); if (!l.length) return null; S.asmAt = Math.max(0, Math.min(l.length - 1, S.asmAt)); return l[S.asmAt]; }
+function asmLight() { const l = asmLine(); S.multi = new Set(l ? l.designators : []); draw(); }
+function asmDo(what) {
+  const lines = asmLines(); if (!lines.length) return;
+  const done = asmDone(), cur = asmLine();
+  if (what === "done") {
+    const k = lineKey(cur); done.has(k) ? done.delete(k) : done.add(k); store.set(asmKey(), [...done]);
+    if (done.has(k)) { const nx = lines.findIndex((l, i) => i > S.asmAt && !done.has(lineKey(l))); if (nx >= 0) S.asmAt = nx; }
+  } else if (what === "next") S.asmAt = Math.min(lines.length - 1, S.asmAt + 1);
+  else if (what === "prev") S.asmAt = Math.max(0, S.asmAt - 1);
+  else if (what === "reset") { store.set(asmKey(), []); S.asmAt = 0; }
+  else if (what.startsWith("go:")) S.asmAt = +what.slice(3);
+  asmLight(); clearTools(); paintTools();
+}
+function assembleBlock() {
+  const L = S.lib || {};
+  if (L.state !== "ready") return `<section class="block"><h2>${esc(T("Assemble"))}</h2>${L.state === "failed" ? `<div class="result fail">${esc(L.error)}</div>` : `<div class="result run"><span class="spin"></span> ${esc(T("Reading the BOM from Altium"))}</div>`}</section>`;
+  const lines = asmLines(), done = asmDone(), cur = asmLine();
+  if (!cur) return `<section class="block"><h2>${esc(T("Assemble"))}</h2><p class="hint">${esc(T("None of the BOM's parts are on this board."))}</p></section>`;
+  const parts = lines.reduce((a, l) => a + l.qty, 0), placed = lines.filter(l => done.has(lineKey(l))).reduce((a, l) => a + l.qty, 0);
+  const isDone = done.has(lineKey(cur));
+  return `<section class="block asm"><h2>${esc(T("Line {0} of {1}", S.asmAt + 1, lines.length))}<small>${esc(T("{0} of {1} parts placed", placed, parts))}</small></h2>
+      <div class="meter"><i style="width:${parts ? 100 * placed / parts : 0}%"></i></div>
+      <div class="now">${esc(cur.comment || cur.lib_ref)}</div>
+      <p class="hint" style="margin:2px 0">${esc(cur.footprint)}, ${esc(T(cur.side ? "bottom side" : "top side"))}${cur.mpn ? ", " + esc(cur.mpn) : ""}</p>
+      <div class="refs">${esc(T("{0} × {1}", cur.qty, cur.designators.join(", ")))}</div>
+      <div class="actions"><button data-asm="prev">${esc(T("Back"))}</button><button class="go" data-asm="done">${esc(isDone ? T("Not placed after all") : T("Placed, next"))} <kbd>Space</kbd></button><button data-asm="next">${esc(T("Skip"))}</button></div>
+      <p class="hint">${esc(T("The parts of this line are ringed in amber on the board. Progress is kept in this browser."))}</p></section>
+    <section class="block asm"><h2>${esc(T("All lines"))}<small>${lines.filter(l => done.has(lineKey(l))).length} / ${lines.length}</small></h2><div class="list">
+      ${lines.map((l, i) => `<div class="row ${done.has(lineKey(l)) ? "done" : ""}" aria-selected="${i === S.asmAt}" data-asm="go:${i}"><span class="k">${l.qty}&times;</span><span class="v">${esc(l.comment || l.lib_ref)}, ${esc(l.designators.join(", "))}</span></div>`).join("")}
+      </div><div class="actions"><button data-asm="reset">${esc(T("Start over"))}</button></div></section>`;
+}
+
+/* ================================================================ engines */
+async function pollLive(start) {
+  const r = await get("/api/live" + (start || !S.live ? "" : "?since=" + S.live.version));
+  if (!r || !r.ok) return;
+  const changed = !r.unchanged;
+  if (changed) S.live = r.empty ? {version: 0, empty: true, progress: r.progress} : r;
+  else S.live = {...S.live, note: r.note, progress: r.progress, ts: r.ts};
+  const d = await get("/api/live/decisions?since=" + (start ? 0 : S.decSeq));
+  if (d && d.ok) { if (start || d.last < S.decSeq) S.decisions = []; S.decisions = S.decisions.concat(d.decisions || []).slice(-500); S.decSeq = d.last; }
+  if (S.mode === "engines" && (changed || start)) { if (changed && r.diff) { S.diff = r.diff; S.diffAt = performance.now(); } useDrawn(start); }
+  clearTools();
+}
+function enginesBlock() {
+  const L = S.live || {}, pr = L.progress || {}, decs = S.decisions.slice().reverse();
+  const busy = pr.text && Date.now() / 1000 - (pr.time || 0) < 30;
+  return `<section class="block"><h2>${esc(T("Latest layout"))}${L.version ? `<small>${esc(L.ts || "")}</small>` : ""}</h2>
+      ${L.version ? `<p style="margin:0">${esc(L.note || "")}</p>` : `<p class="hint">${esc(T("Nothing published yet."))}</p>`}
+      ${busy ? `<div class="result run"><span class="spin"></span> ${esc(pr.text)}</div>` : ""}
+      <p class="hint">${esc(T("What the placer and router publish as they work, whoever started them. The board in Altium is in the other modes."))}</p></section>
+    <section class="block"><h2>${esc(T("Decisions"))}<small>${decs.length}</small></h2>
+      ${decs.slice(0, 200).map(x => `<div class="dec"><span>${esc(String(x.ts || "").slice(5, 16).replace("T", " "))}</span>${esc(x.text)}</div>`).join("") || `<p class="hint">${esc(T("None logged."))}</p>`}</section>`;
+}
+
+/* ================================================================ tools */
+async function loadTools() { if (S.tools) return; const r = await get("/api/tools"); S.tools = (r && r.tools) || []; paintPane(); }
+function paintToolsPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  if (!S.tools) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; loadTools(); return; }
+  const q = S.toolFilter.toLowerCase(), recent = store.get("wb.recenttools", []);
+  const list = S.tools.filter(t => !q || t.name.includes(q) || (t.description || "").toLowerCase().includes(q));
+  list.sort((a, b) => (recent.indexOf(b.name) - recent.indexOf(a.name)) || a.name.localeCompare(b.name));
+  const t = S.tools.find(x => x.name === S.tool);
+  const focus = document.activeElement && document.activeElement.id === "toolq";
+  let form = `<p class="hint">${esc(T("Pick a tool on the left. Its settings come up here."))}</p>`;
+  if (t) {
+    const props = (t.schema && t.schema.properties) || {}, req = new Set((t.schema && t.schema.required) || []);
+    form = `<h2 style="margin:0 0 6px">${esc(t.name)} ${t.mutates ? `<span class="tag">${esc(T("Changes the design"))}</span>` : ""}</h2>
+      <div class="desc">${esc(t.description)}</div>
+      ${Object.entries(props).map(([k, p]) => toolField(k, p, req.has(k))).join("") || `<p class="hint">${esc(T("This tool takes no settings."))}</p>`}
+      <div class="actions"><button class="go" type="submit">${esc(t.mutates ? T("Run it on the design") : T("Run"))}</button></div>
+      ${S.toolResult ? `<h2 style="margin:14px 0 6px">${esc(S.toolResult.ok ? T("Result, {0} ms", num(S.toolResult.elapsed_ms)) : T("Failed"))}</h2><pre>${esc(S.toolResult.ok ? JSON.stringify(S.toolResult.data, null, 2) : S.toolResult.reason)}</pre>` : ""}`;
+  }
+  pane.innerHTML = `<div class="tools"><div class="list"><input id="toolq" style="margin:8px;width:calc(100% - 16px)" placeholder="${esc(T("Filter {0} tools", S.tools.length))}" value="${esc(S.toolFilter)}" aria-label="${esc(T("Filter"))}">
+      ${list.map(x => `<div class="row" data-tool="${esc(x.name)}" aria-selected="${x.name === S.tool}"><span class="k" style="flex:1">${esc(x.name)}</span>${x.mutates ? `<span class="tag">${esc(T("changes"))}</span>` : ""}</div>`).join("")}</div>
+    <form id="toolform">${form}</form></div>`;
+  if (focus) { const i = $("#toolq"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+}
+function toolField(k, p, required) {
+  const type = p.type || (p.anyOf ? (p.anyOf.find(a => a.type !== "null") || {}).type : "string");
+  const def = p.default == null ? "" : p.default, id = "tf-" + k;
+  let input;
+  if (type === "boolean") input = `<input type="checkbox" id="${id}" name="${esc(k)}" data-type="boolean" ${def === true ? "checked" : ""}>`;
+  else if (type === "integer" || type === "number") input = `<input type="number" step="any" id="${id}" name="${esc(k)}" data-type="number" value="${esc(def)}">`;
+  else if (type === "array" || type === "object") input = `<textarea id="${id}" name="${esc(k)}" data-type="json" rows="3" placeholder="${esc(type === "array" ? "[ ]" : "{ }")}">${def === "" ? "" : esc(JSON.stringify(def))}</textarea>`;
+  else input = `<input id="${id}" name="${esc(k)}" data-type="string" value="${esc(def)}">`;
+  return `<div class="field"><label for="${id}">${esc(k)}${required ? " *" : ""}<small>${esc(type)}</small></label>${input}</div>`;
+}
+async function runTool(form) {
+  const args = {};
+  for (const el of form.querySelectorAll("[name]")) {
+    const k = el.name, ty = el.dataset.type;
+    if (ty === "boolean") { args[k] = el.checked; continue; }
+    if (el.value === "") continue;
+    if (ty === "number") args[k] = Number(el.value);
+    else if (ty === "json") { try { args[k] = JSON.parse(el.value); } catch (e) { say(T("{0} is not valid JSON.", k), true); return; } }
+    else args[k] = el.value;
+  }
+  say(T("Running {0}...", S.tool));
+  S.toolResult = await post("/api/tool/run", {name: S.tool, args});
+  const recent = store.get("wb.recenttools", []).filter(n => n !== S.tool).concat([S.tool]).slice(-30);
+  store.set("wb.recenttools", recent);
+  say(S.toolResult && S.toolResult.ok ? T("{0} finished.", S.tool) : T("{0} failed.", S.tool), !(S.toolResult && S.toolResult.ok));
+  paintPane();
+}
+function toolsSideBlock() {
+  return `<section class="block"><h2>${esc(T("Tools"))}</h2><p class="hint">${esc(T("Every tool the AI can use, run by hand. Tools marked as changing the design write to Altium; Ctrl+Z there undoes most of them."))}</p></section>`;
+}
+
+/* ================================================================ activity */
+const ACT = {rows: [], es: null, open: false};
+function startActivity() {
+  ACT.es = new EventSource("/events");
+  ACT.es.addEventListener("snapshot", e => { try { ACT.rows = (JSON.parse(e.data).entries || []).slice(0, 2000); } catch (x) {} lastCall(); if (ACT.open) paintActivity(); });
+  ACT.es.onmessage = e => {
+    let items = []; try { items = JSON.parse(e.data); } catch (x) {}
+    if (!Array.isArray(items)) return;
+    for (const it of items) { const r = it && (it.entry || it); if (r && r.cmd) ACT.rows.unshift(r); }
+    ACT.rows.length = Math.min(ACT.rows.length, 2000); lastCall(); if (ACT.open) paintActivity();
+  };
+}
+function lastCall() {
+  const r = ACT.rows[0], el = $("#lastcall"); if (!r) { el.textContent = ""; return; }
+  const bad = r.err_code || r.severity === "error";
+  el.className = bad ? "fail" : "";
+  el.textContent = bad ? T("{0} failed: {1}", r.cmd, r.err_msg || r.err_code) : T("{0}, {1} ms", r.cmd, num(r.dur_ms));
+}
+function toggleActivity(force) { ACT.open = force != null ? force : !ACT.open; $("#drawer").hidden = !ACT.open; if (ACT.open) paintActivity(); }
+function paintActivity() {
+  const q = $("#actq").value.trim().toLowerCase(), bad = $("#actbad").checked;
+  const rows = ACT.rows.filter(r => (!q || String(r.cmd).toLowerCase().includes(q)) && (!bad || r.err_code || r.severity === "error" || r.severity === "slow")).slice(0, 500);
+  const now = Date.now(), minute = ACT.rows.filter(r => now - Date.parse(String(r.ts).replace(" ", "T")) < 60000).length;
+  $("#actrate").textContent = T("{0} calls in the last minute", minute);
+  $("#actlist").innerHTML = rows.map(r => `<div class="ar ${r.err_code || r.severity === "error" ? "fail" : r.severity === "slow" ? "slow" : ""}"><span class="t">${esc(String(r.ts).slice(11, 23))}</span><span>${esc(r.cmd)}</span><span class="d">${num(r.dur_ms)} ms</span><span>${esc(r.err_code ? r.err_code + ": " + r.err_msg : "")}</span></div>`).join("")
+    || `<p class="hint" style="padding:var(--s3)">${esc(T("No calls yet."))}</p>`;
+}
+async function pollFault() {
+  const r = await get("/api/recovery"), f = r && r.recovery ? r.recovery : null, el = $("#fault");
+  if (f) el.innerHTML = `<b>${esc(T("Altium's script engine needs attention"))}</b><p style="margin:4px 0">${esc(f.diagnosis || "")}</p><ol style="margin:0 0 0 18px;padding:0">${(f.steps || []).map(s => `<li>${esc(typeof s === "string" ? s : s.text || s.title || JSON.stringify(s))}</li>`).join("")}</ol>`;
+  el.hidden = !f;
+  setTimeout(pollFault, 5000);
+}
+
+/* ================================================================ the board */
+const cv = $("#cv"), ctx = cv.getContext("2d");
+let DPR = 1;
+// The board as it is built: soldermask green, copper under it, ENIG pads,
+// silkscreen; markups in red pen, blue pencil and amber.
+const C = {film: "#E8EBE5", mask: "#1F533A", edge: "#0F2A1D", pad: "#D9B45A", padB: "#B89545", via: "#C6CCCF", hole: "#E8EBE5",
+  silk: "rgba(244,244,236,.8)", silkB: "rgba(170,205,230,.55)", rats: "rgba(244,244,236,.75)", frame: "#1C2A35",
+  red: "#E0452C", amber: "#F2A12B", blue: "#5B8CFF", blueInk: "#2459B8", lit: "#FFF6C8"};
+const LAYER = ["#8FC79A", "#7FB3C9", "#C9B26A", "#B79AD0", "#D49A7A", "#9AC0A8", "#C7C27A", "#A7A9D8"];
+const G = {layers: [], byLayer: {}};
+function layerColor(name) {
+  const i = G.layers.indexOf(name), n = G.layers.length;
+  if (i === 0) return LAYER[0];
+  if (i === n - 1 && n > 1) return LAYER[1];
+  return LAYER[2 + ((i - 1) % (LAYER.length - 2))];
+}
+function drawn() { return S.mode === "engines" ? (S.live && S.live.snapshot) || null : S.board; }
+function useDrawn(refit) {
+  const b = drawn(); S.drawnBoard = b;
+  S.drawCompBy = {}; if (b) { for (const c of b.components) S.drawCompBy[c.ref] = c; geometry(); legend(); } else $("#legend").innerHTML = "";
+  if (refit || (!S.view && b)) fit();
+  draw();
+}
+const rotPts = (cx, cy, w, h, rot) => { const a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([x, y]) => [cx + x * c - y * s, cy + x * s + y * c]); };
+function poly(p, pts) { if (!pts || !pts.length) return; p.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]); p.closePath(); }
+function padPath(p, x) {
+  const w = x.w || 20, h = x.h || 20;
+  if (/round|circle/.test(x.shape || "") && Math.abs(w - h) < .01) { p.moveTo(x.x + w / 2, x.y); p.arc(x.x, x.y, w / 2, 0, 2 * Math.PI); return; }
+  poly(p, rotPts(x.x, x.y, w, h, x.rot || 0));
+}
+function geometry() {
+  const b = S.drawnBoard;
+  G.layers = (b.layers || []).filter(l => /copper|signal|plane/.test(l.kind)).map(l => l.name);
+  const seen = new Set(G.layers);
+  for (const t of b.tracks) if (!seen.has(t.layer)) { seen.add(t.layer); G.layers.push(t.layer); }
+  G.byLayer = {};
+  const L = n => G.byLayer[n] || (G.byLayer[n] = {tracks: new Map(), pours: new Path2D()});
+  const tp = (layer, w) => { const m = L(layer).tracks; if (!m.has(w)) m.set(w, new Path2D()); return m.get(w); };
+  for (const t of b.tracks) { const p = tp(t.layer, t.w || 6); p.moveTo(t.x1, t.y1); p.lineTo(t.x2, t.y2); }
+  for (const a of b.arcs || []) { const p = tp(a.layer, a.w || 6), a1 = a.a1 * Math.PI / 180; let a2 = a.a2 * Math.PI / 180; if (a2 <= a1) a2 += 2 * Math.PI;
+    p.moveTo(a.cx + a.r * Math.cos(a1), a.cy + a.r * Math.sin(a1)); p.arc(a.cx, a.cy, a.r, a1, a2, false); }
+  for (const r of b.pours || []) { const p = L(r.layer).pours; poly(p, r.outline); for (const h of r.holes || []) poly(p, h); }
+  const top = G.layers[0], bot = G.layers[G.layers.length - 1];
+  G.padsT = new Path2D(); G.padsB = new Path2D();
+  for (const x of b.pads) padPath(x.side === bot && bot !== top ? G.padsB : G.padsT, x);
+  G.vias = new Path2D(); G.holes = new Path2D();
+  for (const v of b.vias) { G.vias.moveTo(v.x + v.d / 2, v.y); G.vias.arc(v.x, v.y, v.d / 2, 0, 2 * Math.PI);
+    const hd = (v.hole || v.d / 2) / 2; G.holes.moveTo(v.x + hd, v.y); G.holes.arc(v.x, v.y, hd, 0, 2 * Math.PI); }
+  for (const h of b.holes || []) { G.holes.moveTo(h.x + h.d / 2, h.y); G.holes.arc(h.x, h.y, h.d / 2, 0, 2 * Math.PI); }
+  G.outline = new Path2D(); poly(G.outline, b.outline.length ? b.outline : [[b.bbox[0], b.bbox[1]], [b.bbox[2], b.bbox[1]], [b.bbox[2], b.bbox[3]], [b.bbox[0], b.bbox[3]]]);
+  for (const c of b.cutouts || []) poly(G.outline, c);
+  G.bodyT = new Path2D(); G.bodyB = new Path2D();
+  for (const c of b.components) poly(c.side === "bottom" ? G.bodyB : G.bodyT, c.outline);
+  G.rats = new Path2D(); for (const r of b.rats || []) { G.rats.moveTo(r[0], r[1]); G.rats.lineTo(r[2], r[3]); }
+  G.keep = new Path2D();
+  for (const k of b.keepouts || []) { if (k.type === "track") { G.keep.moveTo(k.x1, k.y1); G.keep.lineTo(k.x2, k.y2); } else if (k.outline) poly(G.keep, k.outline); }
+}
+function legend() {
+  const names = [...G.layers.map(n => [n, n, layerColor(n)]), ["pads", T("Pads"), C.pad], ["parts", T("Outlines"), "#F4F4EC"],
+    ["rats", T("Connections"), "#F4F4EC"], ["problems", T("Problems"), C.red], ["names", T("Designators"), "#F4F4EC"], ["zones", T("Zones"), C.frame]];
+  $("#legend").innerHTML = names.map(([k, label, col]) => `<label class="${S.hidden[k] ? "off" : ""}"><input type="checkbox" data-layer="${esc(k)}" ${S.hidden[k] ? "" : "checked"}><i style="background:${col}"></i>${esc(label)}</label>`).join("");
+}
+function resize() {
+  DPR = window.devicePixelRatio || 1; const r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, Math.round(r.width * DPR)); cv.height = Math.max(1, Math.round(r.height * DPR));
+  if (!S.view && S.drawnBoard) fit(); draw();
+}
+function fitBox(x0, y0, x1, y1, pad) {
+  const r = cv.getBoundingClientRect(); pad = pad == null ? 40 : pad;
+  const s = Math.min((r.width - 2 * pad) / Math.max(x1 - x0, 1), (r.height - 2 * pad - 70) / Math.max(y1 - y0, 1));
+  S.view = {s, ox: (x0 + x1) / 2 - r.width / 2 / s, oy: (y0 + y1) / 2 + (r.height - 70) / 2 / s};
+  saveView(); draw();
+}
+function fit() { const b = S.drawnBoard; if (!b) return; const z = zones(b), m = Math.max(z.x1 - z.x0, z.y1 - z.y0) * .06; fitBox(z.x0 - m, z.y0 - m, z.x1 + m, z.y1 + m); }
+let saveT = 0;
+function saveView() { clearTimeout(saveT); saveT = setTimeout(() => { if (S.board && S.view && S.mode !== "engines") store.set("wb.view:" + S.board.board, S.view); }, 400); }
+function zoomBy(f, px, py) {
+  if (!S.view) return; const r = cv.getBoundingClientRect(); px = px == null ? r.width / 2 : px; py = py == null ? r.height / 2 : py;
+  const [bx, by] = toBoard(px, py); S.view.s = Math.max(.003, Math.min(100, S.view.s * f));
+  S.view.ox = bx - px / S.view.s; S.view.oy = by + py / S.view.s; saveView(); draw();
+}
+const toBoard = (px, py) => [S.view.ox + px / S.view.s, S.view.oy - py / S.view.s];
+function zoomTo(kind, id) {
+  const b = S.drawnBoard; if (!b) return;
+  if (kind === "part") { const c = S.drawCompBy[id]; if (!c) return; const bb = c.bbox, m = Math.max(bb[2] - bb[0], bb[3] - bb[1], 100) * 2.5, cx = (bb[0] + bb[2]) / 2, cy = (bb[1] + bb[3]) / 2; fitBox(cx - m / 2, cy - m / 2, cx + m / 2, cy + m / 2); }
+  else if (kind === "net") { const xs = [], ys = []; for (const p of b.pads) if (p.net === id) { xs.push(p.x); ys.push(p.y); } if (xs.length) fitBox(Math.min(...xs) - 80, Math.min(...ys) - 80, Math.max(...xs) + 80, Math.max(...ys) + 80, 60); }
+  else { const f = S.problems[id]; if (f && f.at) fitBox(f.at[0] - 160, f.at[1] - 160, f.at[0] + 160, f.at[1] + 160); }
+}
+let queued = false;
+function draw() { if (!queued) { queued = true; requestAnimationFrame(render); } }
+
+function lit() {
+  const nets = new Set(), parts = new Set(), altium = new Set(), sel = (S.state && S.state.cockpit.selected) || {};
+  if (S.mode !== "engines") { for (const p of sel.parts || []) { parts.add(p); altium.add(p); } for (const n of sel.nets || []) nets.add(n); }
+  if (S.sel) {
+    if (S.sel.kind === "net") nets.add(S.sel.id); else if (S.sel.kind === "part") parts.add(S.sel.id);
+    else { const f = S.problems[S.sel.id]; if (f) for (const r of f.refs || []) { if (S.netsBy[r]) nets.add(r); else if (S.compBy[r]) parts.add(r); } }
+  }
+  return {nets, parts, altium};
+}
+
+function render() {
+  queued = false;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = C.film; ctx.fillRect(0, 0, cv.width, cv.height);
+  const b = S.drawnBoard; if (!b || !S.view) { $("#coords").textContent = ""; return; }
+  const v = S.view, k = v.s * DPR, px = 1 / k, hid = S.hidden, engines = S.mode === "engines";
+  ctx.setTransform(k, 0, 0, -k, -v.ox * k, v.oy * k);
+  if (!hid.zones) frame(b, px);
+  ctx.fillStyle = C.mask; ctx.fill(G.outline, "evenodd");
+  ctx.strokeStyle = C.edge; ctx.lineWidth = 2 * px; ctx.stroke(G.outline);
+  const hl = lit(), dim = hl.nets.size > 0;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const ln of G.layers.slice().reverse()) {
+    if (hid[ln]) continue; const g = G.byLayer[ln]; if (!g) continue; const col = layerColor(ln);
+    ctx.globalAlpha = dim ? .12 : .28; ctx.fillStyle = col; ctx.fill(g.pours, "evenodd");
+    ctx.globalAlpha = dim ? .3 : .95; ctx.strokeStyle = col;
+    for (const [w, p] of g.tracks) { ctx.lineWidth = Math.max(w, px); ctx.stroke(p); }
+  }
+  ctx.globalAlpha = 1;
+  if (!hid.pads) { ctx.globalAlpha = dim ? .45 : 1; ctx.fillStyle = C.padB; ctx.fill(G.padsB); ctx.fillStyle = C.pad; ctx.fill(G.padsT);
+    ctx.fillStyle = C.via; ctx.fill(G.vias); ctx.fillStyle = C.hole; ctx.fill(G.holes); ctx.globalAlpha = 1; }
+  ctx.setLineDash([4 * px, 4 * px]); ctx.strokeStyle = "rgba(224,69,44,.6)"; ctx.lineWidth = px; ctx.stroke(G.keep); ctx.setLineDash([]);
+  if (!hid.parts) { ctx.lineWidth = 1.2 * px; ctx.strokeStyle = C.silk; ctx.stroke(G.bodyT); ctx.strokeStyle = C.silkB; ctx.stroke(G.bodyB); }
+  if (!hid.rats) { ctx.strokeStyle = C.rats; ctx.lineWidth = px; ctx.stroke(G.rats); }
+  if (hl.nets.size) {
+    ctx.strokeStyle = C.lit;
+    for (const t of b.tracks) if (hl.nets.has(t.net)) { ctx.lineWidth = Math.max(t.w, 2 * px); ctx.beginPath(); ctx.moveTo(t.x1, t.y1); ctx.lineTo(t.x2, t.y2); ctx.stroke(); }
+    const p = new Path2D(); for (const x of b.pads) if (hl.nets.has(x.net)) padPath(p, x); ctx.fillStyle = C.lit; ctx.fill(p);
+    const r = new Path2D(); for (const x of b.rats || []) if (hl.nets.has(x[4])) { r.moveTo(x[0], x[1]); r.lineTo(x[2], x[3]); }
+    ctx.lineWidth = 1.5 * px; ctx.stroke(r);
+  }
+  for (const c of b.components) {
+    const picked = S.multi.has(c.ref), inA = hl.altium.has(c.ref), mine = hl.parts.has(c.ref);
+    if (!picked && !mine) continue;
+    const p = new Path2D(); poly(p, c.outline);
+    if (picked) {
+      ctx.fillStyle = "rgba(242,161,43,.35)"; ctx.fill(p); ctx.strokeStyle = C.amber; ctx.lineWidth = 2.5 * px; ctx.stroke(p);
+      const bb = c.bbox, r = Math.max(bb[2] - bb[0], bb[3] - bb[1]) / 2 + 12 * px;
+      ctx.beginPath(); ctx.arc((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2, r, 0, 2 * Math.PI); ctx.stroke();
+    }
+    if (mine) { ctx.fillStyle = inA ? "rgba(91,140,255,.25)" : "rgba(255,246,200,.22)"; ctx.fill(p); ctx.strokeStyle = inA ? C.blue : C.lit; ctx.lineWidth = 2 * px; ctx.stroke(p); }
+  }
+  const age = (performance.now() - (S.diffAt || 0)) / 1000;
+  if (S.diff && age < 3) {
+    const keys = new Set([...(S.diff.moved || []), ...(S.diff.added || [])]);
+    ctx.strokeStyle = `rgba(91,140,255,${1 - age / 3})`; ctx.lineWidth = 3 * px;
+    for (const c of b.components) if (keys.has(c.k)) { const p = new Path2D(); poly(p, c.outline); ctx.stroke(p); }
+    draw();
+  }
+  if (S.preview && !engines) proposal(px);
+  if (!hid.problems && !engines) {
+    const w = waived();
+    for (const f of S.problems) {
+      if (!f.at || f.severity === "info" || w.has(probKey(f))) continue;
+      const on = S.sel && S.sel.kind === "problem" && S.sel.id === f.id;
+      ctx.strokeStyle = f.severity === "error" ? C.red : C.amber; ctx.lineWidth = (on ? 3 : 2) * px;
+      ctx.beginPath(); ctx.arc(f.at[0], f.at[1], (on ? 16 : 8) * px, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // Screen space: designators in silkscreen, zone labels, the hover note.
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const r = cv.getBoundingClientRect();
+  if (!hid.zones) zoneLabels(b, r);
+  if (!hid.names && v.s > .1) {
+    ctx.font = "600 11px Bahnschrift, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (const c of b.components) {
+      const sx = (c.x - v.ox) * v.s, sy = (v.oy - c.y) * v.s;
+      if (sx < -40 || sy < -20 || sx > r.width + 40 || sy > r.height + 20) continue;
+      if ((c.bbox[2] - c.bbox[0]) * v.s < 20 && !hl.parts.has(c.ref) && !S.multi.has(c.ref)) continue;
+      ctx.fillStyle = hl.parts.has(c.ref) || S.multi.has(c.ref) ? "#FFFFFF" : "rgba(244,244,236,.85)"; ctx.fillText(c.ref, sx, sy);
+    }
+  }
+  if (S.hover) {
+    ctx.font = "13px Bahnschrift, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    const w = ctx.measureText(S.hover.text).width + 14;
+    ctx.fillStyle = "#F5F6F2"; ctx.strokeStyle = C.frame; ctx.lineWidth = 1; ctx.fillRect(S.hover.x + 14, S.hover.y + 14, w, 22); ctx.strokeRect(S.hover.x + 14.5, S.hover.y + 14.5, w, 22);
+    ctx.fillStyle = C.frame; ctx.fillText(S.hover.text, S.hover.x + 21, S.hover.y + 18);
+  }
+  const m = S.mouse ? toBoard(S.mouse[0], S.mouse[1]) : null;
+  $("#coords").textContent = m ? `${zoneOf(m[0], m[1], b)}  ${xy(m[0], m[1])}` : "";
+}
+function frame(b, px) {
+  const z = zones(b), m = Math.max(z.x1 - z.x0, z.y1 - z.y0) * .035;
+  ctx.strokeStyle = C.frame; ctx.lineWidth = 1.2 * px;
+  ctx.strokeRect(z.x0 - m, z.y0 - m, z.x1 - z.x0 + 2 * m, z.y1 - z.y0 + 2 * m);
+  ctx.lineWidth = .8 * px; ctx.beginPath();
+  for (let i = 1; i < z.cols; i++) { const x = z.x0 + i * z.zw; ctx.moveTo(x, z.y1 + m); ctx.lineTo(x, z.y1 + m * .45); ctx.moveTo(x, z.y0 - m); ctx.lineTo(x, z.y0 - m * .45); }
+  for (let i = 1; i < z.rows; i++) { const y = z.y1 - i * z.zh; ctx.moveTo(z.x0 - m, y); ctx.lineTo(z.x0 - m * .45, y); ctx.moveTo(z.x1 + m, y); ctx.lineTo(z.x1 + m * .45, y); }
+  ctx.stroke();
+}
+function zoneLabels(b, r) {
+  const z = zones(b), m = Math.max(z.x1 - z.x0, z.y1 - z.y0) * .035, v = S.view;
+  const sx = x => (x - v.ox) * v.s, sy = y => (v.oy - y) * v.s;
+  ctx.font = "11px Bahnschrift, sans-serif"; ctx.fillStyle = C.frame; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let i = 0; i < z.cols; i++) { const x = sx(z.x0 + (i + .5) * z.zw); ctx.fillText(String(i + 1), x, sy(z.y1 + m * .6)); ctx.fillText(String(i + 1), x, sy(z.y0 - m * .6)); }
+  for (let i = 0; i < z.rows; i++) { const y = sy(z.y1 - (i + .5) * z.zh), l = String.fromCharCode(65 + i); ctx.fillText(l, sx(z.x0 - m * .6), y); ctx.fillText(l, sx(z.x1 + m * .6), y); }
+}
+function proposal(px) {
+  const p = S.preview; ctx.save();
+  if (S.previewKind === "place") {
+    for (const mv of p.moves || []) {
+      const c = S.compBy[mv.designator]; if (!c) continue;
+      const dr = ((mv.rotation != null ? mv.rotation : c.rot) - c.rot) * Math.PI / 180, cs = Math.cos(dr), sn = Math.sin(dr);
+      const g = new Path2D(); poly(g, c.outline.map(([x, y]) => { const dx = x - c.x, dy = y - c.y; return [mv.x + dx * cs - dy * sn, mv.y + dx * sn + dy * cs]; }));
+      ctx.fillStyle = "rgba(91,140,255,.22)"; ctx.fill(g); ctx.setLineDash([5 * px, 3 * px]); ctx.strokeStyle = C.blue; ctx.lineWidth = 1.6 * px; ctx.stroke(g);
+      ctx.lineWidth = px; ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(mv.x, mv.y); ctx.stroke(); ctx.setLineDash([]);
+    }
+  } else {
+    ctx.lineCap = "round";
+    for (const t of p.tracks || []) {
+      if (S.hidden[t.layer]) continue;
+      ctx.strokeStyle = C.blue; ctx.globalAlpha = .55; ctx.lineWidth = Math.max(t.w, 1.5 * px); ctx.beginPath(); ctx.moveTo(t.x1, t.y1); ctx.lineTo(t.x2, t.y2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = px; ctx.setLineDash([4 * px, 3 * px]); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.fillStyle = C.blue; for (const v of p.vias || []) { ctx.beginPath(); ctx.arc(v.x, v.y, v.d / 2, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  ctx.restore();
+}
+function hit(px, py) {
+  const [x, y] = toBoard(px, py), tol = 4 / S.view.s, b = S.drawnBoard, engines = S.mode === "engines", w = waived();
+  if (!engines && !S.hidden.problems) for (const f of S.problems) if (f.at && f.severity !== "info" && !w.has(probKey(f)) && Math.hypot(f.at[0] - x, f.at[1] - y) < 12 / S.view.s) return {kind: "problem", id: f.id, text: f.text};
+  for (const p of b.pads) if (p.net && Math.abs(p.x - x) < (p.w || 20) / 2 + tol && Math.abs(p.y - y) < (p.h || 20) / 2 + tol)
+    return {kind: "net", id: p.net, part: p.comp, text: `${p.comp ? p.comp + "." : ""}${p.name}  ${p.net}`};
+  for (const t of b.tracks) {
+    if (S.hidden[t.layer] || !t.net) continue;
+    const dx = t.x2 - t.x1, dy = t.y2 - t.y1, L2 = dx * dx + dy * dy, u = L2 ? Math.max(0, Math.min(1, ((x - t.x1) * dx + (y - t.y1) * dy) / L2)) : 0;
+    if (Math.hypot(t.x1 + u * dx - x, t.y1 + u * dy - y) < t.w / 2 + tol) return {kind: "net", id: t.net, text: `${t.net}, ${t.layer}, ${len(t.w, 1)}`};
+  }
+  let best = null, area = Infinity;
+  for (const c of b.components) { const bb = c.bbox; if (x >= bb[0] && x <= bb[2] && y >= bb[1] && y <= bb[3]) { const a = (bb[2] - bb[0]) * (bb[3] - bb[1]); if (a < area) { area = a; best = c; } } }
+  if (best) { const p = S.partsBy[best.ref]; return {kind: "part", id: best.ref, text: `${best.ref}  ${(p && p.comment) || best.footprint}`}; }
+  return null;
+}
+
+let drag = null;
+cv.addEventListener("mousedown", e => { drag = {x: e.offsetX, y: e.offsetY, ox: S.view && S.view.ox, oy: S.view && S.view.oy, moved: false}; });
+window.addEventListener("mouseup", e => {
+  if (!drag) return; const d = drag; drag = null; cv.style.cursor = "crosshair";
+  if (d.moved) { saveView(); return; }
+  if (!S.drawnBoard || e.target !== cv || S.mode === "engines") return;
+  const h = hit(e.offsetX, e.offsetY);
+  if (!h) return select(null);
+  // On a pad: Place mode means the part, Route mode the net; Alt picks the other.
+  const wantPart = h.kind === "net" && h.part && ((S.mode === "place" || S.mode === "assemble") !== e.altKey);
+  if (wantPart) select("part", h.part); else select(h.kind, h.id);
+});
+cv.addEventListener("mousemove", e => {
+  S.mouse = [e.offsetX, e.offsetY];
+  if (drag && S.view) {
+    const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (drag.moved) { S.view.ox = drag.ox - dx / S.view.s; S.view.oy = drag.oy + dy / S.view.s; cv.style.cursor = "grabbing"; S.hover = null; }
+  } else if (S.drawnBoard && S.view) {
+    const h = hit(e.offsetX, e.offsetY); S.hover = h ? {text: h.text, x: e.offsetX, y: e.offsetY} : null; cv.style.cursor = h ? "pointer" : "crosshair";
+  }
+  draw();
+});
+cv.addEventListener("mouseleave", () => { S.hover = null; S.mouse = null; draw(); });
+cv.addEventListener("wheel", e => { e.preventDefault(); zoomBy(Math.exp(-e.deltaY * .0015), e.offsetX, e.offsetY); }, {passive: false});
+cv.addEventListener("dblclick", e => { if (S.drawnBoard && S.mode !== "engines" && hit(e.offsetX, e.offsetY)) showInAltium(); else fit(); });
+
+/* ================================================================ find */
+function commands() {
+  return [
+    [T("Fit the board"), fit], [T("Next problem"), () => nextProblem(1)],
+    [T("Propose a placement"), () => { setMode("place"); startEngine("place"); }],
+    [T("Plan routes for every open net"), () => { setMode("route"); startEngine("route"); }],
+    [T("Run Altium's DRC"), () => runAction("drc")], [T("Repour"), () => runAction("repour")], [T("Add teardrops"), () => runAction("teardrops")],
+    [T("Read the board again"), () => post("/api/cockpit/refresh").then(() => say(T("Reading the board again.")))],
+    [T("Read the project again"), () => { setMode("library"); readLibrary(); }],
+    [T("Check the open PcbLib"), () => { setMode("library"); libDo("audit"); }],
+    [T("Update the schematic from its libraries"), () => libDo("sch")], [T("Update the board from its PCB libraries"), () => libDo("pcb")],
+    [T("Open the activity log"), () => toggleActivity(true)], [T("Keyboard shortcuts"), () => openHelp()],
+    ...MODES.map(m => [T("Go to {0}", modeName(m)), () => setMode(m)]),
+  ];
+}
+function modeName(m) { return T({place: "Place", route: "Route", review: "Review", library: "Library", assemble: "Assemble", engines: "Engines", tools: "Tools"}[m]); }
+let palItems = [], palOn = 0;
+function openPal() { $("#pal").hidden = false; $("#palq").value = ""; palSearch(); $("#palq").focus(); }
+function closePal() { $("#pal").hidden = true; }
+function palSearch() {
+  const q = $("#palq").value.trim().toLowerCase(), items = [];
+  const score = s => { s = String(s).toLowerCase(); if (!q) return 1; if (s === q) return 100; if (s.startsWith(q)) return 50; return s.includes(q) ? 10 : 0; };
+  for (const [label, fn] of commands()) { const sc = score(label); if (sc) items.push({t: T("Do"), label, sc: sc + 5, fn}); }
+  if (q) {
+    for (const p of S.parts) { const sc = Math.max(score(p.ref) * 2, score(p.comment || "") / 2); if (sc) items.push({t: T("Part"), label: `${p.ref}  ${p.comment || p.footprint}`, sc, fn: () => { setList("parts"); select("part", p.ref, {zoom: true}); }}); }
+    for (const n of S.nets) { const sc = score(n.net) * 1.5; if (sc) items.push({t: T("Net"), label: `${n.net}  ${netState(n.status)}`, sc, fn: () => { setList("nets"); select("net", n.net, {zoom: true}); }}); }
+    for (const f of liveProblems()) { const sc = score(f.text) / 3; if (sc) items.push({t: T("Problem"), label: f.text, sc, fn: () => { setList("problems"); select("problem", f.id, {zoom: true}); }}); }
+    if (S.tools) for (const t of S.tools) { const sc = score(t.name) / 2; if (sc) items.push({t: T("Tool"), label: t.name, sc, fn: () => { S.tool = t.name; S.toolResult = null; setMode("tools"); }}); }
+  }
+  items.sort((a, b) => b.sc - a.sc); palItems = items.slice(0, 60); palOn = 0; paintPal();
+}
+function paintPal() {
+  $("#pallist").innerHTML = palItems.map((it, i) => `<div class="it" role="option" aria-selected="${i === palOn}" data-i="${i}"><span class="t">${esc(it.t)}</span><span>${esc(it.label)}</span></div>`).join("") || `<div class="it">${esc(T("Nothing found"))}</div>`;
+  const on = $('#pallist [aria-selected="true"]'); if (on) on.scrollIntoView({block: "nearest"});
+}
+$("#palq").addEventListener("input", palSearch);
+$("#palq").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { palOn = Math.min(palItems.length - 1, palOn + 1); paintPal(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { palOn = Math.max(0, palOn - 1); paintPal(); e.preventDefault(); }
+  else if (e.key === "Enter") { const it = palItems[palOn]; closePal(); if (it) it.fn(); }
+  else if (e.key === "Escape") closePal();
+});
+$("#pallist").addEventListener("click", e => { const d = e.target.closest(".it[data-i]"); if (!d) return; const it = palItems[+d.dataset.i]; closePal(); if (it) it.fn(); });
+$("#pal").addEventListener("click", e => { if (e.target.id === "pal") closePal(); });
+function openHelp() { $("#help").hidden = false; }
+$("#help").addEventListener("click", () => { $("#help").hidden = true; });
+
+/* ================================================================ boards */
+async function openPicker() {
+  const m = $("#boardmenu");
+  m.hidden = false; $("#boardbtn").setAttribute("aria-expanded", "true");
+  m.innerHTML = `<div class="bh"><span class="spin"></span></div>`;
+  const r = await get("/api/wb/documents?fresh=1");
+  if (!r || !r.ok) { m.innerHTML = `<div class="bh bad">${esc((r && r.reason) || T("Altium is not answering"))}</div>`; return; }
+  m.innerHTML = `<div class="bh">${esc(T("Open boards"))}</div>` + (r.boards.map(d =>
+    `<div class="brow" role="option" aria-selected="${d.shown}" data-file="${esc(d.file)}"><div style="min-width:0;flex:1"><b>${esc(d.name)}</b>${d.modified ? " " + esc(T("unsaved")) : ""}<div class="path">${esc(d.file)}</div></div><small>${d.front ? esc(T("In front in Altium")) : ""}</small></div>`).join("")
+    || `<div class="bh">${esc(T("No board is open in Altium."))}</div>`);
+}
+function closePicker() { $("#boardmenu").hidden = true; $("#boardbtn").setAttribute("aria-expanded", "false"); }
+async function openBoard(file) {
+  closePicker();
+  const r = await post("/api/wb/open", {file});
+  if (!r || !r.ok) return say((r && r.reason) || T("It did not start."), true);
+  S.version = -1; S.checksVersion = -1; S.sel = null; S.multi = new Set(); S.view = null;
+  say(T("Loading {0}", baseName(file)));
+}
+$("#boardbtn").addEventListener("click", e => { e.stopPropagation(); $("#boardmenu").hidden ? openPicker() : closePicker(); });
+$("#boardmenu").addEventListener("click", e => { const r = e.target.closest("[data-file]"); if (r) openBoard(r.dataset.file); });
+document.addEventListener("click", e => { if (!e.target.closest("#picker")) closePicker(); });
+$("#titleblock").addEventListener("click", e => { if (e.target.closest("[data-reread]") && S.state) { e.stopPropagation(); openBoard(S.state.cockpit.shown); } });
+$("#empty").addEventListener("click", e => { if (e.target.closest("[data-pick]")) { e.stopPropagation(); openPicker(); } });
+$("#follow").addEventListener("change", async e => {
+  await post("/api/wb/follow", {on: e.target.checked});
+  say(e.target.checked ? T("Following the board in front.") : T("Staying on this board."));
+});
+
+/* ================================================================ wiring */
+function setMode(m) {
+  if (!MODES.includes(m)) m = "place";
+  const from = S.mode; S.mode = m; store.set("wb.mode", m);
+  document.querySelectorAll("#modes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+  if (m === "route" && S.list === "parts") setList("nets");
+  if ((m === "place" || m === "assemble") && S.list === "nets") setList("parts");
+  if (m === "review") setList("problems");
+  if (m === "engines") pollLive(true); else if (from === "engines" || S.drawnBoard !== S.board) useDrawn(false);
+  if (m === "assemble") { if (!S.lib || S.lib.state === "empty") pollLibrary(true); asmLight(); }
+  else if (from === "assemble") S.multi = new Set();
+  if (m === "library" && !S.lib) pollLibrary(true);
+  S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
+}
+function repaintAll() { legend(); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); paintEmpty(); paintPane(); lastCall(); if (ACT.open) paintActivity(); draw(); }
+
+document.querySelectorAll("#modes button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setList(b.dataset.list)));
+$("#q").addEventListener("input", paintNav);
+$("#q").addEventListener("keydown", e => {
+  if (e.key === "Enter") { const r = $("#navlist .row[data-kind]"); if (r) select(r.dataset.kind, r.dataset.kind === "problem" ? +r.dataset.id : r.dataset.id, {zoom: true}); }
+  if (e.key === "Escape") { $("#q").value = ""; paintNav(); $("#q").blur(); }
+});
+function clickRow(e) {
+  const r = e.target.closest(".row[data-kind]");
+  if (r) { select(r.dataset.kind, r.dataset.kind === "problem" ? +r.dataset.id : r.dataset.id, {zoom: true}); return true; }
+  const p = e.target.closest("[data-prob]"); if (p) { select("problem", +p.dataset.prob, {zoom: true}); return true; }
+  return false;
+}
+$("#navlist").addEventListener("click", e => {
+  if (e.target.closest("[data-showhidden]")) { S.showHidden = !S.showHidden; return paintNav(); }
+  clickRow(e);
+});
+$("#titleblock").addEventListener("click", e => { const g = e.target.closest("[data-go]"); if (g) setMode(g.dataset.go); });
+function sideClick(e) {
+  if (clickRow(e)) return;
+  const t = e.target.closest("button, [data-net], [data-part], [data-asm]"); if (!t || t.disabled) return;
+  if (t.dataset.action) { let a = {}; try { a = JSON.parse(t.dataset.args || "{}"); } catch (x) {} return runAction(t.dataset.action, a); }
+  if (t.dataset.engine) return startEngine(t.dataset.engine);
+  if (t.dataset.engineDo) return engineDo(t.dataset.engineDo);
+  if (t.dataset.lib) return libDo(t.dataset.lib);
+  if (t.dataset.asm) return asmDo(t.dataset.asm);
+  if (t.dataset.ref) { const r = t.dataset.ref; return select(S.netsBy[r] ? "net" : "part", r, {zoom: true}); }
+  if (t.dataset.net) return select("net", t.dataset.net, {zoom: true});
+  if (t.dataset.part) return select("part", t.dataset.part, {zoom: true});
+  const d = t.dataset.do;
+  if (d === "altium") showInAltium();
+  else if (d === "zoomsel" && S.sel) zoomTo(S.sel.kind, S.sel.id);
+  else if (d === "next") nextProblem(1);
+  else if (d === "focus") bringToFront();
+  else if (d === "refresh") post("/api/cockpit/refresh").then(() => say(T("Reading the board again.")));
+  else if (d === "plannet" && S.sel) { setMode("route"); startEngine("route", [S.sel.id]); }
+  else if (d === "planall") startEngine("route", null);
+  else if (d === "waive" && S.sel) {
+    const f = S.problems[S.sel.id], w = waived(), k = probKey(f);
+    w.has(k) ? w.delete(k) : w.add(k); store.set(waiveKey(), [...w]);
+    say(w.has(k) ? T("Hidden for this board.") : T("Shown again.")); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); draw();
+  }
+}
+$("#side").addEventListener("click", sideClick);
+$("#pane").addEventListener("click", e => {
+  if (S.mode === "tools") {
+    const r = e.target.closest("[data-tool]"); if (r) { S.tool = r.dataset.tool; S.toolResult = null; paintPane(); }
+    return;
+  }
+  if (e.target.closest("[data-lib]")) return libDo(e.target.closest("[data-lib]").dataset.lib);
+  const only = e.target.closest("[data-libonly]"); if (only) { S.libOnly = only.dataset.libonly; return paintPane(); }
+  if (e.target.closest("a") || e.target.id === "libq") return;
+  if (e.target.closest("[data-liball]")) {
+    const all = S.libShown.every(r => r.designators.every(d => S.libPick.has(d)));
+    for (const r of S.libShown) r.designators.forEach(d => all ? S.libPick.delete(d) : S.libPick.add(d));
+  } else {
+    const tr = e.target.closest("[data-librow]"); if (!tr) return;
+    const r = S.libShown[+tr.dataset.librow], on = r.designators.every(d => S.libPick.has(d));
+    r.designators.forEach(d => on ? S.libPick.delete(d) : S.libPick.add(d));
+  }
+  S.multi = new Set(S.libPick); paintPane(); clearTools(); paintTools();
+});
+$("#pane").addEventListener("input", e => {
+  if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
+  if (e.target.id === "toolq") { S.toolFilter = e.target.value; paintPane(); }
+});
+$("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
+$("#legend").addEventListener("change", e => {
+  const n = e.target.dataset.layer; if (!n) return;
+  if (e.target.checked) delete S.hidden[n]; else S.hidden[n] = 1;
+  store.set("wb.layers", S.hidden); legend(); draw();
+});
+$("#zin").addEventListener("click", () => zoomBy(1.4));
+$("#zout").addEventListener("click", () => zoomBy(1 / 1.4));
+$("#zfit").addEventListener("click", fit);
+$("#find").addEventListener("click", openPal);
+$("#helpbtn").addEventListener("click", openHelp);
+$("#lastcall").addEventListener("click", () => toggleActivity());
+$("#actclose").addEventListener("click", () => toggleActivity(false));
+$("#actq").addEventListener("input", paintActivity);
+$("#actbad").addEventListener("change", paintActivity);
+$("#setbtn").addEventListener("click", () => { const m = $("#settings .menu"); m.hidden = !m.hidden; $("#setbtn").setAttribute("aria-expanded", String(!m.hidden)); });
+document.addEventListener("click", e => { if (!e.target.closest("#settings")) { $("#settings .menu").hidden = true; $("#setbtn").setAttribute("aria-expanded", "false"); } });
+$("#units").addEventListener("change", e => { S.units = e.target.value; store.set("wb.units", S.units); repaintAll(); });
+$("#mirror").addEventListener("change", e => { S.mirror = e.target.checked; store.set("wb.mirror", S.mirror); });
+$("#lang").addEventListener("change", e => { store.set("wb.lang", e.target.value); setLanguage(e.target.value); });
+
+window.addEventListener("keydown", e => {
+  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); return openPal(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); return engineDo("apply"); }
+  if (e.key === "Escape") { if (!$("#help").hidden) { $("#help").hidden = true; return; } if (ACT.open) return toggleActivity(false); if (!typing) select(null); return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  if (/^[1-7]$/.test(k)) setMode(MODES[+k - 1]);
+  else if (k === "/") { e.preventDefault(); $("#q").focus(); }
+  else if (k === "f" || k === "F") fit();
+  else if (k === "n") nextProblem(1); else if (k === "N") nextProblem(-1);
+  else if (k === "s" || k === "S") showInAltium();
+  else if (k === "l" || k === "L") toggleActivity();
+  else if (k === "?") openHelp();
+  else if (k === "Enter" && S.mode === "route" && S.sel && S.sel.kind === "net") startEngine("route", [S.sel.id]);
+  else if (S.mode === "assemble" && k === " ") { e.preventDefault(); asmDo("done"); }
+  else if (S.mode === "assemble" && k === "ArrowRight") asmDo("next");
+  else if (S.mode === "assemble" && (k === "ArrowLeft" || k === "Backspace")) asmDo("prev");
+});
+window.addEventListener("resize", resize);
+
+(async function boot() {
+  $("#units").value = S.units; $("#mirror").checked = S.mirror;
+  const info = await get("/api/language");
+  S.langInfo = info || {};
+  for (const l of (info && info.available) || []) { const o = document.createElement("option"); o.value = l.code; o.textContent = l.name; $("#lang").appendChild(o); }
+  $("#lang").options[0].textContent = T("Altium ({0})", (info && (info.name || info.language)) || "English");
+  const choice = store.get("wb.lang", "auto"); $("#lang").value = choice; if ($("#lang").selectedIndex < 0) $("#lang").value = "auto";
+  await setLanguage($("#lang").value);
+  setList(S.list); setMode(S.mode); resize(); paintInspector(); poll(); startActivity(); pollFault();
+})();
+</script>
+</body>
+</html>
