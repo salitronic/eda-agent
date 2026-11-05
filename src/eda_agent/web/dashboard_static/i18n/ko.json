@@ -229,6 +229,7 @@
  "Net labels not on any wire (silent phantom net)": "어떤 배선에도 없는 네트 라벨(조용한 유령 네트)",
  "Net labels that merge, short, or sit on a pin root": "네트를 합치거나 단락시키거나 핀 뿌리에 놓인 네트 라벨",
  "Net mixes thin + wide tracks (>2× ratio, hotspot risk)": "얇은 트랙과 넓은 트랙이 섞인 네트(비율 >2×, 핫스폿 위험)",
+ "Objects a search by area or their net cannot find": "영역 검색이나 네트로 찾을 수 없는 객체",
  "Nets": "네트",
  "Nets routed": "배선된 넷",
  "Nets selected in Altium": "Altium에서 선택한 넷",

@@ -2713,12 +2713,14 @@ End;
 {                     and the Net getter answers the pour's net for it);      }
 {   Component=<name>  the primitives of every component of that designator;   }
 {   BoundsLeft / BoundsRight / X1 / X2 and BoundsBottom / BoundsTop / Y1 / Y2 }
-{                     a point every match's bounding box holds, so a spatial  }
+{                     a point on every match's bounding box, so a spatial     }
 {                     search of a small area round it (primitives only: a     }
-{                     spatial iterator does not hand out group objects);      }
+{                     spatial iterator does not hand out group objects). The  }
+{                     index does not always hold an object by the box its     }
+{                     getters print, so a search that hands out no match      }
+{                     goes on to the walk;                                    }
 { else the board walk, narrowed by Layer= (NarrowPCBWalk). MatchesFilterPCB   }
-{ still decides every object any route hands out, so a route can only leave  }
-{ out what the filter would reject.                                           }
+{ still decides every object any route hands out.                             }
 { Every route sees layers by their internal names: a user name in a Layer   }
 { condition is resolved once here, not per object (CanonicalLayerFilter). A }
 { value that names no layer stays as given; ProcessActivePCBDoc refuses     }
@@ -2736,7 +2738,8 @@ Var
     Seen : TStringList;
     Wanted, Value, BadLayer : String;
     HasX, HasY, IsPrimitive : Boolean;
-    X, Y, Lo, Hi : TCoord;
+    X, Y, Lo, Hi, Margin : TCoord;
+    Found : Integer;
 Begin
     FilterStr := CanonicalLayerFilter(Board, FilterStr, BadLayer);
     Seen := TStringList.Create;
@@ -2868,9 +2871,18 @@ Begin
         End;
         If HasX Or HasY Then
         Begin
-            { One mil round the point: the filter compares printed values. }
+            { One mil round the point: the filter compares printed values.   }
+            { A via or pad is searched 100 mil round it. MEASURED on AD 26.11 }
+            { on a board just opened: every via whose mask comes from the     }
+            { rules is indexed by a box 16 mil per side narrower than the     }
+            { Bounds the getters print, and a search by those Bounds found    }
+            { none of its 279 vias.                                           }
+            Margin := MilsToCoordF(1);
+            If (ObjTypeInt = eViaObject) Or (ObjTypeInt = ePadObject) Then
+                Margin := MilsToCoordF(100);
             Lo := MilsToCoordF(-200000);
             Hi := MilsToCoordF(200000);
+            Found := Matches.Count;
             { Every layer: a spatial search narrowed to TopLayer left out    }
             { the SMD pads on it (MEASURED); the filter checks Layer anyway. }
             Spatial := Board.SpatialIterator_Create;
@@ -2878,12 +2890,11 @@ Begin
                 Spatial.AddFilter_ObjectSet(MkSet(ObjTypeInt));
                 Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 If HasX And HasY Then
-                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Y - MilsToCoordF(1),
-                        X + MilsToCoordF(1), Y + MilsToCoordF(1))
+                    Spatial.AddFilter_Area(X - Margin, Y - Margin, X + Margin, Y + Margin)
                 Else If HasX Then
-                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Lo, X + MilsToCoordF(1), Hi)
+                    Spatial.AddFilter_Area(X - Margin, Lo, X + Margin, Hi)
                 Else
-                    Spatial.AddFilter_Area(Lo, Y - MilsToCoordF(1), Hi, Y + MilsToCoordF(1));
+                    Spatial.AddFilter_Area(Lo, Y - Margin, Hi, Y + Margin);
                 Obj := Spatial.FirstPCBObject;
                 While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
                 Begin
@@ -2893,7 +2904,15 @@ Begin
             Finally
                 Board.SpatialIterator_Destroy(Spatial);
             End;
-            Exit;
+            { For a via or pad the index is a shortcut, not the last word:    }
+            { when it hands out no match, the board walk below decides, so    }
+            { one the index holds by some other box is still found. Every     }
+            { other primitive is indexed by exactly the box its getters print }
+            { (audit.find_stale_read_paths, MEASURED on a board just opened), }
+            { and obj_modify keeps it so; walking for them on every miss cost }
+            { 10 s on a 1817-track board.                                     }
+            If Matches.Count > Found Then Exit;
+            If (ObjTypeInt <> eViaObject) And (ObjTypeInt <> ePadObject) Then Exit;
         End;
 
         Iterator := Board.BoardIterator_Create;
@@ -2916,16 +2935,20 @@ End;
 
 Function ProcessPCBBoardObjects(Board : IPCB_Board; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
-    Mode : String; Var TotalMatched : Integer; Limit : Integer) : String;
+    Mode : String; Var TotalMatched : Integer; Limit : Integer;
+    Var IndexJson : String) : String;
 Var
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
     First, Removed : Boolean;
-    I, Remaining : Integer;
+    I, Remaining, Held, Reindexed, LeftStale, IndexBefore : Integer;
     Victims : TInterfaceList;
     FilterWas : Boolean;
 Begin
     Result := '';
+    IndexJson := '';
+    Reindexed := 0;
+    LeftStale := 0;
     First := (TotalMatched = 0);
 
     { EVERY PreProcess BELOW IS IN A Try/Finally, and that is not tidiness.   }
@@ -3009,16 +3032,21 @@ Begin
                 { while the board's spatial index still held the old one, so }
                 { the mouse could not pick it and a spatial search found it  }
                 { where it no longer was.                                    }
+                IndexBefore := BoardIndexState(Board, FoundObj);
                 FoundObj.BeginModify;
                 Try
                     ApplySetPropertiesPCB(FoundObj, SetStr);
                 Finally
                     FoundObj.EndModify;
                 End;
-                { A via's mask moves its box but not its index entry. }
-                If (FoundObj.ObjectId = eViaObject)
-                    And (Pos('SolderMask', SetStr) > 0) Then
-                    ReindexBoardObject(Board, FoundObj);
+                { A WRITE IS DONE WHEN THE INDEX STILL FINDS THE OBJECT. A   }
+                { via's mask grew its box past its index entry (#208), and   }
+                { the bracket does not re-index every property, so each      }
+                { changed object is looked up again after the write and      }
+                { re-indexed where the index holds it less than before.      }
+                Held := EnsureIndexed(Board, FoundObj, IndexBefore);
+                If Held = 1 Then Inc(Reindexed)
+                Else If Held >= 2 Then Inc(LeftStale);
                 FoundObj.GraphicallyInvalidate;
                 Inc(TotalMatched);
             End;
@@ -3026,6 +3054,8 @@ Begin
             PcbEndEdit(0);
             PcbSelectFilterRestore(Board, FilterWas);
         End;
+        IndexJson := ',"reindexed":' + IntToStr(Reindexed)
+            + ',"stale_index":' + IntToStr(LeftStale);
         Exit;
     End;
 
@@ -3224,7 +3254,7 @@ Function ProcessActivePCBDoc(ObjTypeInt : Integer;
 Var
     Board : IPCB_Board;
     TotalMatched : Integer;
-    JsonItems, Why, BadLayer, BadCond, Canon : String;
+    JsonItems, Why, BadLayer, BadCond, Canon, IndexJson : String;
 Begin
     BadCond := FilterProblem(FilterStr);
     If BadCond <> '' Then
@@ -3292,7 +3322,7 @@ Begin
     End;
     TotalMatched := 0;
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
-        Canon, PropsStr, SetStr, Mode, TotalMatched, Limit);
+        Canon, PropsStr, SetStr, Mode, TotalMatched, Limit, IndexJson);
 
     { Nothing matched, nothing changed: no redraw of the whole board and no }
     { dirty mark on a document the call did not touch.                     }
@@ -3311,7 +3341,7 @@ Begin
           whether a property write landed. The tail reports that, the same
           way the schematic modify replies do. }
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched)
+            '{"matched":' + IntToStr(TotalMatched) + IndexJson
             + ModifyOutcomeJson(0) + '}');
 End;
 

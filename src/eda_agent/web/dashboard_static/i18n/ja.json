@@ -229,6 +229,7 @@
  "Net labels not on any wire (silent phantom net)": "どの配線にも乗っていないネットラベル (見えない幽霊ネット)",
  "Net labels that merge, short, or sit on a pin root": "ネットを結合 / 短絡させる、またはピンの根元にあるネットラベル",
  "Net mixes thin + wide tracks (>2× ratio, hotspot risk)": "細いトラックと太いトラックが混在するネット (比 >2×、ホットスポットのおそれ)",
+ "Objects a search by area or their net cannot find": "領域検索やネットから見つからないオブジェクト",
  "Nets": "ネット",
  "Nets routed": "配線済みネット",
  "Nets selected in Altium": "Altium で選択したネット",

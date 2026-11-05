@@ -2029,6 +2029,31 @@ def register_project_tools(mcp):
                           "newly_produced": st.st_mtime >= cutoff})
         return True, files
 
+    def _drill_report_duplicates(paths):
+        """Each fresh NC drill report that lists holes at the same point.
+
+        MEASURED 2026-10-30: after 279 via holes were resized, the drill
+        file held 5 holes while every other output looked right, and the
+        report said "Two holes at same point : 279". The report is the
+        only place that says so, so it is read after every run.
+        """
+        import re
+        from pathlib import Path
+
+        found = []
+        for p in paths:
+            if not str(p).lower().endswith(".drr"):
+                continue
+            try:
+                text = Path(p).read_text(encoding="latin-1", errors="replace")
+            except OSError:
+                continue
+            counts = [int(m.group(1)) for m in re.finditer(
+                r"(?i)holes at same point\s*:\s*(\d+)", text)]
+            if counts or re.search(r"(?i)holes at same point", text):
+                found.append({"report": str(p), "count": sum(counts) or 1})
+        return found
+
     def _judge_outjob_run(run, started_at, fresh_window_seconds):
         """A run reply with ``success`` decided by what was written.
 
@@ -2046,6 +2071,16 @@ def register_project_tools(mcp):
         out["files_written"] = len(fresh)
         out["written"] = fresh[:50]
         out["success"] = bool(fresh)
+        duplicates = _drill_report_duplicates(fresh)
+        if duplicates:
+            out["success"] = False
+            out["drill_duplicates"] = duplicates
+            out["reason"] = (
+                "the drill report says holes share a point, and the NC "
+                "drill file leaves such holes out: "
+                + "; ".join(f"{d['report']}: {d['count']}" for d in duplicates)
+                + ". Close and reopen the board, then run the output again")
+            return out
         if run.get("dialog"):
             out["reason"] = (
                 f"Altium raised a dialog during the run and the bridge "

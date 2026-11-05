@@ -229,6 +229,7 @@
  "Net labels not on any wire (silent phantom net)": "Метки цепей не на проводе (скрытая фантомная цепь)",
  "Net labels that merge, short, or sit on a pin root": "Метки цепей, которые объединяют, замыкают или стоят у основания вывода",
  "Net mixes thin + wide tracks (>2× ratio, hotspot risk)": "Цепь с тонкими и широкими дорожками (соотношение >2×, риск перегрева)",
+ "Objects a search by area or their net cannot find": "Объекты, которые не находит поиск по области или их цепь",
  "Nets": "Цепи",
  "Nets routed": "Разведено цепей",
  "Nets selected in Altium": "Цепи, выделенные в Altium",

@@ -2056,6 +2056,88 @@ Begin
     Except NoteWriteFailed('re-index an object on the board'); End;
 End;
 
+{ WHETHER THE BOARD'S SPATIAL INDEX HANDS OUT OBJ AT (X, Y). Searches by     }
+{ area (obj_query by bounds, Altium's online DRC, pours, picking) go through }
+{ that index; an object it does not hold there is invisible to them while    }
+{ its own getters, and a board walk, still find it.                          }
+Function BoardIndexFinds(Board : IPCB_Board; Obj : IPCB_Primitive;
+    X, Y : TCoord) : Boolean;
+Var
+    Spatial : IPCB_SpatialIterator;
+    Other : IPCB_Primitive;
+    Key : String;
+    Found : Boolean;
+Begin
+    Found := False;
+    Key := IntToStr(Obj.I_ObjectAddress);
+    Spatial := Board.SpatialIterator_Create;
+    Try
+        Spatial.AddFilter_ObjectSet(MkSet(Obj.ObjectId));
+        Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Spatial.AddFilter_Area(X - 10, Y - 10, X + 10, Y + 10);
+        Other := Spatial.FirstPCBObject;
+        While (Other <> Nil) And Not Found Do
+        Begin
+            If IntToStr(Other.I_ObjectAddress) = Key Then Found := True
+            Else Other := Spatial.NextPCBObject;
+        End;
+    Finally
+        Board.SpatialIterator_Destroy(Spatial);
+    End;
+    Result := Found;
+End;
+
+{ WHERE THE INDEX HOLDS OBJ: bit 1 at the centre of its bounding box, bit 2 }
+{ at two opposite corners of it, so 3 is the whole box and 0 is nowhere it }
+{ is. MEASURED on AD 26.11 (a board just opened, nothing written): every  }
+{ via whose mask comes from the rules reads 1, its index box narrower than }
+{ the box BoundingRectangle reports, and taking it off the board and back  }
+{ leaves it so. Altium indexes it that way; 1 is not stale. 0 is.          }
+Function BoardIndexState(Board : IPCB_Board; Obj : IPCB_Primitive) : Integer;
+Var
+    BR : TCoordRect;
+    State : Integer;
+Begin
+    State := 0;
+    If (Board <> Nil) And (Obj <> Nil) Then
+    Begin
+        BR := Obj.BoundingRectangle;
+        If BoardIndexFinds(Board, Obj, (BR.Left + BR.Right) Div 2,
+            (BR.Bottom + BR.Top) Div 2) Then State := 1;
+        If BoardIndexFinds(Board, Obj, BR.Left, BR.Bottom) Then
+            If BoardIndexFinds(Board, Obj, BR.Right, BR.Top) Then
+                State := State + 2;
+    End;
+    Result := State;
+End;
+
+{ A WRITE MAY NOT LEAVE A READ PATH WORSE THAN IT FOUND IT. Before is the    }
+{ BoardIndexState read before the write; call this after the object's       }
+{ modify bracket. Where the index now holds the object less than it did      }
+{ (#208: a via's mask grew its box past the index entry), the object is      }
+{ re-indexed. Returns 0 when nothing was lost, 1 when re-indexing put it     }
+{ back, 2 when it was left alone (a component, polygon or dimension, or a    }
+{ primitive one of them owns, is not taken off the board and put back), 3    }
+{ when it is still worse after re-indexing.                                  }
+Function EnsureIndexed(Board : IPCB_Board; Obj : IPCB_Primitive;
+    Before : Integer) : Integer;
+Var
+    After : Integer;
+Begin
+    Result := 0;
+    If (Board = Nil) Or (Obj = Nil) Then Exit;
+    After := BoardIndexState(Board, Obj);
+    If (After And Before) = Before Then Exit;
+    Result := 2;
+    If Obj.InComponent Or Obj.InPolygon Or Obj.InDimension Then Exit;
+    If (Obj.ObjectId = eComponentObject) Or (Obj.ObjectId = ePolyObject)
+        Or (Obj.ObjectId = eDimensionObject) Then Exit;
+    ReindexBoardObject(Board, Obj);
+    After := BoardIndexState(Board, Obj);
+    If (After And Before) = Before Then Result := 1
+    Else Result := 3;
+End;
+
 { A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
 {                                                                            }
 { The Selection Filter (the per-type toggles in the Properties panel) also   }

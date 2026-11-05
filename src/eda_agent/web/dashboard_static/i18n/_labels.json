@@ -253,6 +253,7 @@
 "Net labels not on any wire (silent phantom net)",
 "Net labels that merge, short, or sit on a pin root",
 "Net mixes thin + wide tracks (>2× ratio, hotspot risk)",
+"Objects a search by area or their net cannot find",
 "No HelpURL / ComponentLink1URL / Datasheet parameter found on this component. Ask the agent to add one with set_sch_component_parameters.",
 "No baseline yet -- click 'baseline' to capture the current BOM, then edit and click 'changes' to compare.",
 "No baseline yet -- click 'baseline' to capture the current net list, then run an ECO and click 'changes' to compare.",

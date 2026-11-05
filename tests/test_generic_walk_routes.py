@@ -52,7 +52,9 @@ def test_each_route_ends_the_walk_and_the_board_walk_is_last():
     spatial = body.index("Spatial := Board.SpatialIterator_Create;")
     walk = body.rindex("Iterator := Board.BoardIterator_Create;")
     assert net < comp < spatial < walk
-    assert body.count("Exit;") == 3
+    # Net and Component end the walk; the spatial route ends it when it
+    # found a match, or for a type the index holds by its printed box.
+    assert body.count("Exit;") == 4
 
 
 def test_a_route_is_only_taken_for_an_exact_condition():
@@ -120,7 +122,26 @@ def test_the_spatial_route_is_primitives_only_on_every_layer():
         assert f"FilterExactValue(FilterStr, '{prop}', Value)" in body
     for prop in ("BoundsBottom", "BoundsTop", "Y1", "Y2"):
         assert f"FilterExactValue(FilterStr, '{prop}', Value)" in body
-    assert "Spatial.AddFilter_Area(X - MilsToCoordF(1), Y - MilsToCoordF(1)," in route
+    assert "Spatial.AddFilter_Area(X - Margin, Y - Margin, X + Margin, Y + Margin)" in route
+    # One mil round the point, 100 mil for a via or pad: a via whose mask
+    # comes from the rules is indexed by a box narrower than its Bounds.
+    assert "Margin := MilsToCoordF(1);" in body
+    wide = body[body.index("Margin := MilsToCoordF(1);"):body.index("Margin := MilsToCoordF(100);")]
+    assert "eViaObject" in wide and "ePadObject" in wide
+
+
+def test_a_spatial_search_that_finds_nothing_goes_on_to_the_walk():
+    body = _routes()
+    route = body[body.index("If HasX Or HasY Then"):]
+    found = route.index("Found := Matches.Count;")
+    search = route.index("Spatial.FirstPCBObject")
+    leave = route.index("If Matches.Count > Found Then Exit;")
+    walk = route.index("Iterator := Board.BoardIterator_Create;")
+    assert found < search < leave < walk
+    # Nothing between the spatial search and the walk ends the routine.
+    between = route[route.index("Board.SpatialIterator_Destroy(Spatial);"):walk]
+    assert between.count("Exit;") == 2
+    assert "(ObjTypeInt <> eViaObject) And (ObjTypeInt <> ePadObject)" in between
 
 
 def test_every_walk_stops_at_the_limit_and_query_counts_what_is_left():

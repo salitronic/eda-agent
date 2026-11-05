@@ -229,6 +229,7 @@
  "Net labels not on any wire (silent phantom net)": "不在任何导线上的网络标签（无声的幽灵网络）",
  "Net labels that merge, short, or sit on a pin root": "合并、短路或落在引脚根部的网络标签",
  "Net mixes thin + wide tracks (>2× ratio, hotspot risk)": "网络混用细线与粗线（比例 >2×，有热点风险）",
+ "Objects a search by area or their net cannot find": "按区域搜索或其网络找不到的对象",
  "Nets": "网络",
  "Nets routed": "已布线网络",
  "Nets selected in Altium": "在 Altium 中选中的网络",
