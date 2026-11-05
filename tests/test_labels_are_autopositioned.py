@@ -67,6 +67,14 @@ def test_the_action_forces_and_reports_before_and_after():
     assert "Found.Free" not in body
 
 
+def test_a_label_font_can_be_read_and_written():
+    """A sheet symbol's name and file name carry their own font (Arial 8 in a
+    house style); it is a property of the label, spelled SheetName.FontId."""
+    assert "'FontId'" in _routine("SchLabelPropWhich")
+    assert "Lbl.FontID" in _routine("GetSchComponentLabelProp")
+    assert "Lbl.FontID := StrToIntDef(Value, 1)" in _routine("SetSchComponentLabelProp")
+
+
 def test_the_label_property_names_parse(tmp_path):
     fpc = shutil.which("fpc")
     if not fpc:
@@ -77,6 +85,9 @@ def test_the_label_property_names_parse(tmp_path):
         ("SheetFileName.Autoposition", "Filename", "Autoposition"),
         ("Filename.IsHidden", "Filename", "IsHidden"),
         ("Comment.Location.X", "Comment", "Location.X"),
+        ("SheetName.FontId", "Designator", "FontId"),
+        ("SheetFileName.FontId", "Filename", "FontId"),
+        ("Designator.FontId", "Designator", "FontId"),
         ("Designator.Text", "", None),
         ("Location.X", "", None),
         ("Orientation", "", None),

@@ -1017,7 +1017,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1029,7 +1029,9 @@ Begin
 End;
 
 { IsHidden, position and Autoposition of a label (see SchLabelOf). Field is }
-{ 'IsHidden', 'Location.X', 'Location.Y' or 'Autoposition'; positions are  }
+{ 'IsHidden', 'Location.X', 'Location.Y', 'Autoposition' or 'FontId' (a    }
+{ Layer32 addition: the PCEU preset sets a sheet symbol's name and file    }
+{ name labels to Arial 8); positions are                                   }
 { in mils. Returns '' when the object carries no such label.              }
 Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
 Var
@@ -1043,6 +1045,7 @@ Begin
         If Field = 'Location.X' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.X));
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
+        If Field = 'FontId' Then Result := IntToStr(Lbl.FontID);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1067,6 +1070,7 @@ Begin
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
+        If Field = 'FontId' Then Lbl.FontID := StrToIntDef(Value, 1);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
