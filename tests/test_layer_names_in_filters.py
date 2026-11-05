@@ -95,7 +95,7 @@ def test_an_unknown_filter_layer_is_refused_before_anything_is_matched():
     canon = body.index("Canon := CanonicalLayerFilter(Board, FilterStr, BadLayer);")
     refuse = body.index("'Unknown layer name in the filter: ' + BadLayer")
     assert canon < refuse < body.index("ProcessPCBBoardObjects(Board, ObjTypeInt,")
-    assert "Canon, PropsStr, SetStr, Mode, TotalMatched, Limit);" in body
+    assert "Canon, PropsStr, SetStr, Mode, TotalMatched, Limit, IndexJson);" in body
 
 
 def test_a_case_variant_of_an_internal_name_resolves_before_user_names():

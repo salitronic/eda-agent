@@ -588,8 +588,7 @@ def register_generic_tools(mcp):
                 HoleNegativeTolerance on pads and vias ("unset" when
                 none is set; Altium keeps a negative tolerance as its
                 size; IsCounterHole reads); BarCode* and Multiline* on a
-                text (Altium recalculates the barcode and multiline sizes
-                from the text: read them back); TextHeight,
+                text (their sizes follow the text: read them back); TextHeight,
                 TextFormat, TextPrecision, TextPrefix, TextSuffix,
                 Arrow* and Extension* on a dimension; PolygonType,
                 BorderWidth, AvoidObsticles (Altium's spelling),
@@ -597,8 +596,7 @@ def register_generic_tools(mcp):
                 ArcPourMode on a pour; EnablePinSwapping and
                 EnablePartSwapping on a part (IsBGA reads); also on a
                 part LockStrings, NameAutoPosition and CommentAutoPosition
-                (Altium's anchor numbers; writing one moves the text
-                there), FootprintDescription, DefaultPCB3DModel
+                (Altium's anchor numbers), FootprintDescription, DefaultPCB3DModel
                 (PackageSpecificHash reads), SourceDescription,
                 JumpersVisible, ChannelOffset and GroupNum; on a board
                 pad JumperID, SwapID_Pad, SwapID_Part, SwappedPadName and
@@ -609,7 +607,7 @@ def register_generic_tools(mcp):
                 DRCError, UniqueID and IsElectricalPrim (reads); on any
                 schematic object DescriptionString, IdentifierString and
                 ErrorString (reads); on tracks, arcs and vias IsPreRoute
-                (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
+                and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
@@ -657,7 +655,9 @@ def register_generic_tools(mcp):
         Returns:
             "matched", "sheets_processed", and on a schematic "modified"
             (something was written) with "saved" false: the sheet is
-            marked modified, not saved. Run app_save_all to write it.
+            marked modified, not saved; app_save_all writes it.
+            On a board "reindexed" and "stale_index": objects the write
+            dropped from the board's index, put back or not.
             With items: operations_processed, operations_skipped,
             total_matched and per-item ``results`` with ``matched`` and a
             ``note`` ("no_objects_matched" when nothing matched).

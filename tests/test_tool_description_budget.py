@@ -22,7 +22,7 @@ BACKENDS = ("altium", "easyeda", "kicad")
 TOOL_LIMIT = 3_000
 OVER_LIMIT = {
     "obj_modify": 7_021, "pcb_apply_geometry_map": 6_566, "obj_query": 5_355,
-    "pcb_set_rule_properties": 4_975, "audit": 4_945, "pcb_calc": 4_556,
+    "pcb_set_rule_properties": 4_975, "audit": 5_091, "pcb_calc": 4_556,
     "pcb_plan_placement": 4_171, "lib_set_pad_properties": 3_714,
     "lib_create_footprint_from_package": 3_229, "sch_editor_options": 3_223,
     "sch_preview_template": 3_095,

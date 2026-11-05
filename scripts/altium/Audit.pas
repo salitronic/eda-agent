@@ -4500,6 +4500,216 @@ Begin
 End;
 
 
+{ Audit_FindStaleReadPaths                                                    }
+{                                                                              }
+{ A write that reports success can leave a read path behind: the getters show }
+{ the new state while another way of finding the object still answers from   }
+{ the old one (#208: a via's mask moved its box, its spatial index entry     }
+{ stayed, and a search by the new box found nothing). This walks the board  }
+{ and asks each read path for every object:                                   }
+{   index   the spatial index hands the object out where it is, at the      }
+{           centre of its bounding box (searches by area, the online DRC,    }
+{           pours and picking go through it). An object it holds there but  }
+{           not at the corners of the box the getters report is counted as  }
+{           index_box, not as stale: Altium indexes a via whose mask comes  }
+{           from the rules by a narrower box (BoardIndexState);              }
+{   net     an object that reports a net is in that net's own list           }
+{           (connectivity, the ratsnest and pours walk the list; poured      }
+{           copper is not in it and is not asked);                           }
+{   counts  per primitive type (the spatial iterator never hands out group }
+{           objects: components and polygons), the index over the board     }
+{           holds as many objects as the board walk: more means an entry    }
+{           left for a deleted object, fewer an object never indexed.       }
+
+Function StaleTypeId(T : Integer) : Integer;
+Begin
+    Case T Of
+        0 : Result := eTrackObject;
+        1 : Result := eArcObject;
+        2 : Result := eViaObject;
+        3 : Result := ePadObject;
+        4 : Result := eFillObject;
+        5 : Result := eRegionObject;
+        6 : Result := eTextObject;
+    Else
+        Result := eComponentBodyObject;
+    End;
+End;
+
+Function StaleTypeWanted(Types : String; Name : String) : Boolean;
+Begin
+    Result := (Types = '') Or (Pos(',' + Name + ',', ',' + Types + ',') > 0);
+End;
+
+Function Audit_FindStaleReadPaths(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Spatial : IPCB_SpatialIterator;
+    NetIter : IPCB_BoardIterator;
+    Group : IPCB_GroupIterator;
+    Obj, Member : IPCB_Primitive;
+    Net : IPCB_Net;
+    Members : TStringList;
+    BR : TCoordRect;
+    T, TypeId, State, Narrow, Limit, Checked, StaleIdx, StaleNet, Mismatch, Walked, Indexed, Shown : Integer;
+    Types, Name, ItemsJson, CountsJson, Response, NetName, Owner : String;
+    Lo, Hi : TCoord;
+Begin
+    Board := ResolvePCBBoard(ExtractJsonValue(Params, 'board_path'));
+    If Board = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No board open at that path, and none focused');
+        Result := Response;
+        Exit;
+    End;
+    Types := LowerCase(ExtractJsonValue(Params, 'types'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
+
+    { Every primitive any net lists. }
+    Members := TStringList.Create;
+    Members.Sorted := True;
+    NetIter := Board.BoardIterator_Create;
+    Try
+        NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+        NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        NetIter.AddFilter_Method(eProcessAll);
+        Net := NetIter.FirstPCBObject;
+        While Net <> Nil Do
+        Begin
+            Group := Net.GroupIterator_Create;
+            Try
+                Member := Group.FirstPCBObject;
+                While Member <> Nil Do
+                Begin
+                    Members.Add(IntToStr(Member.I_ObjectAddress));
+                    Member := Group.NextPCBObject;
+                End;
+            Finally
+                Net.GroupIterator_Destroy(Group);
+            End;
+            Net := NetIter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(NetIter);
+    End;
+
+    Checked := 0; Narrow := 0; StaleIdx := 0; StaleNet := 0; Mismatch := 0; Shown := 0;
+    ItemsJson := ''; CountsJson := '';
+    Lo := MilsToCoordF(-200000);
+    Hi := MilsToCoordF(200000);
+    Try
+        For T := 0 To 7 Do
+        Begin
+            TypeId := StaleTypeId(T);
+            Name := ObjectIDToObjectName(TypeId);
+            If Not StaleTypeWanted(Types, Name) Then Continue;
+            Walked := 0;
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(TypeId));
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iter.AddFilter_Method(eProcessAll);
+                Obj := Iter.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Walked);
+                    Inc(Checked);
+                    State := BoardIndexState(Board, Obj);
+                    If State = 1 Then Inc(Narrow);
+                    If (State And 1) = 0 Then
+                    Begin
+                        Inc(StaleIdx);
+                        If Shown < Limit Then
+                        Begin
+                            BR := Obj.BoundingRectangle;
+                            Owner := '';
+                            If Obj.InComponent Then Owner := 'component'
+                            Else If Obj.InPolygon Then Owner := 'polygon'
+                            Else If Obj.InDimension Then Owner := 'dimension';
+                            If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                            ItemsJson := ItemsJson + JsonObj(
+                                JsonStr('read_path', 'index') + ','
+                                + JsonStr('type', Name) + ','
+                                + JsonStr('layer', GetLayerString(Obj.Layer)) + ','
+                                + JsonStr('owner', Owner) + ','
+                                + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                + JsonFloat('bottom', CoordToMilsF(BR.Bottom)) + ','
+                                + JsonFloat('right', CoordToMilsF(BR.Right)) + ','
+                                + JsonFloat('top', CoordToMilsF(BR.Top)));
+                            Inc(Shown);
+                        End;
+                    End;
+                    Net := Nil;
+                    If Not Obj.InPolygon Then Net := Obj.Net;
+                    If Net <> Nil Then
+                    Begin
+                        If Members.IndexOf(IntToStr(Obj.I_ObjectAddress)) < 0 Then
+                        Begin
+                            Inc(StaleNet);
+                            If Shown < Limit Then
+                            Begin
+                                BR := Obj.BoundingRectangle;
+                                NetName := '';
+                                Try NetName := Net.Name; Except End;
+                                If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                                ItemsJson := ItemsJson + JsonObj(
+                                    JsonStr('read_path', 'net') + ','
+                                    + JsonStr('type', Name) + ','
+                                    + JsonStr('net', NetName) + ','
+                                    + JsonStr('layer', GetLayerString(Obj.Layer)) + ','
+                                    + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                    + JsonFloat('bottom', CoordToMilsF(BR.Bottom)));
+                                Inc(Shown);
+                            End;
+                        End;
+                    End;
+                    Obj := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+
+            Indexed := 0;
+            Spatial := Board.SpatialIterator_Create;
+            Try
+                Spatial.AddFilter_ObjectSet(MkSet(TypeId));
+                Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Spatial.AddFilter_Area(Lo, Lo, Hi, Hi);
+                Obj := Spatial.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Indexed);
+                    Obj := Spatial.NextPCBObject;
+                End;
+            Finally
+                Board.SpatialIterator_Destroy(Spatial);
+            End;
+            If Indexed <> Walked Then Inc(Mismatch);
+            If CountsJson <> '' Then CountsJson := CountsJson + ',';
+            CountsJson := CountsJson + JsonObj(JsonStr('type', Name) + ','
+                + JsonInt('board', Walked) + ',' + JsonInt('index', Indexed));
+        End;
+    Finally
+        Members.Free;
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonInt('checked', Checked) + ',' +
+            JsonInt('violations', StaleIdx + StaleNet + Mismatch) + ',' +
+            JsonInt('stale_index', StaleIdx) + ',' +
+            JsonInt('count_mismatches', Mismatch) + ',' +
+            JsonInt('index_box', Narrow) + ',' +
+            JsonInt('stale_net', StaleNet) + ',' +
+            JsonRaw('counts', '[' + CountsJson + ']') + ',' +
+            JsonRaw('items', '[' + ItemsJson + ']')
+        ));
+    Result := Response;
+End;
+
+
 Function HandleAuditCommand(Action : String; Params : String;
                              RequestId : String) : String;
 Begin
@@ -4563,6 +4773,8 @@ Begin
         Result := Audit_FindInconsistentTrackWidths(Params, RequestId)
     Else If Action = 'find_pads_center_not_connected' Then
         Result := Audit_FindPadsCenterNotConnected(Params, RequestId)
+    Else If Action = 'find_stale_read_paths' Then
+        Result := Audit_FindStaleReadPaths(Params, RequestId)
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown audit action: ' + Action);

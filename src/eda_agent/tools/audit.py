@@ -501,6 +501,43 @@ def register_audit_tools(mcp):
             "audit.find_unlocked_component_primitives", {})
 
     @mcp.tool()
+    async def audit_find_stale_read_paths(
+        board_path: str = "",
+        types: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Find board objects a search by area or a net's list misses.
+
+        A write that reported success can still leave one of the ways of
+        finding an object behind, hiding it from a later read, the DRC or
+        a pour.
+
+        Per object: the spatial index holds it over its own bounding box
+        (searches by area, Altium's online DRC, pours and picking use the
+        index), and an object reporting a net is in that net's list
+        (connectivity, the ratsnest and pours use the list). Per type: the
+        index holds as many objects as a board walk finds.
+
+        Args:
+            board_path: The board to check; the focused board when empty.
+            types: Comma-separated type names to check (track, arc, via,
+                pad, fill, region, text, component_body, component,
+                polygon); all of them when empty.
+            limit: Most items to list.
+
+        Returns:
+            ``checked``, ``violations`` (the sum of the three below),
+            ``stale_index``, ``stale_net``, ``count_mismatches``,
+            ``counts`` (``{type, board, index}`` per type) and ``items``
+            (``read_path`` "index" or "net", type, layer, box in mils).
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "audit.find_stale_read_paths",
+            {"board_path": board_path, "types": types.replace(" ", ""),
+             "limit": str(int(limit))})
+
+    @mcp.tool()
     async def audit_find_mirrored_pcb_text() -> dict[str, Any]:
         """Find free-floating PCB text (eTextObject) that's mirrored
         on the wrong overlay.

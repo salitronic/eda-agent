@@ -87,6 +87,7 @@ LINT_SEVERITY: dict[str, str] = {
     "find_orphan_power_objects":         "critical",
     "find_placeholder_values":           "critical",
     "find_invalid_regions":              "critical",
+    "find_stale_read_paths":             "critical",
     "find_mirrored_pcb_text":            "critical",
     "find_components_outside_board_outline": "critical",
     "find_non_embedded_images":          "critical",
@@ -163,6 +164,7 @@ LINT_AUDIT_LIST: list[tuple[str, str]] = [
     ("find_mirrored_pcb_text",          "audit.find_mirrored_pcb_text"),
     ("find_acute_angles",               "audit.find_acute_angles"),
     ("find_inconsistent_track_widths",  "audit.find_inconsistent_track_widths"),
+    ("find_stale_read_paths",           "audit.find_stale_read_paths"),
 ]
 
 
