@@ -10315,6 +10315,17 @@ Begin
         Exit;
     End;
 
+    { A second rule of the same name was added without complaint, and      }
+    { Altium's priority order then decided which of the two applied.        }
+    If PCB_FindRuleByName(Board, RuleName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule named "' + RuleName + '" is already on the board. Nothing '
+            + 'was created. Change it with pcb_set_rule_properties, or delete '
+            + 'it with pcb_delete_design_rule first.');
+        Exit;
+    End;
+
     If RuleTypeStr = '' Then
         RuleTypeStr := 'clearance';
 
@@ -13100,6 +13111,15 @@ Begin
     If (X1Str = '') Or (Y1Str = '') Or (X2Str = '') Or (Y2Str = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing coordinate parameters (x1, y1, x2, y2)');
+        Exit;
+    End;
+    { A room is a rule; a second of the same name was added without      }
+    { complaint and left two rooms answering to one name.                 }
+    If PCB_FindRuleByName(Board, RoomName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule or room named "' + RoomName + '" is already on the board. '
+            + 'Nothing was created.');
         Exit;
     End;
 

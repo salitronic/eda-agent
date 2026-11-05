@@ -647,6 +647,46 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
             "suggested_scope": fixed, **extra}
 
 
+def create_rule_params(name: str, rule_type: str = "clearance", value: float = 10,
+                       max_value: Optional[float] = None,
+                       favored_value: Optional[float] = None,
+                       max_uncoupled_length: Optional[float] = None, scope: str = "",
+                       net_scope: str = "different_nets", allowed: Optional[bool] = None,
+                       connect_style: str = "direct") -> dict[str, Any]:
+    """pcb.create_design_rule's request, or a refusal (which has no name)."""
+    if scope:
+        refusal = _scope_refusal(scope, created=False)
+        if refusal:
+            return refusal
+    params: dict[str, Any] = {"name": name, "rule_type": rule_type,
+                              "value": str(value), "net_scope": net_scope}
+    if max_value is not None:
+        params["max_value"] = str(max_value)
+    if favored_value is not None:
+        params["favored_value"] = str(favored_value)
+    if max_uncoupled_length is not None:
+        params["max_uncoupled_length"] = str(max_uncoupled_length)
+    if scope:
+        params["scope"] = scope
+    if allowed is not None:
+        params["allowed"] = "true" if allowed else "false"
+    if rule_type in ("polygon_connect", "plane_connect"):
+        params["connect_style"] = connect_style
+    limit_keys = {
+        "length": ("min_length_mils", "max_length_mils"),
+        "signal_impedance": ("min_signal_impedance_ohms", "max_signal_impedance_ohms"),
+        "flight_time_rising": ("max_flight_time_ns", None),
+        "flight_time_falling": ("max_flight_time_ns", None),
+    }.get(rule_type)
+    if limit_keys:
+        if value <= 0 and rule_type != "length":
+            return {"ok": False, "reason": f"{rule_type} takes a value more than 0"}
+        params[limit_keys[0]] = str(value)
+        if limit_keys[1] and max_value is not None:
+            params[limit_keys[1]] = str(max_value)
+    return params
+
+
 #: Altium's internal units per mil.
 #: Design > Netlist > Update Free Primitives From Component Pads asks first.
 #: MEASURED (AD 25.8): a box titled exactly "Confirm" with this text and
@@ -2378,12 +2418,12 @@ def register_pcb_tools(mcp):
             width: Spoke (conductor) width in mils.
             gap: Air gap in mils.
             rotation: Standard spokes at 45 or 90 degrees.
-            custom: False switches custom spokes off (back to the standard
-                ones); custom spokes are set with pcb_pad_relief_spokes.
-            read_spokes: Also list the custom spoke points. This marks the
-                board modified (one undo step): the list is made sure of
-                by adding and removing a spoke, because reading a list
-                that was never made stops Altium's script.
+            custom: False switches custom spokes off; set them with
+                pcb_pad_relief_spokes.
+            read_spokes: Also list the custom spoke points. Marks the
+                board modified (one undo step): a spoke is added and
+                removed first, as reading a list never made stops the
+                script.
             kind: "via" for a free via, named by x / y. A simple via has
                 one record for every layer; on a top-middle-bottom via the
                 record reached is the MIDDLE one (every inner layer) --
@@ -8721,7 +8761,8 @@ def register_pcb_tools(mcp):
         """Create a new design rule on the active PCB.
 
         Args:
-            name: Rule name (e.g., "Min Clearance 6mil").
+            name: Rule name (e.g., "Min Clearance 6mil"). A name already on
+                the board is refused (RULE_EXISTS).
             rule_type: "polygon_connect" / "plane_connect" (no value:
                 connect_style decides, e.g. scope "IsVia" with "direct"
                 so vias never get thermal reliefs; set relief widths
@@ -8762,43 +8803,12 @@ def register_pcb_tools(mcp):
         be created; existing ones can be changed with
         pcb_set_rule_properties.
         """
-        if scope:
-            refusal = _scope_refusal(scope, created=False)
-            if refusal:
-                return refusal
-        bridge = get_bridge()
-        params: dict[str, Any] = {
-            "name": name,
-            "rule_type": rule_type,
-            "value": str(value),
-            "net_scope": net_scope,
-        }
-        if max_value is not None:
-            params["max_value"] = str(max_value)
-        if favored_value is not None:
-            params["favored_value"] = str(favored_value)
-        if max_uncoupled_length is not None:
-            params["max_uncoupled_length"] = str(max_uncoupled_length)
-        if scope:
-            params["scope"] = scope
-        if allowed is not None:
-            params["allowed"] = "true" if allowed else "false"
-        if rule_type in ("polygon_connect", "plane_connect"):
-            params["connect_style"] = connect_style
-        limit_keys = {
-            "length": ("min_length_mils", "max_length_mils"),
-            "signal_impedance": ("min_signal_impedance_ohms", "max_signal_impedance_ohms"),
-            "flight_time_rising": ("max_flight_time_ns", None),
-            "flight_time_falling": ("max_flight_time_ns", None),
-        }.get(rule_type)
-        if limit_keys:
-            if value <= 0 and rule_type != "length":
-                return {"ok": False, "reason": f"{rule_type} takes a value more than 0"}
-            params[limit_keys[0]] = str(value)
-            if limit_keys[1] and max_value is not None:
-                params[limit_keys[1]] = str(max_value)
-        result = await bridge.send_command_async("pcb.create_design_rule", params)
-        return result
+        params = create_rule_params(
+            name, rule_type, value, max_value, favored_value, max_uncoupled_length,
+            scope, net_scope, allowed, connect_style)
+        if "name" not in params:
+            return params
+        return await get_bridge().send_command_async("pcb.create_design_rule", params)
 
     @mcp.tool()
     async def pcb_delete_design_rule(

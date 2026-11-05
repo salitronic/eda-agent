@@ -1,15 +1,16 @@
-"""Native IPC batch generation through RunProcess, without desktop input.
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+# Copyright (c) 2026 StarX-ai
+"""Footprints from an IPC batch table, through Altium's own generator.
 
-AD 24.0.1 FootprintWizard.ins declares BatchPCBLibCreate. The DLL's
-FileName/OutputFolder process entry was exercised against a QFN CSV.
-Other native batch preferences are intentionally not advertised as
-working process parameters: output inspection, not dispatch, proves success.
+FootprintWizard:BatchPCBLibCreate takes FileName, OutputFolder and
+EnableStepModel. Success is what the output folder and the libraries in
+it hold when read back, never the dispatch alone.
 """
 from __future__ import annotations
 
 import asyncio
 import csv
-import json
 import re
 from html import unescape
 from pathlib import Path
@@ -62,7 +63,7 @@ def _report(path: Path) -> dict:
 
 async def generate_ipc_batch(input_file: str, output_dir: str, *,
                              require_step: bool = True,
-                             remove_designator: bool = True,
+                             remove_designator: bool = False,
                              timeout: float = 120.0) -> dict:
     """Run the native importer; only verified generated libraries count."""
     try:
@@ -158,7 +159,6 @@ async def generate_ipc_batch(input_file: str, output_dir: str, *,
             native_preferences="AD's saved batch naming/report preferences apply; EnableStepModel=True requests STEP and its presence is verified")
     except Exception as exc:
         result.update(stage="exception", reason=f"{type(exc).__name__}: {exc}")
-    (out / "mcp-ipc-batch-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return result
 
 
@@ -166,20 +166,27 @@ def register_ipc_batch_tools(mcp):
     @mcp.tool()
     async def lib_generate_ipc_batch(input_file: str, output_dir: str,
                                      require_step: bool = True,
-                                     remove_designator: bool = True,
+                                     remove_designator: bool = False,
                                      timeout: float = 120.0) -> dict:
-        """Import a native IPC batch table through AD's own generator, without desktop input.
+        """Make PcbLibs from an IPC footprint batch table (Altium's
+        QFN/QFP/SOP template) with Altium's own batch generator.
 
-        Runs FootprintWizard:BatchPCBLibCreate with FileName, OutputFolder,
-        and EnableStepModel=True when require_step=True.
-        Requires an absolute CSV/XLS/XLSX path and a NEW or EMPTY output folder.
-        Reads every generated footprint, checks the CSV row count, rejects native
-        report errors, removes Designator text (preserving unrelated text), saves,
-        and extracts/checksums embedded STEP models when require_step=True.
-        AD's saved native batch preferences control naming/report options;
-        require_step requests and verifies STEP, never substitutes extruded bodies.
-        No mouse, keyboard, menu clicking, UI Automation, or dialog driving.
-        Returns ok=False if dispatch produces no files or any required check fails.
+        Every footprint is read back: pad count, the table's row count,
+        errors in Altium's report, and with require_step its STEP body,
+        extracted and checksummed. Naming follows Altium's saved batch
+        preferences.
+
+        Args:
+            input_file: Absolute path of the .csv, .xls or .xlsx table.
+            output_dir: A new or empty folder; nothing is overwritten.
+            require_step: Ask for STEP bodies and fail without them.
+            remove_designator: Delete the Designator text, refused when
+                other text shares its layer.
+            timeout: Seconds, 10 to 600.
+
+        Returns:
+            ``ok``, ``stage`` (where it stopped), ``libraries`` with each
+            footprint, and the ``reports``.
         """
         return await generate_ipc_batch(input_file, output_dir,
             require_step=require_step, remove_designator=remove_designator, timeout=timeout)

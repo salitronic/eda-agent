@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+# Copyright (c) 2026 StarX-ai
+"""lib_generate_ipc_batch: what it sends, and what it refuses to call success."""
 import asyncio
 import tempfile
 import unittest
@@ -42,11 +46,11 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.source.write_text('QFN,,\nFootprintName,DensityLevel,Other\nQFN20,N,\n')
         self.output = self.root / 'result'
 
-    async def run_fake(self, fake):
+    async def run_fake(self, fake, **kwargs):
         with patch.object(ipc_batch, 'get_bridge', return_value=fake), patch.object(
                 ipc_batch.pcblib_models, 'extract_embedded_models', return_value={
                     'ok': True, 'written': [{'step_header': True, 'checksum_verified': True}]}):
-            return await ipc_batch.generate_ipc_batch(str(self.source), str(self.output))
+            return await ipc_batch.generate_ipc_batch(str(self.source), str(self.output), **kwargs)
 
     async def test_checks_outputs_and_real_step(self):
         fake = FakeBridge(self.output)
@@ -55,7 +59,8 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['footprint_count'], 1)
         self.assertFalse(result['ui_automation'])
         self.assertIn('|EnableStepModel=True', fake.dispatch_params)
-        self.assertTrue((self.output / 'mcp-ipc-batch-result.json').is_file())
+        # Only Altium's own output is left in the folder.
+        self.assertEqual(sorted(p.name for p in self.output.iterdir()), ['report.html', 'test.PcbLib'])
 
     async def test_dispatch_alone_is_not_success(self):
         fake = FakeBridge(self.output, create=False)
@@ -76,8 +81,14 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preserves_unrelated_text(self):
         fake = FakeBridge(self.output, text=True)
-        result = await self.run_fake(fake)
+        result = await self.run_fake(fake, remove_designator=True)
         self.assertEqual(result['stage'], 'designator')
+        self.assertNotIn('library.delete_footprint_primitives', fake.calls)
+
+    async def test_designator_text_is_kept_unless_asked(self):
+        fake = FakeBridge(self.output, text=True)
+        result = await self.run_fake(fake)
+        self.assertTrue(result['ok'], result)
         self.assertNotIn('library.delete_footprint_primitives', fake.calls)
 
     async def test_existing_directory_never_overwritten(self):

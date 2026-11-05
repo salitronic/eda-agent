@@ -1,4 +1,4 @@
-# Release verification: 2026.11.05.1
+# Release verification: 2026.11.05.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -245,6 +245,7 @@ works elsewhere cannot be an undeclared identifier:
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
 | 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
+| 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -420,7 +421,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.05.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.05.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3758,6 +3759,54 @@ sheet symbol for Chan.SchDoc, Chan with ports DIN (input), DOUT
 
 Not run live here: a compile mask's effect on the netlist, and what
 each `style` and `symbol` integer looks like.
+
+## 70. Pad relief, the library's own board, the current footprint, auto-off, IPC batch
+
+Pull requests #221, #222, #225, #227 (vincent-himpe), #223 (All4Motion)
+and #228 (StarX-ai). Measured 2026-11-05 on AD 26.11.1.5 with this
+build, on a scratch board and a scratch PcbLib:
+
+* `pcb_pad_relief` on a free SMD pad read the rule's relief (4 spokes,
+  10 / 10 mil), set 2 spokes, 8 mil width, 9 mil gap and read them back
+  as `defined` manual; `style` "rule" put it back.
+* `pcb_pad_relief_spokes` refused "E" on a round pad (its east end is an
+  arc) with the reason, then placed "N" and "0" degrees and read both
+  points back in `custom_spokes`.
+* With a PcbLib in front, `lib_get_footprints` named the `current`
+  footprint and `pcb_layer_view` read and wrote the library's own
+  board (Mechanical16 hidden, then shown, both read back).
+
+Not run live here: the status window's double-click (an interface
+action), and `lib_generate_ipc_batch`, which needs a table in Altium's
+batch template; the contributor ran it on AD 24.0.1.36. Its designator
+removal is now off unless asked for, and it writes nothing of its own
+into the output folder.
+
+## 71. A rule or room name already on the board is refused
+
+`pcb_create_design_rule` and `pcb_create_room` added a second rule of a
+name the board already had, and Altium's priority order then decided
+which applied. Both now refuse it (`RULE_EXISTS`), and
+`tests/test_rule_names_are_unique.py` refuses a rule factory call with
+no name check before it. Measured 2026-11-05 on a scratch board: a
+second `DupCheck` rule and a room of that name were both refused, and
+the first rule was unchanged.
+
+## 72. Board rules and ERC levels from the policy folder
+
+`pcb_apply_policy_rules`, `proj_apply_policy_erc` and
+`design_apply_policy` bring a board's rules and a project's ERC levels
+to `board_rules.json` and `erc_levels.json` / `erc_levels/<set>.json` in
+EDA_AGENT_POLICY_DIR. They write through `pcb.create_design_rule`,
+`pcb.set_rule_properties` and `project.set_erc_levels`; nothing is
+deleted. Measured 2026-11-05 on a scratch board and project:
+
+* Board: a dry run proposed two rules to create and one to rewrite
+  (comment and a 12 to 20 mil gap). Applying created both and rewrote
+  the third (`gap_written`); applying again created nothing, showed no
+  difference and left no duplicate.
+* ERC: a set extending another changed three levels and saved the
+  project; a second look found all three the same.
 
 ## Still open, and not blocking
 

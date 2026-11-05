@@ -1410,9 +1410,9 @@ async def _footprint_3d_body(bridge: Any, step: Any, spec: Any, model: Any,
 
 
 def register_library_tools(mcp):
+    """Register library tools with the MCP server."""
     from .ipc_batch import register_ipc_batch_tools
     register_ipc_batch_tools(mcp)
-    """Register library tools with the MCP server."""
 
     # =========================================================================
     # Symbol Creation
