@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.05.2';
+    SCRIPT_VERSION = '2026.11.05.6';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -38,10 +38,18 @@ Const
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
 
-    { How long one Claude session may run commands back to back while      }
-    { another session is waiting. See ScanForRequestFile. A session alone   }
-    { is never slotted.                                                     }
+    { PickSession's slot length. Sessions now take turns per tool call, so  }
+    { the scan passes either 0 (the session is inside a tool call: keep    }
+    { going) or this (rotate to the next waiting session).                 }
     SESSION_SLOT_MS = 30000;
+
+    { A tool call keeps Altium between its own commands. While another      }
+    { session waits, the gap between two of its commands may last          }
+    { KEEP_GRACE_MS before the turn passes on, and the whole call may hold  }
+    { the turn for KEEP_MAX_MS. The server ends the hold at once by writing }
+    { callend_<tag>-<call>.flag when the tool call returns.                 }
+    KEEP_GRACE_MS = 3000;
+    KEEP_MAX_MS = 20000;
 
     CONFIG_FILE = 'mcp_config.json';
     SAVING_FILE = 'saving.json';
@@ -200,6 +208,16 @@ Var
     SlotSession : String;
     SlotStartTick : Integer;
     QueueNoteTick : Integer;
+
+    { The tool call being served: HoldCall is its mark ('k' and four       }
+    { letters, '' for a request outside a tool call), HoldStartTick when   }
+    { its first command was picked, LastDoneTick when the last command     }
+    { finished, JustPicked that a command was handed out since the last    }
+    { scan. See ScanForRequestFile.                                        }
+    HoldCall : String;
+    HoldStartTick : Integer;
+    LastDoneTick : Integer;
+    JustPicked : Boolean;
 
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
@@ -2617,17 +2635,24 @@ End;
 { eliminate any cross-caller race: each caller publishes to its own filename }
 { and polls only its own response file.                                      }
 {                                                                              }
-{ TIME SLOTS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude   }
-{ session) writes ids <tag>-<seq>-<random>: an 8-character session tag and an }
-{ 8-digit sequence. Any other id is the 'legacy' session (a server from       }
-{ before this). Of the pending requests, each session's lowest sequence is    }
-{ its next. With one session pending it is served straight through: one      }
-{ session is never slotted. With several, the session whose slot is running  }
-{ keeps it for SESSION_SLOT_MS, then the next waiting session in tag order    }
-{ gets one slot, so no session has a second slot before every waiting one     }
-{ has had one. A command is never cut off: slots change between commands.    }
-{ While sessions contend, queue.json is refreshed about once a second, so a  }
-{ waiting client can tell a queue from a dead loop.                           }
+{ TURNS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude        }
+{ session) writes ids <tag>-<seq>-<mark><random>: an 8-character session tag, }
+{ an 8-digit sequence, and a mark: 'k' and four letters for a command of a    }
+{ tool call (the four letters name the call), 'q' for background work such   }
+{ as the dashboard's reads, none otherwise. Any other id is the 'legacy'      }
+{ session. Of the pending requests, each session's lowest sequence is its     }
+{ next; a session's background requests queue as a session of their own.     }
+{ Background work runs only when no session's request waits.                  }
+{ With one session pending it is served straight through. With several, they }
+{ take turns PER TOOL CALL: the session being served keeps Altium while its  }
+{ next command belongs to the same tool call (a select-then-act sequence is   }
+{ never split), and between its commands waits up to KEEP_GRACE_MS for the  }
+{ next one, unless the server has written callend_<tag>-<call>.flag to say   }
+{ the call is over. A call holds the turn for KEEP_MAX_MS at most. Then the   }
+{ next waiting session in tag order goes, so a session waits for at most one }
+{ tool call of each other session, not for a whole run of them. A command is }
+{ never cut off. While sessions contend, queue.json is refreshed about once  }
+{ a second, so a waiting client can tell a queue from a dead loop.           }
 
 { PickSession - which session's request goes next. Tags: the sessions with   }
 { a pending request, joined by '|'. Current: the session whose slot is       }
@@ -2708,15 +2733,127 @@ Begin
     Result := 'restore';
 End;
 
+{ NextTurn - which pending key goes next, or '' to wait for the tool call    }
+{ being served. Keys: the pending keys joined by '|', each a session's tag,  }
+{ or its tag and '.bg' for its background work. Marks: each key's next       }
+{ request's tool-call mark in the same order, '-' for none. Current: the key }
+{ being served; HoldCall the mark of its last command ('' outside a tool     }
+{ call); HoldMs how long that call has held the turn; IdleMs since its last  }
+{ command finished; CallEnded 1 when the server has said the call is over.   }
+{ Background keys go only when no other key is pending. Inside a tool call   }
+{ the current key keeps the turn while its next command is that call's;     }
+{ with none pending yet it is waited for up to GraceMs, unless the call     }
+{ ended. A call holds the turn for KeepMaxMs at most. Otherwise the turn    }
+{ passes after every command, through PickSession. Pure strings, so the     }
+{ Free Pascal cross-check runs a verbatim copy.                              }
+Function NextTurn(Keys : String; Marks : String; Current : String; HoldCall : String;
+    HoldMs : Integer; IdleMs : Integer; KeepMaxMs : Integer; GraceMs : Integer;
+    CallEnded : Integer) : String;
+Var
+    RestK, RestM, Key, Mark, Fore, CurMark : String;
+    Bar, ForeCount, Elapsed : Integer;
+    CurPending, AnyFore : Boolean;
+Begin
+    Result := '';
+    AnyFore := False;
+    RestK := Keys;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        If (Key <> '') And (Pos('.bg', Key) = 0) Then AnyFore := True;
+    End;
+    Fore := '';
+    ForeCount := 0;
+    CurPending := False;
+    CurMark := '';
+    RestK := Keys;
+    RestM := Marks;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        Bar := Pos('|', RestM);
+        If Bar = 0 Then
+        Begin
+            Mark := RestM;
+            RestM := '';
+        End
+        Else
+        Begin
+            Mark := Copy(RestM, 1, Bar - 1);
+            RestM := Copy(RestM, Bar + 1, Length(RestM));
+        End;
+        If (Key <> '') And ((Not AnyFore) Or (Pos('.bg', Key) = 0)) Then
+        Begin
+            If Fore <> '' Then Fore := Fore + '|';
+            Fore := Fore + Key;
+            Inc(ForeCount);
+            If Key = Current Then
+            Begin
+                CurPending := True;
+                CurMark := Mark;
+            End;
+        End;
+    End;
+    If ForeCount = 0 Then Exit;
+    Elapsed := 1;
+    If (HoldCall <> '') And (HoldMs < KeepMaxMs) Then
+    Begin
+        If CurPending Then
+        Begin
+            If CurMark = HoldCall Then Elapsed := 0;
+        End
+        Else If (CallEnded = 0) And (IdleMs < GraceMs) Then
+            Exit;
+    End;
+    Result := PickSession(Fore, Current, Elapsed, 1);
+End;
+
+{ CallMark - a request id's tool-call mark: 'k' and the four letters naming  }
+{ its call, or '' for any other request. Lower case, because FindFiles can   }
+{ return the file names upper-cased. Pure strings.                           }
+Function CallMark(IdPart : String) : String;
+Begin
+    Result := '';
+    If (Length(IdPart) >= 23) And (LowerCase(Copy(IdPart, 19, 1)) = 'k') Then
+        Result := LowerCase(Copy(IdPart, 19, 5));
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
     Files, Tags, BestSeq, BestName : TStringList;
-    I, NameLen, Pick, NowTick : Integer;
-    Name, IdPart, Tag, Seq, NextTag, Pending : String;
+    I, NameLen, Pick, NowTick, Ended : Integer;
+    Name, IdPart, Tag, Seq, NextTag, Keys, Marks, Mark, EndFlag, Pending : String;
 Begin
     Result := False;
     FilePath := '';
     RequestId := '';
+    NowTick := GetTickCount;
+    { The scan after a hand-out runs once that command has finished. }
+    If JustPicked Then
+    Begin
+        LastDoneTick := NowTick;
+        JustPicked := False;
+    End;
 
     Files := TStringList.Create;
     Tags := TStringList.Create;
@@ -2744,6 +2881,8 @@ Begin
                     Begin
                         Tag := LowerCase(Copy(IdPart, 1, 8));
                         Seq := Copy(IdPart, 10, 8);
+                        // A session's background work queues apart.
+                        If LowerCase(Copy(IdPart, 19, 1)) = 'q' Then Tag := Tag + '.bg';
                     End;
                     Pick := Tags.IndexOf(Tag);
                     If Pick < 0 Then
@@ -2766,43 +2905,74 @@ Begin
 
         If Tags.Count > 0 Then
         Begin
-            NowTick := GetTickCount;
-            Pending := '';
+            Keys := '';
+            Marks := '';
             For I := 0 To Tags.Count - 1 Do
             Begin
-                If Pending <> '' Then Pending := Pending + '|';
-                Pending := Pending + Tags[I];
-            End;
-            NextTag := PickSession(Pending, SlotSession, NowTick - SlotStartTick,
-                SESSION_SLOT_MS);
-            Pick := Tags.IndexOf(NextTag);
-            If Pick < 0 Then Pick := 0;
-            If Tags.Count > 1 Then
-            Begin
-                If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                If Keys <> '' Then
                 Begin
-                    Pending := '';
-                    For I := 0 To Tags.Count - 1 Do
-                    Begin
-                        If Pending <> '' Then Pending := Pending + ',';
-                        Pending := Pending + '"' + Tags[I] + '"';
-                    End;
-                    Try
-                        WriteFileContent(WorkspaceDir + 'queue.json',
-                            '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
-                            + '],"slot_ms":' + IntToStr(SESSION_SLOT_MS) + '}');
-                    Except End;
-                    QueueNoteTick := NowTick;
+                    Keys := Keys + '|';
+                    Marks := Marks + '|';
+                End;
+                Keys := Keys + Tags[I];
+                Mark := CallMark(Copy(BestName[I], 9, Length(BestName[I]) - 13));
+                If Mark = '' Then Mark := '-';
+                Marks := Marks + Mark;
+            End;
+            { The server says when a tool call is over, so the turn passes }
+            { at once instead of after the grace.                          }
+            Ended := 0;
+            If HoldCall <> '' Then
+            Begin
+                EndFlag := WorkspaceDir + 'callend_' + SlotSession + '-'
+                    + Copy(HoldCall, 2, 4) + '.flag';
+                If FileExists(EndFlag) Then
+                Begin
+                    Ended := 1;
+                    Try DeleteFile(EndFlag); Except End;
                 End;
             End;
-            If Tags[Pick] <> SlotSession Then
+            NextTag := NextTurn(Keys, Marks, SlotSession, HoldCall,
+                NowTick - HoldStartTick, NowTick - LastDoneTick, KEEP_MAX_MS,
+                KEEP_GRACE_MS, Ended);
+            If Ended = 1 Then HoldCall := '';
+            Pick := Tags.IndexOf(NextTag);
+            If Pick >= 0 Then
             Begin
-                SlotSession := Tags[Pick];
-                SlotStartTick := NowTick;
+                { Noted while anyone else waits: another session, or     }
+                { background work held back.                             }
+                If Tags.Count > 1 Then
+                Begin
+                    If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                    Begin
+                        Pending := '';
+                        For I := 0 To Tags.Count - 1 Do
+                        Begin
+                            If Pending <> '' Then Pending := Pending + ',';
+                            Pending := Pending + '"' + Tags[I] + '"';
+                        End;
+                        Try
+                            WriteFileContent(WorkspaceDir + 'queue.json',
+                                '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
+                                + '],"turn":"tool call"}');
+                        Except End;
+                        QueueNoteTick := NowTick;
+                    End;
+                End;
+                If Tags[Pick] <> SlotSession Then
+                Begin
+                    SlotSession := Tags[Pick];
+                    SlotStartTick := NowTick;
+                End;
+                IdPart := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
+                Mark := CallMark(IdPart);
+                If Mark <> HoldCall Then HoldStartTick := NowTick;
+                HoldCall := Mark;
+                JustPicked := True;
+                RequestId := IdPart;
+                FilePath := WorkspaceDir + BestName[Pick];
+                Result := True;
             End;
-            RequestId := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
-            FilePath := WorkspaceDir + BestName[Pick];
-            Result := True;
         End;
     Finally
         Files.Free;
@@ -2843,9 +3013,14 @@ End;
 { withdrawn its own request.                                               }
 Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
-    Files : TStringList;
+    Files, Flags : TStringList;
     I, Purged : Integer;
 Begin
+    { A new loop starts with no tool call holding the turn. }
+    HoldCall := '';
+    HoldStartTick := 0;
+    LastDoneTick := 0;
+    JustPicked := False;
     If FileExists(WorkspaceDir + 'maintenance.json') Then
     Begin
         AppendLog(FormatLogStamp(0) + ',0,_purge_requests,kept for restart,0,');
@@ -2860,6 +3035,14 @@ Begin
                 DeleteFile(Files[I]);
                 Inc(Purged);
             Except End;
+        Flags := TStringList.Create;
+        Try
+            FindFiles(WorkspaceDir, 'callend_*.flag', 63, False, Flags);
+            For I := 0 To Flags.Count - 1 Do
+                Try DeleteFile(Flags[I]); Except End;
+        Finally
+            Flags.Free;
+        End;
     Finally
         Files.Free;
     End;

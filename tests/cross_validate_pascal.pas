@@ -577,6 +577,89 @@ Begin
     Else Result := Lowest;
 End;
 
+{ NextTurn -- copied VERBATIM from Main.pas (test_session_slots checks it). }
+Function NextTurn(Keys : String; Marks : String; Current : String; HoldCall : String;
+    HoldMs : Integer; IdleMs : Integer; KeepMaxMs : Integer; GraceMs : Integer;
+    CallEnded : Integer) : String;
+Var
+    RestK, RestM, Key, Mark, Fore, CurMark : String;
+    Bar, ForeCount, Elapsed : Integer;
+    CurPending, AnyFore : Boolean;
+Begin
+    Result := '';
+    AnyFore := False;
+    RestK := Keys;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        If (Key <> '') And (Pos('.bg', Key) = 0) Then AnyFore := True;
+    End;
+    Fore := '';
+    ForeCount := 0;
+    CurPending := False;
+    CurMark := '';
+    RestK := Keys;
+    RestM := Marks;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        Bar := Pos('|', RestM);
+        If Bar = 0 Then
+        Begin
+            Mark := RestM;
+            RestM := '';
+        End
+        Else
+        Begin
+            Mark := Copy(RestM, 1, Bar - 1);
+            RestM := Copy(RestM, Bar + 1, Length(RestM));
+        End;
+        If (Key <> '') And ((Not AnyFore) Or (Pos('.bg', Key) = 0)) Then
+        Begin
+            If Fore <> '' Then Fore := Fore + '|';
+            Fore := Fore + Key;
+            Inc(ForeCount);
+            If Key = Current Then
+            Begin
+                CurPending := True;
+                CurMark := Mark;
+            End;
+        End;
+    End;
+    If ForeCount = 0 Then Exit;
+    Elapsed := 1;
+    If (HoldCall <> '') And (HoldMs < KeepMaxMs) Then
+    Begin
+        If CurPending Then
+        Begin
+            If CurMark = HoldCall Then Elapsed := 0;
+        End
+        Else If (CallEnded = 0) And (IdleMs < GraceMs) Then
+            Exit;
+    End;
+    Result := PickSession(Fore, Current, Elapsed, 1);
+End;
+
 { SessionFocusAction -- copied VERBATIM from Main.pas (test_session_document checks it). }
 Function SessionFocusAction(Pin : String; Current : String) : String;
 Begin
@@ -1075,6 +1158,17 @@ begin
       ResultStr := PickSession(B64Decode(Parts[1]), B64Decode(Parts[2]),
                                StrToInt(B64Decode(Parts[3])),
                                StrToInt(B64Decode(Parts[4])));
+    end
+
+    { --- NextTurn: args = keys, marks, current, hold_call, hold_ms, idle_ms,
+          keep_max_ms, grace_ms, call_ended --- }
+    else if FnName = 'NextTurn' then
+    begin
+      ResultStr := NextTurn(B64Decode(Parts[1]), B64Decode(Parts[2]),
+                            B64Decode(Parts[3]), B64Decode(Parts[4]),
+                            StrToInt(B64Decode(Parts[5])), StrToInt(B64Decode(Parts[6])),
+                            StrToInt(B64Decode(Parts[7])), StrToInt(B64Decode(Parts[8])),
+                            StrToInt(B64Decode(Parts[9])));
     end
 
     { --- SessionFocusAction: args = pin, current --- }

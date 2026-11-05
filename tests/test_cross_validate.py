@@ -1076,6 +1076,8 @@ def run_python(fn_name: str, args: list[str]) -> str:
 
     elif fn_name == 'PickSession':
         return pick_session(args[0], args[1], int(args[2]), int(args[3]))
+    elif fn_name == 'NextTurn':
+        return next_turn(*args[:4], *(int(x) for x in args[4:9]))
 
     elif fn_name == 'SessionFocusAction':
         return session_focus_action(args[0], args[1])
@@ -1308,6 +1310,31 @@ def pick_session(tags: str, current: str, elapsed_ms: int, slot_ms: int) -> str:
     return after[0] if after else min(pending)
 
 
+def next_turn(keys: str, marks: str, current: str, hold_call: str, hold_ms: int,
+              idle_ms: int, keep_max_ms: int, grace_ms: int, call_ended: int) -> str:
+    """Main.pas NextTurn: background keys only when nothing else waits; the
+    current key keeps the turn while its next command is the same tool
+    call's, and is waited for within the grace unless the call ended;
+    otherwise the turn passes after every command."""
+    ks = keys.split("|") if keys else []
+    ms = marks.split("|") if marks else []
+    ms += [""] * (len(ks) - len(ms))
+    pairs = [(k, m) for k, m in zip(ks, ms) if k]
+    any_fore = any(".bg" not in k for k, _ in pairs)
+    fore = [(k, m) for k, m in pairs if not any_fore or ".bg" not in k]
+    if not fore:
+        return ""
+    cur = dict(fore).get(current)
+    elapsed = 1
+    if hold_call and hold_ms < keep_max_ms:
+        if current in dict(fore):
+            if cur == hold_call:
+                elapsed = 0
+        elif not call_ended and idle_ms < grace_ms:
+            return ""
+    return pick_session("|".join(k for k, _ in fore), current, elapsed, 1)
+
+
 def session_focus_action(pin: str, current: str) -> str:
     """Main.pas SessionFocusAction: put the session's document back unless
     it has none or it is already in front (paths compared ignoring case)."""
@@ -1399,6 +1426,35 @@ def generate_batch_field_cases():
         ("PickSession", ["cccc3333|aaaa1111", "bbbb2222", "0", "30000"]),
         ("PickSession", ["legacy|aaaa1111", "aaaa1111", "30000", "30000"]),
         ("PickSession", ["", "aaaa1111", "0", "30000"]),
+        # Turns per tool call (Main.pas NextTurn).
+        ("NextTurn", ['aaaa1111', 'kab12', 'aaaa1111', 'kab12', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111', 'kab12', 'aaaa1111', 'kab12', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', '-|-', 'aaaa1111', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', '-|-', 'aaaa1111', '', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kab12|-', 'aaaa1111', 'kab12', "500", "10", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kab12|-', 'aaaa1111', 'kab12', "500", "10", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kcd34|-', 'aaaa1111', 'kab12', "500", "10", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kcd34|-', 'aaaa1111', 'kab12', "500", "10", "20000", "3000", "1"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "500", "100", "20000", "3000", "0"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "500", "100", "20000", "3000", "1"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "500", "3000", "20000", "3000", "0"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "500", "3000", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kab12|-', 'aaaa1111', 'kab12', "20000", "10", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111|bbbb2222', 'kab12|-', 'aaaa1111', 'kab12', "20000", "10", "20000", "3000", "1"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "20000", "10", "20000", "3000", "0"]),
+        ("NextTurn", ['bbbb2222', '-', 'aaaa1111', 'kab12', "20000", "10", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222', '-|-', 'aaaa1111.bg', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222', '-|-', 'aaaa1111.bg', '', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222|cccc3333', '-|kzz99|-', 'bbbb2222', 'kzz99', "100", "5", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222|cccc3333', '-|kzz99|-', 'bbbb2222', 'kzz99', "100", "5", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111.bg', '-', 'bbbb2222', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111.bg', '-', 'bbbb2222', '', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222.bg', '-|-', 'aaaa1111.bg', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['aaaa1111.bg|bbbb2222.bg', '-|-', 'aaaa1111.bg', '', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['', '', 'aaaa1111', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['', '', 'aaaa1111', '', "0", "0", "20000", "3000", "1"]),
+        ("NextTurn", ['legacy|aaaa1111', '-|-', 'legacy', '', "0", "0", "20000", "3000", "0"]),
+        ("NextTurn", ['legacy|aaaa1111', '-|-', 'legacy', '', "0", "0", "20000", "3000", "1"]),
         # A session with no document acts on whatever is in front.
         ("SessionFocusAction", ["", r"C:\B\b.PcbDoc"]),
         ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"C:\A\a.PcbDoc"]),

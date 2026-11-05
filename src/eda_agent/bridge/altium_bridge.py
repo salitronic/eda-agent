@@ -10,6 +10,7 @@ user tool calls.
 """
 
 import contextlib
+import contextvars
 import itertools
 import json
 import locale
@@ -123,6 +124,80 @@ _executor = ThreadPoolExecutor(max_workers=1)
 _CALL = threading.local()
 
 
+#: How a request takes its turn in Altium (ScanForRequestFile in Main.pas):
+#: inside a tool call its commands keep the turn together; background work
+#: such as the dashboard's reads waits while any session has a request.
+#: Context variables, so the marks reach the executor thread a call runs on.
+_TOOL_CALL: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "eda_tool_call", default=None)
+_BACKGROUND: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "eda_background", default=False)
+#: following_front() as a context variable too: a thread-local alone was lost
+#: when a dashboard action ran an async tool, whose commands go out on the
+#: executor thread. Measured 2026-11-05: each of them put the session's own
+#: document back in front, Altium switched windows on every command, and the
+#: teardrops landed on another open board.
+_FOLLOW: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "eda_follow_front", default=False)
+
+
+@contextlib.contextmanager
+def tool_call():
+    """One MCP tool call: its commands to Altium keep the turn between
+    them while other sessions wait, and when it returns the turn passes
+    on at once (callend_<tag>-<call>.flag) instead of after a grace."""
+    call = {"id": uuid.uuid4().hex[:4], "sent": False}
+    token = _TOOL_CALL.set(call)
+    try:
+        yield call
+    finally:
+        _TOOL_CALL.reset(token)
+        if call["sent"]:
+            _end_call(call["id"])
+
+
+def _end_call(call_id: str) -> None:
+    """Tell Altium this session's tool call is over. Never raises."""
+    try:
+        ws = get_config().workspace_dir
+        for old in ws.glob(f"callend_{_SESSION_TAG}-*.flag"):
+            discard(old)
+        (ws / f"callend_{_SESSION_TAG}-{call_id}.flag").write_text("1", encoding="ascii")
+    except Exception:  # noqa: BLE001 - the grace in Altium covers a lost flag
+        pass
+
+
+@contextlib.contextmanager
+def background():
+    """Requests made here wait in Altium while any session has one."""
+    token = _BACKGROUND.set(True)
+    try:
+        yield
+    finally:
+        _BACKGROUND.reset(token)
+
+
+@contextlib.contextmanager
+def following_front(background: bool = True):
+    """Calls on this thread act on whatever document is in front: they
+    neither put the session's document back first nor make a document
+    they moved to the session's. For a viewer that follows the person at
+    Altium, such as the dashboard's cockpit, which shares the bridge of
+    the MCP server it runs in. Its requests are background work, waiting
+    in Altium while any session has one, unless ``background`` is False:
+    something a person just asked for on the page."""
+    before = getattr(_CALL, "follow_front", False)
+    _CALL.follow_front = True
+    token = _BACKGROUND.set(background)
+    follow = _FOLLOW.set(True)
+    try:
+        yield
+    finally:
+        _CALL.follow_front = before
+        _BACKGROUND.reset(token)
+        _FOLLOW.reset(follow)
+
+
 def _read_response_json(path: Path) -> Any:
     """A reply file as JSON: UTF-8 (a byte-order mark dropped), else the
     Windows codepage. Older Altium builds (AD 25) can
@@ -139,8 +214,17 @@ def _read_response_json(path: Path) -> Any:
     return json.loads(text)
 
 
+#: Commands polled every few seconds (the dashboard's cockpit): their
+#: routine lines would bury everything else in the trace, so only lines
+#: about something going wrong are written for them.
+_QUIET_COMMANDS = frozenset({"pcb.cockpit_state"})
+_ROUTINE_LINES = ("SEND ", "POLL_START ", "POLL_SEEN ", "POLL_MATCH ")
+
+
 def _trace_log(workspace_dir: Path, msg: str) -> None:
     """Append a line to workspace/bridge_trace.log. Never raises."""
+    if getattr(_CALL, "command", "") in _QUIET_COMMANDS and msg.startswith(_ROUTINE_LINES):
+        return
     try:
         path = workspace_dir / "bridge_trace.log"
         with open(path, "a", encoding="utf-8") as f:
@@ -377,7 +461,14 @@ def _short_id() -> str:
     the random tail keeps ids unique across restarts.
     """
     seq = next(_SEQUENCE) % 100_000_000
-    return f"{_SESSION_TAG}-{seq:08d}-{uuid.uuid4().hex[:12]}"
+    tail = uuid.uuid4().hex
+    call = _TOOL_CALL.get()
+    if _BACKGROUND.get():
+        tail = "q" + tail
+    elif call is not None:
+        call["sent"] = True
+        tail = "k" + call["id"] + tail
+    return f"{_SESSION_TAG}-{seq:08d}-{tail[:12]}"
 
 
 @dataclass
@@ -472,11 +563,14 @@ _UNPINNED = frozenset({
     "application.ping",
     "application.stop_server",
     "application.get_unit_stamps",
+    # The dashboard's cockpit polls it to follow the person at Altium.
+    "pcb.cockpit_state",
 })
 
 
 def _unpinned(command: str, params: Optional[dict]) -> bool:
-    return command in _UNPINNED or (
+    return (getattr(_CALL, "follow_front", False) or _FOLLOW.get()
+            or command in _UNPINNED) or (
         command == "application.get_active_document"
         and str((params or {}).get("front", "")).lower() == "true")
 
@@ -1440,11 +1534,12 @@ class AltiumBridge:
             session_doc="" if _unpinned(command, params) else self._session_doc)
         workspace_dir = self.config.workspace_dir
 
-        _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
         _CALL.command = command
         _CALL.answered_box = None
+        _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
         self._publish_request(request)
-        logger.info("Sent command: %s (id=%s)", command, request.id[:8])
+        note = logger.debug if command in _QUIET_COMMANDS else logger.info
+        note("Sent command: %s (id=%s)", command, request.id[:8])
 
         response_path = self._response_path(request.id)
         try:
@@ -1476,7 +1571,7 @@ class AltiumBridge:
         answered = getattr(_CALL, "answered_box", None)
 
         if response.success:
-            logger.info("Command %s succeeded", command)
+            note("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
             data = _with_envelope_notes(response.data, response)
             if command == "application.ping" and isinstance(data, dict):
@@ -1635,8 +1730,10 @@ class AltiumBridge:
         _trace_log(self.config.workspace_dir,
                    f"CALL cmd={command} tag={_SESSION_TAG}")
         loop = asyncio.get_running_loop()
+        # The caller's context, so the request carries its turn mark.
         result = await loop.run_in_executor(
             _executor,
+            contextvars.copy_context().run,
             self._execute_command,
             command,
             one_spelling(params or {}),
@@ -1646,7 +1743,7 @@ class AltiumBridge:
             try:
                 await loop.run_in_executor(
                     _executor, self._execute_command,
-                    "generic.zoom", {"action": "board"}, 10.0)
+                    "generic.zoom", {"action": "fit"}, 10.0)
             except Exception:  # a view nicety never fails the call it follows
                 pass
         return result

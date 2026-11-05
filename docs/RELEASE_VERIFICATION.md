@@ -1,4 +1,4 @@
-# Release verification: 2026.11.05.2
+# Release verification: 2026.11.05.6
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -421,7 +421,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.05.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.05.6`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3816,6 +3816,75 @@ deleted. Measured 2026-11-05 on a scratch board and project:
   difference and left no duplicate.
 * ERC: a set extending another changed three levels and saved the
   project; a second look found all three the same.
+
+## 73. The dashboard cockpit: the board in front, kept current, with its checks
+
+The Layout tab's "follow Altium" draws the board in front in Altium and
+lists the layout checks on it. `pcb.cockpit_state` (read only) gives the
+document in front, a stamp of the parts, one of the free copper (walked
+only when asked; otherwise the counter's count) and the selection. The
+dashboard polls it about every 1.5 s, stretched to keep near a tenth of
+Altium's script time; a change that holds still for one poll re-reads
+only its sections, then the checks run. Its calls follow the front
+(`following_front`): they neither put a document back nor adopt one.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build, on a scratch copy of
+a 146-part, 2,095-copper board:
+
+* First read 16 to 17 s, fast checks 2 s, slow ones 2 s; 153 located
+  findings. Counting poll about 0.2 s in Altium, walking poll about 0.9 s;
+  on an 11,084-copper board the walk took 5 s, so above 4,000 objects
+  the copper is counted, not walked.
+* A part moved 100 mil: parts and pads re-read (9 s), findings updated
+  14 s after the move, no copper re-read.
+* A part and a net selected in Altium appeared in the state; clicking a
+  part selected it and zoomed to it, a net was highlighted, a finding
+  zoomed Altium to it; the focus stayed on the board throughout.
+* Pinned to the scratch board while another session had its schematic
+  in front, nothing was read.
+
+## 74. Update From Libraries without the menu, every dialog answered
+
+`proj_update_from_libraries` runs Tools > Update From Libraries or Update
+From PCB Libraries as Altium's own process
+(`WorkspaceManager:DocumentOptions`, `ObjectKind=Project|Action=
+LibrarySynch` or `PCBLibrarySynch`), so no menu or pointer is used. With
+Dialogs Automatic the dialogs on the way are answered and the change
+order is executed, its failed lines read, and closed. A dialog passed on
+the way can require text: the "Confirm" counting footprints no library
+has is answered only when it says so, and its sentence is kept.
+
+Measured 2026-11-05 on AD 26.11.1.5, on the scratch RoundLED project:
+
+* Schematic: "Update From Library" Finish, then the change order
+  executed and closed; no failed lines.
+* Board: "Update From PCB Libraries - Options" Update All Footprints
+  (Create ECO); "Confirm" read as "9 of the 155 footprints were not found
+  in libraries. Continue?" and answered Yes; on Execute, "Component(s)
+  Update Options" OK; the change order closed; no failed lines.
+
+The tool focuses its document first (`document_path`). Another session
+placing tracks between its own focus and its placement put 17 tracks on
+this scratch board, which was discarded unsaved: placing tools should
+name their board and refuse another (open).
+
+## 75. Placement names its board
+
+`pcb_place_tracks`, `pcb_place_vias`, `pcb_place_arcs` and `pcb_place_pads`
+take `board_path`: the handler takes that board by its path at the moment
+it places (through `StackBoard`), and refuses when it is not open. Without
+it they act on the board in front as before. Another session focusing its
+own document between a focus and a placement put 17 tracks on the wrong
+board before this.
+
+The first build called `ResolvePCBBoard` (Main.pas) directly from the four
+handlers and the PCB unit then failed to load on every deploy ("Undeclared
+identifier: HandlePCBCommand"); the same call through `StackBoard`, a
+PCB.pas wrapper, loads.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build: with a scratch sheet in
+front, a track with `board_path` naming a scratch board went onto that
+board; a path naming no open board was refused and placed nothing.
 
 ## Still open, and not blocking
 

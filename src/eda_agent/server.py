@@ -388,7 +388,11 @@ class _CompactFastMCP(FastMCP):
 
     async def call_tool(self, name, arguments):
         logger.info("Tool call: %s", name)
-        result = await super().call_tool(name, arguments)
+        # Its commands to Altium take one turn together (Main.pas
+        # ScanForRequestFile), and the turn passes on when it returns.
+        from .bridge.altium_bridge import tool_call
+        with tool_call():
+            result = await super().call_tool(name, arguments)
         try:
             from . import updates
             news = updates.notice_once()
@@ -457,6 +461,44 @@ def _dashboard_disabled_via_env() -> bool:
     return False
 
 
+def _take_over_dashboard(host: str, port: int, owner_pid: int,
+                         wait: float = 6.0) -> bool:
+    """Ask the dashboard holding the port to stop when this copy's code is
+    newer, and wait for the port. False when it is as new or newer, or too
+    old to be asked (it predates the handover and keeps the port until its
+    session ends)."""
+    import json
+    import time
+    import urllib.request
+    from .web.dashboard import code_stamp
+    base = f"http://{host}:{port}"
+    try:
+        with urllib.request.urlopen(base + "/api/dashboard/info", timeout=2) as r:
+            theirs = float(json.loads(r.read()).get("code") or 0)
+    except Exception:                                    # noqa: BLE001
+        logger.info("dashboard on port %s (pid %s) is too old to hand over", port, owner_pid)
+        return False
+    mine = code_stamp()
+    if mine <= theirs:
+        return False
+    try:
+        req = urllib.request.Request(base + "/api/dashboard/yield", method="POST",
+                                     data=json.dumps({"code": mine}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            if not json.loads(r.read()).get("yielding"):
+                return False
+    except Exception:                                    # noqa: BLE001
+        return False
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if _probe_port_owner(host, port) in (None, os.getpid()):
+            logger.info("dashboard on port %s handed over by pid %s", port, owner_pid)
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
     """Start the local web dashboard on a background thread.
 
@@ -483,7 +525,7 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
     # `eda-agent dashboard` -- skip with an info log. The MCP server
     # works fine without an in-process dashboard.
     owner_pid = _probe_port_owner(host, port)
-    if owner_pid is not None and owner_pid != os.getpid():
+    if owner_pid is not None and owner_pid != os.getpid()             and not _take_over_dashboard(host, port, owner_pid):
         logger.info(
             "dashboard already running on port %s (pid %s) -- not "
             "spawning another. http://%s:%s/", port, owner_pid, host, port,
@@ -501,6 +543,8 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
             _log.getLogger("werkzeug").setLevel(_log.WARNING)
             srv = make_server(host, port, app, threaded=True)
             server_holder["srv"] = srv
+            from .web import dashboard as _dash
+            _dash.SHUTDOWN["stop"] = srv.shutdown
             srv.serve_forever()
         except OSError as e:
             logger.warning("dashboard could not bind %s:%s (%s)",
