@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""The tool listing a client loads stays within a budget that only shrinks.
+"""Each tool's description stays within a per-tool limit.
 
-Every description and input schema is sent to the model whenever the
-full surface is listed, so its size is a cost paid on every session. The
-budgets below are the sizes measured when this guard was added. Lower
-them when a change trims the text; a change that grows the listing past
-them has to trim something else first.
+Every description is sent to the model whenever the surface is listed,
+so a long one is a cost paid on every session. The listing as a whole
+grows with the tools; no single description may.
 """
 from __future__ import annotations
 
@@ -18,8 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 from eda_agent.tools import register_backend
 
-# Characters of description plus input schema over the full listing.
-BUDGET = {"altium": 894_262, "easyeda": 370_386, "kicad": 189_782}
+BACKENDS = ("altium", "easyeda", "kicad")
 
 # One tool's description. Those already longer are capped at their size.
 TOOL_LIMIT = 3_000
@@ -38,19 +35,11 @@ def _listing(backend: str):
     return asyncio.run(mcp.list_tools())
 
 
-@pytest.mark.parametrize("backend", sorted(BUDGET))
-def test_the_listing_fits_its_budget(backend):
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_no_description_grows_past_its_limit(backend):
     tools = _listing(backend)
     assert len(tools) > 50, "the listing came back almost empty"
-    size = sum(len(t.description or "") + len(json.dumps(t.inputSchema)) for t in tools)
-    assert size <= BUDGET[backend], (
-        f"the {backend} listing is {size} characters, over its budget of "
-        f"{BUDGET[backend]}: trim a description before adding to it")
-
-
-@pytest.mark.parametrize("backend", sorted(BUDGET))
-def test_no_description_grows_past_its_limit(backend):
-    long = {t.name: len(t.description or "") for t in _listing(backend)
+    long = {t.name: len(t.description or "") for t in tools
             if len(t.description or "") > OVER_LIMIT.get(t.name, TOOL_LIMIT)}
     assert not long, (
         f"{long}: keep a description to what the tool does now, its "

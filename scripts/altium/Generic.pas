@@ -364,6 +364,14 @@ Begin
     Else If PropName = 'SuppressableErrors' Then
     Begin
         Try Result := N.StrSuppressableErrors; Except End;
+    End
+    Else If PropName = 'Symbol' Then
+    Begin
+        Try Result := IntToStr(N.Symbol); Except End;
+    End
+    Else If PropName = 'Orientation' Then
+    Begin
+        Try Result := IntToStr(N.Orientation); Except End;
     End;
 End;
 
@@ -389,6 +397,14 @@ Begin
     Else If PropName = 'ConnectionPairsToSuppress' Then
     Begin
         Try N.StrConnectionPairsToSuppress := Value; Except NoteWriteFailed('NoERC.ConnectionPairsToSuppress'); End;
+    End
+    Else If (PropName = 'Symbol') And IsIntStr(Value) Then
+    Begin
+        Try N.Symbol := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Symbol'); End;
+    End
+    Else If (PropName = 'Orientation') And IsIntStr(Value) Then
+    Begin
+        Try N.Orientation := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Orientation'); End;
     End;
 End;
 
@@ -1984,7 +2000,7 @@ Begin
         Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
             Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
             Or (PropName = 'ConnectionPairsToSuppress')
-            Or (PropName = 'SuppressableErrors')) Then
+            Or (PropName = 'SuppressableErrors') Or (PropName = 'Symbol')) Then
             Result := ReadNoErcProp(Obj, PropName)
         Else If PropName = 'CurrentPartID' Then
         Begin
@@ -2454,7 +2470,7 @@ Begin
         End
         Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
             Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
-            Or (PropName = 'ConnectionPairsToSuppress')) Then
+            Or (PropName = 'ConnectionPairsToSuppress') Or (PropName = 'Symbol')) Then
         Begin
             WriteNoErcProp(Obj, PropName, Value);
             WroteOK := (LowerCase(ReadNoErcProp(Obj, PropName)) = LowerCase(Value));
@@ -6602,7 +6618,10 @@ Begin
                 If Sym.SheetName <> Nil Then
                     ThisName := Sym.SheetName.Text;
             Except End;
-            If ThisName = SheetNameStr Then
+            { A repeated sheet is named Repeat(CH,1,4); its plain name finds it. }
+            If (ThisName = SheetNameStr)
+                Or (Pos(UpperCase('Repeat(' + SheetNameStr + ','),
+                        UpperCase(StringReplace(ThisName, ' ', '', -1))) = 1) Then
             Begin
                 Found := True;
                 Break;
@@ -7276,6 +7295,58 @@ Begin
         + '"designator":"' + EscapeJsonString(DesigStr) + '"}');
 End;
 
+{ A new parameter set at (X, Y) mils carrying 'Name=Value|Name=Value'.      }
+{ Nil when the list holds no Name=Value pair. Used by directives and        }
+{ blankets alike.                                                           }
+Function NewParamSet(X : Double; Y : Double; ParamList : String) : ISch_ParameterSet;
+Var
+    PSet : ISch_ParameterSet;
+    Remaining, Pair, PName, PValue : String;
+    BarPos, EqPos, Added : Integer;
+    Param : ISch_Parameter;
+Begin
+    Result := Nil;
+    PSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+    If PSet = Nil Then Exit;
+    PSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
+    Added := 0;
+    Remaining := ParamList;
+    While Remaining <> '' Do
+    Begin
+        BarPos := Pos('|', Remaining);
+        If BarPos > 0 Then
+        Begin
+            Pair := Copy(Remaining, 1, BarPos - 1);
+            Remaining := Copy(Remaining, BarPos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Pair);
+        If EqPos > 1 Then
+        Begin
+            PName := Trim(Copy(Pair, 1, EqPos - 1));
+            PValue := Trim(Copy(Pair, EqPos + 1, Length(Pair)));
+            Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+            If Param <> Nil Then
+            Begin
+                Param.Name := PName;
+                Param.Text := PValue;
+                PSet.AddSchObject(Param);
+                SchRegisterObject(PSet, Param);
+                If Added = 0 Then
+                Begin
+                    Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
+                End;
+                Inc(Added);
+            End;
+        End;
+    End;
+    If Added > 0 Then Result := PSet;
+End;
+
 { One parameter set as JSON: name, place, the parameters it carries, and   }
 { where it was found ("sheet", or "blanket" for one held inside a blanket). }
 Function ParamSetJson(ParamSet : ISch_BasicContainer; Owner : String) : String;
@@ -7285,9 +7356,12 @@ Var
     ChildJson, PName, PValue, DirName : String;
     FirstChild : Boolean;
     X, Y : Double;
+    Style, Orient : Integer;
 Begin
-    DirName := ''; X := 0; Y := 0;
+    DirName := ''; X := 0; Y := 0; Style := -1; Orient := -1;
     Try DirName := ParamSet.Name; Except End;
+    Try Style := ParamSet.Style; Except End;
+    Try Orient := ParamSet.Orientation; Except End;
     Try X := CoordToMilsF(ParamSet.Location.X); Except End;
     Try Y := CoordToMilsF(ParamSet.Location.Y); Except End;
     ChildJson := '';
@@ -7312,6 +7386,7 @@ Begin
     Result := '{"name":"' + EscapeJsonString(DirName) + '",'
         + '"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
         + '"owner":"' + Owner + '",'
+        + '"style":' + IntToStr(Style) + ',"orientation":' + IntToStr(Orient) + ','
         + '"parameters":[' + ChildJson + ']}';
 End;
 
@@ -7320,25 +7395,36 @@ End;
 { A parameter-set directive attaches a named parameter to a wire or net,     }
 { commonly used for differential pairs (DifferentialPair=<pair name>), net   }
 { class membership (NetClass=<class name>), or custom net-level rules.        }
-{ Params: x, y, param_name, param_value                                       }
+{ Params: x, y, and param_name + param_value or parameters                   }
+{         'Name=Value|Name=Value'; optional style and orientation (integers)  }
 {..............................................................................}
 
 Function Gen_PlaceDirective(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
-    ParamName, ParamValue : String;
+    ParamName, ParamValue, ParamList, StyleStr, OrientStr : String;
     SchDoc : ISch_Document;
     ParamSet : ISch_ParameterSet;
-    Param : ISch_Parameter;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     ParamName := ExtractJsonValue(Params, 'param_name');
     ParamValue := ExtractJsonValue(Params, 'param_value');
+    ParamList := ExtractJsonValue(Params, 'parameters');
+    StyleStr := ExtractJsonValue(Params, 'style');
+    OrientStr := ExtractJsonValue(Params, 'orientation');
+    If (ParamList = '') And (ParamName <> '') Then ParamList := ParamName + '=' + ParamValue;
 
-    If ParamName = '' Then
+    If ParamList = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name or parameters required');
+        Exit;
+    End;
+    If ((StyleStr <> '') And (Not IsIntStr(StyleStr)))
+        Or ((OrientStr <> '') And (Not IsIntStr(OrientStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'style and orientation are integers. Nothing was placed.');
         Exit;
     End;
 
@@ -7350,27 +7436,24 @@ Begin
     End;
 
     { ISch_ParameterSet is the proper directive interface, a group of
-      parameters applied to the wire/net at its location. Create the
-      parameter set first, then add a child ISch_Parameter carrying the
-      actual (name, value) payload. ISch_Parameter alone would render
-      as free-standing text and not act as a directive. }
-    ParamSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+      parameters applied to the wire/net at its location; each carries
+      one ISch_Parameter. ISch_Parameter alone would render as
+      free-standing text and not act as a directive. }
+    ParamSet := NewParamSet(X, Y, ParamList);
     If ParamSet = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create parameter-set directive');
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'parameters must be Name=Value pairs joined by |; got "'
+            + EscapeJsonString(ParamList) + '". Nothing was placed.');
         Exit;
     End;
-
-    ParamSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
-    Try ParamSet.Name := ParamName; Except NoteWriteFailed('directive Name'); End;
-
-    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-    If Param <> Nil Then
+    If StyleStr <> '' Then
     Begin
-        Param.Name := ParamName;
-        Param.Text := ParamValue;
-        ParamSet.AddSchObject(Param);
-        SchRegisterObject(ParamSet, Param);
+        Try ParamSet.Style := StrToIntDef(StyleStr, 0); Except NoteWriteFailed('directive Style'); End;
+    End;
+    If OrientStr <> '' Then
+    Begin
+        Try ParamSet.Orientation := StrToIntDef(OrientStr, 0); Except NoteWriteFailed('directive Orientation'); End;
     End;
 
     SchBeginEdit(SchDoc, '');
@@ -7390,7 +7473,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
         + '"param_name":"' + EscapeJsonString(ParamName) + '",'
-        + '"param_value":"' + EscapeJsonString(ParamValue) + '"}');
+        + '"param_value":"' + EscapeJsonString(ParamValue) + '",'
+        + '"directive":' + ParamSetJson(ParamSet, 'sheet') + '}');
 End;
 
 {..............................................................................}
@@ -7480,17 +7564,19 @@ End;
 
 Function Gen_PlaceCompileMask(Params : String; RequestId : String) : String;
 Var
-    TmpI : Integer;
+    TmpF : Double;
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     Mask : ISch_CompileMask;
+    CollStr : String;
 Begin
     X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
     X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
     Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    CollStr := LowerCase(ExtractJsonValue(Params, 'collapsed'));
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -7508,6 +7594,10 @@ Begin
 
     Mask.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Mask.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
+    If (CollStr = 'true') Or (CollStr = 'false') Then
+    Begin
+        Try Mask.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('CompileMask.Collapsed'); End;
+    End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Mask);
@@ -7523,10 +7613,14 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    { Read back, so a mask that did not take its box says so. }
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
-        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
+        + '"x1":' + FloatToJsonStr(CoordToMilsF(Mask.Location.X))
+        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Mask.Location.Y)) + ','
+        + '"x2":' + FloatToJsonStr(CoordToMilsF(Mask.Corner.X))
+        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Mask.Corner.Y)) + ','
+        + '"collapsed":' + BoolToJsonStr(Mask.Collapsed) + '}');
 End;
 
 {..............................................................................}
@@ -7538,57 +7632,6 @@ End;
 { is checked rather than trusted. ParamSetJson, which they share with      }
 { Gen_GetDirectives, is defined above that function.                         }
 {..............................................................................}
-
-{ A new parameter set at (X, Y) mils carrying 'Name=Value|Name=Value'.      }
-{ Nil when the list holds no Name=Value pair.                               }
-Function NewParamSet(X : Double; Y : Double; ParamList : String) : ISch_ParameterSet;
-Var
-    PSet : ISch_ParameterSet;
-    Remaining, Pair, PName, PValue : String;
-    BarPos, EqPos, Added : Integer;
-    Param : ISch_Parameter;
-Begin
-    Result := Nil;
-    PSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
-    If PSet = Nil Then Exit;
-    PSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
-    Added := 0;
-    Remaining := ParamList;
-    While Remaining <> '' Do
-    Begin
-        BarPos := Pos('|', Remaining);
-        If BarPos > 0 Then
-        Begin
-            Pair := Copy(Remaining, 1, BarPos - 1);
-            Remaining := Copy(Remaining, BarPos + 1, Length(Remaining));
-        End
-        Else
-        Begin
-            Pair := Remaining;
-            Remaining := '';
-        End;
-        EqPos := Pos('=', Pair);
-        If EqPos > 1 Then
-        Begin
-            PName := Trim(Copy(Pair, 1, EqPos - 1));
-            PValue := Trim(Copy(Pair, EqPos + 1, Length(Pair)));
-            Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-            If Param <> Nil Then
-            Begin
-                Param.Name := PName;
-                Param.Text := PValue;
-                PSet.AddSchObject(Param);
-                SchRegisterObject(PSet, Param);
-                If Added = 0 Then
-                Begin
-                    Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
-                End;
-                Inc(Added);
-            End;
-        End;
-    End;
-    If Added > 0 Then Result := PSet;
-End;
 
 { Place a blanket from an outline, with the directive it carries.           }
 { Params: vertices 'x1,y1,x2,y2,...' (mils, at least 3 points);             }
@@ -7743,7 +7786,8 @@ Var
     DMDoc : IDocument;
     DMB : IBlanket;
     Item : INetItem;
-    Json, DirJson, NetsJson, NetList, NetName, Seen : String;
+    DMSym : ISheetSymbol;
+    Json, DirJson, NetsJson, NetList, NetName, Seen, SymList, SymName, SymFile : String;
     First, FirstDir, FirstNet : Boolean;
     Count, I, J, Style : Integer;
     Coll : Boolean;
@@ -7861,13 +7905,30 @@ Begin
                         NetList := NetList + '"' + EscapeJsonString(NetName) + '"';
                     End;
                 End;
+                { Sheet symbols it covers: its directive reaches every net }
+                { through their entries.                                    }
+                SymList := '';
+                Try
+                    For J := 0 To DMB.DM_SheetSymbolCount - 1 Do
+                    Begin
+                        DMSym := Nil; SymName := ''; SymFile := '';
+                        Try DMSym := DMB.DM_SheetSymbols(J); Except DMSym := Nil; End;
+                        If DMSym = Nil Then Continue;
+                        Try SymName := DMSym.DM_LogicalDesignator; Except End;
+                        Try SymFile := DMSym.DM_SheetSymbolFileName; Except End;
+                        If SymList <> '' Then SymList := SymList + ',';
+                        SymList := SymList + '{"sheet_name":"' + EscapeJsonString(SymName)
+                            + '","file":"' + EscapeJsonString(SymFile) + '"}';
+                    End;
+                Except End;
                 If Not First Then NetsJson := NetsJson + ',';
                 First := False;
                 { No position: a compiled blanket reports 0,0 for its      }
                 { location (measured on AD 26.11), so it would only mislead. }
                 NetsJson := NetsJson + '{"index":' + IntToStr(I)
                     + ',"net_items":' + IntToStr(DMB.DM_NetItemCount)
-                    + ',"nets":[' + NetList + ']}';
+                    + ',"nets":[' + NetList + ']'
+                    + ',"sheet_symbols":[' + SymList + ']}';
             End;
         End;
     End;
@@ -8876,14 +8937,22 @@ End;
 
 {..............................................................................}
 { Place a No-ERC marker at coordinates on active schematic                    }
-{ Params: x, y                                                                }
+{ Params: x, y; optional symbol, orientation (integers), suppress_all,       }
+{ active (true/false), error_kinds, connection_pairs (Altium's strings).     }
 {..............................................................................}
+
+{ A number or true/false read off a marker, as JSON; null when unreadable. }
+Function NoErcJsonVal(S : String) : String;
+Begin
+    If S = '' Then Result := 'null' Else Result := S;
+End;
 
 Function Gen_PlaceNoERC(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
     SchDoc : ISch_Document;
     NoERC : ISch_GraphicalObject;
+    Value, Back : String;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
@@ -8904,6 +8973,19 @@ Begin
 
     ApplyNoErcDefaults(NoERC);
     NoERC.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
+    { The caller's options, after the defaults so they can narrow them. }
+    Value := ExtractJsonValue(Params, 'symbol');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'Symbol', Value);
+    Value := ExtractJsonValue(Params, 'orientation');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'Orientation', Value);
+    Value := ExtractJsonValue(Params, 'suppress_all');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'SuppressAll', Value);
+    Value := ExtractJsonValue(Params, 'active');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'IsActive', Value);
+    Value := ExtractJsonValue(Params, 'error_kinds');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'ErrorKindSetToSuppress', Value);
+    Value := ExtractJsonValue(Params, 'connection_pairs');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'ConnectionPairsToSuppress', Value);
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NoERC);
@@ -8919,8 +9001,14 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Back := '"symbol":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'Symbol'))
+        + ',"orientation":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'Orientation'))
+        + ',"suppress_all":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'SuppressAll'))
+        + ',"active":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'IsActive'))
+        + ',"error_kinds":"' + EscapeJsonString(ReadNoErcProp(NoERC, 'ErrorKindSetToSuppress')) + '"'
+        + ',"connection_pairs":"' + EscapeJsonString(ReadNoErcProp(NoERC, 'ConnectionPairsToSuppress')) + '"';
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + '}');
+        '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ',' + Back + '}');
 End;
 
 {..............................................................................}

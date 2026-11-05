@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Project management tools for Altium Designer MCP Server."""
 
+import re
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..units import MM_PER_MIL
@@ -75,6 +76,63 @@ async def _footprint_source(bridge, designator: str) -> dict:
                     {"library": f.get("library", ""), "found_at": f.get("found_at", "")}
                     for f in model.get("datafiles") or [] if isinstance(f, dict)]}
     return {}
+
+
+def _signal(name: str) -> str:
+    """An entry or port name as it connects: Repeat(X) is X, case aside."""
+    m = re.fullmatch(r"\s*repeat\s*\(\s*([^,()]+?)\s*\)\s*", name or "", re.I)
+    return (m.group(1) if m else (name or "")).strip().upper()
+
+
+def _direction(io: str) -> str:
+    """input, output or '' for anything that does not conflict."""
+    io = (io or "").strip().lower()
+    return io if io in ("input", "output") else ""
+
+
+def _channel_copy(sym: dict, siblings: list) -> bool:
+    """A compiled channel of a Repeat() symbol after the first: Altium
+    gives it only the Repeat() entries, the first channel carries all."""
+    names = {str(e.get("name", "")) for e in sym.get("entries") or []}
+    if not names or any(_signal(n) == n.strip().upper() for n in names):
+        return False
+    return any(s is not sym and str(s.get("file", "")).lower() == str(sym.get("file", "")).lower()
+               and names < {str(e.get("name", "")) for e in s.get("entries") or []}
+               for s in siblings)
+
+
+def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
+    """What does not join up in a compiled hierarchy: dangling symbols,
+    entries and ports without a partner, opposite directions, orphans."""
+    by_file = {str(s.get("file", "")).lower(): s for s in sheets if isinstance(s, dict)}
+    problems: list[dict] = []
+    for sheet in by_file.values():
+        name = sheet.get("file", "")
+        if not sheet.get("parents") and name.lower() != top.lower():
+            problems.append({"kind": "orphan_sheet", "sheet": name})
+        symbols = sheet.get("sheet_symbols") or []
+        for sym in symbols:
+            if _channel_copy(sym, symbols):
+                continue
+            where = {"sheet": name, "sheet_symbol": sym.get("sheet_name", ""),
+                     "file": sym.get("file", "")}
+            child = by_file.get(str(sym.get("file", "")).lower())
+            if child is None or sym.get("child_sheets") == 0:
+                problems.append({"kind": "missing_child", **where})
+                continue
+            ports = {_signal(p.get("name", "")): p for p in child.get("ports") or []}
+            entries = {_signal(e.get("name", "")): e for e in sym.get("entries") or []}
+            for sig in sorted(set(entries) - set(ports)):
+                problems.append({"kind": "entry_without_port", "name": sig, **where})
+            for sig in sorted(set(ports) - set(entries)):
+                problems.append({"kind": "port_without_entry", "name": sig, **where})
+            for sig in sorted(set(entries) & set(ports)):
+                a = _direction(entries[sig].get("io", ""))
+                b = _direction(ports[sig].get("io", ""))
+                if a and b and a != b:
+                    problems.append({"kind": "direction_conflict", "name": sig,
+                                     "entry_io": a, "port_io": b, **where})
+    return problems
 
 
 async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
@@ -2879,6 +2937,28 @@ def register_project_tools(mcp):
         params = {"project_path": project_path} if project_path else {}
         return await get_bridge().send_command_async(
             "project.get_channels", params, timeout=120.0)
+
+    @mcp.tool()
+    async def proj_get_hierarchy(project_path: str = "") -> dict[str, Any]:
+        """The compiled sheet hierarchy: each sheet's ``parents``,
+        ``ports`` and ``sheet_symbols`` with their ``entries``, and the
+        ``problems``: a missing child, an entry without a port or a port
+        without an entry, opposite directions, an orphan sheet.
+
+        Args:
+            project_path: The .PrjPcb. Default: the focused project.
+        """
+        params = {"project_path": project_path} if project_path else {}
+        out = await get_bridge().send_command_async(
+            "project.get_hierarchy", params, timeout=180.0)
+        sheets = _rows(out, "sheets")
+        if sheets:
+            for s in sheets:
+                if isinstance(s, dict) and isinstance(s.get("parents"), list):
+                    s["parents"] = list(dict.fromkeys(s["parents"]))
+            body = out.get("result", out) if isinstance(out.get("result"), dict) else out
+            out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
+        return out
 
     @mcp.tool()
     async def proj_component_models(project_path: str = "", designator: str = "",

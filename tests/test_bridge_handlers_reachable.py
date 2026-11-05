@@ -14,13 +14,13 @@ somebody wrote Pascal with no way to call it.
 Most current entries are singular forms whose bulk equivalent is the one
 actually exposed, matching the standing preference for batch tools over
 per-item loops (``move_component`` is superseded by
-``pcb.batch_move_components``, and so on). Two are not superseded by
+``pcb.batch_move_components``, and so on). These are not superseded by
 anything and are genuinely unexposed:
 
 * ``fillet_corners`` -- rounds acute track joins. Its own header says it
   has NOT been validated against a live Altium session, so exposing it
   would present unvalidated code as a first-class tool.
-* ``measure_distance`` / ``place_compile_mask`` -- no equivalent found.
+* ``measure_distance`` -- no equivalent found.
 """
 
 from __future__ import annotations
@@ -76,7 +76,6 @@ KNOWN_UNREACHABLE = {
     # Genuinely unexposed.
     "fillet_corners",
     "measure_distance",
-    "place_compile_mask",
     # The schematic emitter placed its junctions through this until
     # it stopped placing any: Altium draws its own at every T, in the
     # colour interactive wiring gives them (see AUTO JUNCTIONS in

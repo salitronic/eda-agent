@@ -2729,6 +2729,139 @@ Begin
 End;
 
 {..............................................................................}
+{ HierItemJson - a compiled port or sheet entry: its name and direction.     }
+{ The name is DM_PortName, else DM_NetName; both are read, since which one  }
+{ an entry carries is the compiler's choice.                                 }
+{..............................................................................}
+Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Var
+    Name, NetName, Electric : String;
+Begin
+    Name := ''; NetName := ''; Electric := '';
+    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Try NetName := Item.DM_NetName; Except Inc(Misses); End;
+    Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    If Name = '' Then Name := NetName;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('net', NetName) + ','
+        + JsonStr('io', Electric));
+End;
+
+{..............................................................................}
+{ Proj_GetHierarchy - the compiled sheet hierarchy: every schematic with    }
+{ its parents, the ports it offers up, and the sheet symbols on it with     }
+{ their file, sheet name, entries and how many child sheets the compiler   }
+{ found for them (0: the file is not in the project).                       }
+{..............................................................................}
+Function Proj_GetHierarchy(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc, TopDoc, ParentDoc : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
+    SymFile, SymName, PName : String;
+    I, J, K, Misses, Children, Sheets : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Misses := 0;
+    TopName := '';
+    TopDoc := Nil;
+    Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
+    If TopDoc <> Nil Then
+    Begin
+        Try TopName := TopDoc.DM_FileName; Except Inc(Misses); End;
+    End;
+    Items := '';
+    Sheets := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Kind := '';
+        Try Kind := UpperCase(Doc.DM_DocumentKind); Except End;
+        If Kind <> 'SCH' Then Continue;
+        Inc(Sheets);
+        FileName := '';
+        Try FileName := Doc.DM_FileName; Except Inc(Misses); End;
+
+        Parents := '';
+        Try
+            For J := 0 To Doc.DM_ParentDocumentCount - 1 Do
+            Begin
+                ParentDoc := Nil; PName := '';
+                Try ParentDoc := Doc.DM_ParentDocuments(J); Except ParentDoc := Nil; End;
+                If ParentDoc = Nil Then Continue;
+                Try PName := ParentDoc.DM_FileName; Except End;
+                If Parents <> '' Then Parents := Parents + ',';
+                Parents := Parents + '"' + EscapeJsonString(PName) + '"';
+            End;
+        Except Inc(Misses); End;
+
+        Ports := '';
+        Try
+            For J := 0 To Doc.DM_PortCount - 1 Do
+            Begin
+                Item := Nil;
+                Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
+                If Item = Nil Then Continue;
+                If Ports <> '' Then Ports := Ports + ',';
+                Ports := Ports + HierItemJson(Item, Misses);
+            End;
+        Except Inc(Misses); End;
+
+        Syms := '';
+        Try
+            For J := 0 To Doc.DM_SheetSymbolCount - 1 Do
+            Begin
+                Sym := Nil;
+                Try Sym := Doc.DM_SheetSymbols(J); Except Sym := Nil; End;
+                If Sym = Nil Then Continue;
+                SymFile := ''; SymName := ''; Children := -1;
+                Try SymFile := Sym.DM_SheetSymbolFileName; Except Inc(Misses); End;
+                Try SymName := Sym.DM_LogicalDesignator; Except Inc(Misses); End;
+                Try Children := Sym.DM_ChildSheetCount; Except Inc(Misses); End;
+                Entries := '';
+                Try
+                    For K := 0 To Sym.DM_SheetEntryCount - 1 Do
+                    Begin
+                        Item := Nil;
+                        Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                        If Item = Nil Then Continue;
+                        If Entries <> '' Then Entries := Entries + ',';
+                        Entries := Entries + HierItemJson(Item, Misses);
+                    End;
+                Except Inc(Misses); End;
+                If Syms <> '' Then Syms := Syms + ',';
+                Syms := Syms + JsonObj(JsonStr('sheet_name', SymName) + ','
+                    + JsonStr('file', SymFile) + ','
+                    + JsonInt('child_sheets', Children) + ','
+                    + JsonRaw('entries', '[' + Entries + ']'));
+            End;
+        Except Inc(Misses); End;
+
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('file', FileName) + ','
+            + JsonRaw('parents', '[' + Parents + ']') + ','
+            + JsonRaw('ports', '[' + Ports + ']') + ','
+            + JsonRaw('sheet_symbols', '[' + Syms + ']'));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('top', TopName) + ','
+        + JsonInt('sheet_count', Sheets) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('sheets', '[' + Items + ']')));
+End;
+
+{..............................................................................}
 { Proj_ComponentModels - where each compiled part's models resolve: model    }
 { name and type, each datafile's library, entity and kind, the full path     }
 { Altium finds for it (empty when it finds none), integrated or not.        }
@@ -7700,6 +7833,7 @@ Begin
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'step_options':      Result := Proj_StepOptions(Params, RequestId);
         'get_channels':      Result := Proj_GetChannels(Params, RequestId);
+        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'component_models':  Result := Proj_ComponentModels(Params, RequestId);
         'library_lookup':    Result := Proj_LibraryLookup(Params, RequestId);
         'output_panel':      Result := Proj_OutputPanel(Params, RequestId);

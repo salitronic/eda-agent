@@ -9,7 +9,7 @@ change to the Python took effect only after the client reconnected
 With ``EDA_AGENT_RELOAD=1`` (or ``eda-agent --reload``) the client talks
 to this proxy instead, which runs the real server as a child process and
 passes messages through unchanged. When a ``.py`` file under the package
-changes and no call is in flight, it starts a new child, replays the
+or the bridge script's ``Main.pas`` changes and no call is in flight, it starts a new child, replays the
 client's ``initialize`` to it, and tells the client the tool list changed.
 The client's connection never drops.
 
@@ -57,6 +57,18 @@ def source_stamp(root: Path = _PACKAGE) -> dict:
         except OSError:
             continue
     return stamps
+
+
+def script_version_stamp() -> dict:
+    """Modification time of the bridge script's Main.pas. The server
+    records its SCRIPT_VERSION at start and warns once Altium runs a newer
+    one, so a version bump restarts the server as a .py change does."""
+    try:
+        from .cli import get_bundled_scripts_path
+        path = get_bundled_scripts_path() / "Main.pas"
+        return {str(path): path.stat().st_mtime_ns}
+    except Exception:                                    # noqa: BLE001
+        return {}
 
 
 class Proxy:
@@ -258,11 +270,11 @@ class Proxy:
                             "method": "notifications/tools/list_changed"})
 
     def watch(self) -> None:
-        stamp = source_stamp(self.root)
+        stamp = {**source_stamp(self.root), **script_version_stamp()}
         changed_at = None
         while True:
             time.sleep(POLL_S)
-            now = source_stamp(self.root)
+            now = {**source_stamp(self.root), **script_version_stamp()}
             if now != stamp:
                 stamp = now
                 changed_at = time.monotonic()

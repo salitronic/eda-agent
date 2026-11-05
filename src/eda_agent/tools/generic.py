@@ -1968,21 +1968,24 @@ def register_generic_tools(mcp):
         y2: float,
         sheet_file_name: str,
         sheet_name: str = "",
+        repeat_first: int = 0,
+        repeat_last: int = 0,
     ) -> dict[str, Any]:
-        """Place a sheet symbol linking to a child schematic document.
-
-        sheet_file_name must match a .SchDoc in the project exactly, or
-        the symbol is dangling. Then add its entries with
-        `sch_place_sheet_entry`.
+        """Place a sheet symbol for a child .SchDoc of the project (exact
+        file name). Add entries with sch_place_sheet_entry.
 
         Args:
-            x1, y1, x2, y2: Sheet symbol box corners in mils
-            sheet_file_name: Child SchDoc filename (e.g. "PSU.SchDoc")
-            sheet_name: Display label (default: file name without extension)
-
-        Returns:
-            Dictionary confirming sheet symbol placement
+            x1, y1, x2, y2: Corners in mils.
+            sheet_file_name: e.g. "PSU.SchDoc".
+            sheet_name: Default: the file name.
+            repeat_first, repeat_last: Channels, e.g. 1 and 4, named
+                Repeat(sheet_name,1,4).
         """
+        if repeat_first or repeat_last:
+            if not 0 <= repeat_first <= repeat_last or not sheet_name.strip():
+                return {"ok": False, "reason": "repeat needs a sheet_name and "
+                        "0 <= repeat_first <= repeat_last"}
+            sheet_name = f"Repeat({sheet_name.strip()},{repeat_first},{repeat_last})"
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_sheet_symbol",
@@ -2041,26 +2044,25 @@ def register_generic_tools(mcp):
         side: str = "left",
         distance_from_top: float = 100,
         font_id: int = 0,
+        repeat: bool = False,
     ) -> dict[str, Any]:
-        """Place a sheet entry port on an existing sheet symbol.
-
-        Sheet entries are the ports on a sheet symbol that map to
-        hierarchical ports inside the child sheet. Name must match a
-        port defined in the child .SchDoc for electrical continuity.
+        """Place an entry on a sheet symbol; it joins the child sheet's
+        port of the same name.
 
         Args:
-            sheet_name: SheetName of the target sheet symbol
-            entry_name: Port name (must match a port in the child sheet)
+            sheet_name: The symbol's name (a repeated one by its plain name).
+            entry_name: The child port's name.
+            repeat: One signal per channel, named Repeat(entry_name).
             io_type: "input" | "output" | "bidirectional" | "unspecified"
             side: "left" | "right" | "top" | "bottom"
-            distance_from_top: Position along the chosen side in mils
-            font_id: The entry's font. 0 takes the font the sheet's
-                entries already use, else its net labels' font.
+            distance_from_top: Along the side, in mils.
+            font_id: 0 takes the sheet's entry font, else its net labels'.
 
         Returns:
-            Dictionary confirming sheet entry placement, with the
-            ``font_id`` read back.
+            Where it was placed and ``font_id``.
         """
+        if repeat and not entry_name.strip().lower().startswith("repeat("):
+            entry_name = f"Repeat({entry_name.strip()})"
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_sheet_entry",
@@ -2593,31 +2595,38 @@ def register_generic_tools(mcp):
     async def sch_place_no_erc(
         x: float,
         y: float,
+        symbol: int | None = None,
+        orientation: int | None = None,
+        suppress_all: bool | None = None,
+        active: bool | None = None,
+        error_kinds: str = "",
+        connection_pairs: str = "",
     ) -> dict[str, Any]:
-        """Place a No-ERC marker at coordinates to suppress the ERC violations
-        there.
-
-        Put it on the pin's wire end (its connection point), not on the
-        body side. The marker is placed active and
-        suppressing ALL violations, as Altium's own placed No ERC does; to
-        narrow it, write ErrorKindSetToSuppress / SuppressAll=false on the
-        eNoERC object with obj_modify. obj_query reads SuppressAll,
-        IsActive, ErrorKindSetToSuppress, ConnectionPairsToSuppress and
-        SuppressableErrors.
+        """Place a No ERC marker on a pin's connection end. By default it
+        is active and suppresses every violation, as Altium's own does.
 
         Args:
-            x: X coordinate in mils
-            y: Y coordinate in mils
+            x, y: Location in mils.
+            symbol: Altium's Symbol integer.
+            orientation: Quarter turns, 0 to 3.
+            suppress_all: False suppresses only ``error_kinds`` and
+                ``connection_pairs`` (Altium's strings).
+            active: False places it switched off.
 
         Returns:
-            Dictionary confirming placement with coordinates
+            Every option read back.
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.place_no_erc",
-            {"x": str(x), "y": str(y)},
-        )
-        return result
+        if orientation is not None and orientation not in (0, 1, 2, 3):
+            return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
+        args = {"x": str(x), "y": str(y), "error_kinds": error_kinds,
+                "connection_pairs": connection_pairs}
+        for key, value in (("symbol", symbol), ("orientation", orientation)):
+            if value is not None:
+                args[key] = str(int(value))
+        for key, flag in (("suppress_all", suppress_all), ("active", active)):
+            if flag is not None:
+                args[key] = "true" if flag else "false"
+        return await get_bridge().send_command_async("generic.place_no_erc", args)
 
     @mcp.tool()
     async def sch_place_junction(
@@ -2933,34 +2942,43 @@ def register_generic_tools(mcp):
     async def sch_add_directive(
         x: float,
         y: float,
-        param_name: str,
-        param_value: str,
+        param_name: str = "",
+        param_value: str = "",
+        parameters: dict[str, str] | None = None,
+        style: int | None = None,
+        orientation: int | None = None,
     ) -> dict[str, Any]:
-        """Place a parameter-set directive at (x, y) on the active schematic.
-
-        Attaches one ``name=value`` parameter to the wire or net under it,
-        e.g. ``DifferentialPair=USB`` or ``NetClass=HighSpeed``. To apply
-        a directive to every net in an area, use sch_place_blanket.
+        """Place a directive ON a wire of the active schematic; its
+        parameters (e.g. NetClass=PWR) go to that net. For an area, use
+        sch_place_blanket.
 
         Args:
-            x, y: Location in mils, place ON the target wire/net.
-            param_name: Parameter name (e.g. "NetClass", "DifferentialPair")
-            param_value: Parameter value
+            x, y: Location in mils.
+            param_name, param_value: One parameter.
+            parameters: Several, e.g. {"NetClass": "PWR", "Width": "20"}.
+            style: Altium's Style integer.
+            orientation: Quarter turns, 0 to 3.
 
         Returns:
-            Dictionary confirming placement.
+            The ``directive`` read back.
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.place_directive",
-            {
-                "x": str(x),
-                "y": str(y),
-                "param_name": param_name,
+        params = dict(parameters or {})
+        if not params and param_name:
+            params = {param_name: param_value}
+        if not params or any(not k or any(c in f"{k}{v}" for c in "|=")
+                             for k, v in params.items()):
+            return {"ok": False, "reason": "give param_name or parameters; a "
+                    "name is non-empty and neither may contain '|' or '='"}
+        if orientation is not None and orientation not in (0, 1, 2, 3):
+            return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
+        args = {"x": str(x), "y": str(y), "param_name": param_name,
                 "param_value": param_value,
-            },
-        )
-        return result
+                "parameters": "|".join(f"{k}={v}" for k, v in params.items())}
+        if style is not None:
+            args["style"] = str(int(style))
+        if orientation is not None:
+            args["orientation"] = str(orientation)
+        return await get_bridge().send_command_async("generic.place_directive", args)
 
     @mcp.tool()
     async def sch_get_directives() -> dict[str, Any]:
@@ -3004,13 +3022,11 @@ def register_generic_tools(mcp):
             line_style: Outline style, as Altium's integer.
             collapsed: Draw the blanket collapsed.
 
-        Reshape it later with obj_modify, object_type "eBlanket", set
-        "Vertices=x1,y1,x2,y2,...". Check what it caught with
-        sch_get_blankets after a compile.
+        Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
+        Coverage: sch_get_blankets after a compile.
 
         Returns:
-            ``placed``, ``vertices_count``, ``vertices`` as read back, and
-            the ``directive`` placed with its parameters (null if none).
+            ``vertices`` and the ``directive`` read back.
         """
         if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
             return {"success": False, "error": {
@@ -3040,6 +3056,22 @@ def register_generic_tools(mcp):
         return await bridge.send_command_async("generic.place_blanket", args)
 
     @mcp.tool()
+    async def sch_place_compile_mask(x1: float, y1: float, x2: float, y2: float,
+                                     collapsed: bool | None = None) -> dict[str, Any]:
+        """Place a compile mask on the active schematic: what it encloses
+        is left out of the compile, netlist and ERC.
+
+        Args:
+            x1, y1, x2, y2: Corners in mils.
+            collapsed: Draw it collapsed.
+        """
+        args = {"x1": f"{float(x1):g}", "y1": f"{float(y1):g}",
+                "x2": f"{float(x2):g}", "y2": f"{float(y2):g}"}
+        if collapsed is not None:
+            args["collapsed"] = "true" if collapsed else "false"
+        return await get_bridge().send_command_async("generic.place_compile_mask", args)
+
+    @mcp.tool()
     async def sch_get_blankets() -> dict[str, Any]:
         """List the blankets on the active schematic sheet.
 
@@ -3048,11 +3080,9 @@ def register_generic_tools(mcp):
             box (x1, y1, x2, y2), ``line_style``, ``collapsed`` and the
             ``directives`` inside it or on its edge (``owner`` "blanket" or
             "sheet").
-            ``coverage``: from the last compile, one entry per blanket in
-            the compiler's order, with ``net_items`` and the ``nets`` it
-            caught; compile first (proj_compile) after an edit.
-            ``compiled`` false means the sheet is not in the focused
-            project, so coverage is empty.
+            ``coverage``: per blanket, from the last compile, the ``nets``
+            and ``sheet_symbols`` it covers. ``compiled`` false: the sheet
+            is not in the focused project.
         """
         bridge = get_bridge()
         return await bridge.send_command_async("generic.get_blankets", {})

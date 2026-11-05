@@ -1,4 +1,4 @@
-# Release verification: 2026.11.04.16
+# Release verification: 2026.11.05.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -244,6 +244,7 @@ works elsewhere cannot be an undeclared identifier:
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
+| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -419,7 +420,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.04.16`, `version_match` =
+Expect `altium_script_version` = `2026.11.05.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3730,6 +3731,33 @@ Live check after the deploy, on scratch copies only:
 3. Point that part at a footprint no library has and run
    `proj_sync_pcb`: `after_sync.footprint_mismatch` carries an `eco_line`
    with "Footprint Not Found".
+
+## 69. Hierarchy read, repeated channels, compile masks, directive and No ERC options (live verified)
+
+Measured 2026-11-05 on AD 26.11.1.5 with the last 4 November build, on a scratch
+project of three sheets added by explicit `project_path`: Top with one
+sheet symbol for Chan.SchDoc, Chan with ports DIN (input), DOUT
+(output), PG (output) and FB (input), and Orphan linked from nowhere.
+
+* `sch_place_sheet_symbol` with `repeat_first` 1 and `repeat_last` 4
+  named it `Repeat(CH,1,4)`; `sch_place_sheet_entry` found it by `CH`,
+  and `repeat` named the entry `Repeat(DIN)`. `proj_get_channels`
+  listed CH1 to CH4 with `channel_index` 1 to 4.
+* `proj_get_hierarchy` read 3 sheets, no read errors, and reported
+  exactly the four planted breaks: SPARE entry without a port, FB port
+  without an entry, PG input entry on an output port, Orphan.SchDoc.
+  Altium gives compiled channels after the first only their Repeat()
+  entries; those copies are not checked, and each parent is listed once.
+* `sch_place_compile_mask` read back its box and `collapsed`.
+* `sch_add_directive` with two parameters, `style` 1, `orientation` 1
+  read back all four.
+* `sch_place_no_erc` with `symbol` 1, `orientation` 2,
+  `suppress_all` false, `active` true read back each.
+* `sch_get_blankets` coverage of a blanket over the repeated symbol
+  listed its nets and `sheet_symbols` CH1 to CH4.
+
+Not run live here: a compile mask's effect on the netlist, and what
+each `style` and `symbol` integer looks like.
 
 ## Still open, and not blocking
 
