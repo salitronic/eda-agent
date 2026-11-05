@@ -24,6 +24,7 @@ import asyncio
 import sys
 from typing import Any
 
+from ..saving import button_saves, keys_save, menu_saves, refused, saving_off
 from ..ui import controls, dialog_driver, dialog_report, menu, windows
 
 #: Menu path per target. The only thing that still differs between the
@@ -49,6 +50,12 @@ _MENU_EXPECT = {
     "schematic": "Update From Librar",
     "pcb": "Update From PCB Librar",
 }
+
+
+def _saving_refused(what: str) -> dict[str, Any]:
+    """The interface tools answer in ok/reason form."""
+    reply = refused(what)
+    return {"ok": False, "error": reply["error"], "reason": reply["message"]}
 
 
 def _dialog_state(hwnd):
@@ -406,6 +413,8 @@ def register_uiauto_tools(mcp):
             submenu is a failure. ``retried`` and ``first_read`` show a
             level read twice.
         """
+        if not list_only and menu_saves(menu_path) and saving_off():
+            return _saving_refused("This menu item saves.")
         if not menu.available():
             return {"ok": False, "reason": (
                 "menu driving needs pywin32 and comtypes on Windows")}
@@ -458,6 +467,10 @@ def register_uiauto_tools(mcp):
         Differences"), ``engineering_change_order``, ``wizard``,
         ``progress`` or ``unknown``. Grids and owner-drawn lists can't be
         read (``has_unreadable_content``). Presses nothing.
+        ``needs_a_human`` means no driver answers it blindly: read the
+        message and press the answer the task calls for with
+        app_press_dialog_button. Ask the user only when the choice is
+        theirs, never to click a button for you.
 
         Returns:
             Dict with ``blocked``, ``dialog_count``, ``dialogs``,
@@ -475,9 +488,10 @@ def register_uiauto_tools(mcp):
         return dialog_report.report(pid)
 
     @mcp.tool()
-    async def app_press_dialog_button(button_caption: str,
+    async def app_press_dialog_button(button_caption: str = "",
                                       dialog_title: str = "",
-                                      allow_irreversible: bool = False
+                                      allow_irreversible: bool = False,
+                                      button: str = "",
                                       ) -> dict[str, Any]:
         """Press ONE named button in an open Altium dialog.
 
@@ -492,11 +506,18 @@ def register_uiauto_tools(mcp):
             dialog_title: substring picking one dialog when several are
                 open. Empty uses the first.
             allow_irreversible: permit a committing press.
+            button: the same as ``button_caption``, the name clients reach
+                for first.
 
         Returns:
             ``ok``, the dialog and button actually matched, and whether
             the dialog closed afterwards.
         """
+        button_caption = button_caption or button
+        if not button_caption:
+            return {"ok": False, "reason": "give the button's caption"}
+        if button_saves(button_caption) and saving_off():
+            return _saving_refused("This button saves.")
         pid, problem = _altium_pid()
         if problem:
             return problem
@@ -737,6 +758,8 @@ def register_uiauto_tools(mcp):
             succeeded, so a command that opened something nobody could
             answer does not read as a success.
         """
+        if menu_saves(menu_path) and saving_off():
+            return _saving_refused("This menu item saves.")
         pid, problem = _altium_pid()
         if problem:
             return problem
@@ -1014,6 +1037,8 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import windows as win
 
+        if keys_save(sequence) and saving_off():
+            return _saving_refused("Ctrl+S saves the document in front.")
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
@@ -1207,8 +1232,9 @@ def register_uiauto_tools(mcp):
                 window.
 
         Returns:
-            ``{"ok": true, "path": ..., "hwnd": ...}``. Read the file to
-            look at it.
+            ``ok``, ``path``, ``hwnd``, and the picture's ``width`` and
+            ``height`` in pixels; it is the window at its real size, so
+            things can be measured on it. Read the file to look at it.
         """
         import os
         import time as _time
@@ -1241,10 +1267,62 @@ def register_uiauto_tools(mcp):
             from ..config import get_config
             path = os.path.join(str(get_config().workspace_dir),
                                 f"altium_{int(_time.time())}.png")
+        folder = os.path.dirname(os.path.abspath(path))
+        created_folder = not os.path.isdir(folder)
+        os.makedirs(folder, exist_ok=True)
         if not ocr.capture_png(target, path):
             return {"ok": False, "reason": "capture failed", "path": path}
-        return {"ok": True, "path": path, "hwnd": target,
+        pixels: dict[str, int] = {}
+        try:
+            from PIL import Image
+            with Image.open(path) as picture:
+                pixels = dict(zip(("width", "height"), picture.size))
+        except Exception:  # noqa: BLE001 - the file is the answer; its size is a bonus
+            pass
+        return {"ok": True, "path": path, "hwnd": target, **pixels,
+                "created_folder": created_folder,
                 "note": "read the file to look at it"}
+
+    @mcp.tool()
+    async def app_recover_script(force: bool = False) -> dict[str, Any]:
+        """Clear a crashed bridge script and restart the loop.
+
+        A call that crashes the script does this by itself. This is for a
+        script found halted later: the Script IDE holding a line, or
+        "Another script executing now". It screenshots and answers OK on a
+        script error box, screenshots the halted line, stops the script
+        (Run > Stop, Ctrl+F3) and restarts the loop, with other sessions'
+        calls waiting through it. Screenshots and a record go to
+        logs/crashes in the workspace.
+
+        Args:
+            force: restart even when Altium's title does not name the
+                script project, the usual sign of a halt.
+
+        Returns:
+            ``halted`` (whether a restart ran), ``screenshots``,
+            ``dialog``, ``title``, ``restart`` {restarted, output} and
+            ``record``.
+        """
+        from ..bridge import get_bridge, script_crash
+
+        pid, problem = _altium_pid()
+        if problem:
+            return problem
+
+        def recover():
+            report = dialog_report.report(pid)
+            box = script_crash.script_error_dialog(report)
+            return script_crash.recover(
+                get_bridge().config.workspace_dir, pid, "app_recover_script",
+                "manual00", box, lambda seconds: False, force=force)
+
+        outcome = await asyncio.to_thread(recover)
+        if not outcome.get("halted"):
+            outcome["reason"] = (
+                "no halt was seen: Altium's title does not name the script "
+                "project. Check app_ping; pass force=True to restart anyway.")
+        return outcome
 
     @mcp.tool()
     async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,

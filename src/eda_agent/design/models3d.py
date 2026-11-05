@@ -30,9 +30,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from ..noconsole import no_window
 
 __all__ = [
     "Solid",
@@ -40,6 +43,7 @@ __all__ = [
     "ASSUMED",
     "MODELLED_FAMILIES",
     "plan_model",
+    "plan_from_solids",
     "available_writers",
     "write_step",
 ]
@@ -60,6 +64,10 @@ _COLOURS = {
     "metal": (0.78, 0.78, 0.80),
     "ceramic": (0.55, 0.45, 0.33),
     "ball": (0.75, 0.75, 0.78),
+    "white": (0.93, 0.93, 0.90),
+    "lens": (0.97, 0.97, 0.95),
+    "gold": (0.85, 0.68, 0.25),
+    "pin1": (0.90, 0.90, 0.90),
 }
 
 
@@ -418,6 +426,85 @@ def _top(s: Solid) -> float:
     return s.z1
 
 
+#: Fields each solid kind needs in plan_from_solids.
+_SOLID_FIELDS = {
+    "box": ("x0", "y0", "z0", "x1", "y1", "z1"),
+    "cylinder": ("r",),
+    "sphere": ("cx", "cy", "cz", "r"),
+    "prism": ("profile",),
+}
+
+
+def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPlan], list[str]]:
+    """A model drawn as a list of primitives, for a part no family covers.
+
+    A connector, a LED with a lens or a header has a shape no package
+    family describes, but its datasheet drawing gives every dimension of
+    it. The caller reads them off the drawing and passes the solids, in
+    mm, origin at the footprint origin, Z up from the board; ``source``
+    names the drawing (document, page, figure) and is required, as for
+    every model here. Returns ``(plan, problems)``; plan is None when
+    any solid is malformed, and the problems say which and why.
+    """
+    problems: list[str] = []
+    out: list[Solid] = []
+    allowed = set(Solid.__dataclass_fields__)
+    for i, raw in enumerate(solids or []):
+        if not isinstance(raw, dict):
+            problems.append(f"solid {i}: not an object")
+            continue
+        kind = str(raw.get("kind", "")).lower()
+        if kind not in _SOLID_FIELDS:
+            problems.append(f"solid {i}: kind {raw.get('kind')!r} is not one of "
+                            + ", ".join(_SOLID_FIELDS))
+            continue
+        missing = [f for f in _SOLID_FIELDS[kind] if f not in raw]
+        if kind == "cylinder":
+            ends = ("x0", "x1") if raw.get("axis") == "x" else ("z0", "z1")
+            missing += [f for f in ends if f not in raw]
+        if kind == "prism":
+            ends = ("x0", "x1") if raw.get("axis") == "x" else ("y0", "y1")
+            missing += [f for f in ends if f not in raw]
+        if missing:
+            problems.append(f"solid {i} ({kind}): missing {', '.join(missing)}")
+            continue
+        role = str(raw.get("role") or "body")
+        if role not in _COLOURS:
+            problems.append(f"solid {i}: role {role!r} is not one of "
+                            + ", ".join(sorted(_COLOURS)))
+            continue
+        try:
+            args = {k: v for k, v in raw.items() if k in allowed}
+            args["kind"], args["role"] = kind, role
+            if kind == "prism":
+                args["profile"] = [(float(u), float(z)) for u, z in raw["profile"]]
+                if len(args["profile"]) < 3:
+                    raise ValueError("a profile needs three points or more")
+            for k, v in list(args.items()):
+                if k not in ("kind", "role", "axis", "profile"):
+                    args[k] = float(v)
+            s = Solid(**args)
+        except (TypeError, ValueError) as exc:
+            problems.append(f"solid {i} ({kind}): {exc}")
+            continue
+        if kind == "box" and not (s.x1 > s.x0 and s.y1 > s.y0 and s.z1 > s.z0):
+            problems.append(f"solid {i} (box): each far edge must exceed its near edge")
+            continue
+        if kind in ("cylinder", "sphere") and s.r <= 0:
+            problems.append(f"solid {i} ({kind}): r must be positive")
+            continue
+        out.append(s)
+    if not out and not problems:
+        problems.append("no solids given")
+    if problems:
+        return None, problems
+    source = str(source or "").strip()
+    plan = ModelPlan("custom", out, [], round(max(_top(s) for s in out), 6),
+                     {"drawing": source} if source else {},
+                     [] if source else ["every solid (no source drawing named)"])
+    return plan, []
+
+
 def plan_model(spec: Any, model: Any) -> Optional[ModelPlan]:
     """The solids for ``spec`` with its land pattern ``model``, or None
     when the family is not modelled or the description lacks a dimension
@@ -458,12 +545,40 @@ def _freecadcmd() -> Optional[str]:
     return None
 
 
-def _has_cadquery() -> bool:
+def warm_cadquery() -> None:
+    """Load CadQuery once in a throwaway process, in the background.
+
+    Measured: the first STEP write after a reboot spent 140 s importing
+    CadQuery's kernel from disk, which moved the first footprint call
+    past the client's two-minute wait; the next import took 2 s. A
+    child process that imports and exits fills the OS file cache for
+    this server's later import without holding the kernel in memory in
+    every server that never draws a model.
+    """
+    import importlib.util
+    import subprocess
+    import sys
+
     try:
-        import cadquery  # noqa: F401
-    except Exception:
+        if importlib.util.find_spec("cadquery") is None:
+            return
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | \
+            getattr(subprocess, "IDLE_PRIORITY_CLASS", 0)
+        subprocess.Popen([sys.executable, "-c", "import cadquery"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags)
+    except (OSError, ImportError, ValueError):  # a warm-up only; the real import reports
+        pass
+
+
+def _has_cadquery() -> bool:
+    """Whether CadQuery is installed, without importing it here (the
+    worker process does that, see _write_cadquery)."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec("cadquery") is not None
+    except (ImportError, ValueError):
         return False
-    return True
 
 
 def available_writers() -> list[str]:
@@ -501,7 +616,57 @@ def _cq_solid(s: Solid):
     raise ValueError(f"unknown solid kind {s.kind}")
 
 
+_worker_lock = threading.Lock()
+_worker: dict = {}
+
+
+def _worker_proc():
+    """The STEP worker (step_worker.py), started on first use."""
+    proc = _worker.get("proc")
+    if proc is not None and proc.poll() is None:
+        return proc
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "eda_agent.design.step_worker"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, encoding="utf-8", creationflags=flags)
+    first = proc.stdout.readline()
+    try:
+        hello = json.loads(first) if first else {}
+    except ValueError:
+        hello = {}
+    if not hello.get("ready"):
+        proc.kill()
+        raise RuntimeError("the STEP worker could not load CadQuery: "
+                           + str(hello.get("error") or first.strip() or "no answer"))
+    _worker["proc"] = proc
+    return proc
+
+
 def _write_cadquery(plan: ModelPlan, path: Path, name: str) -> None:
+    """Write through the worker process, never by importing CadQuery
+    here: in the server the first import took up to 224 s (see
+    step_worker.py). A worker that died is started again once."""
+    req = json.dumps({"plan": plan.to_dict(), "path": str(path), "name": name}) + "\n"
+    with _worker_lock:
+        for attempt in (1, 2):
+            proc = _worker_proc()
+            try:
+                proc.stdin.write(req)
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+            except (OSError, ValueError):
+                line = ""
+            if line:
+                reply = json.loads(line)
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "the STEP worker failed")
+                return
+            _worker.pop("proc", None)           # it went away: once more
+        raise RuntimeError("the STEP worker stopped answering")
+
+
+def _write_cadquery_here(plan: ModelPlan, path: Path, name: str) -> None:
     import cadquery as cq
 
     assy = cq.Assembly(name=name)
@@ -557,7 +722,8 @@ def _write_freecad(plan: ModelPlan, path: Path) -> None:
         script.write_text(_FREECAD_SCRIPT, encoding="utf-8")
         data.write_text(json.dumps(plan.to_dict()), encoding="utf-8")
         proc = subprocess.run([exe, str(script), str(data), str(path)],
-                              capture_output=True, text=True, timeout=180)
+                              capture_output=True, text=True, timeout=180,
+                              **no_window())
         if not path.is_file():
             raise RuntimeError("freecadcmd wrote no STEP: "
                                + (proc.stderr or proc.stdout)[-400:])

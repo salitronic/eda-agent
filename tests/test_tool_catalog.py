@@ -48,8 +48,11 @@ def test_catalog_lists_everything_by_default(mcp):
 
 def test_filter_by_category(mcp):
     res = _payload(_call(mcp, category="audit"))
-    assert res["count"] == 32
+    # The family tool and its 32 members, each member with how to reach it.
+    assert res["count"] == 33
     assert all(t["category"] == "audit" for t in res["tools"])
+    members = [t for t in res["tools"] if t["name"] != "audit"]
+    assert all(t["reach"].startswith("audit(kind=") for t in members)
 
 
 def test_filter_by_interaction_modal(mcp):

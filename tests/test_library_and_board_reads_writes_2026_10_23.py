@@ -60,9 +60,12 @@ def test_a_board_found_by_walking_is_named_on_the_reply():
     body = _fn("Main.pas", "GetPCBBoardAnywhere")
     walk = body.index("Client.OpenDocument('PCB', Path)")
     assert "BoardFallbackPath := Path;" in body[walk:]
-    process = _fn("StatusForm.pas", "ProcessCommand")
-    assert "BoardFallbackPath := '';" in process
-    assert process.index("BoardFallbackPath := '';") < process.index("Case Category Of")
+    # ProcessOne: each item of a bulk call is a request of its own.
+    process = _fn("StatusForm.pas", "ProcessOne")
+    status = _src("StatusForm.pas")
+    reset = status[status.index("Procedure ResetItemState("):]
+    assert "BoardFallbackPath := '';" in reset[:reset.index("End;")]
+    assert process.index("ResetItemState(0);") < process.index("Case Category Of")
     assert "Result := BoardFallbackNote(Result);" in process
     note = _fn("StatusForm.pas", "BoardFallbackNote")
     assert '"board_used":"' in note and "EscapeJsonString(BoardFallbackPath)" in note
@@ -110,7 +113,7 @@ def test_every_footprint_delete_walk_is_filtered():
 
 def test_the_delete_counts_again_and_says_when_something_stayed():
     body = _fn("Library.pas", "Lib_DeleteFootprintPrimitives")
-    assert body.index("Leftover := CountFootprintMatches(") > body.index("PCBServer.PostProcess;")
+    assert body.index("Leftover := CountFootprintMatches(") > body.index("PcbEndEdit(0);")
     assert '"leftover":' in body and '"hint":"' in body and '"matched":' in body
     count = _fn("Library.pas", "CountFootprintMatches")
     assert "FilterFootprintWalk(GrpIter, ObjFilter);" in count
@@ -231,6 +234,24 @@ def test_layer_counts_name_footprints_and_every_mechanical_layer():
     assert "eCoordinateObject" in body
     assert '"footprints":[' in body
     assert "'library_path is required'" not in body
+
+
+# -- a footprint name the library already has -----------------------------------
+
+def test_creating_a_footprint_refuses_a_name_already_taken():
+    body = _fn("Library.pas", "Lib_CreateFootprint")
+    check = body.index("UpperCase(CurName) = UpperCase(Name)")
+    assert "'NAME_EXISTS'" in body
+    assert check < body.index("PCBServer.CreatePCBLibComp")
+
+
+def test_an_empty_footprint_name_is_refused_before_sending():
+    tools, sent, mp = _tools("library")
+    try:
+        got = asyncio.run(tools["lib_create_footprint"]("  "))
+    finally:
+        mp.undo()
+    assert got["success"] is False and not sent
 
 
 # -- #113: extruded bodies ------------------------------------------------------

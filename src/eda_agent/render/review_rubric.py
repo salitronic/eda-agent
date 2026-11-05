@@ -91,7 +91,16 @@ def visual_review_guidance(target: str) -> dict[str, Any]:
         rubric = _PCB_RUBRIC
     else:
         rubric = []
+    from ..tools.folds import call_form
+
+    items = []
+    for item in rubric:
+        entry = dict(item)
+        if "audits" in entry:
+            # Named by the advertised tool that runs each audit.
+            entry["audits"] = list(dict.fromkeys(call_form(a) for a in entry["audits"]))
+        items.append(entry)
     return {
-        "rubric": [dict(item) for item in rubric],
+        "rubric": items,
         "loop_protocol": list(_LOOP_PROTOCOL),
     }

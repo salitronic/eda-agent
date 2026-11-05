@@ -50,11 +50,15 @@ _KINDS = (
     ("fanout control", "fanout"),
     ("minimum annular ring", "annular_ring"),
     ("solder mask expansion", "soldermask"),
+    ("minimum solder mask sliver", "mask_sliver"),
     ("paste mask expansion", "pastemask"),
     ("silk to solder mask", "silk_to_mask"),
     ("silk to silk", "silk_to_silk"),
     ("height", "height"),
 )
+
+#: Altium's solder mask expansion when no rule sets one, in mils.
+DEFAULT_MASK_EXPANSION = 4.0
 
 _VALUE = re.compile(r"(\w+)\s*=\s*(-?[\d.]+)\s*(mil|mm)?", re.IGNORECASE)
 
@@ -231,6 +235,27 @@ def _eval(node, f: ObjectFacts) -> bool:
     raise _Unknown(f"scope predicate {name} is not evaluated here")
 
 
+#: Every predicate ``_eval`` answers. A scope naming any other is unknown
+#: when it is read, not when it is first matched: matched, the failure only
+#: made the rule look as if it did not apply, so a check that skipped it
+#: still reported a pass.
+_PREDICATES = frozenset({
+    "all", "innet", "innetclass", "incomponent", "onlayer",
+    "indifferentialpair", "ispad", "isvia", "istrack", "isarc", "isregion",
+    "isfill", "inpolygon", "ispolygon", "issmtpad", "isthpad",
+})
+
+
+def _check_known(node) -> None:
+    if node[0] in ("or", "and"):
+        _check_known(node[1])
+        _check_known(node[2])
+    elif node[0] == "not":
+        _check_known(node[1])
+    elif node[1] not in _PREDICATES:
+        raise _Unknown(f"scope predicate {node[1]} is not evaluated here")
+
+
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -271,6 +296,8 @@ class RuleSet:
             try:
                 rr.scope1 = _Parser(_tokens(r.scope1 or "All")).parse()
                 rr.scope2 = _Parser(_tokens(r.scope2 or "All")).parse()
+                _check_known(rr.scope1)
+                _check_known(rr.scope2)
             except _Unknown as exc:
                 rr.unknown = str(exc)
             out.rules.append(rr)
@@ -280,9 +307,11 @@ class RuleSet:
     def of_type(self, kind: str) -> list[ResolvedRule]:
         return [r for r in self.rules if r.type == kind]
 
-    def unevaluated(self) -> list[dict]:
-        return [{"rule": r.rule.name, "why": r.unknown}
-                for r in self.rules if r.unknown]
+    def unevaluated(self, kinds=None) -> list[dict]:
+        """Rules whose scope could not be evaluated, of ``kinds`` when given."""
+        return [{"rule": r.rule.name, "type": r.type, "why": r.unknown}
+                for r in self.rules
+                if r.unknown and (kinds is None or r.type in kinds)]
 
     # -- matching -----------------------------------------------------------
 
@@ -346,6 +375,18 @@ class RuleSet:
     def max_clearance(self) -> float:
         gaps = [rr.values.get("gap", 0.0) for rr in self.of_type("clearance")]
         return max(gaps) if gaps else 0.0
+
+    def mask_expansion(self, facts: ObjectFacts) -> float:
+        """The solder mask expansion the board's rule gives this object.
+
+        Altium's own default, 4 mil, when no rule covers it."""
+        rr = self.unary("soldermask", facts)
+        return rr.values.get("expansion", DEFAULT_MASK_EXPANSION) if rr else DEFAULT_MASK_EXPANSION
+
+    def mask_sliver(self, fa: ObjectFacts, fb: ObjectFacts) -> float:
+        """The narrowest mask web allowed between two openings; 0 for none."""
+        rr = self.binary("mask_sliver", fa, fb)
+        return rr.values.get("gap", 0.0) if rr else 0.0
 
     def width(self, facts: ObjectFacts) -> dict[str, float]:
         """Min, preferred and max track width for this net on this layer."""

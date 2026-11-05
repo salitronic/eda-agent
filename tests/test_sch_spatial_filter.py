@@ -50,8 +50,8 @@ def test_explain_pin_rejects_bbox_only_hits():
     assert "BOUNDING BOXES" in body or "bounding box" in body.lower()
     # Hits must carry coordinates so a leak is visible even if the
     # filter regresses.
-    assert "JsonInt('x_mils'" in body
-    assert "JsonInt('y_mils'" in body
+    assert "JsonFloat('x_mils'" in body
+    assert "JsonFloat('y_mils'" in body
 
 
 def test_net_label_conflict_audit_requires_location_match():

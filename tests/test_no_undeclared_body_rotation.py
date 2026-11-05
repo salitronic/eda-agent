@@ -20,9 +20,8 @@ Same family as the ``ObjectIDToObjectName`` fault: an identifier nobody
 verified, dormant for as long as its branch went unexercised.
 
 The rotation is reachable, but on the MODEL and before it is attached
-(``Model.SetState`` in AutoSTEPplacer.pas). Its four arguments are
-undocumented, so implementing it means measuring them first, not
-guessing.
+(``Model.SetState(RotX, RotY, RotZ, Dz)``, as the SDK declares it and
+AutoSTEPplacer.pas uses it).
 """
 
 from __future__ import annotations
@@ -55,18 +54,18 @@ def test_no_pascal_assigns_rotation_on_a_component_body():
         + "\n".join(offenders))
 
 
-def test_the_tool_does_not_promise_a_rotation_it_cannot_apply():
-    """The docstring told callers rotation_z 'sets the body's Rotation'.
-
-    A caller who believed it paid with the bridge. Tested in the
-    opposite direction from the Pascal guard: the code being gone is
-    not the same as the contract saying so.
-    """
+def test_the_rotation_goes_on_the_model_before_it_is_bound():
+    """The docstring once promised 'sets the body's Rotation', and a
+    caller who believed it paid with the bridge. The rotation is set on
+    the MODEL, IPCB_Model.SetState(RotX, RotY, RotZ, Dz) as the SDK
+    declares it, before Body.Model takes it; the contract says it is
+    written and not read back."""
     text = LIBRARY_PY.read_text(encoding="utf-8")
     start = text.index("def lib_link_3d_model")
     doc = text[start:start + 4000]
-
-    assert "rotation_z: NOT APPLIED" in doc, (
-        "lib_link_3d_model must state that rotation_z is not applied")
-    assert "sets the body's Rotation" not in doc, (
-        "the docstring still promises the assignment that was fatal")
+    assert "sets the body's Rotation" not in doc
+    assert "model before it is bound to the body" in " ".join(doc.split())
+    pas = (PASCAL / "Library.pas").read_text(encoding="utf-8-sig")
+    body = pas[pas.index("Function Lib_Link3DModel("):]
+    body = body[:body.index("\nEnd;")]
+    assert body.index("Model.SetState(RotX, RotY, RotZ, 0)") < body.index("Body.Model := Model")

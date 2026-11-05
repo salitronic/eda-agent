@@ -191,10 +191,23 @@ def test_apply_enlarges_an_untemplated_sheet_then_rechecks():
         {"type": "rectangle", "label": "", "bbox": [10000, 500, 10600, 900]}]),
               frame_x=11500, frame_y=7600, sheet_style=0, template="")
     a3 = dict(a4, frame_x=15500, frame_y=11100, sheet_style=1)
+    sheet = r"C:\w\A.SchDoc"
     out, sent = _apply_audit({"generic.get_sheet_frame": [a4, a3],
-                              "generic.set_sheet_size": [{"success": True}]})
+                              "generic.set_sheet_size": [{"success": True}],
+                              "application.get_active_document": [{"file_path": sheet}],
+                              "application.save_document": [{"saved": True}],
+                              "application.close_document": [{"closed": True}],
+                              "application.run_process": [{"success": True}],
+                              "application.set_active_document": [{"success": True}]})
+    # The sheet is reopened after the size change: Altium's ERC keeps the
+    # old frame until it is.
     assert [c for c, _ in sent] == ["generic.get_sheet_frame",
                                     "generic.set_sheet_size",
+                                    "application.get_active_document",
+                                    "application.save_document",
+                                    "application.close_document",
+                                    "application.run_process",
+                                    "application.set_active_document",
                                     "generic.get_sheet_frame"]
     assert sent[1][1]["style"] == "A3" and out["verdict"] == "fits"
 

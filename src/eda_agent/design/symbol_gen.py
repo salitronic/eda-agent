@@ -49,28 +49,43 @@ def _snap(v: float) -> int:
 
 
 def generate_ic_symbol(
-    left_pins: list[dict],
-    right_pins: list[dict],
+    left_pins: list,
+    right_pins: list,
     *,
     min_inner_width: int = _MIN_INNER,
+    pin_length: int = PIN_LENGTH,
+    pin_pitch: int = PIN_PITCH,
+    char_width: int = _CHAR_W,
+    name_gap: int = _NAME_GAP,
 ) -> SymbolGeometry:
     """Lay out an IC symbol from left/right pin groups.
 
     Each pin dict needs ``designator`` and ``name``; ``electrical_type``
-    (default "passive") is passed through. Left pins are placed top->down
+    (default "passive") and ``hidden`` are passed through. ``None`` in a
+    side's list keeps that row free, which spaces pin groups apart. Left
+    pins are placed top->down
     starting at the origin row; right pins likewise on the far side. The
     body width is sized to clear the pin-name text on both sides.
+    ``pin_length`` and ``pin_pitch`` stay on the 100-mil grid.
 
     Returns a :class:`SymbolGeometry`. Raises if both sides are empty.
     """
-    if not left_pins and not right_pins:
+    for label, value in (("pin_length", pin_length), ("pin_pitch", pin_pitch)):
+        if value <= 0 or value % GRID:
+            raise ValueError(f"{label} must be a positive multiple of {GRID} mil")
+    if char_width <= 0 or name_gap < 0:
+        raise ValueError("char_width must be above zero and name_gap 0 or more")
+    real = [p for p in (*left_pins, *right_pins) if p is not None]
+    if not real:
         raise ValueError("need at least one pin on a side")
 
     # Every pin needs a designator, and designators must be unique across
     # the whole symbol -- a missing or duplicated pin number makes an
     # invalid component that ERC and the netlist would mis-resolve.
     designators: list[str] = []
-    for p in (*left_pins, *right_pins):
+    for p in real:
+        if not isinstance(p, dict):
+            raise ValueError(f"a pin is a dict, or None for a gap row (got {p!r})")
         d = str(p.get("designator", "")).strip()
         if not d:
             raise ValueError(
@@ -81,45 +96,35 @@ def generate_ic_symbol(
     if dupes:
         raise ValueError(f"duplicate pin designator(s): {dupes}")
 
-    max_l_name = max((len(str(p.get("name", ""))) for p in left_pins),
-                     default=0)
-    max_r_name = max((len(str(p.get("name", ""))) for p in right_pins),
-                     default=0)
-    inner = (max_l_name + max_r_name) * _CHAR_W + _NAME_GAP
-    inner = max(min_inner_width, _snap(inner))
-    body_x_left = PIN_LENGTH                 # left pin bodies sit here
-    body_x_right = PIN_LENGTH + inner        # right pin bodies sit here
-
+    max_l_name = max((len(str(p.get("name", ""))) for p in left_pins
+                      if p is not None), default=0)
+    max_r_name = max((len(str(p.get("name", ""))) for p in right_pins
+                      if p is not None), default=0)
+    inner = max(min_inner_width,
+                _snap((max_l_name + max_r_name) * char_width + name_gap))
+    # The body spans from the end of the left stubs to the start of the right
+    # ones; a left pin points left (rotation 180, orientation 2), so its wire
+    # end sits at x=0, and a right pin points right (rotation 0).
+    edges = {180: pin_length, 0: pin_length + inner}
     pins: list[dict] = []
-    # Left column: pin points LEFT (rotation 180 -> orientation 2), so the
-    # wire-end = Location.X - length lands at x=0 for the top-left pin.
-    for i, p in enumerate(left_pins):
-        y = -i * PIN_PITCH
-        pins.append({
-            "designator": str(p.get("designator", "")),
-            "name": str(p.get("name", "")),
-            "x": body_x_left, "y": y, "length": PIN_LENGTH, "rotation": 180,
-            "electrical_type": p.get("electrical_type", "passive"),
-        })
-    # Right column: pin points RIGHT (rotation 0 -> orientation 0), wire-end =
-    # Location.X + length.
-    for j, p in enumerate(right_pins):
-        y = -j * PIN_PITCH
-        pins.append({
-            "designator": str(p.get("designator", "")),
-            "name": str(p.get("name", "")),
-            "x": body_x_right, "y": y, "length": PIN_LENGTH, "rotation": 0,
-            "electrical_type": p.get("electrical_type", "passive"),
-        })
+    for rotation, column in ((180, left_pins), (0, right_pins)):
+        for row, p in enumerate(column):
+            if p is None:
+                continue
+            pins.append({
+                "designator": str(p.get("designator", "")),
+                "name": str(p.get("name", "")),
+                "x": edges[rotation], "y": -row * pin_pitch,
+                "length": pin_length, "rotation": rotation,
+                "electrical_type": p.get("electrical_type", "passive"),
+                "hidden": bool(p.get("hidden", False))})
 
+    # One pitch of margin above the first row and below the last.
     rows = max(len(left_pins), len(right_pins))
-    body_bottom = -(rows - 1) * PIN_PITCH - PIN_PITCH   # one row of margin
-    body = {
-        "x1": body_x_left, "y1": PIN_PITCH,            # top edge above row 0
-        "x2": body_x_right, "y2": body_bottom,
-    }
-    width = body_x_right + PIN_LENGTH                  # incl. right pin stub
-    height = PIN_PITCH - body_bottom
+    body_bottom = -rows * pin_pitch
+    body = {"x1": edges[180], "y1": pin_pitch, "x2": edges[0], "y2": body_bottom}
+    width = edges[0] + pin_length
+    height = pin_pitch - body_bottom
     return SymbolGeometry(pins=tuple(pins), body=body,
                           width_mils=width, height_mils=height)
 

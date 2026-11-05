@@ -109,6 +109,11 @@ def register_route_tools(mcp):
         plane_fanout: bool = False,
         pin_lanes: bool = True,
         bus_lanes: bool = True,
+        gloss: bool = True,
+        axis_entry: bool = False,
+        neck_pads: bool = False,
+        join_existing: bool = False,
+        exclude_layers: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Route the focused board with the in-house engine, as a job.
 
@@ -134,6 +139,18 @@ def register_route_tools(mcp):
                 or finer (default True).
             bus_lanes: Route 3+ nets between the same two parts as nested
                 lanes (default True).
+            gloss: Lay the routed tracks again as the shortest clean 45/90
+                runs, pad entries straight along a pad axis (default
+                True); the board's own tracks are left as they are.
+            axis_entry: Reach surface pads only straight out of their centre
+                along an axis, turning clear of the pad; an IC's long pin
+                only through its ends.
+            neck_pads: Route a net at its rule width, narrowing only on the
+                stub into a pad narrower than the track.
+            join_existing: Route only what the board's copper leaves apart;
+                a net it joins whole is left alone.
+            exclude_layers: Copper layers no route may use (not one a
+                net's surface pad is on).
 
         Returns:
             {"job_id", "board", "read": {pads, components, nets, layers}}
@@ -155,21 +172,39 @@ def register_route_tools(mcp):
             return {"error": f"board read failed: {exc}"}
         stages = {"diff_pairs": bool(diff_pairs), "plane_fanout": bool(plane_fanout),
                   "pin_lanes": bool(pin_lanes), "bus_lanes": bool(bus_lanes)}
+        # Only what was asked for: the rest keep the router's own defaults.
+        extra = {k: v for k, v in (("axis_entry", bool(axis_entry)),
+                                   ("neck_pads", bool(neck_pads)),
+                                   ("join_existing", bool(join_existing)),
+                                   ("exclude_layers", tuple(exclude_layers or ()))) if v}
         # All four off is the router before the stages (StageOptions.coerce
         # False), not the stages' other defaults with four switches flipped.
-        if not any(stages.values()):
+        if not any(stages.values()) and not any(extra.values()):
             stages = False
+        else:
+            stages.update(extra)
+        bad = set(extra.get("exclude_layers", ())) - set(board.copper_layers())
+        if bad:
+            return {"error": f"exclude_layers names no copper layer: {sorted(bad)}",
+                    "layers": board.copper_layers()}
+        padded = {c.layer for p in board.pads if p.net and p.is_smd for c in p.copper}
+        if set(extra.get("exclude_layers", ())) & padded:
+            return {"error": "exclude_layers takes a layer no net's surface pad is on: "
+                             f"{sorted(set(extra['exclude_layers']) & padded)} carry some"}
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": list(nets) if nets else None, "planes": use_planes,
-             "stages": stages})
+             "stages": stages, "gloss": bool(gloss)})
         return {
             "job_id": job_id,
             "board": board.name,
             "read": {"pads": len(board.pads), "components": len(board.components),
                      "nets": len(board.nets()), "layers": board.copper_layers()},
-            "next_step": "poll design_job_status, then design_job_result; "
-                         "apply with pcb_autoroute_apply",
+            "next_step": "call design_job_status(job_id, wait_seconds=90) "
+                         "until it is done (nothing notifies you when it "
+                         "finishes, so keep calling it; do not end your "
+                         "turn), then design_job_result; apply with "
+                         "pcb_autoroute_apply",
         }
 
     @mcp.tool()

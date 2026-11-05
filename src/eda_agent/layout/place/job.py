@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from ..bench import copy_board, hpwl, overlaps, strip_routing
-from ..drc import run_drc
+from ..drc import verdict
 from ..model import LayoutBoard
 from .placer import DEFAULT_STRATEGY, Placer
 from .transform import set_pose
@@ -52,13 +52,16 @@ def place_job(params: dict[str, Any]) -> dict[str, Any]:
             continue
         set_pose(out, part.ref, x=x, y=y, rotation=rot)
         moves.append({"designator": part.ref, "x": x, "y": y, "rotation": rot})
-    # Judged unrouted: the board's own routing does not move with its
-    # parts, and its tracks would be counted against the new places.
+    # Judged as applying the moves leaves it: the board's own routing
+    # does not move with its parts, so a part put down on it is a short
+    # or a clearance violation now, not after routing. Judged with the
+    # routing taken away, two moved resistors reported none and the
+    # board's batch DRC then found ten.
     placed = strip_routing(out)
-    drc = run_drc(placed)
+    v = verdict(out)
     pub = live.publish_safe(out, f"Placed: {len(moves)} parts moved, {len(rep['failed'])} found "
-                      f"no free spot, {len(drc.violations)} clearance violations before "
-                      "routing.", "place", {"fixed": fixed, "blocks": rep.get("blocks") or []})
+                      f"no free spot, {len(v['violations'])} violations.",
+                      "place", {"fixed": fixed, "blocks": rep.get("blocks") or []})
     moved = {m["designator"] for m in moves}
     blocks = {k: rep[k] for k in ("blocks", "legaliser_moves", "flagged_moves",
                                   "floorplan_packed", "floorplan_overflow", "fallback") if k in rep}
@@ -78,12 +81,16 @@ def place_job(params: dict[str, Any]) -> dict[str, Any]:
             "hpwl_before": round(hpwl(strip_routing(copy_board(board))), 1),
             "hpwl_after": round(hpwl(placed), 1),
             "overlaps": [list(o) for o in overlaps(placed) if moved & set(o)],
-            "violations": len(drc.violations),
+            # pass, fail or incomplete: see drc.verdict.
+            "drc_status": v["status"],
+            "violations": len(v["violations"]),
             "seconds": round(time.perf_counter() - t0, 1),
         },
-        "violations": [v.as_dict() for v in drc.violations[:50]],
+        "violations": [x.as_dict() for x in v["violations"][:50]],
+        "unevaluated_rules": v["unevaluated_rules"],
+        "not_checked": v["not_checked"],
         "moves": moves,
-        "notes": _notes(board, moves, rep),
+        "notes": _notes(board, moves, rep) + v["notes"],
     }
 
 
@@ -100,9 +107,11 @@ def _notes(board: LayoutBoard, moves, rep) -> list[str]:
     vias = [v for v in board.vias if not v.comp]
     if (routed or vias) and moves:
         notes.append(f"The board has {len(routed)} tracks and {len(vias)} vias of "
-                     "its own; moving parts leaves "
-                     "them where they are. Take it up first with pcb_unroute (all nets, "
-                     "or the moved parts' nets), then place.")
+                     "its own; moving parts leaves them where they are. Parts were kept "
+                     "clear of them on the outer layers, and the violations count is "
+                     "the board with them, as applying the moves leaves it. The moved "
+                     "parts' old tracks now end in the air: take them up with pcb_unroute "
+                     "(the moved parts' nets) and route again.")
     if rep["failed"]:
         notes.append("These parts found no free spot and were left where spreading put "
                      "them, overlapping others: " + ", ".join(rep["failed"]))

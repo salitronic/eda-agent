@@ -63,7 +63,7 @@ def _ping_altium() -> Optional[dict]:
         from eda_agent.bridge import get_bridge
         bridge = get_bridge()
         return bridge.ping_with_version()
-    except Exception:
+    except Exception:  # the check reports no reply; that is what was found
         return None
 
 
@@ -105,7 +105,7 @@ def _check_script_version_match(ping: Optional[dict]) -> Check:
                     parts = line.split("=", 1)
                     bundled_v = parts[1].strip().strip(";").strip().strip("'")
                     break
-    except Exception:
+    except (OSError, ImportError, UnicodeDecodeError):  # reported below as not found
         pass
 
     if not altium_v or not bundled_v:

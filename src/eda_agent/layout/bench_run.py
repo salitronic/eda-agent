@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..atomicfile import replace_with_retry
+from ..noconsole import no_window
 from .bench import (copy_board, detour_stats, hpwl, overlaps, routing_stats, score,
                     scramble_placement, strip_routing, via_clusters)
 from .model import LayoutBoard
@@ -496,7 +497,7 @@ def code_version() -> dict:
         try:
             return subprocess.run(["git", "--no-optional-locks", *args], cwd=root,
                                   capture_output=True, text=True, timeout=60,
-                                  check=True).stdout
+                                  check=True, **no_window()).stdout
         except (OSError, subprocess.SubprocessError):
             return None
 

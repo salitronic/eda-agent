@@ -42,7 +42,7 @@ def test_each_flag_is_read_back():
 def test_nothing_is_written_during_the_board_walk():
     body = _body()
     walk_end = body.index("Board.BoardIterator_Destroy(Iterator);")
-    assert body.index("PCBServer.PreProcess;") > walk_end
+    assert body.index("PcbBeginEdit(0);") > walk_end
     assert "SetState_IsTenting" not in body[:walk_end]
 
 

@@ -35,6 +35,10 @@ _MUST_HINT = ("NO_PCBLIB", "NO_SCHLIB", "NO_PCB", "NO_BOARD",
 #: Codes deliberately left without one, with the reason. Listing them
 #: is what makes the set above a decision rather than an oversight.
 _NO_HINT_NEEDED = {
+    "NOT_A_DIELECTRIC": "the layer was found on the right board; the message says "
+                        "which tool lists the dielectric layers",
+    "WRONG_RULE_KIND": "the rule was found on the right board; the message names "
+                       "its kind and the kind the setting is for",
     "NO_DOCUMENT": "nothing is open at all, so there is no sibling",
     "NO_LIBRARY": "the message already says to supply library_path",
     "NO_SCH_SERVER": "an infrastructure failure, not a document mix-up",

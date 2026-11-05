@@ -7,6 +7,7 @@ from __future__ import annotations
 from eda_agent.design.autonomy import autonomy_guide, autonomy_prompt_text
 from eda_agent.design.session import STAGES
 from eda_agent.design.state_machine import STAGE_PLAYBOOKS
+from eda_agent.tools.folds import call_form
 
 
 def test_guide_covers_all_stages_without_drift():
@@ -16,7 +17,9 @@ def test_guide_covers_all_stages_without_drift():
     for s in g["stages"]:
         # Guide content mirrors the state machine's playbooks (no drift).
         assert s["goal"] == STAGE_PLAYBOOKS[s["stage"]]["goal"]
-        assert s["tools"] == STAGE_PLAYBOOKS[s["stage"]]["tools"]
+        # Each named by the advertised tool that runs it.
+        assert s["tools"] == list(dict.fromkeys(
+            call_form(t) for t in STAGE_PLAYBOOKS[s["stage"]]["tools"]))
 
 
 def test_guide_has_loop_and_constraints():

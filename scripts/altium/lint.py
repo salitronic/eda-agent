@@ -190,7 +190,11 @@ RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     # Var block failed Altium's compile with "Error in
                     # declaration block". Delphi reads index as a property
                     # directive.
-                    "Index"}
+                    "Index",
+                    # Measured 2026-10-28 on AD 26.11: a local declared
+                    # `Cu, Reference : IPCB_ElectricalLayer;` stopped the
+                    # compile with "Unknown identifier: Reference".
+                    "Reference"}
 _RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",
@@ -455,10 +459,6 @@ KNOWN_WRONG_METHOD_NAMES = {
     # .HatchStyle raises Undeclared identifier at runtime. (.PolyHatchStyle has
     # the dot before "Poly", so this pattern does not false-match it.)
     "HatchStyle":           "use .PolyHatchStyle (IPCB_Polygon)",
-    # IPCB_Polygon.GeometricPolygon is undeclared in this Altium script binding
-    # (raises at runtime) despite being in the API docs. Use AreaSize (outline
-    # area) + BoundingRectangle instead of GeometricPolygon.GetState_Area.
-    "GeometricPolygon":     "undeclared here; use .AreaSize + .BoundingRectangle",
     # IPCB_Board has no GetNetByName; iterate eNetObject. The FindNetByName /
     # EnsureNet helpers in PCB.pas do this. Raised "Undeclared identifier:
     # GetNetByName" at runtime in PCB_PlacePad and five sibling handlers.
@@ -488,6 +488,15 @@ KNOWN_WRONG_PROPERTY_ACCESSES = {
     # use MidXSize / MidYSize, for bottom BotXSize / BotYSize.
     "Pad.XSize": "Pad.TopXSize (top layer) or per-layer Mid/Bot variant",
     "Pad.YSize": "Pad.TopYSize (top layer) or per-layer Mid/Bot variant",
+    # IPCB_Polygon.GeometricPolygon is undeclared in this Altium script
+    # binding (raises at runtime) despite being in the API docs: use
+    # AreaSize (outline area) + BoundingRectangle, or the geometric polygon
+    # of each REGION the pour holds. IPCB_Region.GeometricPolygon IS
+    # declared (read and written through a typed IPCB_Region local,
+    # measured on AD 25.8), so only the polygon names are listed here.
+    "Polygon.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
+    "Poly.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
+    "Pour.GeometricPolygon": "on IPCB_Region only; use .AreaSize or its regions",
 }
 RULE_KNOWN_WRONG_PROPERTY = LineRule(
     name="known-wrong-altium-property",
@@ -1112,6 +1121,41 @@ def _scan_call_order_across_files(targets: list) -> list:
     return findings
 
 
+def _scan_duplicate_definitions(targets: list) -> list:
+    """A routine defined twice in the concatenation.
+
+    The script compiles with both, and every call goes to the later one.
+    A new Proj_GenerateOutput added beside the old one took over its
+    command that way: the old export answered with the new routine's
+    reply and nothing reported an error.
+    """
+    first: dict = {}
+    findings = []
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().split("\n")
+        rel = os.path.basename(path)
+        for i, raw in enumerate(lines, 1):
+            m = _DEF_RE.match(strip_comments_and_strings(raw))
+            if not m:
+                continue
+            key = m.group(1).lower()
+            if key in first:
+                where, at = first[key]
+                findings.append(Finding(
+                    file=rel, line=i, col=1,
+                    rule="duplicate-definition",
+                    severity="error",
+                    snippet=raw.rstrip() + f"   [also defined at {where}:{at}]",
+                    memory="bridge_same_command_name_two_handlers.md",
+                ))
+            else:
+                first[key] = (rel, i)
+    return findings
+
+
 def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int:
     """Lint every Pascal file. Returns the count of error-level findings."""
     targets = list(files) if files else [
@@ -1130,7 +1174,8 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
             else:
                 warns += 1
 
-    for f in _scan_call_order_across_files(targets):
+    for f in (_scan_call_order_across_files(targets)
+              + _scan_duplicate_definitions(targets)):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 

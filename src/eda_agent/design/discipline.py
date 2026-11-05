@@ -293,9 +293,11 @@ these rules before producing a plan; they bound your choices.
       net labels, and notes via `obj_get_font_spec` / `obj_get_font_id`
       (resolve the FontID an existing label uses; reuse THAT id, do not
       mint a new font).
-    - **Colours**: wire colour, net-label colour, text colour, and
-      symbol body fill, read from existing objects with `obj_query`
-      (don't hardcode a colour; sample what the sheet already uses).
+    - **Colours**: wire colour, text colour, and symbol body fill, read
+      from existing objects with `obj_query` (don't hardcode a colour;
+      sample what the sheet already uses). Net labels are the exception:
+      every label is Altium's native maroon (Color 128), and the label
+      tools write it whatever the older labels carry.
     - **Line widths / styles**: wire and bus width, junction size.
     - **Parameter presentation**: visibility, justification, and offset
       of Designator/Comment on already-placed components (match rule 16's
@@ -333,11 +335,12 @@ one design. They apply in every session.
    rating). NEVER hard-code or regex against one library's `lib_ref` naming
    layout: the planner is the matcher, not a string template.
 
-4. **Prefer bulk tools over looping.** `obj_batch_modify`, `pcb_move_components`,
-   `sch_place_components`, `sch_place_wires`, `sch_set_components_parameters`,
-   etc. do N operations in one IPC round-trip. Looping the singular variant
-   costs one LLM turn each: 10-100× slower wall-clock. Plan the whole set,
-   then issue one batch.
+4. **Prefer bulk calls over looping.** Every editing tool takes `items`, a
+   list of its own arguments, and runs them as one request and one undo
+   step; `pcb_move_components`, `sch_place_components`, `sch_place_wires`,
+   `sch_set_components_parameters`, etc. take their list directly. Looping
+   the single call costs one LLM turn each: 10-100× slower wall-clock. Plan
+   the whole set, then issue one call.
 
 5. **Target the document explicitly.** Schematic placement and most
    mutations act on the ACTIVE document, and a freshly `app_create_document`'d
@@ -348,12 +351,15 @@ one design. They apply in every session.
    reads, prefer `scope=doc:<path>` (e.g. `obj_query`) over active-doc
    tools.
 
-6. **ECO (schematic → PCB) is not headless.** `proj_sync_pcb` fires the real
-   Engineering Change Order, but Altium's change-review dialog is
-   non-suppressible by design: a human must click **Execute Changes**.
-   Don't call `proj_sync_pcb` in an unattended run; it blocks until someone
-   interacts. After an attended ECO, the rest of the PCB tools work
-   normally.
+6. **The ECO (schematic → PCB) is a dialog, and you drive it.** Altium's
+   change-review dialog cannot be suppressed, so `proj_sync_pcb` blocks the
+   bridge while it is open. Open it without blocking instead:
+   `app_click_menu("Design|Import Changes From <Project>.PrjPcb",
+   expect_dialog="Engineering Change Order")`, read it with
+   `app_screenshot(dialog_title=...)`, then
+   `app_press_dialog_button("Execute Changes", allow_irreversible=True)` and
+   "Close". Do not ask the user to click it. Read board rules and counts
+   before opening it, since every bridge call waits while it is open.
 
 7. **`pcb_place_components` has two modes.** *Geometry only* (footprint +
    designator) leaves the board UNSYNCED, no link, no pad nets; pads are
@@ -366,14 +372,14 @@ one design. They apply in every session.
    `proj_get_connectivity_many`). That stamps the sch↔PCB link AND creates +
    assigns each pad's net, giving real connectivity (ratsnest + DRC) with
    NO ECO dialog: the headless way to populate a board from a compiled
-   schematic. (`proj_sync_pcb` / a real attended ECO remains the canonical
-   path when a human can click the dialog.)
+   schematic. (The real ECO, driven as in rule 6, remains the canonical
+   path.)
 
 8. **Connectivity review uses the netlist, never the render.** The FIRST
    priority for any review or check that concerns electrical connection (what
    sits on a net, what a pin connects to, missing or extra connections,
    single-pin or no-driver nets, schematic-to-PCB drift) is the actual net
-   data, read from the compiled design: `proj_get_nets`, `proj_get_connectivity` /
+   data, read from the compiled design: `proj_get_nets`,
    `proj_get_connectivity_many`, `obj_crossref_net`, `proj_compare_sch_pcb`,
    `proj_get_unconnected_pins`, `proj_get_erc_violations`. Read the connections; do not
    infer them from a picture.
@@ -412,8 +418,7 @@ one design. They apply in every session.
      NPN/PNP. Never a rectangle for a discrete.
    - If you must drop primitives by hand, ALWAYS use the BULK tools --
      `lib_add_footprint_pads`/`lib_add_footprint_tracks`/`lib_add_pins`/
-     `lib_add_symbol_lines` -- one call for the whole set, never a loop of
-     the singular `lib_add_footprint_pad`/`lib_add_footprint_track`
+     `lib_add_symbol_lines` -- one call for the whole set, never a loop
      (rule 4). Glyph
      lines/arcs/polygons accept a finer `grid` than the 100-mil pin grid.
 
@@ -674,7 +679,7 @@ which is why they are written down rather than left to the checker.
    `route_plan` does this by default; if you place tracks yourself with
    `pcb_place_tracks`, emit the chamfer segment rather than a single
    corner point. Acute (less than 90 degree) corners are worse than
-   either and are what `audit_find_acute_angles` looks for.
+   either and are what `audit` with kind `acute_angles` looks for.
 
 2. **No via in a pad unless the part forces it.** A via inside a
    surface-mount pad wicks solder off the joint and has to be filled
@@ -835,7 +840,7 @@ _DRAW_BLOCK = {
 
 #: The first line of the schematic-to-PCB block, used as an anchor. The
 #: block runs from here to the start of rule 8.
-_ECO_ANCHOR = "6. **ECO (schematic → PCB) is not headless.**"
+_ECO_ANCHOR = "6. **The ECO (schematic → PCB) is a dialog, and you drive it.**"
 _RULE_8_ANCHOR = "8. **Connectivity review uses the netlist, never the render.**"
 
 #: Rules 6 and 7 explain Altium's Engineering Change Order: a dialog a
@@ -877,8 +882,11 @@ _SCH_TO_PCB_BLOCK = {
 }
 
 
-def get_discipline() -> str:
+def get_discipline(include_schema: bool = True) -> str:
     """Return the discipline doc + the embedded DesignPlan JSON schema.
+
+    ``include_schema=False`` leaves the schema out, for a caller that
+    sends it separately (design_get_discipline sends it as a dict).
 
     The opening paragraph is rewritten for the active backend. Only
     that paragraph: the rest of the text names Altium tools inside
@@ -920,8 +928,7 @@ def get_discipline() -> str:
         # while the prose around them was adapted. Matching the opening
         # parenthesis as well reaches them. Both forms keep a delimiter
         # after the name, which is what stops a shorter key rewriting
-        # the front of a longer name: `lib_add_footprint_pad` and
-        # `lib_add_footprint_pads` are both real and both mapped.
+        # the front of a longer name.
         #
         # Naming the shorter-name hazard with an INVENTED example here
         # broke a guard that scans this file for tool-shaped names and
@@ -978,6 +985,8 @@ def get_discipline() -> str:
                 f"is {editor}; a plan is run there with {executor}.\n")
         text = replaced
 
+    if not include_schema:
+        return text
     return (
         text
         + "\n## DesignPlan JSON schema\n\nYour DesignPlan must validate "

@@ -34,8 +34,9 @@ def _docs() -> dict[str, str]:
 
     reg = ToolRegistry()
     register_backend(reg, "both", "full")
-    return {t.name: (t.description or "")
-            for t in asyncio.run(reg.list_tools())}
+    # Members of a family tool are searched too, as tool_guide does.
+    specs = list(asyncio.run(reg.list_tools())) + list(reg.hidden.values())
+    return {t.name: (t.description or "") for t in specs}
 
 
 @pytest.fixture(scope="module")

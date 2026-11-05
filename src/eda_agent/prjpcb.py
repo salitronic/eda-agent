@@ -75,6 +75,13 @@ def finish_removal(reply: Any, backup_dir: str) -> Any:
     if not (isinstance(reply, dict) and reply.get("removed")
             and reply.get("project_path") and isinstance(reply.get("members"), list)):
         return reply
+    from .saving import saving_off
+    if saving_off():
+        reply.pop("members", None)
+        reply["stale_sections"] = {"pruned": 0, "reason": (
+            "saving is switched off on the bridge dashboard, so the project "
+            "file was not edited")}
+        return reply
     try:
         pruned = prune_stale_documents(reply["project_path"], reply["members"],
                                        backup_dir)

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from eda_agent.sim.simcfg import (SimCfgError, analysis_changes, apply,
-                                  new_simcfg, parse_simcfg, read_simcfg,
-                                  spice_number, write_simcfg)
+from eda_agent.sim.simcfg import (SimCfgError, analysis_changes, apply, describe,
+                                  new_simcfg, only_analyses, parse_simcfg,
+                                  read_simcfg, spice_number, write_simcfg)
 
 FILE = (
     '<?xml version="1.0"?>\r\n'
@@ -102,3 +102,37 @@ def test_a_new_file_reads_back_and_takes_settings(tmp_path):
 def test_a_file_that_is_not_settings_is_refused():
     with pytest.raises(SimCfgError):
         parse_simcfg("SDF: 1.0\nTotalPoints: 0\n")
+
+
+def test_only_analyses_switches_the_named_on_and_every_other_off():
+    changes = only_analyses(["tran", "AC sweep"])
+    assert changes["TRAN_Analysis"] == "True" and changes["AC_Analysis"] == "True"
+    assert changes["OP_Analysis"] == "False" and changes["DC_Analysis"] == "False"
+    # The rarer analyses go off too, so nothing rides along.
+    assert changes["Noise_Analysis"] == "False" and changes["MonteCarlo_Analysis"] == "False"
+
+
+def test_only_analyses_refuses_an_unknown_name_and_an_empty_list():
+    with pytest.raises(SimCfgError):
+        only_analyses(["noise"])
+    with pytest.raises(SimCfgError):
+        only_analyses([])
+
+
+def test_describe_reads_the_sheet_when_the_setup_is_per_document():
+    text = FILE.replace("<Affect>Project</Affect>", "<Affect>Document</Affect>")
+    cfg = apply(parse_simcfg(text), only_analyses(["dc"]))
+    sheet = describe(cfg, r"C:\proj\amp.SchDoc")
+    assert sheet["source"] == "amp.SchDoc" and sheet["enabled"] == ["dc"]
+    # A sheet without its own settings reads the project's.
+    other = describe(cfg, "other.SchDoc")
+    assert other["source"] == "project"
+
+
+def test_describe_lists_outputs_and_the_run_history():
+    cfg = apply(parse_simcfg(FILE), {"AC_Analysis": "True", "AC_StartFrequency": "1k"})
+    setup = describe(cfg)
+    assert setup["source"] == "project" and "ac" in setup["enabled"]
+    assert setup["settings"]["ac"]["outputs"] == ["dB(v(out)/v(in))"]
+    assert setup["settings"]["ac"]["AC_StartFrequency"] == "1k"
+    assert setup["results"] == [{"name": "Transient Analysis"}]

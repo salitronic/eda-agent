@@ -25,9 +25,10 @@ _STOP_STEP = (
     "or Ctrl+F3; use Ctrl+Pause/Break if the script is truly hung)."
 )
 _RELAUNCH_STEP = (
-    "Relaunch the polling loop: File > Run Script... > Altium_API > "
-    "Dispatcher.pas > StartMCPServer > Run, or run `eda-agent relaunch` "
-    "in a terminal."
+    "Relaunch the polling loop: call app_recover_script, which does this "
+    "step and the one before it, or run `eda-agent relaunch --restart` in "
+    "a terminal, or File > Run Script... > Altium_API > Dispatcher.pas > "
+    "StartMCPServer > Run."
 )
 
 _GUIDANCE = {

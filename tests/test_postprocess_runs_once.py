@@ -54,6 +54,14 @@ def _call(token: str, method: str):
     return ".".join(parts[:-1])
 
 
+def _closer(token: str):
+    """The server a token closes an edit on, or None. PcbEndEdit is the
+    board server's, through the depth count (Main.pas)."""
+    if token.strip().lower() == "pcbendedit":
+        return "pcbserver"
+    return _call(token, "postprocess")
+
+
 def double_postprocess(body: str) -> tuple[list, int]:
     """(offending lines, Try/Finally-with-PostProcess blocks examined)."""
     toks = [(m.group(0), m.start()) for m in _TOKEN.finditer(body)]
@@ -70,13 +78,13 @@ def double_postprocess(body: str) -> tuple[list, int]:
                 blocks.append((start, mid, i))
     found, examined = [], 0
     for start, mid, end in blocks:
-        closers = {_call(toks[k][0], "postprocess") for k in range(mid + 1, end)}
+        closers = {_closer(toks[k][0]) for k in range(mid + 1, end)}
         closers.discard(None)
         if not closers:
             continue
         examined += 1
         for k in range(start + 1, mid):
-            if _call(toks[k][0], "postprocess") in closers:
+            if _closer(toks[k][0]) in closers:
                 found.append(body.count("\n", 0, toks[k][1]) + 1)
     return found, examined
 
@@ -141,6 +149,14 @@ End;
 def test_the_detector_finds_both_shapes():
     assert double_postprocess(_BAD)[0] == [8]
     assert double_postprocess(_LOOP)[0] == [8]
+
+
+def test_the_detector_reads_the_edit_helpers():
+    """Board handlers end their edits with PcbEndEdit now; a scan that
+    only knew PCBServer.PostProcess would examine none of them."""
+    helpers = (_BAD.replace("PCBServer.PreProcess;", "PcbBeginEdit(0);")
+               .replace("PCBServer.PostProcess;", "PcbEndEdit(0);"))
+    assert double_postprocess(helpers)[0] == [8]
 
 
 def test_the_detector_passes_the_fixed_shape_and_other_servers():

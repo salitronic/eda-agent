@@ -77,6 +77,11 @@ class EasyEdaComponent:
     """A whole part: metadata plus its symbol and footprint."""
 
     lcsc_id: str = ""
+    #: "Basic Part" or "Extended Part" at JLCPCB assembly, as the source
+    #: states it; blank when it does not say.
+    jlc_part_class: str = ""
+    #: LCSC stock when the source reports it, else None (not zero).
+    lcsc_stock: Optional[int] = None
     mpn: str = ""
     manufacturer: str = ""
     package: str = ""
@@ -106,6 +111,8 @@ class EasyEdaComponent:
     def to_dict(self) -> dict[str, Any]:
         return {
             "lcsc_id": self.lcsc_id,
+            "jlc_part_class": self.jlc_part_class,
+            "lcsc_stock": self.lcsc_stock,
             "mpn": self.mpn,
             "manufacturer": self.manufacturer,
             "package": self.package,
@@ -232,13 +239,20 @@ def parse_component(payload: dict[str, Any]) -> EasyEdaComponent:
     result = payload.get("result", payload) or {}
     comp = EasyEdaComponent()
 
-    comp.lcsc_id = str(
-        result.get("szlcsc", {}).get("code")
-        or result.get("code") or "").strip()
-
     data_str = result.get("dataStr") or {}
     head = data_str.get("head") or {}
     attrs = head.get("c_para") or {}
+
+    # The live service keys the part number as lcsc.number (and repeats
+    # it as the "Supplier Part" attribute); "code" is an older spelling.
+    lcsc = result.get("lcsc") or {}
+    szlcsc = result.get("szlcsc") or {}
+    comp.lcsc_id = str(
+        lcsc.get("number") or szlcsc.get("number") or szlcsc.get("code")
+        or result.get("code") or _attr(attrs, "Supplier Part") or "").strip()
+    comp.jlc_part_class = _attr(attrs, "JLCPCB Part Class")
+    stock = lcsc.get("stock")
+    comp.lcsc_stock = stock if isinstance(stock, int) else None
 
     comp.mpn = _attr(attrs, "Manufacturer Part", "name")
     comp.manufacturer = _attr(attrs, "Manufacturer")

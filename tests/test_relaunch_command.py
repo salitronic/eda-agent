@@ -66,7 +66,10 @@ def test_pending_requests_survive_a_relaunch(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen",
                         lambda command, **k: started.append(command))
     assert cli.cmd_relaunch(prjscr=str(project)) == 0
-    assert started == [cli.relaunch_command(str(exe), str(project))]
+    # A script left halted in the debugger is stopped first, or the new
+    # loop meets "Another script executing now".
+    assert started == [[str(exe), "-REditScript:Stop"],
+                       cli.relaunch_command(str(exe), str(project))]
     assert pending.exists()
 
 
@@ -115,8 +118,9 @@ def test_a_main_window_the_handoff_hid_is_shown_again(tmp_path, monkeypatch,
                                                       capsys):
     waited, asked = _relaunch_with_frames(tmp_path, monkeypatch,
                                           before=[11], hidden=[11])
-    # Checked only once the second X2.EXE has handed over and exited.
-    assert waited == [cli.RELAUNCH_HANDOFF_TIMEOUT_S]
+    # Checked only once the second X2.EXE has handed over and exited (the
+    # first wait is the stop sent before it).
+    assert waited[-1:] == [cli.RELAUNCH_HANDOFF_TIMEOUT_S]
     assert asked == [[11]]
     assert "shown again" in capsys.readouterr().out
 

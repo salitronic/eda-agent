@@ -35,6 +35,10 @@ def sim(monkeypatch):
 
     class Bridge:
         async def send_command_async(self, command, params=None, timeout=None):
+            # sim_run counts the charts already in the project's results
+            # before it runs; no project is focused here.
+            if command == "project.get_focused":
+                return {}
             return replies.pop(0)
 
     monkeypatch.setattr(sim_mod, "get_bridge", lambda: Bridge())
@@ -94,6 +98,69 @@ def test_get_results_names_the_analyses_when_one_is_missing(sim):
         results_document=str(FIX / "rc_ac_dc.sdf"), analysis="Transient Analysis"))
     assert out["error"] == "NO_SUCH_ANALYSIS"
     assert set(out["analyses"]) == {"AC Analysis", "DC Sweep"}
+
+
+def test_a_run_names_the_analyses_it_produced(sim):
+    tools, replies = sim
+    replies.append({"success": True, "ran": True,
+                    "results_document": str(FIX / "rc_ac_dc.sdf"),
+                    "results_saved": True})
+    out = asyncio.run(tools["sim_run"]())
+    assert sorted(out["ran_analyses"]) == ["ac", "dc"]
+
+
+def test_only_the_charts_this_run_added_are_reported(sim, monkeypatch):
+    # The results file keeps every earlier run's charts ahead of the new ones.
+    from eda_agent.tools import sim as sim_mod
+    tools, replies = sim
+    path = str(FIX / "rc_ac_dc.sdf")
+
+    async def one_chart_before(bridge):
+        return {path.lower(): 1}
+
+    monkeypatch.setattr(sim_mod, "_chart_count", one_chart_before)
+    replies.append({"success": True, "ran": True, "results_document": path,
+                    "results_saved": True})
+    out = asyncio.run(tools["sim_run"]())
+    assert out["ran_analyses"] == ["dc"]
+    assert list(out["results"]) == ["DC Sweep"]
+
+
+def _switch_ok(monkeypatch):
+    from eda_agent.tools import sim as sim_mod
+
+    async def ok(bridge, project_path, changes):
+        return {"success": True, "simcfg": "x.simcfg", "set": changes}
+
+    monkeypatch.setattr(sim_mod, "_change_simcfg", ok)
+
+
+def test_a_selection_that_took_says_so(sim, monkeypatch):
+    tools, replies = sim
+    _switch_ok(monkeypatch)
+    replies.append({"success": True, "ran": True,
+                    "results_document": str(FIX / "rc_ac_dc.sdf"),
+                    "results_saved": True})
+    out = asyncio.run(tools["sim_run"](analyses=["ac", "dc"]))
+    assert out["switched"]["on"] == ["ac", "dc"]
+    assert out["selection_applied"] is True and "selection_note" not in out
+
+
+def test_a_selection_altium_did_not_take_is_reported_not_hidden(sim, monkeypatch):
+    tools, replies = sim
+    _switch_ok(monkeypatch)
+    replies.append({"success": True, "ran": True,
+                    "results_document": str(FIX / "rc_ac_dc.sdf"),
+                    "results_saved": True})
+    out = asyncio.run(tools["sim_run"](analyses=["ac"]))
+    assert out["selection_applied"] is False
+    assert "reopened" in out["selection_note"]
+
+
+def test_an_unknown_analysis_is_refused_before_anything_runs(sim):
+    tools, replies = sim
+    out = asyncio.run(tools["sim_run"](analyses=["noise"]))
+    assert out["error"] == "BAD_ANALYSES" and not replies
 
 
 def test_get_results_without_any_run_is_an_error(sim):

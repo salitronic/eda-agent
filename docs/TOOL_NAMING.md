@@ -3,10 +3,18 @@
 Every MCP tool follows `ns_verb_object`:
 
 1. **Namespace** (required, first token): one of
-   `app` · `proj` · `sch` · `pcb` · `lib` · `obj` · `sim` · `audit` · `design`.
-   The namespace says which subsystem the tool acts on. `obj` is the generic
-   object layer (CRUD primitives, selection, view, fonts) that is not specific
-   to schematic or PCB.
+   `app` · `proj` · `sch` · `pcb` · `lib` · `obj` · `sim` · `audit` · `design`
+   for the Altium tools. The namespace says which subsystem the tool acts on.
+   `obj` is the generic object layer (CRUD primitives, selection, view, fonts)
+   that is not specific to schematic or PCB. The other backends and services
+   have their own: `easyeda` and `kicad` (one per backend), `altium365` (the
+   Altium 365 workspace), `part`, `datasheet` and `footprint` (sourcing and
+   package checks on any backend), `route` (route planning), `tool` and
+   `server` (the server itself).
+
+   A few tools that every backend answers the same way carry no namespace:
+   `get_board_info`, `list_components`, `list_nets`, `review_design`,
+   `run_drc` and `run_erc`.
 2. **Verb** (second token): a present-tense action. Prefer the shared set
    `get` (one/known) · `list` (enumerate) · `create` · `add` · `set` ·
    `update` · `delete` · `remove` · `place` · `move` · `copy` · `run` ·

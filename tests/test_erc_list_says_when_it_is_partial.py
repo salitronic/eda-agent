@@ -65,8 +65,10 @@ def test_the_tools_send_limit_and_offset(monkeypatch):
     asyncio.run(tools["proj_get_erc_violations"](limit=0, offset=100))
     asyncio.run(tools["proj_run_erc"](limit=0))
     assert bridge.params[0] == ("generic.get_erc_violations",
-                                {"limit": "0", "offset": "100"})
-    assert bridge.params[1] == ("generic.run_erc", {"limit": "0"})
+                                {"limit": "0", "offset": "100",
+                                 "include_suppressed": "false"})
+    assert bridge.params[1] == ("generic.run_erc", {"limit": "0",
+                                                    "include_suppressed": "false"})
 
 
 def test_a_partial_page_carries_a_warning(monkeypatch):

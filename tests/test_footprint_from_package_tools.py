@@ -215,6 +215,14 @@ def test_a_name_already_in_the_library_is_refused(altium):
     assert "library.create_footprint" not in box["bridge"].commands()
 
 
+def test_a_name_taken_in_another_case_is_refused_too(altium):
+    run, box = altium
+    out = run(bridge=FakeAltium(existing=["soic-8 (d)"]),
+              package=cases.soic8().to_dict())
+    assert not out["ok"] and "already in the library" in out["reason"]
+    assert "library.create_footprint" not in box["bridge"].commands()
+
+
 def test_no_role_layers_refuses_before_writing(altium):
     run, box = altium
     out = run(bridge=FakeAltium(mech=[{"layer": "Mechanical1", "name":

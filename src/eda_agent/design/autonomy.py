@@ -33,7 +33,7 @@ from .state_machine import MAX_STAGE_ATTEMPTS, RETRY, STAGE_PLAYBOOKS, next_acti
 # The loop a client runs. Kept short and imperative: it is meant to be read
 # once and followed.
 LOOP_PROTOCOL = [
-    "1. Call design_get_discipline once: hard rules + the DesignPlan schema.",
+    "1. Call design_get_discipline once: the hard rules (include_schema=True adds the DesignPlan schema).",
     "2. design_session_start(requirement): opens the durable journal. Keep "
     "the returned session_id. Then design_live_view so the person can watch "
     "the board change, and record each decision with its reason BEFORE "
@@ -397,16 +397,19 @@ def _registered_tools(backend: str) -> set:
                 return fn
             return deco
 
+    server = _Mcp()
     try:
         from ..tools import register_backend
 
-        register_backend(_Mcp(), backend)
+        register_backend(server, backend)
     except Exception:                                # noqa: BLE001
         # A guide naming every tool beats one naming none, so an
         # unexpected registration failure falls back to no filtering.
         _BACKEND_TOOLS[backend] = set()
         return set()
-    _BACKEND_TOOLS[backend] = set(captured)
+    # Members of a family tool are reachable too; the guide names them by
+    # the family tool that runs them.
+    _BACKEND_TOOLS[backend] = set(captured) | set(getattr(server, "hidden", {}) or {})
     return _BACKEND_TOOLS[backend]
 
 
@@ -441,14 +444,11 @@ _EQUIVALENTS = {
     "lib_add_symbol_arc": "easyeda_add_arc",
     "lib_add_symbol_lines": "easyeda_add_polyline",
     "lib_add_footprint_pads": "easyeda_add_pads",
-    "lib_add_footprint_pad": "easyeda_add_pad",
     "lib_add_footprint_tracks": "easyeda_add_polyline",
-    "lib_add_footprint_track": "easyeda_add_line",
     "lib_create_footprint": "easyeda_create_footprint",
     "design_validate": "design_validate_plan",
     "app_set_active_document": "easyeda_open_document",
     "app_checkpoint": "easyeda_checkpoint",
-    "obj_batch_modify": "easyeda_modify_pcb_components",
     "sch_place_components": "easyeda_place_schematic_components",
     "sch_place_wires": "easyeda_add_wires",
     "sch_set_components_parameters":
@@ -518,13 +518,16 @@ def _stage_tools(stage: str, available: set) -> tuple:
     thin stage legible: "there is no tool for this here" is guidance,
     a silently empty list is a puzzle.
     """
+    from ..tools.folds import call_form
+
     wanted = STAGE_PLAYBOOKS[stage]["tools"]
     if not available:                    # filtering unavailable
-        return list(wanted), []
+        return [call_form(t) for t in wanted], []
     usable, absent = [], []
     for tool in wanted:
         if tool in available:
-            usable.append(tool)
+            if call_form(tool) not in usable:
+                usable.append(call_form(tool))
             continue
         # The same job under another name is still the job. Only
         # substitute a tool this backend really registers.

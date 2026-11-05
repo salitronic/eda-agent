@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from tests.test_sch_properties_match_their_interface import _routine, _source
+from tests.test_sch_properties_match_their_interface import GENERIC, _routine, _source
 
 
 def _assert_textcolor_access(code):
@@ -100,7 +100,8 @@ def test_production_textcolor_filters_do_not_read_missing_members(tmp_path):
     if not fpc:
         pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
     names = ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
-             "UnsupportedSchProperty")
+             "SchObjectHasFontId", "SchObjectHasTextFontId", "SchExtraOwner",
+             "SchExtraFits", "UnsupportedSchProperty")
     source = _source()
     guards = "\n".join(_routine(source, name) for name in names)
     types = sorted(set(re.findall(r"\be[A-Z]\w*", guards)) | {"ePowerObject", "eNetLabel"})
@@ -120,6 +121,7 @@ begin
   Inc(Reads);
   if Prop='TextColor' then Result:='128' else Result:='GND';
 end;
+@@HELPERS@@
 @@FILTER@@
 var Obj: ISch_GraphicalObject;
 begin
@@ -142,6 +144,12 @@ begin
 end.
 """.replace("@@CONSTANTS@@", constants).replace("@@GUARDS@@", guards).replace(
         "@@FILTER@@", _routine(source, "MatchesFilter"))
+    # The filter's operator helpers live in Utils.pas.
+    utils = (GENERIC.parent / "Utils.pas").read_text(encoding="utf-8", errors="replace")
+    helpers = "\n".join(_routine(utils, name) for name in (
+        "FilterOpPos", "FilterOpText", "IsFloatStr", "StrToFloatDef", "FilterWildMatch",
+        "FilterOpHolds"))
+    program = program.replace("@@HELPERS@@", helpers)
     path = tmp_path / "textcolor_filters.pas"
     path.write_text(program, encoding="utf-8")
     compiled = subprocess.run([fpc, str(path)], cwd=tmp_path, capture_output=True, text=True)

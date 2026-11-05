@@ -73,7 +73,7 @@ def test_the_clearances_come_from_the_rules_or_the_call_and_never_from_nowhere()
     assert "eRule_Silk" not in body
     assert "GapMilsFromDescriptor(Rule.Descriptor)" in body
     refuse = body.index("'NO_CLEARANCE'")
-    assert body.index("PCBServer.PreProcess") > refuse, "refused after something moved"
+    assert body.index("PcbBeginEdit(0)") > refuse, "refused after something moved"
 
 
 @pytest.mark.asyncio

@@ -19,10 +19,13 @@ as text so everything else in the file, including Altium's namespace
 declarations and line endings, is written back untouched.
 
 What is set here is MEASURED to reach a run: a stop time and AC and DC
-parameters written to the file were used. What is NOT honoured from the
-file: the per-analysis on/off flags. A run started from a script did an
-operating point, DC sweep, transient and AC every time, whatever the
-flags said.
+parameters written to the file were used. The per-analysis on/off flags
+are honoured by a run for a sheet, the form the Simulation Dashboard
+sends, but only as read at the first run after the project opens:
+Altium keeps that selection until the project is reopened, and each run
+switches operating point, DC, transient and AC back on in its copy
+(MEASURED on AD 26.11). A run of the project's first simulator output
+did all four every time, whatever the flags said.
 """
 
 from __future__ import annotations
@@ -39,6 +42,29 @@ _TAG = re.compile(r"<(/?)([A-Za-z_][\w.-]*)([^>]*?)(/?)>")
 _SETTING_PARENTS = ("ProjectConfig", "DocumentConfig")
 
 _SWEEPS = {"dec": "DEC", "oct": "OCT", "lin": "LIN"}
+
+#: The analyses a run can be limited to, by the name a caller gives.
+ANALYSES = {"op": "OP_Analysis", "dc": "DC_Analysis",
+            "transient": "TRAN_Analysis", "ac": "AC_Analysis"}
+_ANALYSIS_ALIASES = {"operating_point": "op", "operating point": "op",
+                     "dc_sweep": "dc", "dc sweep": "dc", "tran": "transient",
+                     "ac_sweep": "ac", "ac sweep": "ac"}
+
+#: Every on/off flag the dashboard clears before it switches one analysis
+#: on (read from the dashboard), so nothing else rides along.
+_ALL_FLAGS = ("OP_Analysis", "TRAN_Analysis", "DC_Analysis", "AC_Analysis",
+              "TF_Analysis", "PZ_Analysis", "Noise_Analysis", "SP_Analysis",
+              "TRAN_FourierAnalysis", "TRAN_StressAnalysis", "TempSweep_Analysis",
+              "ParamSweep_Analysis", "MonteCarlo_Analysis")
+
+#: The settings reported for each analysis that is switched on.
+_REPORTED = {
+    "op": (),
+    "dc": ("DC_PrimarySource", "DC_PrimaryStart", "DC_PrimaryStop", "DC_PrimaryStep"),
+    "transient": ("TRAN_StartTime", "TRAN_StopTime", "TRAN_StepTime", "TRAN_MaxStepTime"),
+    "ac": ("AC_StartFrequency", "AC_StopFrequency", "AC_TestPoints", "AC_SweepType"),
+}
+_OUTPUT_PREFIX = {"dc": "DC", "transient": "TRAN", "ac": "AC"}
 
 
 class SimCfgError(ValueError):
@@ -99,6 +125,91 @@ def apply(cfg: SimCfg, changes: dict) -> SimCfg:
         last = end
     out.append(cfg.text[last:])
     return parse_simcfg("".join(out))
+
+
+def only_analyses(names) -> dict:
+    """Settings keys that switch on the analyses named and every other off.
+
+    names: "op", "dc", "transient" and "ac" (also "operating_point",
+    "dc_sweep", "tran", "ac_sweep").
+    """
+    if isinstance(names, str):
+        names = [names]
+    chosen = []
+    for name in names or []:
+        key = str(name).strip().lower()
+        key = _ANALYSIS_ALIASES.get(key, key)
+        if key not in ANALYSES:
+            raise SimCfgError(f"unknown analysis {name!r}; use one of "
+                              + ", ".join(ANALYSES))
+        if key not in chosen:
+            chosen.append(key)
+    if not chosen:
+        raise SimCfgError("name at least one analysis to run")
+    changes = {flag: "False" for flag in _ALL_FLAGS}
+    for key in chosen:
+        changes[ANALYSES[key]] = "True"
+    return changes
+
+
+def describe(cfg: SimCfg, sheet: str = "") -> dict:
+    """The setup a run would use: where it comes from and what is on.
+
+    Altium reads the sheet's own settings when ``affect`` is Document and
+    the project's when it is Project. ``sheet`` is the sheet's file name
+    or path; empty, or a sheet without its own settings, reports the
+    project's.
+    """
+    configs = cfg.settings()
+    owner, settings = configs[0]
+    name = Path(sheet).name.lower() if sheet else ""
+    if cfg.affect.lower() == "document" and name:
+        for o, s in configs:
+            if o.lower() == name:
+                owner, settings = o, s
+                break
+    def on(key):
+        return settings.get(key, "").strip().lower() == "true"
+
+    enabled = [k for k, flag in ANALYSES.items() if on(flag)]
+    others = sorted(f for f in _ALL_FLAGS
+                    if f not in ANALYSES.values() and on(f))
+    detail = {}
+    for key in enabled:
+        entry = {k: settings[k] for k in _REPORTED[key] if k in settings}
+        prefix = _OUTPUT_PREFIX.get(key)
+        if prefix:
+            entry["outputs"] = _enabled_outputs(settings, prefix)
+        detail[key] = entry
+    return {"affect": cfg.affect, "source": owner, "enabled": enabled,
+            "other_enabled": others, "settings": detail,
+            "sheets": list(cfg.sheets), "results": _results_history(cfg.text)}
+
+
+def _enabled_outputs(settings: dict, prefix: str) -> list:
+    out, i = [], 0
+    while f"{prefix}_Variable{i}" in settings:
+        expr = settings[f"{prefix}_Variable{i}"].strip()
+        if expr and settings.get(f"{prefix}_VariableEnabled{i}", "True").lower() == "true":
+            out.append(expr)
+        i += 1
+    return out
+
+
+def _results_history(text: str) -> list:
+    """Each recorded run: its name, type, date and whether it is locked."""
+    out = []
+    for block in re.findall(r"<ResultConfig>(.*?)</ResultConfig>", text, re.S):
+        row = {}
+        for tag, key in (("Name", "name"), ("Type", "type"), ("Date", "date"),
+                         ("IsLocked", "locked")):
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", block, re.S)
+            if m:
+                row[key] = unescape(m.group(1).strip())
+        if "locked" in row:
+            row["locked"] = row["locked"].lower() == "true"
+        out.append(row)
+    return out
 
 
 def analysis_changes(*, transient=None, ac=None, dc=None, outputs=None) -> dict:

@@ -55,8 +55,15 @@ def _is_unset(value) -> bool:
 def _surface(backend: str) -> dict[str, inspect.Signature]:
     registry = ToolRegistry()
     register_backend(registry, backend, "full")
-    return {name: inspect.signature(registry.get(name).fn)
-            for name in registry.names}
+    # Members of a family tool too: two backends advertising the same
+    # family tool can still differ in what each kind takes.
+    specs = {name: registry.get(name) for name in registry.names}
+    specs.update(registry.hidden)
+    # The tools as written: the items wrapper advertises a required
+    # argument as optional, which is not a default of the physics.
+    from eda_agent.tools.bulk import single
+    return {name: inspect.signature(single(spec.fn))
+            for name, spec in specs.items()}
 
 
 @pytest.fixture(scope="module")

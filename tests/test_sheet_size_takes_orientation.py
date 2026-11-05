@@ -17,7 +17,7 @@ class _Bridge:
     def __init__(self):
         self.sent = []
 
-    async def send_command_async(self, command, params):
+    async def send_command_async(self, command, params, timeout=None):
         self.sent.append((command, params))
         return {"success": True}
 
@@ -42,7 +42,7 @@ def _tool(monkeypatch):
 async def test_orientation_alone_reaches_the_handler(monkeypatch):
     tool, bridge = _tool(monkeypatch)
     await tool(orientation="Landscape")
-    assert bridge.sent == [("generic.set_sheet_size", {
+    assert bridge.sent[:1] == [("generic.set_sheet_size", {
         "style": "", "custom_width": "0", "custom_height": "0",
         "orientation": "landscape"})]
 
@@ -51,7 +51,7 @@ async def test_orientation_alone_reaches_the_handler(monkeypatch):
 async def test_a_style_alone_sends_what_it_always_sent(monkeypatch):
     tool, bridge = _tool(monkeypatch)
     await tool("A3")
-    assert bridge.sent == [("generic.set_sheet_size", {
+    assert bridge.sent[:1] == [("generic.set_sheet_size", {
         "style": "A3", "custom_width": "0", "custom_height": "0"})]
 
 

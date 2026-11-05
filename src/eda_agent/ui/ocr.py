@@ -34,6 +34,7 @@ import os
 import subprocess
 import tempfile
 
+from ..noconsole import no_window
 from . import windows as win
 
 #: PrintWindow flag. Renders the full window content including anything
@@ -45,7 +46,7 @@ _PW_RENDERFULLCONTENT = 0x00000002
 #: IAsyncOperation directly, hence the AsTask reflection dance. Kept as
 #: a file rather than an inline -Command so quoting cannot corrupt it.
 _OCR_PS1 = r"""
-param([Parameter(Mandatory=$true)][string]$Path)
+param([Parameter(Mandatory=$true)][string]$Path, [switch]$Words)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 
@@ -75,7 +76,14 @@ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
 if ($null -eq $engine) { throw 'no OCR language pack is installed' }
 
 $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-foreach ($line in $result.Lines) { Write-Output $line.Text }
+if ($Words) {
+    foreach ($line in $result.Lines) { foreach ($w in $line.Words) {
+        $r = $w.BoundingRect
+        Write-Output ("{0}`t{1}`t{2}`t{3}" -f [int]$r.X, [int]$r.Y, [int]$r.Height, $w.Text)
+    } }
+} else {
+    foreach ($line in $result.Lines) { Write-Output $line.Text }
+}
 """
 
 
@@ -91,8 +99,12 @@ def available() -> bool:
     return os.name == "nt"
 
 
-def capture_png(hwnd: int, path: str) -> bool:
+def capture_png(hwnd: int, path: str, enlarge: int = 1) -> bool:
     """Render a window to a PNG. True when it worked.
+
+    ``enlarge`` multiplies the size, which only the text recogniser
+    wants; a screenshot stays at the window's real pixels so that it can
+    be measured.
 
     PrintWindow asks the window to draw ITSELF, so the capture is
     correct even when the dialog is behind something else or off the
@@ -131,7 +143,10 @@ def capture_png(hwnd: int, path: str) -> bool:
             bitmap.GetBitmapBits(True), "raw", "BGRX", 0, 1)
         # Upscaling helps the recogniser on small UI type, which is
         # usually 8 or 9 point and sits near its resolution limit.
-        image = image.resize((width * 2, height * 2), Image.LANCZOS)
+        # Screenshots are left at size: doubled they hold no more detail
+        # and give wrong measurements.
+        if enlarge > 1:
+            image = image.resize((width * enlarge, height * enlarge), Image.LANCZOS)
         image.save(path)
         return True
     finally:
@@ -147,20 +162,55 @@ def read_window_text(hwnd: int, timeout: float = 30.0) -> list:
     Never raises: this is a best-effort enrichment of a report that must
     still be produced when it cannot run.
     """
+    return _recognise(hwnd, timeout, words=False)
+
+
+def read_window_rows(hwnd: int, timeout: float = 30.0) -> list:
+    """The window's text as screen rows, left to right. Empty on failure.
+
+    Line mode splits a grid by column, so a message loses the row it
+    belongs to; here every word is placed by its position and words whose
+    vertical centres agree form one row.
+    """
+    return rows_from_words(_recognise(hwnd, timeout, words=True))
+
+
+def rows_from_words(lines: list) -> list:
+    """Group ``x<TAB>y<TAB>height<TAB>word`` records into rows of text."""
+    words = []
+    for line in lines:
+        parts = line.split("\t", 3)
+        if len(parts) != 4:
+            continue
+        try:
+            x, y, h = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        words.append((y + h / 2.0, x, max(h, 1), parts[3]))
+    rows: list = []
+    for centre, x, h, text in sorted(words):
+        if rows and abs(centre - rows[-1]["centre"]) <= rows[-1]["h"] * 0.6:
+            rows[-1]["words"].append((x, text))
+        else:
+            rows.append({"centre": centre, "h": h, "words": [(x, text)]})
+    return [" ".join(t for _, t in sorted(r["words"])) for r in rows]
+
+
+def _recognise(hwnd: int, timeout: float, words: bool) -> list:
     if not available():
         return []
     tmp = tempfile.mkdtemp(prefix="eda-agent-ocr-")
     png = os.path.join(tmp, "dialog.png")
     script = os.path.join(tmp, "ocr.ps1")
     try:
-        if not capture_png(hwnd, png):
+        if not capture_png(hwnd, png, enlarge=2):
             return []
         with open(script, "w", encoding="utf-8") as handle:
             handle.write(_OCR_PS1)
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", script, "-Path", png],
-            capture_output=True, text=True, timeout=timeout)
+             "-File", script, "-Path", png] + (["-Words"] if words else []),
+            capture_output=True, text=True, timeout=timeout, **no_window())
         if proc.returncode != 0:
             return []
         return [line.strip() for line in proc.stdout.splitlines()

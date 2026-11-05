@@ -113,6 +113,16 @@ def install_bridge_fake(monkeypatch, tmp_path, fake):
     import eda_agent.bridge as bridge_pkg
     monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: fake)
 
+    # A running KiCad is as live as Altium: a no-argument sweep would
+    # save, revert or renumber whatever project is open in it. Every
+    # KiCad request goes through KiCadIpc.call, so the wall is there.
+    from eda_agent.bridge import kicad_ipc
+
+    def kicad_wall(*_args, **_kwargs):
+        raise kicad_ipc.KiCadNotReachableError("KiCad is walled off in this test")
+
+    monkeypatch.setattr(kicad_ipc.KiCadIpc, "call", kicad_wall)
+
     import eda_agent.tools as tools_pkg
     for mod_info in pkgutil.iter_modules(tools_pkg.__path__):
         mod = importlib.import_module(f"eda_agent.tools.{mod_info.name}")
@@ -213,6 +223,20 @@ def pytest_collection_modifyitems(config, items):
             needs = True
         if needs:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_bulk_hint_counts():
+    """Start each test with no calls counted toward the repeat nudge.
+
+    Every tool that takes ``items`` counts its single calls process-wide
+    and adds ``_hint_bulk`` to a reply once one repeats; a test calling a
+    tool the test before it called would otherwise see a reply it did not
+    cause.
+    """
+    from eda_agent.tools.bulk_hints import BulkHintTracker
+    BulkHintTracker.reset()
+    yield
 
 
 @pytest.fixture(autouse=True)

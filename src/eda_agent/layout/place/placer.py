@@ -507,6 +507,20 @@ class Placer:
             mask[b0:b1, a0:a1] |= d <= 0.0
         return j0, i0, mask
 
+    def _raster_shape(self, s: geom.Shape, grow: float):
+        """Cells a board-frame shape covers, grown by ``grow``, as (row
+        start, col start, mask)."""
+        c = self.cell
+        x0, y0, x1, y1 = s.bbox
+        i0 = int(math.floor((x0 - grow - self.box[0]) / c))
+        j0 = int(math.floor((y0 - grow - self.box[1]) / c))
+        i1 = int(math.ceil((x1 + grow - self.box[0]) / c)) + 1
+        j1 = int(math.ceil((y1 + grow - self.box[1]) / c)) + 1
+        X = self.box[0] + (np.arange(i0, i1) + 0.5) * c
+        Y = self.box[1] + (np.arange(j0, j1) + 0.5) * c
+        d = shape_distance(geom.Shape(s.kind, s.pts, s.r + grow, s.holes), X[None, :], Y[:, None])
+        return j0, i0, d <= 0.0
+
     def _grows(self, p: Part) -> list[float]:
         """How far each of a part's polygons is grown on the raster. A cell
         counts by its centre, so everything grows by half a cell's
@@ -554,7 +568,8 @@ class Placer:
         """What is closed to parts before any movable one is placed, per
         side: everything a part keeps out, and copper alone. Off the board,
         within the board-outline rule of its edge, cutouts, pads of no
-        part, and the fixed parts."""
+        part, keepouts, the board's own tracks and vias, and the fixed
+        parts."""
         c = self.cell
         W = int(math.ceil((self.box[2] - self.box[0]) / c)) + 1
         H = int(math.ceil((self.box[3] - self.box[1]) / c)) + 1
@@ -590,6 +605,16 @@ class Placer:
                     self._stamp(occ[side], j0, i0, m)
                     self._stamp(occ_cu[side], j0, i0, m)
                 break
+        # Keepouts, and copper that stays where it is when parts move: a
+        # part's pads must keep the clearance from it, like from a part's.
+        from .floorplan import free_copper, keepouts
+        for found, gr in ((keepouts(self.board), 0.71 * c),
+                          (free_copper(self.board), grow)):
+            for shape, sides in found:
+                j0, i0, m = self._raster_shape(shape, gr)
+                for side in sides:
+                    self._stamp(occ[side], j0, i0, m)
+                    self._stamp(occ_cu[side], j0, i0, m)
         for p in self.parts:
             if p.fixed and p.keep:
                 # A cell is marked by its centre: grown by half its

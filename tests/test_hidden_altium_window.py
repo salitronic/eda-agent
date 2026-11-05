@@ -139,3 +139,30 @@ def test_ui_tools_name_themselves_in_the_trace(monkeypatch, tmp_path):
     assert app_click_menu() == (4242, None)
     trace = (tmp_path / "bridge_trace.log").read_text(encoding="utf-8")
     assert "UI tool=app_click_menu" in trace
+
+
+def test_a_menu_walk_finds_a_hidden_frame_and_shows_it(monkeypatch, needs_win32):
+    """The menu walk does not go through the bridge, so its own frame
+    lookup has to show a hidden frame: app_update_from_libraries said "no
+    Altium main window" on a running Altium."""
+    from eda_agent.ui import menu
+
+    frame = Window(2, "TDocumentForm", "a - Altium Designer", 100)
+    visible: set = set()
+    shown = []
+    monkeypatch.setattr(
+        menu.win, "enumerate_windows",
+        lambda pid=None, visible_only=True:
+            [w for w in [frame] if not visible_only or w.hwnd in visible])
+    monkeypatch.setattr(menu.win32gui, "IsWindowVisible", lambda h: h in visible)
+
+    def show(hwnd):
+        shown.append(hwnd)
+        visible.add(hwnd)
+
+    monkeypatch.setattr(menu.win, "show_without_focus", show)
+    assert menu.frame(100) == frame
+    assert shown == [2]
+    # Shown once: a visible frame is returned as it is.
+    assert menu.frame(100) == frame
+    assert shown == [2]

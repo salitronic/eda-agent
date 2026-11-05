@@ -152,3 +152,30 @@ def test_the_preview_png_is_written(tmp_path):
     d = st.build(template, pins)
     out = st.render_png(d, str(tmp_path / "t.png"), title="buck")
     assert (tmp_path / "t.png").stat().st_size > 1000 and out.endswith("t.png")
+
+
+def _texts(d):
+    return [w for w in d.warnings if w["check"] == "text_overlap"]
+
+
+def test_a_ground_symbol_under_a_value_is_warned_about():
+    """A cap value sat over its ground symbol on screen and was found only
+    on the Altium screenshot."""
+    pins = _pins(C1=(PASSIVE, 1000, 1000, 90), C2=(PASSIVE, 1200, 1000, 90))
+    d = st.build({"parts": [
+        {"designator": "C1", "lib_reference": "C", "x": 1000, "y": 1000,
+         "rotation": 90, "value": "100nF"},
+        {"designator": "C2", "lib_reference": "C", "x": 1200, "y": 1000,
+         "rotation": 90, "value": "100nF"}],
+        "ports": [{"net": "GND", "at": "C1.1"}, {"net": "GND", "at": "C2.1"}]}, pins)
+    found = _texts(d)
+    assert found and any("value" in w["detail"] for w in found), d.warnings
+
+
+def test_parts_spaced_apart_draw_no_text_warning():
+    pins = _pins(R1=(PASSIVE, 1000, 1000, 0), R2=(PASSIVE, 3000, 3000, 0))
+    d = st.build({"parts": [
+        {"designator": "R1", "lib_reference": "R", "x": 1000, "y": 1000, "value": "10k"},
+        {"designator": "R2", "lib_reference": "R", "x": 3000, "y": 3000, "value": "10k"}]},
+        pins)
+    assert not _texts(d), _texts(d)

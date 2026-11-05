@@ -33,8 +33,8 @@ class TestBulkHintTracker:
         BulkHintTracker.record_and_hint("obj_create")
         hint = BulkHintTracker.record_and_hint("obj_create")
         assert hint is not None
-        assert hint["bulk_tool"] == "obj_batch_create"
-        assert "obj_batch_create" in hint["hint"]
+        assert hint["bulk_tool"] == "obj_create"
+        assert "items=" in hint["hint"]
         assert "obj_create" in hint["hint"]
 
     def test_hint_fires_once_per_window(self):
@@ -45,6 +45,26 @@ class TestBulkHintTracker:
     def test_unknown_tool_returns_no_hint(self):
         for _ in range(10):
             assert BulkHintTracker.record_and_hint("some_other_tool") is None
+
+    def test_a_tool_that_takes_items_is_pointed_at_them(self):
+        for _ in range(2):
+            assert BulkHintTracker.record_and_hint("pcb_place_arc",
+                                                   takes_items=True) is None
+        hint = BulkHintTracker.record_and_hint("pcb_place_arc", takes_items=True)
+        assert hint["bulk_tool"] == "pcb_place_arc"
+        assert "pcb_place_arc items=[" in hint["hint"]
+
+    def test_a_repeated_single_call_through_the_wrapper_carries_the_hint(self):
+        import asyncio
+
+        from eda_agent.tools.bulk import with_items
+
+        async def place_thing(x: float) -> dict:
+            return {"placed": x}
+        tool = with_items(place_thing, "pcb_place_thing")
+        replies = [asyncio.run(tool(x=i)) for i in range(3)]
+        assert "_hint_bulk" not in replies[0] and "_hint_bulk" not in replies[1]
+        assert "items=" in replies[2]["_hint_bulk"]["hint"]
 
     def test_library_footprint_pad_nudges_to_bulk(self):
         # looping the singular footprint-pad tool steers to the batch tool
@@ -88,8 +108,8 @@ class TestBulkHintTracker:
         for _ in range(2):
             BulkHintTracker.record_and_hint("obj_create")
             BulkHintTracker.record_and_hint("obj_delete")
-        assert BulkHintTracker.record_and_hint("obj_create")["bulk_tool"] == "obj_batch_create"
-        assert BulkHintTracker.record_and_hint("obj_delete")["bulk_tool"] == "obj_batch_delete"
+        assert BulkHintTracker.record_and_hint("obj_create")["bulk_tool"] == "obj_create"
+        assert BulkHintTracker.record_and_hint("obj_delete")["bulk_tool"] == "obj_delete"
 
     def test_slow_calls_do_not_trip_hint(self, monkeypatch):
         """Calls spaced farther apart than the window should not trip the hint."""
@@ -103,9 +123,10 @@ class TestBulkHintTracker:
             fake_now[0] += BulkHintTracker._WINDOW_SEC + 1.0
         assert len(BulkHintTracker._windows["obj_create"]) == 1
 
-    def test_modify_objects_nudges_to_batch_modify(self):
+    def test_modify_objects_nudges_to_its_items(self):
         for _ in range(2):
             BulkHintTracker.record_and_hint("obj_modify")
         hint = BulkHintTracker.record_and_hint("obj_modify")
         assert hint is not None
-        assert hint["bulk_tool"] == "obj_batch_modify"
+        assert hint["bulk_tool"] == "obj_modify"
+        assert "items=" in hint["hint"]

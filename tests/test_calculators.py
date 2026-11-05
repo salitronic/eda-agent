@@ -139,5 +139,6 @@ def test_every_calculator_is_on_every_backend():
     for backend in ("altium", "kicad", "easyeda"):
         registry = ToolRegistry()
         register_backend(registry, backend, "full")
-        have = {t.name for t in asyncio.run(registry.list_tools())}
+        have = set(registry.hidden)
         assert not names - have, (backend, names - have)
+        assert "pcb_calc" in registry

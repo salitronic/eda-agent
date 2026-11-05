@@ -134,3 +134,18 @@ def test_an_exposed_pad_gets_a_via_array_listed_for_the_fab_notes():
         assert geom.point_in_poly(t.x2, t.y2, ep.shape_on("TopLayer")), "the stub ends on the pad"
     assert rep["fanout"].get("exposed_pad_stubs") == len(pins)
     assert {v["kind"] for v in rep["via_in_pad"]} == {"exposed pad"}
+
+
+def test_a_pad_already_joined_to_its_via_gets_no_second_dog_bone():
+    """The final 07 take: every LED supply pad already had its via and
+    stub, laid by the agent, and the plane fan-out added 303 more vias."""
+    from eda_agent.layout.model import Track, Via
+    b = _plane_board()
+    b.pads = [_pad("C1", "1", 200, 200, "VCC", size=30.0), _pad("C1", "2", 250, 200, "GND", size=30.0),
+              _pad("U1", "1", 500, 300, "VCC")]
+    b.tracks.append(Track("TopLayer", 250, 200, 290, 200, 10.0, "GND"))
+    b.vias.append(Via(290, 200, 24.0, 12.0, "TopLayer", "BottomLayer", "GND"))
+    r, out, drc, rep = _route(b)
+    assert len([v for v in out.vias if v.net == "GND"]) == 1, "a second via for a joined pad"
+    assert rep["fanout"].get("already_joined") == 1
+    assert not rep["fanout"].get("dogbones")

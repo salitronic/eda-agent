@@ -77,11 +77,27 @@ def test_register_exposes_expected_tools() -> None:
 
 def test_get_discipline_returns_text_and_schema() -> None:
     tools = _registered_tools()
-    result = asyncio.run(tools["design_get_discipline"]())
+    result = asyncio.run(tools["design_get_discipline"](include_schema=True))
     assert "discipline" in result
     assert "schema" in result
     assert "Design Discipline" in result["discipline"]
     assert "DesignPlan" in result["schema"]["title"]
+
+
+def test_get_discipline_reply_fits_one_tool_result() -> None:
+    """Claude Code sets a reply over 50 KB aside in a file under the
+    user's profile and shows its path: 74,000 characters with the schema
+    sent twice, then 52.5 KB with it sent once. The schema is now asked
+    for, and the default reply stays well under the limit."""
+    import json
+
+    tools = _registered_tools()
+    result = asyncio.run(tools["design_get_discipline"]())
+    assert "DesignPlan JSON schema" not in result["discipline"]
+    assert "schema" not in result
+    assert len(json.dumps(result)) < 45_000
+    with_schema = asyncio.run(tools["design_get_discipline"](include_schema=True))
+    assert with_schema["schema"]["title"] == "DesignPlan"
 
 
 def test_validate_plan_accepts_valid_plan() -> None:

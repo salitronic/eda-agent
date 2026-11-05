@@ -92,7 +92,8 @@ def test_the_clean_board_passes_every_check():
     # Each check looked at something: a clean verdict over nothing is
     # a false clean.
     assert s["placement_audit"]["parts"] == 2
-    assert s["connectivity_summary"] == {"pass": True, "nets": 1, "routed": 1,
+    assert rep["status"] == "pass"
+    assert s["connectivity_summary"] == {"pass": True, "status": "pass", "nets": 1, "routed": 1,
                                          "partly_routed": 0, "not_started": 0,
                                          "unreached_pads": 0, "missing_connections": 0}
     assert s["corner_audit"]["junctions"] == 3

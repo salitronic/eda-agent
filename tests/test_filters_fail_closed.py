@@ -43,8 +43,12 @@ QUERY = "OnLayer('TopLayer') Or OnLayer('BottomLayer')"
     (QUERY, QUERY),
     ("IsDesignator", "IsDesignator"),
     ("Layer = TopLayer", "Layer = TopLayer"),
-    ("Text!=x", "Text!=x"),
+    ("Text!=x", ""),
+    ("Y>4250|Y<=5000", ""),
+    ("Width>=8", ""),
+    ("Net!GND", "Net!GND"),
     ("=x", "=x"),
+    ("!=x", "!=x"),
     ("Layer=TopLayer|IsDesignator", "IsDesignator"),
 ])
 def test_only_name_value_pairs_pass(filt, bad):
@@ -136,7 +140,7 @@ def test_every_script_entry_point_refuses_first(unit, entry):
 def test_no_matcher_skips_a_condition_it_cannot_parse(unit, matcher):
     body = _routine(_code(unit), matcher)
     assert not re.search(r"EqPos\s*=\s*0\s*Then\s*Continue", body)
-    assert re.search(r"EqPos\s*<\s*2\s*Then", body)
+    assert re.search(r"\(?EqPos\s*<\s*2\)?\s*(Or\s*\(Op\s*=\s*''\)\s*)?Then", body)
 
 
 def _fpc():
@@ -149,18 +153,23 @@ def _fpc():
 def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
     """FilterProblem and both matchers, extracted and executed under FPC."""
     fpc = _fpc()
-    problem = _routine(_code("Utils.pas"), "FilterProblem")
+    problem = "\n".join([_routine(_code("Utils.pas"), "FilterOpPos"),
+                         _routine(_code("Utils.pas"), "FilterOpText"),
+                         _routine(_code("Utils.pas"), "FilterProblem")])
     sch = _routine(_code("Generic.pas"), "MatchesFilter")
     pcb = _routine(_code("PCBGeneric.pas"), "MatchesFilterPCB")
     # What the PCB matcher compares a value with: a length as a number.
     value = "\n".join([_routine(_code("Utils.pas"), "IsFloatStr"),
                        _routine(_code("Utils.pas"), "StrToFloatDef"),
+                       _routine(_code("Utils.pas"), "FilterWildMatch"),
+                       _routine(_code("Utils.pas"), "FilterOpHolds"),
                        _routine(_code("PCBGeneric.pas"), "IsLengthProperty"),
                        _routine(_code("PCBGeneric.pas"), "FilterValueMatchesPCB")])
     checks = [(f, b) for f, b in [
         ("", ""), ("Layer=TopLayer", ""), ("Text=a=b", ""), ("Layer=TopLayer|", ""),
         ("Designator.Text=PWR IN", ""), (QUERY, QUERY), ("IsDesignator", "IsDesignator"),
         ("Layer = TopLayer", "Layer = TopLayer"), ("=x", "=x"),
+        ("Net!=GND", ""), ("Y>4250|Y<=5000", ""), ("Net!GND", "Net!GND"),
     ]]
     lines = [f"  if FilterProblem('{f.replace(chr(39), chr(39) * 2)}') <> "
              f"'{b.replace(chr(39), chr(39) * 2)}' then Halt({i});"
@@ -176,21 +185,34 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
         f"  if MatchesFilterPCB(P, 'Layer=BottomLayer') then Halt({n + 4});",
         f"  if MatchesFilter(S, '{q}') then Halt({n + 5});",
         f"  if not MatchesFilter(S, 'Layer=TopLayer|') then Halt({n + 6});",
+        # Y is 4300 in the stubs, a length; Layer is no number.
+        f"  if not MatchesFilterPCB(P, 'Layer!=BottomLayer') then Halt({n + 7});",
+        f"  if MatchesFilterPCB(P, 'Layer!=TopLayer') then Halt({n + 8});",
+        f"  if not MatchesFilterPCB(P, 'Y>4250|Y<=4300') then Halt({n + 9});",
+        f"  if MatchesFilterPCB(P, 'Y<4300') then Halt({n + 10});",
+        f"  if not MatchesFilterPCB(P, 'Y>=4300,0') then Halt({n + 11});",
+        f"  if MatchesFilterPCB(P, 'Layer>3') then Halt({n + 12});",
+        f"  if MatchesFilterPCB(P, 'Y!=4300.00001') then Halt({n + 13});",
+        f"  if not MatchesFilter(S, 'Y>4000') then Halt({n + 14});",
+        f"  if MatchesFilter(S, 'Layer!=TopLayer') then Halt({n + 15});",
+        f"  if MatchesFilter(S, 'Net!GND') then Halt({n + 16});",
     ]
     program = "\n".join([
         "program filters;", "{$mode delphi}", "uses SysUtils;",
         "type IPCB_Primitive = class end; ISch_GraphicalObject = class end;",
         "function GetPCBProperty(Obj: IPCB_Primitive; PropName: String): String;",
-        "begin if PropName = 'Layer' then Result := 'TopLayer' else Result := ''; end;",
+        "begin if PropName = 'Layer' then Result := 'TopLayer'",
+        " else if PropName = 'Y' then Result := '4300' else Result := ''; end;",
         "function GetSchProperty(Obj: ISch_GraphicalObject; PropName: String): String;",
-        "begin if PropName = 'Layer' then Result := 'TopLayer' else Result := ''; end;",
+        "begin if PropName = 'Layer' then Result := 'TopLayer'",
+        " else if PropName = 'Y' then Result := '4300' else Result := ''; end;",
         # The TextColor guard, which test_sch_textcolor runs for real: every
         # property here is one the stub object declares.
         "function UnsupportedSchProperty(Obj: ISch_GraphicalObject; SetStr: String): String;",
         "begin Result := ''; end;",
         "procedure NotePropertyDiag(Kind: String; PropName: String);",
         "begin end;",
-        problem, sch, value, pcb,
+        problem, value, sch, pcb,
         "var P: IPCB_Primitive; S: ISch_GraphicalObject;",
         "begin", "  P := IPCB_Primitive.Create; S := ISch_GraphicalObject.Create;",
         *lines, "end.",

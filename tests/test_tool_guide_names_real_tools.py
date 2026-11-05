@@ -48,7 +48,10 @@ def _surface(backend: str, toolset: str = "full") -> set[str]:
     try:
         registry = ToolRegistry()
         register_backend(registry, backend, toolset)
-        return {t.name for t in asyncio.run(registry.list_tools())}
+        # Members of a family tool count: tool_guide's reply says how to
+        # reach each one (its ``reach``).
+        return ({t.name for t in asyncio.run(registry.list_tools())}
+                | set(getattr(registry, "hidden", {}) or {}))
     finally:
         set_active_backend(previous or "")
 
@@ -104,6 +107,16 @@ def test_every_recipe_is_well_formed(recipe):
     assert recipe["note"].strip(), f"{recipe['task']} has no note"
     for backend in recipe["backends"]:
         assert backend in _BACKENDS
+    # A bare tool name passed every check above: its third letter was read
+    # as the backend scope, so it was skipped here and shown as {"tool": "p",
+    # "why": "c"} by tool_guide.
+    for entry in recipe["avoid"]:
+        assert isinstance(entry, tuple) and len(entry) in (2, 3), (
+            f"{recipe['task']}: avoid entry {entry!r} is not (tool, why[, backends])")
+        assert entry[1].strip(), f"{recipe['task']}: avoid {entry[0]} gives no reason"
+        if len(entry) == 3:
+            assert isinstance(entry[2], tuple), (
+                f"{recipe['task']}: avoid {entry[0]} scope is not a tuple")
 
 
 def test_an_unknown_document_kind_is_refused_not_ignored():

@@ -38,7 +38,8 @@ Three axes:
     ``readonly``   queries / reads; no mutation.
     ``silent``     mutates, no dialog -- the loop stays responsive.
     ``modal``      pops a non-suppressible Altium dialog that BLOCKS the
-                   polling loop until a human clicks (see the bridge audit).
+                   polling loop until it is answered; answer it yourself
+                   with app_press_dialog_button (see the bridge audit).
     ``partial``    succeeds but leaves the job incomplete; a follow-up tool
                    is required to finish.
 """
@@ -84,6 +85,8 @@ _CATEGORY_BY_PREFIX = (
     # A datasheet is a part's document, fetched like part_fetch fetches a
     # part, and with no editor involved.
     ("datasheet_", "parts"),
+    # Altium 365 through its own API or Nexar; no editor involved.
+    ("altium365_", "altium365"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -113,9 +116,11 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_add_footprint_pads", "lib_add_footprint_track",
     "lib_add_footprint_tracks", "lib_add_pins",
     "lib_add_symbol_polygon", "lib_add_symbol_rectangle", "lib_add_symbol_text",
-    "lib_batch_rename", "lib_batch_set_params", "lib_create_footprint",
-    "lib_create_ic_symbol", "lib_create_standard_footprint",
-    "lib_create_symbol", "lib_diff_libraries",
+    "lib_batch_rename", "lib_batch_set_params", "lib_create_3d_model",
+    "lib_create_footprint",
+    "lib_create_ic_symbol", "lib_create_symbol_in_parts",
+    "lib_create_standard_footprint",
+    "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
     "lib_link_3d_model", "lib_link_footprint",
     "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
@@ -126,13 +131,14 @@ _SIMULATOR_TOOLS = frozenset({
     "pcb_get_components", "pcb_get_nets", "pcb_get_unrouted_nets",
     "pcb_get_vias", "pcb_move_components", "pcb_place_components",
     "pcb_place_tracks", "pcb_place_via", "pcb_run_drc",
-    "proj_add_document", "proj_annotate", "proj_compile",
+    "proj_add_document", "proj_annotate", "proj_close", "proj_compile",
     "proj_create", "proj_cross_probe", "proj_export_bom_html",
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
-    "proj_list_documents", "proj_open", "proj_remove_document",
-    "proj_run_output", "proj_save", "proj_set_parameter",
+    "proj_list_documents", "proj_list_open", "proj_list_variants", "proj_open",
+    "proj_remove_document", "proj_run_output", "proj_save",
+    "proj_set_parameter", "sch_place_comment", "sch_tidy_port_references",
 })
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
@@ -192,17 +198,23 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Altium's Confirm box for the netlist update blocks the loop until it
+    # is answered; the tool presses Yes itself, as above.
+    "pcb_update_free_primitive_nets": MODAL,
+    # Pulls new code into the installation and can restart the Altium
+    # loop. It is filed under meta, which counts as offline, and offline
+    # would otherwise read as readonly.
+    "server_update": SILENT,
     # MEASURED MODAL during the live sweep of 2026-08-24. Each of these was
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    # Design Rule Checker (TDesignRuleCheckForm). Altium exposes no
-    # non-interactive DRC trigger, so the tool's only functional path is
-    # the modal one: it refuses unless called with allow_modal=True.
-    # Measured behind the dialog: a 30-minute dead loop to an 1800 s
-    # client timeout. pcb_get_clearance_violations reads stored
-    # violations instead and stays readonly.
-    "pcb_run_drc": MODAL,
+    # pcb_run_drc was here: PCB:DesignRuleCheck opens the Design Rule
+    # Checker (TDesignRuleCheckForm), measured behind it a 30-minute dead
+    # loop. It now runs IPCB_Board.RunBatchDesignRuleCheck by default,
+    # MEASURED 2026-10-23 on AD 26.11: 0.45 s, no dialog, report written,
+    # so it is silent; allow_modal=True still takes the dialog route.
+    "pcb_run_drc": SILENT,
     "proj_export_pdf": MODAL,         # Preview PCB / print preview
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
@@ -241,6 +253,13 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Measures two objects and asks the clearance rule on the pair; writes
+    # nothing. The pcb_ prefix alone would call it mutating.
+    "pcb_measure_clearance": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
@@ -263,6 +282,23 @@ INTERACTION_OVERRIDES = {
     # writes nothing. The lib_ prefix says nothing about that, and the
     # default would publish an audit as a tool that edits the library.
     "lib_audit_footprint_vs_package": READONLY,
+    # Read Altium 365 or the user's policy files, or read a library and
+    # report; none of them changes anything. The Altium 365 changes
+    # (publish, release, set parameters) keep the SILENT default.
+    "altium365_check_setup": READONLY, "altium365_list_workspaces": READONLY,
+    "altium365_list_projects": READONLY, "altium365_get_project": READONLY,
+    "altium365_list_library_folders": READONLY, "altium365_list_components": READONLY,
+    "altium365_get_component": READONLY, "altium365_read_object": READONLY,
+    "altium365_describe_type": READONLY, "altium365_run_query": READONLY,
+    "footprint_read_ipc_name": READONLY, "lib_verify_ipc_names": READONLY,
+    "lib_check_naming": READONLY, "lib_make_name": READONLY,
+    "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
+    "design_read_rules_export": READONLY, "design_phase_gate": READONLY,
+    "design_phase_standing": READONLY,
+    # Appends to the product's ledger of stage answers in the workspace.
+    "design_phase_answer": SILENT,
+    # Writes the deck and its results into a run folder in the workspace.
+    "design_simulate_deck": SILENT,
 }
 
 # --- explicit maturity overrides -------------------------------------------
@@ -300,6 +336,11 @@ _CATEGORY_BY_NAME = {
     "list_nets": "core",
     "run_drc": "core",
     "run_erc": "core",
+    # Updates eda-agent itself, on every backend: about the tool surface,
+    # like tool_catalog, rather than about any one EDA tool.
+    "server_update": "meta",
+    # The family tool for the audits; its members keep the audit_ prefix.
+    "audit": "audit",
 }
 
 
@@ -519,8 +560,33 @@ def interaction_of(name: str, category: str | None = None) -> str:
     return SILENT
 
 
+def _fold_metadata(name: str) -> "dict[str, str] | None":
+    """A family tool takes its members' category and their most demanding
+    maturity and interaction, since any kind may be the one called."""
+    from .folds import FOLDS, built_members
+
+    if name not in FOLDS:
+        return None
+    members = list(built_members(name).values()) or list(FOLDS[name].members.values())
+    if not members:
+        return None
+    records = [tool_metadata(m) for m in members]
+    maturity_rank = {OFFLINE: 0, SIMULATOR: 1, LIVE_ONLY: 2}
+    interaction_rank = {READONLY: 0, SILENT: 1, PARTIAL: 2, MODAL: 3}
+    return {
+        "name": name,
+        "category": records[0]["category"],
+        "maturity": max((r["maturity"] for r in records), key=maturity_rank.get),
+        "interaction": max((r["interaction"] for r in records),
+                           key=interaction_rank.get),
+    }
+
+
 def tool_metadata(name: str) -> dict[str, str]:
     """Full metadata record for one tool name."""
+    folded = _fold_metadata(name)
+    if folded:
+        return folded
     category = category_of(name)
     return {
         "name": name,

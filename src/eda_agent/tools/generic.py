@@ -13,9 +13,11 @@ from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
+from .library import _mils
 from .pin_hints import pin_location_hint
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
+from .editor_options import run_options
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -41,6 +43,7 @@ PLACEMENT_KEYS = frozenset({
     "rotation",
     "designator",
     "footprint",
+    "part_id",
 })
 
 
@@ -195,22 +198,41 @@ async def _refuse_manual_sheet_layout(
 
 
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
+# Name, operator, value. The operator is the first = ! < > or ~ (names hold
+# none), as the script's FilterOpPos reads it; a lone '!' is no operator.
+_FILTER_COND = re.compile(r"([^=!<>~]*)(!=|!~|<=|>=|=|<|>|~)(.*)", re.S)
+
+
+def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
+    """The items of a list call with the arguments given beside them;
+    an item's own value wins. A refusal dict when items is not a list of
+    dicts."""
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "reason": "items must be a non-empty list of "
+                                       "argument dicts"}
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            return {"ok": False, "reason": f"items[{i}] is not a dict of "
+                                           "arguments; nothing was sent"}
+    return [{**shared, **item} for item in items]
 
 
 def filter_problem(filt: str) -> str:
-    """The first condition of ``filt`` that is not Name=Value, or ''.
+    """The first condition of ``filt`` that is not Name<op>Value, or ''.
 
-    A filter is Name=Value pairs joined by ``|`` and nothing else. The
-    script used to skip a condition it could not parse, which emptied the
-    filter: obj_delete given an Altium query expression removed every
-    track on a board and reported success. The script now refuses such a
-    filter too; this says so before anything is sent.
+    A filter is conditions joined by ``|`` and nothing else, each Name=Value,
+    Name!=Value, a numeric Name<Value, >, <=, >=, or a wildcard Name~pattern /
+    Name!~pattern (* any run, ? one character, case ignored). The script used to skip
+    a condition it could not parse, which emptied the filter: obj_delete
+    given an Altium query expression removed every track on a board and
+    reported success. The script now refuses such a filter too; this says
+    so before anything is sent.
     """
     for cond in str(filt or "").split("|"):
         if not cond.strip():
             continue
-        name, eq, _ = cond.partition("=")
-        if not eq or not _FILTER_NAME.fullmatch(name):
+        m = _FILTER_COND.fullmatch(cond)
+        if not m or not _FILTER_NAME.fullmatch(m.group(1)):
             return cond
     return ""
 
@@ -221,7 +243,9 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
     if _FILTER_NAME.fullmatch(cond.strip()):
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
-                     "Name=Value pairs joined by |, each matched exactly; Altium "
+                     "Name=Value conditions joined by |, each matched exactly "
+                     "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
+                     "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
                      f"not understood.{hint} Nothing was sent.", **extra}
 
@@ -250,6 +274,89 @@ def _mark_erc_page(result: Any) -> Any:
     return result
 
 
+async def _reopen_sheet(bridge) -> dict[str, Any]:
+    """Save, close and reopen the active sheet, and bring it back to front.
+
+    MEASURED on AD 26.11: after a sheet size change the ERC still judged
+    the sheet against its old frame ("Off sheet Net Label PROBE at
+    6000mil,9500mil" on an A3 sheet that had been A4), through saves and
+    forced recompiles, until the document was closed and opened again.
+    A demo run then switched the check off to get a clean ERC.
+    """
+    from ..bridge.exceptions import AltiumError
+
+    try:
+        active = await bridge.send_command_async("application.get_active_document", {})
+        path = str((active or {}).get("file_path") or "") if isinstance(active, dict) else ""
+        if not path.lower().endswith(".schdoc"):
+            return {"done": False, "reason": "the active document is not a saved sheet"}
+        await bridge.send_command_async("application.save_document", {"file_path": path},
+                                        timeout=60)
+        await bridge.send_command_async("application.close_document", {"file_path": path},
+                                        timeout=60)
+        await bridge.send_command_async("application.run_process", {
+            "process_name": "WorkspaceManager:OpenObject",
+            "parameters": f"ObjectKind=Document|FileName={path}"})
+        await bridge.send_command_async("application.set_active_document", {"file_path": path})
+        return {"done": True, "file_path": path,
+                "why": "Altium's ERC keeps a sheet's old frame until it is reopened"}
+    except AltiumError as exc:
+        return {"done": False, "reason": str(exc)}
+
+
+#: Schematic editor preferences: argument name to Altium's.
+_SCH_EDITOR_OPTIONS = {
+    "snap_to_electrical_grid": "SnapToHotSpot",
+    "electrical_grid_distance": "HotSpotGridDistance",
+    "drag_orthogonal": "MaintainOrthogonal",
+    "components_cut_wires": "ComponentsCutWires",
+    "optimize_wires": "OptimizePolylines",
+    "single_slash_negation": "SingleSlashNegation",
+    "convert_special_strings": "ConvertSpecialStrings",
+    "mark_manual_parameters": "MarkManualParameters",
+    "show_pin_direction": "ShowPinDirection",
+    "auto_zoom": "AutoZoom",
+    "click_clears_selection": "ClickClearsSelection",
+    "double_click_runs_inspector": "DoubleClickRunsInspector",
+    "undo_levels": "UndoRedoStackSize",
+    "pin_name_margin": "PinNameMargin",
+    "pin_number_margin": "PinNumberMargin",
+    "multi_part_naming": "MultiPartNamingMethod",
+    "increment_primary": "StringIncA",
+    "increment_secondary": "StringIncB",
+    "power_ground_name": "DefaultPowerGndName",
+    "signal_ground_name": "DefaultSignalGndName",
+    "earth_name": "DefaultEarthName",
+    "expand_designators": "ExpandComponentDesignators",
+    "expand_net_labels": "ExpandNetLabelsText",
+    "expand_ports": "ExpandPortsName",
+    "expand_sheet_number": "ExpandSheetNumber",
+    "expand_document_number": "ExpandDocumentNumber",
+    "watermark_read_only_sheets": "WatermarkReadOnlySheet",
+    "always_drag": "AlwaysDrag",
+    "use_printer_fonts": "DisplayPrinterFonts",
+    "default_template": "DefaultTemplateFileName",
+    "increment_drops_leading_zero": "StringIncRemoveLeadingZero",
+    "ctrl_double_click_goes_down": "CtrlDbleClickGoesDown",
+    "confirm_selection_memory_clear": "ConfirmSelectionMemoryClear",
+    "allow_device_sheet_editing": "AllowDeviceSheetEditing",
+    "watermark_device_sheets": "WatermarkDeviceSheet",
+    "cutter_grid_multiple": "CutterGridSizeMultiple",
+    "cutter_fixed_length": "CutterFixedLength",
+    "physical_view_dim_level": "PhysicalViewDimLevel",
+}
+
+#: The schematic options given in mils (Altium keeps 10000 to the mil).
+_SCH_MARGINS = ("pin_name_margin", "pin_number_margin", "cutter_fixed_length")
+
+#: Measured on AD 26.11: on a port both read
+#: back at once, then the saved and reopened sheet had OverrideDisplayString
+#: empty and HarnessColor at its default; AutoSize kept.
+_PORT_FIELDS_DO_NOT_SAVE = (
+    "OverrideDisplayString and HarnessColor read back on the port now, but do "
+    "not survive saving and reopening the sheet (AD 26.11). AutoSize does.")
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -266,15 +373,19 @@ def register_generic_tools(mcp):
         Args:
             object_type: Altium object type constant.
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
-                "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
+                "eWire", "eBus", "eBusEntry", "eParameter", "eParameterSet", "ePin",
                 "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry",
-                "eNoERC", "eJunction"; symbol graphics as "sch_polygon",
+                "eNoERC", "eJunction", "eBlanket" (outline in "Vertices",
+                settable as "x1,y1,x2,y2,..."; also "LineStyle",
+                "Collapsed"); symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
                 (plain "polygon" and "arc" are the board's), the bare
                 "ellipse", "elliptical_arc" and "bezier", and "eDesignator" and
                 "eRoundRectangle"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
+                "eSplitPlaneObject" (a plane layer's regions, with Net
+                and Layer),
                 "eConnectionObject" (the ratsnest: one line per unrouted
                 connection, with X1, Y1, X2, Y2, Layer1, Layer2 and Net)
             properties: Comma-separated property names to return.
@@ -285,7 +396,17 @@ def register_generic_tools(mcp):
                 (ConnectionX/Y is the ELECTRICAL end a wire must touch;
                 Location is the body-side root);
                 "Designator.Text,Comment.Text,LibReference" for
-                components. A managed component also reads
+                components, and "DisplayMode,DisplayModeCount" (the
+                alternate drawing, settable with obj_modify) and
+                "FootprintPinMap" (the current footprint model's pin map,
+                "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
+                merges by schematic pin, so a map cannot be cleared).
+                "ComponentKind" is its Component Type, read and set by
+                name: standard, mechanical, graphical, net_tie_bom,
+                net_tie_no_bom, standard_no_bom or jumper; with scope
+                "lib_component:NAME" it sets a library symbol's.
+                "TextFontId" is a sheet or harness entry's label font. A
+                managed component also reads
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
                 and the other Vault/Symbol GUIDs.
 
@@ -295,7 +416,13 @@ def register_generic_tools(mcp):
                 "Designator,Comment,Pattern,Rotation,X,Y" for
                 components; "Text,Height,StrokeWidth,IsDesignator" for
                 texts, and "MirrorFlag" (settable with obj_modify; the text
-                is kept where it is). An unknown PCB property is refused with the valid
+                is kept where it is). Polygons ("polygon") read and, with
+                obj_modify, set their pour settings: "Name,Grid,TrackSize,
+                MinTrack,ArcApproximation,NeckWidthThreshold" (decimal
+                mils), "IslandAreaThreshold" (square mils),
+                "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
+                and the read-only "PourIndex,Poured"; nothing repours.
+                An unknown PCB property is refused with the valid
                 list. Lengths are decimal mils.
 
                 A board type returns EVERY primitive of that type;
@@ -314,6 +441,15 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND), e.g.
                 "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
                 length matches as a number in mils ('.' or ',' decimal).
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
+                (a value that is not a number matches no < > <= >=);
+                "Name~POUR_*" matches a wildcard pattern (* any run, ? one
+                character, case ignored), "Net!~VCC*" excludes by one. A
+                PCB Layer (Layer1, Layer2) takes the internal name
+                ("Mechanical21") or the board's own name ("FluidGon"), in
+                any case; a ~ pattern meets either, and a name that is no
+                layer is refused. The same grammar holds for obj_modify,
+                obj_delete and obj_select.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -418,37 +554,113 @@ def register_generic_tools(mcp):
                     if str(p.get("pin_number")) == str(pin):
                         result["compiled_net"] = p.get("net")
                         break
-            except Exception:
-                pass
+            except Exception as e:  # the pin read stands; say why the net is missing
+                result["compiled_net_unread"] = str(e)
         return result
 
     @mcp.tool()
     async def obj_modify(
-        object_type: str,
-        set: str,
+        object_type: str = "",
+        set: str = "",
         scope: str = "active_doc",
         filter: str = "",
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Apply ONE set of property values to every object matching ONE filter.
 
         When each object needs a DIFFERENT value (10 pins to 10 positions,
-        distinct designators), use `obj_batch_modify`: one call instead of
-        one turn per object.
+        distinct designators), give ``items``: a list of
+        {scope, object_type, filter, set} dicts, one per filter. They run in
+        ONE Altium transaction (one undo step); arguments given beside
+        ``items`` apply to every item. No rollback: items before a failure
+        stay applied. After a designator list, check the netlist: duplicate
+        designators merge nets silently (proj_annotate renumbers without
+        duplicates). With items a value in ``set`` may hold ';' but no
+        field may hold '~~'.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
             set: Pipe-separated assignments, e.g. "Text=NEW_NAME" or
                 "Location.X=100|Location.Y=200". Board lengths are
                 decimal mils; a non-number is reported failed, never
-                written as 0.
+                written as 0. Board properties include, besides the
+                usual geometry: HolePositiveTolerance and
+                HoleNegativeTolerance on pads and vias ("unset" when
+                none is set; Altium keeps a negative tolerance as its
+                size; IsCounterHole reads); BarCode* and Multiline* on a
+                text (Altium recalculates the barcode and multiline sizes
+                from the text: read them back); TextHeight,
+                TextFormat, TextPrecision, TextPrefix, TextSuffix,
+                Arrow* and Extension* on a dimension; PolygonType,
+                BorderWidth, AvoidObsticles (Altium's spelling),
+                ClipAcuteCorners, MitreCorners, IgnoreViolations and
+                ArcPourMode on a pour; EnablePinSwapping and
+                EnablePartSwapping on a part (IsBGA reads); also on a
+                part LockStrings, NameAutoPosition and CommentAutoPosition
+                (Altium's anchor numbers; writing one moves the text
+                there), FootprintDescription, DefaultPCB3DModel
+                (PackageSpecificHash reads), SourceDescription,
+                JumpersVisible, ChannelOffset and GroupNum; on a board
+                pad JumperID, SwapID_Pad, SwapID_Part, SwappedPadName and
+                OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
+                SolderMaskExpansionMode (Altium's numbers: from the rule or
+                manual), PasteMaskUsePercent, PasteMaskPercent and
+                PasteMaskEnabled; on any board object DetailString,
+                DRCError, UniqueID and IsElectricalPrim (reads); on any
+                schematic object DescriptionString, IdentifierString and
+                ErrorString (reads); on tracks, arcs and vias IsPreRoute
+                (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
+                DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
+                AutoGenerateName; on board text Inverted,
+                UseInvertedRectangle, InvertedTTTextBorder,
+                TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
+                ConvertedString (reads: the text as shown, special
+                strings resolved) and UnderlyingString (reads: the text
+                as typed, a special string kept as the link); on a 3D body OverrideColor (draw its
+                own colour, not the model's), Texture (an image file) and
+                TextureRotation; on a board pad DrillType (how the hole
+                is made: 0 drilled, 1 punched, 2 laser, 3 plasma) and
+                IsVirtualPin (reads); on a placed part FlippedOnLayer
+                (reads: its "flip on layer" option, not its side); on
+                board text BorderSpaceType (Altium's number).
+                Schematic pins take
+                Symbol_Inner, Symbol_Outer, Symbol_InnerEdge,
+                Symbol_OuterEdge and Symbol_LineWidth (Altium's numbers),
+                HiddenNetName and DefinedFunctions (the pin's functions,
+                ";"-separated; writing replaces the list); schematic parts
+                take ShowHiddenPins, ShowHiddenFields, PinsMoveable,
+                PartIdLocked, DisplayFieldNames, OverideColors (Altium's
+                spelling) and PinColor. Pins also take where their name
+                and number sit: Name_PositionMode,
+                Name_CustomPosition_Margin,
+                Name_CustomPosition_RotationAnchor,
+                Name_CustomPosition_RotationRelative and the same four
+                for Designator_ (Altium's numbers), DefaultValue and
+                FormalType; schematic parts also LibraryPath (the library
+                the symbol came from) and AliasAsText. Schematic parameters
+                take ReadOnlyState, ParamType, AllowLibrarySynchronize
+                and AllowDatabaseSynchronize, and report NameIsReadOnly,
+                ValueIsReadOnly, IsRule, IsSystemParameter and
+                IsConfigurable; ports take AutoSize,
+                OverrideDisplayString and HarnessColor (the last two do
+                not survive save and reopen; the reply notes it). Symbol pins
+                take SwapIdPart (shared by every pin of the part),
+                SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
                 selected for you).
             filter: Pipe-separated property=value conditions (AND logic)
 
+            items: Several filter+set operations at once (see above).
+
         Returns:
-            "matched" and "sheets_processed".
+            "matched", "sheets_processed", and on a schematic "modified"
+            (something was written) with "saved" false: the sheet is
+            marked modified, not saved. Run app_save_all to write it.
+            With items: operations_processed, operations_skipped,
+            total_matched and per-item ``results`` with ``matched`` and a
+            ``note`` ("no_objects_matched" when nothing matched).
 
         Example - rename a net on every sheet:
             obj_modify(object_type="eNetLabel", scope="project",
@@ -456,7 +668,26 @@ def register_generic_tools(mcp):
         Example - edit a pin on any part of a multi-part SchLib symbol:
             obj_modify(object_type="ePin", scope="lib_component:R_0402",
                        filter="Designator=1", set="Name=A")
+        Example - put board copper on a net, or take it off (track, arc,
+        via, pad, fill, region, polygon; the net must exist, "" = no net):
+            obj_modify(object_type="eRegionObject",
+                       filter="Layer=TopLayer|Net=GND", set="Net=")
+        Example - a different value per pin, one call:
+            obj_modify(scope="lib_component:U_MCU", object_type="ePin",
+                       items=[{"filter": "Designator=1", "set": "Name=VDD"},
+                              {"filter": "Designator=2", "set": "Name=GND"}])
         """
+        if items is not None:
+            shared = {k: v for k, v in (("scope", scope),
+                                        ("object_type", object_type),
+                                        ("filter", filter), ("set", set)) if v}
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_modify(ops)
+        if not object_type or not set:
+            return {"ok": False, "reason":
+                    "obj_modify needs object_type and set, or items"}
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
@@ -473,19 +704,23 @@ def register_generic_tools(mcp):
         hint = BulkHintTracker.record_and_hint("obj_modify")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
+        if (isinstance(result, dict) and object_type == "ePort"
+                and re.search(r"(^|\|)\s*(OverrideDisplayString|HarnessColor)\s*=", set)):
+            result["note"] = _PORT_FIELDS_DO_NOT_SAVE
         return result
 
     @mcp.tool()
     async def obj_create(
-        object_type: str,
-        properties: str,
+        object_type: str = "",
+        properties: str = "",
         container: str = "document",
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Create and place a schematic object.
 
-        If you are creating more than one object, use `obj_batch_create`
-        instead, one IPC round-trip for the whole set vs one LLM turn
-        per object.
+        For several, give ``items``: a list of {object_type, properties,
+        container} dicts, created in ONE Altium transaction (one undo
+        step); arguments given beside ``items`` apply to every item.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
@@ -493,10 +728,34 @@ def register_generic_tools(mcp):
                 "Text=MY_NET|Location.X=100|Location.Y=200"
             container: "document" (place on active schematic) or
                       "component" (add to current library component)
+            items: Several objects at once (see above).
+
+        Example, three net labels in one call:
+            obj_create(object_type="eNetLabel", items=[
+                {"properties": "Text=VCC|Location.X=100|Location.Y=200"},
+                {"properties": "Text=GND|Location.X=100|Location.Y=400"},
+                {"properties": "Text=SCK|Location.X=300|Location.Y=200"}])
 
         Returns:
-            Dictionary confirming creation
+            Dictionary confirming creation. With items: created, failed,
+            total and the failures by index. Known unsupported properties
+            (IsHidden on anything but pins, parameters, designators and
+            sheet names; Text on a type without it, such as eParameterSet
+            or eWire) reject that item before registration with reason
+            UNSUPPORTED_PROPERTY; the other items still run.
         """
+        if items is not None:
+            shared = {"object_type": object_type, "properties": properties}
+            shared = {k: v for k, v in shared.items() if v}
+            if container != "document":
+                shared["container"] = container
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_create(ops)
+        if not object_type:
+            return {"ok": False, "reason":
+                    "obj_create needs object_type, or items"}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.create_object",
@@ -513,14 +772,18 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_delete(
-        object_type: str,
+        object_type: str = "",
         scope: str = "active_doc",
         filter: str = "",
         confirm_delete_all: bool = False,
+        items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Find and delete schematic or PCB objects.
 
-        For several type/filter sets at once, use `obj_batch_delete`.
+        For several type/filter sets at once, give ``items``: a list of
+        {scope, object_type, filter} dicts, run in one round trip; an item
+        with an empty filter needs confirm_delete_all, or nothing is sent.
+        Arguments given beside ``items`` apply to every item.
 
         A PCB type deletes from the active board and also matches
         footprint primitives and polygon hatching unless the filter says
@@ -535,6 +798,10 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
+            items: Several deletes at once (see above). Reply:
+                operations_processed, total, total_deleted and per-item
+                ``results`` with ``deleted``; ``partial:`` notes and
+                ``operations_partial`` as for a single delete.
 
         A filter that is not Name=Value pairs (an Altium query expression
         such as ``OnLayer('TopLayer') Or ...``, or a bare name) is refused,
@@ -547,6 +814,17 @@ def register_generic_tools(mcp):
             removed. Query before repeating a delete that failed or timed
             out: the first part of it may already have happened.
         """
+        if items is not None:
+            shared = {k: v for k, v in (("scope", scope),
+                                        ("object_type", object_type),
+                                        ("filter", filter)) if v}
+            ops = _merge_items(items, shared)
+            if isinstance(ops, dict):
+                return ops
+            return await obj_batch_delete(ops, confirm_delete_all=confirm_delete_all)
+        if not object_type:
+            return {"ok": False, "reason":
+                    "obj_delete needs object_type, or items", "matched": 0}
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
@@ -577,9 +855,7 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Get font properties for a given font ID.
 
-        Reads the Altium font table to retrieve the full font specification
-        (size, name, bold, italic, etc.) for a font ID obtained from an object's
-        FontId property.
+        The font an object's FontId names.
 
         Args:
             font_id: Font ID from an object's FontId property
@@ -609,7 +885,10 @@ def register_generic_tools(mcp):
 
         Looks up (or creates) an entry in the Altium font table matching the
         specified properties and returns its font ID. Use the returned font_id
-        to set an object's FontId property via `obj_modify`.
+        to set an object's FontId property via `obj_modify`: labels, net
+        labels, power objects, cross-sheet connectors, parameters,
+        designators, sheet names, ports, text frames and notes. A sheet
+        entry's or harness entry's label font is TextFontId.
 
         Args:
             size: Font size in points (e.g., 8, 10, 12)
@@ -693,8 +972,12 @@ def register_generic_tools(mcp):
         library; the focused tab decides which editor zooms.
 
         Args:
-            action: "fit" (zoom to show all), "selection" (zoom to selected
-                objects) or "point" (zoom to x, y)
+            action: "fit" (Fit All Objects, which can cut a sheet's frame
+                off), "document" (a schematic's Fit Document: the whole
+                sheet with its frame), "board" (the board alone, not
+                parts parked beside it; a schematic fits as "fit"),
+                "selection" (zoom to selected objects) or "point" (zoom
+                to x, y)
             x, y: the point for "point", in mils (a footprint's frame in
                 a PCB library)
             radius: half the width of the view round the point on a board
@@ -718,6 +1001,145 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_reload_document(file_path: str, save: bool = True) -> dict[str, Any]:
+        """Save, close and reopen one schematic sheet, then recompile its
+        project, so nets and ERC are compiled from the sheet as it is.
+
+        A recompile alone can keep what the sheet no longer holds: a
+        deleted net label still naming its net, a changed sub-part still
+        compiled as the old one.
+
+        Args:
+            file_path: The open .SchDoc.
+            save: Write it first; ``saved`` is measured on disk. False
+                closes without writing, and a sheet Altium reads as
+                modified is refused untouched; an edit Altium did not flag
+                is lost.
+
+        Returns:
+            ``file_path``, ``saved``, ``closed``, ``reopened`` and
+            ``recompile`` (its compile ticks); ``ok`` false with ``stage``
+            and ``reason`` at the first step that did not take, the sheet
+            left open when it fails before the close.
+        """
+        import os
+        from ..bridge.exceptions import AltiumError
+
+        path = file_path.strip()
+        if not path.lower().endswith(".schdoc"):
+            return {"ok": False, "reason": "file_path is a .SchDoc"}
+        bridge = get_bridge()
+        out: dict[str, Any] = {"file_path": path, "saved": False}
+        if save:
+            saved = await bridge.send_command_async(
+                "application.save_document", {"file_path": path}, timeout=60.0)
+            if not (isinstance(saved, dict) and saved.get("saved")):
+                return {"ok": False, "stage": "save", **out,
+                        "reason": (saved or {}).get("reason", "the save did not reach "
+                                   "the file") if isinstance(saved, dict) else str(saved)}
+            out["saved"] = True
+        try:
+            closed = await bridge.send_command_async(
+                "application.close_document", {"file_path": path}, timeout=120.0)
+        except AltiumError as exc:
+            return {"ok": False, "stage": "close", **out, "reason": str(exc)}
+        out["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
+        if not out["closed"]:
+            return {"ok": False, "stage": "close", **out, "close": closed}
+        if not os.path.isfile(path):
+            return {"ok": False, "stage": "reopen", **out,
+                    "reason": "the sheet is not on disk to reopen"}
+        await bridge.send_command_async("application.run_process", {
+            "process_name": "WorkspaceManager:OpenObject",
+            "parameters": f"ObjectKind=Document|FileName={path}"})
+        try:
+            await bridge.send_command_async(
+                "application.set_active_document", {"file_path": path})
+        except AltiumError as exc:
+            return {"ok": False, "stage": "reopen", **out, "reason": str(exc)}
+        out["reopened"] = True
+        out["recompile"] = await bridge.send_command_async(
+            "project.force_recompile", {}, timeout=120.0)
+        return {"ok": True, **out}
+
+    @mcp.tool()
+    async def sch_place_comment(text: str, x: float, y: float,
+                                document: str = "") -> dict[str, Any]:
+        """Post an Altium 365 review comment at a point on a schematic.
+
+        A comment is kept only on a project saved to an Altium 365
+        Workspace. On a local project it is placed but stays unsaved, and
+        closing the project asks "Save To Workspace" (Yes moves the
+        project into the Workspace, No drops the comment). A free sheet
+        offers no comment at all. There is no API for comments, so this
+        drives the interface: Place > Comment, Jump To Location to the
+        point, then the popup's text box and Post. It brings Altium to the
+        front and leaves the view zoomed in on the point.
+
+        Args:
+            text: The comment.
+            x, y: The point on the sheet, in mils.
+            document: The schematic's full path. Empty uses the focused
+                document, which must be a schematic.
+
+        Returns:
+            ``ok``, ``posted``, ``document``, ``x``, ``y`` and ``kept``
+            (where the comment is stored); or ``ok: False`` with
+            ``reason`` and, when Altium refused, ``altium`` with its
+            message. The posted text is not read back: the Comments and
+            Tasks panel cannot be read.
+        """
+        # Here and not with the interface tools, which send no bridge
+        # command: this one focuses its document through the bridge first.
+        import asyncio
+        import os
+
+        from ..bridge.exceptions import AltiumError
+        from ..ui import comments, menu, uia
+        from .uiauto import _altium_pid
+
+        if not str(text or "").strip():
+            return {"ok": False, "reason": "text is empty; Altium posts no empty comment"}
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not uia.available() or not menu.available():
+            return {"ok": False, "reason": (
+                "placing a comment needs UI Automation, pywin32 and comtypes")}
+
+        bridge = get_bridge()
+        if document:
+            try:
+                await bridge.send_command_async(
+                    "application.set_active_document", {"file_path": document})
+            except AltiumError as exc:
+                # A project's sheet can be listed but not loaded yet; open
+                # it as app_set_active_document does.
+                if "not loaded" not in str(exc).lower() or not os.path.isfile(document):
+                    raise
+                await bridge.send_command_async("application.run_process", {
+                    "process_name": "WorkspaceManager:OpenObject",
+                    "parameters": f"ObjectKind=Document|FileName={document}"})
+                await bridge.send_command_async(
+                    "application.set_active_document", {"file_path": document})
+        active = await bridge.send_command_async(
+            "application.get_active_document", {}) or {}
+        path = str(active.get("file_path") or "")
+        kind = str(active.get("document_kind") or "").upper()
+        if kind not in ("SCH", "SCHDOC") and not path.lower().endswith(".schdoc"):
+            return {"ok": False, "document": path, "reason": (
+                f"the focused document is {kind or 'none'}, not a schematic. "
+                f"Pass document= with the sheet's path")}
+        if not menu.bring_to_front(pid):
+            return {"ok": False, "reason": "could not focus Altium"}
+
+        loop = asyncio.get_running_loop()
+        out = await loop.run_in_executor(
+            None, lambda: comments.place(pid, float(x), float(y), str(text)))
+        out["document"] = path
+        return out
+
+    @mcp.tool()
     async def sch_mirror_component(
         designator: str,
         mirrored: bool | None = None,
@@ -725,12 +1147,9 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Mirror a placed schematic component horizontally.
 
-        USE THIS RATHER THAN WRITING `IsMirrored`. Setting that property
-        with `obj_modify` sets the flag (the Properties panel even shows
-        it ticked) and the part does not move: the canvas draws from the
-        primitives. Like Altium's own mirror, this sets the flag and
-        reflects the primitives, so the result matches a hand mirror on
-        disk and survives Update From Libraries.
+        USE THIS RATHER THAN WRITING `IsMirrored` with obj_modify, which
+        sets the flag and leaves the drawing unchanged. This reflects the
+        primitives as Altium's own mirror does.
 
         Args:
             designator: component to mirror, e.g. "U1"
@@ -757,12 +1176,211 @@ def register_generic_tools(mcp):
         )
 
     @mcp.tool()
+    async def sch_rename_designators(
+        project_path: str,
+        changes: list[dict[str, str]],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Rename designators across a whole project, swaps included, refusing
+        any collision before the first write.
+
+        Each rename names a part by its current ``designator`` (with
+        ``sheet``, a file name or full path, when copies of a sheet share
+        it) or by the ``unique_id`` of any of its parts (obj_query
+        ``UniqueId``), and gives ``to``. A part is its sub-parts on one
+        sheet with one designator and library reference, so a multi-part
+        part is renamed whole. Every sheet is loaded and every part read
+        first: a name the batch hands out that another part keeps, a part
+        named twice, or one not found refuses the whole batch with nothing
+        written. The parts then go through unique temporary names before
+        their final ones, so R1 to R2 and R2 to R1 works, and the project
+        is read back after each step. Nothing is saved (app_save_all).
+        To renumber a whole design, proj_annotate stays the tool.
+
+        Args:
+            project_path: The .PrjPcb, a full path.
+            changes: ``[{"designator": "R1", "to": "R2"}, ...]``, with
+                ``sheet`` when needed, or ``unique_id`` in place of
+                ``designator``.
+            dry_run: Check and plan only.
+
+        Returns:
+            ``ok``, ``changes`` (``sheet``, ``from``, ``to``, ``parts``),
+            ``sheets``, ``components``, ``duplicates_left`` (designators
+            parts the batch does not touch still share, as on copied sheets
+            not annotated yet); when written, ``verified`` and per step
+            ``temporary`` and ``final`` with what was read back. A step
+            that did not read back as planned stops with ``stage`` and
+            ``now`` (each changed part's designators as the project holds
+            them), so nothing is left unreported.
+        """
+        import ntpath
+        import os
+        import secrets
+
+        if not os.path.isabs(project_path) or not project_path.lower().endswith(
+                (".prjpcb", ".prjpcbm")):
+            return {"ok": False, "reason": "project_path is the full path of a .PrjPcb"}
+        def field(change: Any, key: str) -> str:
+            return str(change.get(key) or "").strip() if isinstance(change, dict) else ""
+
+        asked = [(field(c, "unique_id"), field(c, "designator"), field(c, "sheet"),
+                  field(c, "to")) for c in (changes if isinstance(changes, list) else [])]
+        if not asked:
+            return {"ok": False, "reason": "changes is a list of {designator or "
+                    "unique_id, to}"}
+        for n, (uid, des, _sheet, to) in enumerate(asked):
+            if not to or bool(uid) == bool(des):
+                return {"ok": False, "reason": f"changes[{n}] needs ``to`` and exactly one "
+                        "of designator or unique_id"}
+            if set(des + to) & set("|;~=\r\n"):
+                return {"ok": False, "reason": f"changes[{n}] holds | ; ~ = or a line "
+                        "break, which the batch format cannot carry"}
+
+        bridge = get_bridge()
+        loaded = await bridge.send_command_async(
+            "project.load_project_sheets", {"project_path": project_path}, timeout=300.0)
+        total = loaded.get("total_sheets") if isinstance(loaded, dict) else None
+        if not isinstance(total, int) or total < 1 or (loaded.get("failed") or []):
+            return {"ok": False, "reason": "not every sheet of the project loaded",
+                    "load": loaded}
+
+        Key = tuple[str, str, str]
+
+        async def read() -> dict[Key, dict[str, Any]]:
+            """(sheet, designator, library reference), folded -> the part."""
+            reply = await bridge.send_command_async("generic.query_objects", {
+                "scope": "project:" + project_path, "object_type": "eSchComponent",
+                "filter": "", "properties": "UniqueId,Designator,LibReference,CurrentPartID"},
+                timeout=300.0)
+            rows = reply.get("objects") if isinstance(reply, dict) else None
+            if not isinstance(rows, list) or reply.get("sheets_processed") != total:
+                raise RuntimeError("the parts of every sheet could not be read: "
+                                   + str(reply)[:300])
+            parts: dict[Key, dict[str, Any]] = {}
+            for row in rows:
+                doc = str(row.get("_doc") or "")
+                name = str(row.get("Designator") or "").strip()
+                lib = str(row.get("LibReference") or "")
+                part = parts.setdefault((doc.upper(), name.upper(), lib.upper()), {
+                    "doc": doc, "name": name, "lib": lib, "uids": [], "part_ids": []})
+                part["uids"].append(str(row.get("UniqueId") or "").upper())
+                part["part_ids"].append(str(row.get("CurrentPartID") or ""))
+            return parts
+
+        try:
+            parts = await read()
+        except RuntimeError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+        def sheet_of(key: Key) -> str:
+            return ntpath.basename(parts[key]["doc"])
+
+        wanted: dict[Key, str] = {}
+        for uid, des, sheet, to in asked:
+            if uid:
+                found = [k for k, p in parts.items() if uid.upper() in p["uids"]]
+                label = f"UniqueId {uid}"
+            else:
+                found = [k for k, p in parts.items() if p["name"].upper() == des.upper()
+                         and (not sheet or sheet.upper() in (p["doc"].upper(),
+                                                             sheet_of(k).upper()))]
+                label = des + (f" on {sheet}" if sheet else "")
+            if len(found) != 1:
+                return {"ok": False, "reason": (f"{label} names {len(found)} parts; "
+                        "add its sheet") if found else f"no part is {label}",
+                        "sheets": sorted(sheet_of(k) for k in found)}
+            key = found[0]
+            ids = parts[key]["part_ids"]
+            if len(set(ids)) != len(ids):
+                return {"ok": False, "reason": f"{label} is more than one part on "
+                        f"{sheet_of(key)} (part {', '.join(ids)}): annotate first"}
+            if key in wanted:
+                return {"ok": False, "reason": f"{label} is renamed twice"}
+            wanted[key] = to
+
+        final = {k: wanted.get(k, p["name"]) for k, p in parts.items()}
+        owners_after: dict[str, list[Key]] = {}
+        for key, name in final.items():
+            owners_after.setdefault(name.upper(), []).append(key)
+        # A name the batch hands out must end on one part. Duplicates it does
+        # not touch (copied sheets not yet annotated) are reported, not refused.
+        for key, to in wanted.items():
+            holders = owners_after[to.upper()]
+            if len(holders) > 1:
+                return {"ok": False, "reason": f"{to} would name {len(holders)} parts",
+                        "designator": to,
+                        "on": sorted(f"{parts[k]['name']} on {sheet_of(k)}" for k in holders)}
+        duplicates = sorted(n for n, keys in owners_after.items() if len(keys) > 1)
+
+        changed = [k for k, to in wanted.items() if to != parts[k]["name"]]
+        plan = {"ok": True, "dry_run": dry_run, "sheets": total,
+                "components": len(parts), "duplicates_left": duplicates,
+                "changes": [{"sheet": sheet_of(k), "from": parts[k]["name"],
+                             "to": wanted[k], "parts": len(parts[k]["uids"])}
+                            for k in changed]}
+        if dry_run or not changed:
+            return plan
+
+        taken = set(owners_after) | {p["name"].upper() for p in parts.values()}
+        temporary: dict[Key, str] = {}
+        for key in changed:
+            name = "TMP" + secrets.token_hex(4).upper()
+            while name.upper() in taken:
+                name = "TMP" + secrets.token_hex(4).upper()
+            taken.add(name.upper())
+            temporary[key] = name
+
+        async def step(old: dict[Key, str], new: dict[Key, str]) -> dict[str, Any]:
+            """Rename each changed part from old to new, then read back."""
+            ops = "~~".join(
+                f"scope=doc:{parts[k]['doc']};object_type=eSchComponent;"
+                f"filter=Designator={old[k]}|LibReference={parts[k]['lib']};set=Designator={new[k]}"
+                for k in changed)
+            reply: Any = None
+            try:
+                reply = await bridge.send_command_async(
+                    "generic.batch_modify", {"operations": ops}, timeout=300.0)
+            except Exception as exc:  # the write may have landed; the read says
+                reply = {"error": str(exc)}
+            after = await read()
+            now: dict[str, list[str]] = {}
+            good = True
+            for key, p in parts.items():
+                want = new[key] if key in new else p["name"]
+                got = after.get((key[0], want.upper(), key[2]))
+                if got is None or sorted(got["uids"]) != sorted(p["uids"]):
+                    good = False
+                if key in new:
+                    now[f"{p['name']} on {sheet_of(key)}"] = sorted(
+                        q["name"] for q in after.values() if set(q["uids"]) & set(p["uids"]))
+            return {"verified": good and len(after) == len(parts), "now": now,
+                    "reply": reply}
+
+        original = {k: parts[k]["name"] for k in changed}
+        try:
+            first = await step(original, temporary)
+            if not first["verified"]:
+                return {**plan, "ok": False, "stage": "temporary", "temporary": first}
+            second = await step(temporary, {k: wanted[k] for k in changed})
+        except RuntimeError as exc:
+            return {**plan, "ok": False, "stage": "read back", "reason": str(exc),
+                    "temporary_names": {f"{parts[k]['name']} on {sheet_of(k)}": t
+                                        for k, t in temporary.items()}}
+        out = {**plan, "ok": second["verified"], "verified": second["verified"],
+               "temporary": first, "final": second, "saved": False}
+        if not second["verified"]:
+            out["stage"] = "final"
+        return out
+
+    @mcp.tool()
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Apply many filter+set operations in ONE call. PREFER THIS over
-        looping obj_modify whenever each object gets its own value (pins,
-        designators, per-sheet titles): one call, one Altium transaction.
+        """Apply many filter+set operations in ONE call (obj_modify items).
+
+        What ``obj_modify(items=[...])`` runs, kept under this name for
+        callers that use it.
 
         No rollback: ops that ran before a failure stay applied. After a
         designator batch, check the netlist: duplicate designators merge
@@ -819,7 +1437,10 @@ def register_generic_tools(mcp):
                             "there; nothing was sent",
                             "operations_processed": 0}
             if not obj_type or not set_str:
-                continue
+                # Skipped, it vanished from the batch without a trace.
+                return {"ok": False, "reason":
+                        f"operations[{i}] needs object_type and set; "
+                        "nothing was sent", "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
@@ -870,21 +1491,33 @@ def register_generic_tools(mcp):
             },
         )
         if isinstance(result, dict):
-            return {"success": True, **result}
+            out = {"success": True, **result}
         elif result:
-            return {"success": True, "data": result}
+            out = {"success": True, "data": result}
         else:
-            return {"success": True, "process": process_name}
+            out = {"success": True, "process": process_name}
+        try:
+            from ..ui.altium_processes import unlisted
+            out.update(unlisted(process_name) or {})
+        except Exception:                       # noqa: BLE001 - a hint only
+            pass
+        return out
 
     @mcp.tool()
-    async def proj_run_erc(limit: int = 100) -> dict[str, Any]:
+    async def proj_run_erc(limit: int = 100,
+                           include_suppressed: bool = False) -> dict[str, Any]:
         """Run Electrical Rules Check on the focused project.
 
         Compiles the project first (required), runs ERC, and returns
-        what it found, the same list ``proj_get_erc_violations`` reads.
+        what it found, the same list ``proj_get_erc_violations`` reads:
+        what Altium reports. A violation a No ERC marker covers, or of a
+        type set to No Report, is left out and counted in
+        ``suppressed_count`` / ``not_reported_count``.
 
         Args:
             limit: How many violations to return; 0 returns all of them.
+            include_suppressed: list those too, each with ``suppressed``
+                and ``level``.
 
         Returns:
             ``violation_count`` and ``violations``: each with its kind,
@@ -894,7 +1527,8 @@ def register_generic_tools(mcp):
             with ``proj_get_erc_violations(offset=next_offset)``.
         """
         bridge = get_bridge()
-        params = {"limit": str(max(0, int(limit)))}
+        params = {"limit": str(max(0, int(limit))),
+                  "include_suppressed": "true" if include_suppressed else "false"}
         result = await bridge.send_command_async("generic.run_erc", params)
         # A script from before 2026.10.21 answers the run with a message
         # only; read the list it left behind instead of returning nothing.
@@ -915,7 +1549,10 @@ def register_generic_tools(mcp):
             stamps: One dict per component: ``designator`` plus any
                 parameter key/values, e.g. ``{"designator": "R1",
                 "Value": "10k", "MPN": "..."}``. A parameter the part
-                lacks is created.
+                lacks is created, hidden, at the part. ``Value`` writes
+                the part's Comment and also a Value parameter the part
+                already has; ``Description`` writes the part's own
+                description (as a parameter Altium dropped it on reload).
             sheet_path: Optional SchDoc path; default the focused one.
 
         Returns:
@@ -960,6 +1597,7 @@ def register_generic_tools(mcp):
     async def proj_get_erc_violations(
         limit: int = 100,
         offset: int = 0,
+        include_suppressed: bool = False,
     ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
@@ -976,6 +1614,9 @@ def register_generic_tools(mcp):
             limit: How many violations to return; 0 returns all of them.
             offset: Index of the first violation, to page through a long
                 list without running ERC again.
+            include_suppressed: also list violations a No ERC marker
+                covers or whose type is set to No Report; left out and
+                only counted by default, as Altium's Messages panel does.
 
         Returns:
             ``{"violation_count", "offset", "returned", "truncated",
@@ -985,7 +1626,8 @@ def register_generic_tools(mcp):
         """
         bridge = get_bridge()
         params = {"limit": str(max(0, int(limit))),
-                  "offset": str(max(0, int(offset)))}
+                  "offset": str(max(0, int(offset))),
+                  "include_suppressed": "true" if include_suppressed else "false"}
         result = await bridge.send_command_async(
             "generic.get_erc_violations", params)
         return _mark_erc_page(result)
@@ -1034,10 +1676,8 @@ def register_generic_tools(mcp):
     async def obj_crossref_net(net_name: str) -> dict[str, Any]:
         """Compare the schematic vs PCB membership of a named net.
 
-        Gives the schematic's pins and the board's pads on the net and
-        the difference both ways. Use it when `proj_get_nets` or
-        `proj_get_connectivity` surprises you, or the board and the
-        schematic disagree: ``pcb_only`` pins are connections an Update
+        The schematic's pins and the board's pads on the net, and the
+        difference both ways: ``pcb_only`` pins are connections an Update
         PCB from Schematic would remove.
 
         Args:
@@ -1080,6 +1720,9 @@ def register_generic_tools(mcp):
         """Create a new schematic sheet and add it to the focused project.
 
         The sheet is created in the same directory as the project file.
+        Refused (FILE_EXISTS) when a file of that name is already there,
+        as one removed with proj_delete_sheet is: it would open with its
+        old drawing.
 
         Args:
             name: Name for the new sheet (without .SchDoc extension).
@@ -1147,8 +1790,6 @@ def register_generic_tools(mcp):
     async def obj_refresh_document() -> dict[str, Any]:
         """Force a redraw/refresh of the current document.
 
-        For schematics, calls GraphicallyInvalidate. For PCB, sends a
-        PCB:Zoom Redraw command.
 
         Returns:
             Dictionary confirming the refresh
@@ -1161,8 +1802,7 @@ def register_generic_tools(mcp):
     async def proj_get_unconnected_pins() -> dict[str, Any]:
         """Find unconnected/floating pins in the focused project.
 
-        Compiles the project first (required for connectivity data), then
-        iterates all components via the DM API to check pin connection status.
+        Compiles the project first.
 
         Returns:
             Dictionary with "count" and "unconnected_pins" array, each entry
@@ -1176,17 +1816,14 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_stub_pins(
-        stub_length_mils: int = 100,
+        stub_length_mils: float = 100,
         only_designators: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Draw a short wire stub + net label on every unconnected schematic pin.
 
-        Finds floating pins (via the same connectivity check as
-        `proj_get_unconnected_pins`), then for each one places a wire extending from
-        the pin's electrical end outward along its orientation, terminated by a
-        net label named "<designator>_<pin_number>". This makes dangling pins
-        explicit so ERC reports them as named single-pin nets rather than silent
-        floats, and gives a labelled anchor to wire up later.
+        Each floating pin (as `proj_get_unconnected_pins` finds them) gets
+        a wire out from its end and a net label "<designator>_<pin_number>",
+        so ERC reports it as a named single-pin net.
 
         Args:
             stub_length_mils: Length of each stub wire in mils (default 100)
@@ -1218,7 +1855,7 @@ def register_generic_tools(mcp):
 
         result = await bridge.send_command_async(
             "generic.stub_pins",
-            {"pins": "|".join(records), "stub_length_mils": str(stub_length_mils)},
+            {"pins": "|".join(records), "stub_length_mils": _mils(stub_length_mils)},
             timeout=120.0,
         )
         if isinstance(result, dict):
@@ -1227,10 +1864,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_rectangle(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         solid: bool = False,
         line_width: int = 1,
     ) -> dict[str, Any]:
@@ -1260,10 +1897,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_line(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         line_width: int = 1,
     ) -> dict[str, Any]:
         """Place a decorative line on the active schematic.
@@ -1294,17 +1931,14 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_note(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         text: str,
     ) -> dict[str, Any]:
         """Place a text-box note on the active schematic.
 
-        Useful for design commentary, TODO markers, revision notes.
-        The box sizes itself to (x1,y1)-(x2,y2) and contains the
-        given text.
 
         Args:
             x1, y1, x2, y2: Note box corners in mils
@@ -1328,22 +1962,18 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_sheet_symbol(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         sheet_file_name: str,
         sheet_name: str = "",
     ) -> dict[str, Any]:
         """Place a sheet symbol linking to a child schematic document.
 
-        Used for hierarchical designs, the parent sheet has one sheet
-        symbol per child .SchDoc in the project. The sheet_file_name
-        must exactly match a .SchDoc that's a project member. Without
-        that match the sheet symbol is dangling.
-
-        After placing, use `sch_place_sheet_entry` to add sheet entries
-        corresponding to the child sheet's ports.
+        sheet_file_name must match a .SchDoc in the project exactly, or
+        the symbol is dangling. Then add its entries with
+        `sch_place_sheet_entry`.
 
         Args:
             x1, y1, x2, y2: Sheet symbol box corners in mils
@@ -1368,12 +1998,49 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_autoposition_labels(
+        names: Optional[list[str]] = None,
+        method: str = "rotate",
+    ) -> dict[str, Any]:
+        """Put part designators and comments, and sheet-symbol names and file
+        names, back where Altium positions them, on the active schematic.
+
+        For labels left at the sheet origin (the bottom-left corner) or
+        anywhere odd after a scripted placement. Each label's auto-position
+        is turned back on and Altium is made to position it, as rotating a
+        part and rotating it back does by hand. A label moved on purpose
+        (obj_modify Designator.Location.X) loses that position.
+
+        Args:
+            names: Designators and sheet names to fix; none means every
+                part and sheet symbol on the sheet.
+            method: What makes Altium reposition: "rotate" (90 degrees and
+                back), "move" (one grid step and back) or "modify" (an
+                edit with no change).
+
+        Returns:
+            ``count`` and per object ``name``, ``kind``, ``location`` and
+            every label ``before`` and ``after`` (x, y in mils and
+            autoposition).
+        """
+        names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        bad = [n for n in names if "|" in n]
+        if bad:
+            return {"ok": False, "reason": f"a name cannot contain '|': {bad}"}
+        if method not in ("rotate", "move", "modify"):
+            return {"ok": False, "reason": "method is rotate, move or modify"}
+        return await get_bridge().send_command_async(
+            "generic.autoposition_labels",
+            {"names": "|".join(names), "method": method})
+
+    @mcp.tool()
     async def sch_place_sheet_entry(
         sheet_name: str,
         entry_name: str,
         io_type: str = "unspecified",
         side: str = "left",
-        distance_from_top: int = 100,
+        distance_from_top: float = 100,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a sheet entry port on an existing sheet symbol.
 
@@ -1387,9 +2054,12 @@ def register_generic_tools(mcp):
             io_type: "input" | "output" | "bidirectional" | "unspecified"
             side: "left" | "right" | "top" | "bottom"
             distance_from_top: Position along the chosen side in mils
+            font_id: The entry's font. 0 takes the font the sheet's
+                entries already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming sheet entry placement
+            Dictionary confirming sheet entry placement, with the
+            ``font_id`` read back.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -1399,17 +2069,18 @@ def register_generic_tools(mcp):
                 "entry_name": entry_name,
                 "io_type": io_type,
                 "side": side,
-                "distance_from_top": str(distance_from_top),
+                "distance_from_top": _mils(distance_from_top),
+                "font_id": str(int(font_id)),
             },
         )
         return result
 
     @mcp.tool()
     async def sch_place_bus_entry(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Place a bus entry (45 degree stub) connecting a wire to a bus.
 
@@ -1468,7 +2139,82 @@ def register_generic_tools(mcp):
             params["orientation"] = orientation
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.set_sheet_size", params)
+        if isinstance(result, dict) and result.get("success") is not False:
+            result["reopened"] = await _reopen_sheet(bridge)
         return result
+
+    @mcp.tool()
+    async def sch_set_sheet_options(
+        zones_x: Optional[int] = None,
+        zones_y: Optional[int] = None,
+        margin_width: Optional[float] = None,
+        border_style: Optional[int] = None,
+        reference_zones: Optional[bool] = None,
+        show_template_graphics: Optional[bool] = None,
+        custom_zones_x: Optional[int] = None,
+        custom_zones_y: Optional[int] = None,
+        custom_margin_width: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the active sheet's reference zones, margin, border
+        style and template graphics. Call with nothing to read.
+
+        On a standard sheet size the zones and margin follow the size, so
+        zones_x, zones_y and margin_width do not take; the custom_* ones
+        apply to a custom-size sheet. Every value is read back; one that
+        did not take is in ``not_applied``.
+
+        Args:
+            zones_x, zones_y: Reference zones across and down (from 1).
+            margin_width: Sheet margin in mils.
+            border_style: Altium's border style number (read one back
+                first; 0 is the standard border).
+            reference_zones: Show the zone letters and numbers.
+            show_template_graphics: Show the template's graphics.
+            custom_zones_x, custom_zones_y, custom_margin_width: The same
+                for a custom-size sheet.
+
+        Returns:
+            ``changed``, ``options`` (read back after any write) and
+            ``not_applied``.
+        """
+        params: dict[str, Any] = {}
+        for key, value in (("zones_x", zones_x), ("zones_y", zones_y),
+                           ("custom_zones_x", custom_zones_x),
+                           ("custom_zones_y", custom_zones_y),
+                           ("border_style", border_style)):
+            if value is not None:
+                if value < (0 if key == "border_style" else 1):
+                    return {"ok": False, "reason": f"{key} is out of range"}
+                params[key] = str(int(value))
+        for key, value in (("margin_width", margin_width),
+                           ("custom_margin_width", custom_margin_width)):
+            if value is not None:
+                if value < 0:
+                    return {"ok": False, "reason": f"{key} is mils from 0"}
+                params[key] = str(value)
+        for key, value in (("reference_zones", reference_zones),
+                           ("show_template_graphics", show_template_graphics)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        reply = await get_bridge().send_command_async("generic.sheet_options", params)
+        if isinstance(reply, dict) and params:
+            got = reply.get("options") or {}
+            keys = {"margin_width": "margin_width_mils",
+                    "custom_margin_width": "custom_margin_width_mils"}
+            missed = []
+            for key, sent in params.items():
+                have = got.get(keys.get(key, key))
+                if isinstance(have, bool):
+                    ok = have == (sent == "true")
+                else:
+                    try:
+                        ok = abs(float(have) - float(sent)) < 0.01
+                    except (TypeError, ValueError):
+                        ok = False
+                if not ok:
+                    missed.append(key)
+            reply["not_applied"] = missed
+        return reply
 
     @mcp.tool()
     async def sch_audit_outside_sheet(limit: int = 100,
@@ -1531,7 +2277,8 @@ def register_generic_tools(mcp):
                 "generic.set_sheet_size", {"style": to, "custom_width": "0",
                                            "custom_height": "0"})
             actions.append({"action": "set_sheet_size", "to": to,
-                            "reply": reply})
+                            "reply": reply,
+                            "reopened": await _reopen_sheet(bridge)})
             report = await audit()
         if report.get("ok") and report.get("verdict") == "shift":
             dx, dy = int(report["dx"]), int(report["dy"])
@@ -1546,17 +2293,15 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_bus(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Place a bus segment between two XY coordinates on the active schematic.
 
-        Buses carry multi-signal groups like DATA[0..7]. Place a bus line
-        and then attach net labels with the bus naming syntax to mark the
-        signal group. Typical workflow: bus line, bus entries at each pin,
-        then connect each bus entry to a wire.
+        Name it with a net label in bus syntax (DATA[0..7]), then add bus
+        entries and wires.
 
         Args:
             x1: Start X coordinate in mils
@@ -1577,11 +2322,14 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def sch_place_net_label(
         text: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         orientation: int = 0,
     ) -> dict[str, Any]:
         """Place a net label at coordinates on the active schematic.
+
+        The label takes the font most of the sheet's net labels use, and
+        Altium's native net-label maroon (Color 128) always.
 
         Args:
             text: Net name for the label (e.g., "VCC", "GND", "SDA")
@@ -1607,10 +2355,12 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def sch_place_port(
         name: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         style: str = "right",
         io_type: str = "bidirectional",
+        width: float = 0,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a port on the active schematic for inter-sheet connectivity.
 
@@ -1620,30 +2370,97 @@ def register_generic_tools(mcp):
             y: Y coordinate in mils
             style: Arrow style, "none", "left", "right", "left_right"
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
+            width: Port length in mils. Auto-size is turned off so it
+                holds; 0 leaves the port sizing itself to its name.
+            font_id: The port's font. 0 takes the font the sheet's ports
+                already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming placement
+            ``font_id``, ``width`` and ``auto_size`` read back.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_port",
             {
                 "name": name,
-                "x": str(x),
-                "y": str(y),
+                "x": _mils(x),
+                "y": _mils(y),
                 "style": style,
                 "io_type": io_type,
+                "width": _mils(width),
+                "font_id": str(int(font_id)),
             },
         )
         return result
 
     @mcp.tool()
+    async def sch_tidy_port_references(
+        sheet_path: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Move each port's cross-reference off its wire, to the free end.
+
+        A port moved without its wire keeps its "Sheet[zone]" reference on
+        the wired end, over the wire. Each reference goes 20 mil past the
+        free end. Vertical ports are ``skipped``. The sheet is not saved.
+
+        Args:
+            sheet_path: The .SchDoc.
+            dry_run: True (default) only lists what would move.
+
+        Returns:
+            ``to_move`` (port, which end is wired and how that was decided,
+            x and justification now and new), ``already_right``,
+            ``skipped`` (with why), ``orphan_references``; once written
+            ``moved`` and ``not_moved``.
+        """
+        from ..design.port_reference_side import place_references
+
+        bridge = get_bridge()
+        scope = scope_to_wire(f"doc:{sheet_path}")
+
+        async def query(kind: str, fields: str, where: str = "") -> list:
+            reply = await bridge.send_command_async("generic.query_objects", {
+                "scope": scope, "object_type": kind, "filter": where,
+                "properties": fields})
+            return (reply.get("objects") or []) if isinstance(reply, dict) else []
+
+        ports = await query("ePort", "Name,Location.X,Location.Y,Width,Style,ConnectedEnd")
+        references = await query(
+            "eParameter", "Name,Text,Location.X,Location.Y,Justification", "Name=CrossRef")
+        result = place_references(
+            ports, await query("eWire", "Vertices"), references,
+            await query("ePin", "ConnectionX,ConnectionY"))
+        result.update(sheet_path=sheet_path, dry_run=dry_run,
+                      ports=len(ports), references=len(references))
+        if not references:
+            result["note"] = ("The sheet has no CrossRef parameters: Port Cross "
+                              "References is off, or the project was not compiled "
+                              "after turning it on.")
+        if dry_run:
+            return result
+        moved, not_moved = [], []
+        for entry in result["to_move"]:
+            reply = await bridge.send_command_async("generic.modify_objects", {
+                "scope": scope, "object_type": "eParameter",
+                "filter": "|".join(["Name=CrossRef", f"Location.X={_mils(entry['x'])}",
+                                    f"Location.Y={_mils(entry['y'])}"]),
+                "set": "|".join([f"Location.X={_mils(entry['new_x'])}",
+                                 f"Justification={entry['new_justification']}"])})
+            matched = reply.get("matched", 0) if isinstance(reply, dict) else 0
+            (moved if matched == 1 else not_moved).append(
+                {"port": entry["port"], "reply": reply})
+        result.update(moved=moved, not_moved=not_moved)
+        return result
+
+    @mcp.tool()
     async def sch_place_power_port(
         text: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         style: str = "circle",
         orientation: int = -1,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a power port symbol (VCC, GND, etc.) on the active schematic.
 
@@ -1664,9 +2481,11 @@ def register_generic_tools(mcp):
                 point: 0=right, 1=up, 2=left, 3=down. Leave at -1 to let
                 the bridge decide by style: the three ground glyphs point
                 down, the supply glyphs (circle, arrow, bar, wave) point up.
+            font_id: The net name's font. 0 takes the font the sheet's
+                power ports already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming placement
+            The placement, with the ``font_id`` the power port got.
         """
         style = (style or "circle").strip().lower()
         if style not in POWER_PORT_STYLES:
@@ -1680,10 +2499,11 @@ def register_generic_tools(mcp):
             "generic.place_power_port",
             {
                 "text": text,
-                "x": str(x),
-                "y": str(y),
+                "x": _mils(x),
+                "y": _mils(y),
                 "style": style,
                 "orientation": str(int(orientation)),
+                "font_id": str(int(font_id)),
             },
         )
         return result
@@ -1771,13 +2591,19 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_no_erc(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
     ) -> dict[str, Any]:
-        """Place a No-ERC marker at coordinates to suppress specific ERC violations.
+        """Place a No-ERC marker at coordinates to suppress the ERC violations
+        there.
 
-        Use this after running ERC to suppress known-good violations at specific
-        pin or wire locations.
+        Put it on the pin's wire end (its connection point), not on the
+        body side. The marker is placed active and
+        suppressing ALL violations, as Altium's own placed No ERC does; to
+        narrow it, write ErrorKindSetToSuppress / SuppressAll=false on the
+        eNoERC object with obj_modify. obj_query reads SuppressAll,
+        IsActive, ErrorKindSetToSuppress, ConnectionPairsToSuppress and
+        SuppressableErrors.
 
         Args:
             x: X coordinate in mils
@@ -1795,21 +2621,14 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_junction(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
     ) -> dict[str, Any]:
         """Place a MANUAL junction at coordinates on the active schematic.
 
-        A T NEEDS NONE. Altium draws an automatic junction wherever a wire
-        ends on another wire or three wire ends meet, blue, exactly as
-        interactive wiring leaves it, and it does so for wires this server
-        places too. The object this tool creates is a manual junction:
-        drawn dark red with a lock marker, and placed on a T it just sits
-        on top of the blue one.
-
-        Use it only where two wires CROSS and must connect. A plain
-        crossing is not a connection in Altium, and a manual junction is
-        what makes it one.
+        A T NEEDS NONE: Altium draws a junction itself where a wire ends
+        on another. Use this only where two wires CROSS and must connect;
+        a plain crossing is not a connection.
 
         Args:
             x: X coordinate in mils
@@ -1846,14 +2665,21 @@ def register_generic_tools(mcp):
         visible_grid: int = 0,
         snap_grid_on: Optional[bool] = None,
         visible_grid_on: Optional[bool] = None,
+        hotspot_grid: int = 0,
+        hotspot_grid_on: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Set the snap grid and/or visible grid for the active schematic.
+        """Set the snap, visible and electrical grids for the active
+        schematic. pcb_set_grids sets a board's grids.
 
         Args:
             snap_grid: Snap grid size in mils (0 = don't change)
             visible_grid: Visible grid size in mils (0 = don't change)
             snap_grid_on: Switch the snap grid on or off (None = don't change)
             visible_grid_on: Switch the visible grid on or off (None = don't change)
+            hotspot_grid: Electrical grid in mils, how far a wire end is
+                pulled onto a pin or wire (0 = don't change)
+            hotspot_grid_on: Switch the electrical grid on or off (None =
+                don't change)
 
         Returns:
             Dictionary with the resulting grid sizes and on/off state
@@ -1868,8 +2694,211 @@ def register_generic_tools(mcp):
             params["snap_grid_on"] = "true" if snap_grid_on else "false"
         if visible_grid_on is not None:
             params["visible_grid_on"] = "true" if visible_grid_on else "false"
+        if hotspot_grid > 0:
+            params["hotspot_grid"] = str(hotspot_grid)
+        if hotspot_grid_on is not None:
+            params["hotspot_grid_on"] = "true" if hotspot_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
         return result
+
+    @mcp.tool()
+    async def sch_optimize_wires() -> dict[str, Any]:
+        """Tidy the wires on the active sheet with Altium's own wire
+        optimiser: wires that continue one another are joined and
+        overlapping pieces trimmed. Connectivity is unchanged.
+
+        Returns:
+            ``sheet``, ``wires_before`` / ``wires_after`` and
+            ``vertices_before`` / ``vertices_after``.
+        """
+        return await get_bridge().send_command_async("generic.optimize_wires", {})
+
+    @mcp.tool()
+    async def sch_reference_zones(
+        kinds: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Where each part, net label, port, power port, sheet symbol and
+        off-sheet connector sits on the active sheet, as the border zone
+        a printed drawing is read by ("B3"). The zone is Altium's own; a
+        sheet without zones gives an empty one.
+
+        Args:
+            kinds: Any of "component", "net_label", "port", "power_port",
+                "sheet_symbol", "cross_sheet"; None for all.
+
+        Returns:
+            ``sheet``, ``count`` and ``objects``: each ``kind``, ``text``
+            (designator, label, port or sheet name), ``zone`` and ``x`` /
+            ``y`` in mils.
+        """
+        allowed = ("component", "net_label", "port", "power_port", "sheet_symbol",
+                   "cross_sheet")
+        params: dict[str, Any] = {}
+        if kinds:
+            wanted = [k.strip().lower() for k in kinds]
+            bad = [k for k in wanted if k not in allowed]
+            if bad:
+                return {"ok": False, "reason": f"unknown kind {bad[0]}; kinds are "
+                        + ", ".join(allowed)}
+            params["kinds"] = ",".join(wanted)
+        return await get_bridge().send_command_async("generic.reference_zones", params)
+
+    @mcp.tool()
+    async def sch_editor_options(
+        snap_to_electrical_grid: Optional[bool] = None,
+        electrical_grid_distance: Optional[int] = None,
+        drag_orthogonal: Optional[bool] = None,
+        components_cut_wires: Optional[bool] = None,
+        optimize_wires: Optional[bool] = None,
+        single_slash_negation: Optional[bool] = None,
+        convert_special_strings: Optional[bool] = None,
+        mark_manual_parameters: Optional[bool] = None,
+        show_pin_direction: Optional[bool] = None,
+        auto_zoom: Optional[bool] = None,
+        click_clears_selection: Optional[bool] = None,
+        double_click_runs_inspector: Optional[bool] = None,
+        undo_levels: Optional[int] = None,
+        pin_name_margin: Optional[int] = None,
+        pin_number_margin: Optional[int] = None,
+        multi_part_naming: Optional[int] = None,
+        increment_primary: Optional[str] = None,
+        increment_secondary: Optional[str] = None,
+        power_ground_name: Optional[str] = None,
+        signal_ground_name: Optional[str] = None,
+        earth_name: Optional[str] = None,
+        expand_designators: Optional[bool] = None,
+        expand_net_labels: Optional[bool] = None,
+        expand_ports: Optional[bool] = None,
+        expand_sheet_number: Optional[bool] = None,
+        expand_document_number: Optional[bool] = None,
+        watermark_read_only_sheets: Optional[bool] = None,
+        always_drag: Optional[bool] = None,
+        use_printer_fonts: Optional[bool] = None,
+        default_template: Optional[str] = None,
+        increment_drops_leading_zero: Optional[bool] = None,
+        ctrl_double_click_goes_down: Optional[bool] = None,
+        confirm_selection_memory_clear: Optional[bool] = None,
+        allow_device_sheet_editing: Optional[bool] = None,
+        watermark_device_sheets: Optional[bool] = None,
+        cutter_grid_multiple: Optional[int] = None,
+        cutter_fixed_length: Optional[int] = None,
+        physical_view_dim_level: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the schematic editor's preferences.
+
+        These are Altium's own preferences and apply to every sheet. Call
+        with nothing to read; every option set is read back.
+
+        Args:
+            snap_to_electrical_grid: Pull wire ends onto pins and wires.
+            electrical_grid_distance: How far they are pulled (Altium's
+                number).
+            drag_orthogonal: Wires stay at right angles when dragging.
+            components_cut_wires: A part dropped on a wire cuts it.
+            optimize_wires: Join and trim overlapping wires.
+            single_slash_negation: One leading backslash bars the
+                whole name.
+            convert_special_strings: Show special strings as values.
+            mark_manual_parameters: Mark parameters moved by hand.
+            show_pin_direction: Draw each pin's direction arrow.
+            auto_zoom: Zoom to a part found by a cross-probe.
+            click_clears_selection: A click on empty space clears it.
+            double_click_runs_inspector: Double-click opens the
+                Inspector.
+            undo_levels: How many steps undo keeps.
+            pin_name_margin: Gap between the body edge and a pin name,
+                in mils.
+            pin_number_margin: Gap from the body edge to a pin number,
+                in mils.
+            multi_part_naming: How multi-part designators are written
+                (Altium's number: U1A, U1:1 ...).
+            increment_primary: The step for repeated placement, e.g. "1".
+            increment_secondary: The second step, e.g. "1".
+            power_ground_name: Net name of a new power ground port.
+            signal_ground_name: Net name of a new signal ground port.
+            earth_name: Net name of a new earth port.
+            expand_designators / expand_net_labels / expand_ports /
+                expand_sheet_number / expand_document_number: In a
+                multi-channel design, show these as they are on each
+                channel rather than as drawn.
+            watermark_read_only_sheets: Mark sheets that cannot be
+                edited.
+            always_drag: Moving a part drags its wires along.
+            use_printer_fonts: Draw text with the printer's fonts.
+            default_template: The template file new sheets start from.
+            increment_drops_leading_zero: Repeated placement drops a
+                leading zero (R09 is followed by R10, not R010).
+            ctrl_double_click_goes_down: Ctrl + double-click on a sheet
+                symbol opens the sheet below.
+            confirm_selection_memory_clear: Ask before a selection
+                memory is cleared.
+            allow_device_sheet_editing: Device sheets may be edited.
+            watermark_device_sheets: Mark device sheets.
+            cutter_grid_multiple: The wire cutter's length in snap grids.
+            cutter_fixed_length: The wire cutter's fixed length, in mils.
+            physical_view_dim_level: How far the physical view dims what
+                is not in focus (Altium's number).
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {
+            "snap_to_electrical_grid": snap_to_electrical_grid,
+            "electrical_grid_distance": electrical_grid_distance,
+            "drag_orthogonal": drag_orthogonal,
+            "components_cut_wires": components_cut_wires,
+            "optimize_wires": optimize_wires,
+            "single_slash_negation": single_slash_negation,
+            "convert_special_strings": convert_special_strings,
+            "mark_manual_parameters": mark_manual_parameters,
+            "show_pin_direction": show_pin_direction,
+            "auto_zoom": auto_zoom,
+            "click_clears_selection": click_clears_selection,
+            "double_click_runs_inspector": double_click_runs_inspector,
+            "undo_levels": undo_levels,
+            "pin_name_margin": pin_name_margin,
+            "pin_number_margin": pin_number_margin,
+            "multi_part_naming": multi_part_naming,
+            "increment_primary": increment_primary,
+            "increment_secondary": increment_secondary,
+            "power_ground_name": power_ground_name,
+            "signal_ground_name": signal_ground_name,
+            "earth_name": earth_name,
+            "expand_designators": expand_designators,
+            "expand_net_labels": expand_net_labels,
+            "expand_ports": expand_ports,
+            "expand_sheet_number": expand_sheet_number,
+            "expand_document_number": expand_document_number,
+            "watermark_read_only_sheets": watermark_read_only_sheets,
+            "always_drag": always_drag,
+            "use_printer_fonts": use_printer_fonts,
+            "default_template": default_template,
+            "increment_drops_leading_zero": increment_drops_leading_zero,
+            "ctrl_double_click_goes_down": ctrl_double_click_goes_down,
+            "confirm_selection_memory_clear": confirm_selection_memory_clear,
+            "allow_device_sheet_editing": allow_device_sheet_editing,
+            "watermark_device_sheets": watermark_device_sheets,
+            "cutter_grid_multiple": cutter_grid_multiple,
+            "cutter_fixed_length": cutter_fixed_length,
+            "physical_view_dim_level": physical_view_dim_level,
+        }
+        for key, value in values.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        # Altium keeps the pin margins at 10000 to the mil, like every
+        # schematic length (measured: its defaults read 500000 and 800000,
+        # 50 and 80 mils).
+        for key in _SCH_MARGINS:
+            if values[key] is not None:
+                values[key] = values[key] * 10000
+        reply = await run_options("generic.sch_editor_options", _SCH_EDITOR_OPTIONS, values)
+        options = reply.get("options") if isinstance(reply, dict) else None
+        if isinstance(options, dict):
+            for key in _SCH_MARGINS:
+                if isinstance(options.get(key), int):
+                    options[key] = options[key] / 10000
+        return reply
 
     @mcp.tool()
     async def sch_set_units(
@@ -1877,8 +2906,7 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Set the unit system for the active schematic.
 
-        Calls ISch_Document.SetState_Unit with a TUnit enum value. The
-        current unit is readable via `obj_get_document_info` (unit_system field).
+        `obj_get_document_info` reads the current one.
 
         Args:
             unit: one of
@@ -1903,24 +2931,16 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_add_directive(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         param_name: str,
         param_value: str,
     ) -> dict[str, Any]:
         """Place a parameter-set directive at (x, y) on the active schematic.
 
-        A parameter-set directive attaches a single ``name=value`` design
-        parameter to a wire or net. Drop the directive on top of the target
-        wire/net and the compile engine will propagate the parameter. Common
-        uses:
-
-        - ``param_name="DifferentialPair", param_value="USB"``
-         , marks the net as a member of the USB differential pair.
-        - ``param_name="NetClass", param_value="HighSpeed"``
-         , assigns the net to the HighSpeed class.
-        - ``param_name="Signal_Stimulus", param_value="..."``
-         , any custom per-net rule parameter.
+        Attaches one ``name=value`` parameter to the wire or net under it,
+        e.g. ``DifferentialPair=USB`` or ``NetClass=HighSpeed``. To apply
+        a directive to every net in an area, use sch_place_blanket.
 
         Args:
             x, y: Location in mils, place ON the target wire/net.
@@ -1946,27 +2966,104 @@ def register_generic_tools(mcp):
     async def sch_get_directives() -> dict[str, Any]:
         """Enumerate parameter-set directives on the active schematic sheet.
 
-        Returns every ISch_ParameterSet on the sheet along with its location
-        and the list of parameters it carries. Use this to audit which nets
-        have explicit NetClass / DifferentialPair / custom-rule assignments
-        before a compile, or to verify a bulk placement worked.
+        Each with its location and the parameters it carries, including
+        the directives held inside blankets (sch_get_blankets lists the
+        blankets themselves and the nets they cover).
 
         Returns:
             Dictionary with ``directives`` array, each entry has
-            ``name``, ``x``, ``y``, and a ``parameters`` list of
-            ``{name, value}`` objects, plus ``count``.
+            ``name``, ``x``, ``y``, ``owner`` ("sheet", or "blanket" for
+            one held inside a blanket) and a ``parameters`` list of
+            ``{name, value}`` objects, plus ``count`` and
+            ``in_blankets``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.get_directives", {})
         return result
 
     @mcp.tool()
+    async def sch_place_blanket(
+        vertices: list[list[float]],
+        parameters: dict[str, str] | None = None,
+        directive_x: float | None = None,
+        directive_y: float | None = None,
+        line_style: int | None = None,
+        collapsed: bool | None = None,
+    ) -> dict[str, Any]:
+        """Place a blanket on the active schematic: a polygon whose directive
+        applies to every net it encloses (a net class, a differential pair,
+        No ERC over an area).
+
+        Args:
+            vertices: Outline as [[x, y], ...] in mils, at least 3 points.
+            parameters: The directive's parameters, e.g. {"NetClass": "PWR"}.
+                Omit for a bare blanket.
+            directive_x, directive_y: Where the directive sits, in mils.
+                Default: the first vertex, on the outline, which is where
+                Altium reads a blanket's directive from.
+            line_style: Outline style, as Altium's integer.
+            collapsed: Draw the blanket collapsed.
+
+        Reshape it later with obj_modify, object_type "eBlanket", set
+        "Vertices=x1,y1,x2,y2,...". Check what it caught with
+        sch_get_blankets after a compile.
+
+        Returns:
+            ``placed``, ``vertices_count``, ``vertices`` as read back, and
+            the ``directive`` placed with its parameters (null if none).
+        """
+        if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": "vertices must be at least 3 [x, y] points in mils. "
+                           "Nothing was placed."}}
+        for name, value in (parameters or {}).items():
+            if not name or any(c in f"{name}{value}" for c in "|="):
+                return {"success": False, "error": {
+                    "code": "INVALID_PARAMS",
+                    "message": f"parameter {name!r}={value!r}: a name must be "
+                               "non-empty, and neither may contain '|' or '='. "
+                               "Nothing was placed."}}
+        args: dict[str, Any] = {
+            "vertices": ",".join(f"{float(x):g},{float(y):g}" for x, y in vertices),
+            "parameters": "|".join(f"{k}={v}" for k, v in (parameters or {}).items()),
+        }
+        if directive_x is not None:
+            args["directive_x"] = f"{float(directive_x):g}"
+        if directive_y is not None:
+            args["directive_y"] = f"{float(directive_y):g}"
+        if line_style is not None:
+            args["line_style"] = str(int(line_style))
+        if collapsed is not None:
+            args["collapsed"] = "true" if collapsed else "false"
+        bridge = get_bridge()
+        return await bridge.send_command_async("generic.place_blanket", args)
+
+    @mcp.tool()
+    async def sch_get_blankets() -> dict[str, Any]:
+        """List the blankets on the active schematic sheet.
+
+        Returns:
+            ``blankets``: each with ``vertices`` ("x,y;x,y;..." in mils), its
+            box (x1, y1, x2, y2), ``line_style``, ``collapsed`` and the
+            ``directives`` inside it or on its edge (``owner`` "blanket" or
+            "sheet").
+            ``coverage``: from the last compile, one entry per blanket in
+            the compiler's order, with ``net_items`` and the ``nets`` it
+            caught; compile first (proj_compile) after an edit.
+            ``compiled`` false means the sheet is not in the focused
+            project, so coverage is empty.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("generic.get_blankets", {})
+
+    @mcp.tool()
     async def sch_place_image(
         image_path: str,
-        x: int,
-        y: int,
-        width: int = 500,
-        height: int = 500,
+        x: float,
+        y: float,
+        width: float = 500,
+        height: float = 500,
     ) -> dict[str, Any]:
         """Place an image/logo on the active schematic.
 
@@ -2070,8 +3167,10 @@ def register_generic_tools(mcp):
         ``proj_replace_component`` swaps the symbol itself.
 
         Checked FIRST, so nothing changes on a bad target: a SchLib/IntLib
-        given by full path must contain ``lib_ref``; a DbLib row must
-        exist, and its own symbol and footprint fill ``lib_ref`` and
+        given by full path must contain ``lib_ref``; the DbLib key must
+        pick out one row, with the whole table read (else
+        ``DBLIB_KEY_NOT_UNIQUE``), and that row's symbol and footprint
+        fill ``lib_ref`` and
         ``footprint`` when they are not given. Every part is read back:
         ``parts`` has each one's link ``before`` and ``after``, and a
         field that did not take is named in ``not_applied``.
@@ -2122,6 +3221,16 @@ def register_generic_tools(mcp):
                                    f"{dblib_table!r} in {library_path}; "
                                    f"nothing was changed"),
                         "lookup": row}
+            # The part would link to whichever row Altium found first: with
+            # the key on several rows, or the table not read to its end,
+            # that row is not known.
+            rows_found, read_all = row.get("match_count"), row.get("scan_capped") is not True
+            if rows_found != 1 or not read_all:
+                why = (f"{rows_found} rows have it" if read_all
+                       else "the lookup stopped before the end of the table")
+                return {"success": False, "error": "DBLIB_KEY_NOT_UNIQUE",
+                        "reason": f"{dblib_key!r} in {dblib_table!r}: {why}; nothing "
+                                  "was changed", "lookup": row}
             lib_ref = lib_ref or str(row.get("symbol_ref") or "")
             prints = row.get("footprints") or []
             if not footprint and prints:
@@ -2190,17 +3299,11 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Unpin placed schematic components from a stale source library.
 
-        Schematic mirror of ``pcb_clear_source_footprint_library``.
-        After a library is renamed or moved, placed parts still point at
-        it through two component properties: ``SourceLibraryName`` (the
-        file) and ``DesignItemId`` (the item; a re-link that changes only
-        LibReference leaves it on the old item, the panel's
-        ``<Not Found>``). This clears the first and sets the second to
-        LibReference, so Altium re-matches from the Available Libraries.
-
-        DesignItemId is a property, not a parameter: writing it as a
-        parameter only adds a stray one. For one part use ``obj_modify``
-        with property ``DesignItemId``.
+        After a library is renamed or moved, placed parts still point at it
+        (``SourceLibraryName``, ``DesignItemId``) and show ``<Not Found>``.
+        This clears the first and sets the second to LibReference, so
+        Altium re-matches from the Available Libraries. DesignItemId is a
+        property, not a parameter (for one part: ``obj_modify``).
 
         Args:
             sheet_path: absolute .SchDoc path; empty = the focused
@@ -2244,11 +3347,7 @@ def register_generic_tools(mcp):
     async def sch_get_constraint_groups() -> dict[str, Any]:
         """Enumerate IDocument.DM_ConstraintGroups on the active schematic.
 
-        Constraint groups are FPGA-style pin/timing constraints attached
-        to a document. Each group has a target kind and id, plus a list
-        of IConstraint entries with a kind/data payload. Useful for
-        auditing FPGA pin assignments and timing constraints that don't
-        show up in the regular PCB design-rule list.
+        FPGA-style pin and timing constraints attached to the document.
 
         Returns:
             Dict with groups (list of {target_kind, target_id,
@@ -2261,17 +3360,14 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_harness_connector(
-        x: int,
-        y: int,
-        width: int = 500,
-        height: int = 800,
+        x: float,
+        y: float,
+        width: float = 500,
+        height: float = 800,
         harness_type: str = "",
     ) -> dict[str, Any]:
         """Place a harness connector on the active schematic sheet.
 
-        Harness connectors group a set of wires/buses into a named
-        signal bundle, letting cross-sheet connections be drawn as a
-        single line instead of a bus.
 
         Args:
             x, y: Bottom-left corner in mils.
@@ -2294,16 +3390,14 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_cross_sheet_connector(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         net: str = "",
         side: str = "",
     ) -> dict[str, Any]:
         """Place a cross-sheet connector (off-sheet port) on the active sheet.
 
-        Cross-sheet connectors are the hierarchical equivalent of a net
-        label, they connect a signal to the same net name on another
-        sheet.
+        Connects to the same net name on another sheet.
 
         Args:
             x, y: Connector location in mils.
@@ -2325,45 +3419,50 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_text_frame(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         text: str,
         align: str = "left",
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. Use ``\\n`` in ``text`` for explicit line breaks.
+        text. A newline, or a typed ``\\n``, becomes Altium's own line
+        break.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
-            text: Frame contents (use \\n for line breaks).
+            text: Frame contents.
             align: Horizontal alignment "left", "center", or "right".
+            font_id: The frame's font. 0 takes the font the sheet's text
+                frames already use, else its net labels' font.
 
         Returns:
-            Dict confirming placement and the frame corners.
+            The placement: the frame's corners and the ``font_id`` it got.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
             "generic.place_text_frame",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
                 "text": text,
                 "align": align,
+                "font_id": str(int(font_id)),
             },
         )
 
     @mcp.tool()
     async def sch_generate_toc(
-        x1: int = 200,
-        y1: int = 200,
-        x2: int = 2400,
-        y2: int = 1800,
+        x1: float = 200,
+        y1: float = 200,
+        x2: float = 2400,
+        y2: float = 1800,
         title: str = "Table of Contents",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -2426,10 +3525,8 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Mark a placed schematic component as a net tie.
 
-        A net tie shorts the nets that land on its pins for routing while
-        keeping them as separate logical nets (so ERC/DRC treat the join as
-        intentional). Sets the component's ComponentKind. Use on a dedicated
-        net-tie footprint/symbol you have already placed and wired.
+        Joins the nets on its pins while keeping them separate nets, so
+        ERC and DRC accept the join. Sets the part's ComponentKind.
 
         Args:
             designator: Component to convert (e.g. "NT1").
@@ -2453,9 +3550,8 @@ def register_generic_tools(mcp):
         """Offset the trailing number of schematic designators by a delta.
 
         Adds ``delta`` to the numeric suffix of every component designator
-        on the active sheet (e.g. delta=100 turns R5 into R105),
-        optionally restricted to a designator prefix. Handy after copying
-        a block to avoid designator collisions before re-annotating.
+        on the active sheet (delta=100 turns R5 into R105), optionally
+        only those with a prefix.
 
         Args:
             delta: Non-zero integer added to each designator's number.
@@ -2552,20 +3648,9 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Set UniqueId on every placed symbol with this designator.
 
-        ECO treats sub-parts of a multi-gate symbol (quad comparator,
-        dual op-amp) as one physical footprint only when they share
-        UniqueId. Four copies of part 1 with four UniqueIds become four
-        packages.
-
-        EVERY MATCHING SYMBOL IS STAMPED, not the first. Sharing the id
-        is the whole point of the property, so writing one of three and
-        reporting success left the other two pointing at packages of
-        their own, which is the exact condition this repairs.
-
-        Altium mints UniqueIds itself and may keep its own. Each write
-        is read back and COMPARED; if any symbol kept its old id the
-        call fails and names which ones, because a partial stamp still
-        leaves the device split.
+        The gates of a multi-part device are one package only when they
+        share UniqueId. Every matching symbol is stamped and read back;
+        if any kept its old id the call fails and names it.
 
         Args:
             designator: Component reference as drawn (e.g. "U_COMP2B").
@@ -2592,15 +3677,10 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Copy a placed schematic part and share the master's UniqueId.
 
-        ECO groups multi-part packages (quad comparators, dual op-amps)
-        only when every unit has the same UniqueId. Writing UniqueId
-        after the copy is already on the sheet remints a new id if that
-        value is already present. This path stamps UniqueId on the
-        replica *before* AddSchObject, which is the share that sticks.
-
-        Finds the first instance whose designator matches, Replicates
-        it, optionally switches CurrentPartID, optionally moves it, and
-        keeps the master's UniqueId.
+        The gates of a multi-part device are one package only when they
+        share UniqueId; the copy keeps the source's (written before it is
+        placed, the only way it sticks). Optionally switches the part id
+        and moves it.
 
         Args:
             designator: Source instance to copy (e.g. "U8").
@@ -2631,24 +3711,27 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_probe(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         net_name: str = "",
         probe_method: str = "probed_nets_only",
+        name: str = "",
     ) -> dict[str, Any]:
-        """Place a probe/measurement marker on the active schematic.
+        """Place a simulation voltage probe on the active schematic.
 
-        Probes mark nodes for SPICE/simulation output. Attach one to a
-        wire to declare "capture voltage / current at this point" in
-        simulation runs.
+        The probe measures the voltage of the net under it, so place it
+        on a wire. It is the probe Altium's Place > Probes > Voltage
+        makes: a simulation run reports and plots it, and
+        sim_get_probes lists it with the node it resolved to.
 
         Args:
-            x, y: Probe location in mils.
-            net_name: Optional explicit net label text.
-            probe_method: "probed_nets_only" (default) or "all_nets".
+            x, y: Probe location in mils, on a wire.
+            net_name: Echoed back; the net comes from the wire.
+            probe_method: Echoed back.
+            name: A name shown instead of the net's (ProbeCustomName).
 
         Returns:
-            Dict with success, x, y, net_name.
+            Dict with success, x, y, net_name, name, measures.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -2657,6 +3740,7 @@ def register_generic_tools(mcp):
                 "x": str(x), "y": str(y),
                 "net_name": net_name,
                 "probe_method": probe_method,
+                "name": name,
             },
         )
 
@@ -2668,8 +3752,7 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Attach a datafile link to a component's current implementation.
 
-        Datafile links are how parametric data (IBIS model files, sim
-        models, external CSVs) is bound to a schematic part.
+        E.g. an IBIS or simulation model file.
 
         Args:
             designator: Component reference (e.g., "U1").
@@ -2699,11 +3782,12 @@ def register_generic_tools(mcp):
     async def obj_batch_create(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Create many schematic objects in ONE IPC round-trip.
+        """Create many schematic objects in ONE call (obj_create items).
 
-        PREFER THIS over looping `obj_create`. Each create costs one
-        LLM turn when done one at a time; batched it's a single
-        PreProcess/PostProcess + one save for the whole set.
+        What ``obj_create(items=[...])`` runs, kept under this name for
+        callers that use it.
+
+        One Altium transaction for the whole list.
 
         Args:
             operations: List of create dicts, each with:
@@ -2736,13 +3820,14 @@ def register_generic_tools(mcp):
             object_type. Other valid items still run.
         """
         op_strs: list[str] = []
-        for op in operations:
+        for i, op in enumerate(operations):
             scope = op.get("scope", "active_doc")
             obj_type = op.get("object_type", "")
             props = op.get("properties", "")
             container = op.get("container", "")
             if not obj_type:
-                continue
+                return {"ok": False, "reason": f"operations[{i}] needs "
+                        "object_type; nothing was sent", "created": 0}
             # `properties` is PIPE-separated ("Text=X|Location.X=100"),
             # so ";" is not a legitimate separator inside it and "=" is.
             # payload_safe leaves "=" alone for exactly that reason.
@@ -2769,9 +3854,10 @@ def register_generic_tools(mcp):
         operations: list[dict[str, str]],
         confirm_delete_all: bool = False,
     ) -> dict[str, Any]:
-        """Delete matching objects across many scope/type/filter operations.
+        """Delete objects for many scope/type/filter sets (obj_delete items).
 
-        PREFER THIS over looping `obj_delete`: one round trip.
+        What ``obj_delete(items=[...])`` runs, kept under this name for
+        callers that use it. One round trip.
 
         Args:
             operations: List of delete dicts, each with:
@@ -2819,7 +3905,9 @@ def register_generic_tools(mcp):
                             "batch is refused rather than reshaped",
                             "operations_processed": 0}
             if not obj_type:
-                continue
+                return {"ok": False, "reason": f"operations[{i}] needs "
+                        "object_type; nothing was sent",
+                        "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
@@ -2891,6 +3979,7 @@ def register_generic_tools(mcp):
         placements: list[dict[str, Any]],
         document_path: Optional[str] = None,
         allow_manual_layout: bool = False,
+        tidy: bool = True,
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
 
@@ -2903,13 +3992,24 @@ def register_generic_tools(mcp):
         Args:
             placements: [{lib_reference (required), x, y (mils),
                 library_path (empty: an open library), designator,
-                rotation (0/90/180/270), footprint}].
+                rotation (0/90/180/270), footprint, part_id}]. With
+                ``footprint`` naming one of the symbol's PCB models (any
+                case), that model becomes current; ``part_id`` picks which
+                part of a multi-part symbol goes down.
             document_path: .SchDoc to focus and place onto.
             allow_manual_layout: True places your own coordinates onto an
                 empty sheet anyway; say why.
+            tidy: Make each placed part match the sheet: its library
+                link (a loaded part says "*", and Altium then will not
+                change its Design Item ID), the parameters its models
+                bring hidden, and the sheet's designator font. Listed
+                per part in ``tidied``.
 
         Returns:
-            Dict with placed, failed, total counts.
+            Dict with placed, failed, total counts and footprints_chosen;
+            footprint_issues lists a part whose symbol has no model of
+            that name (with the models it has) or whose choice did not
+            take. Such a part is placed on its library's model.
         """
         refusal = _unknown_keys_refusal(
             placements, PLACEMENT_KEYS,
@@ -2925,14 +4025,17 @@ def register_generic_tools(mcp):
             fields = [
                 f"library_path={payload_safe(p.get('library_path', ''))}",
                 f"lib_reference={payload_safe(lib_ref)}",
-                f"x={int(p.get('x', 0))}",
-                f"y={int(p.get('y', 0))}",
+                f"x={_mils(p.get('x', 0))}",
+                f"y={_mils(p.get('y', 0))}",
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):
                 fields.append(f"designator={p['designator']}")
             if p.get("footprint"):
-                fields.append(f"footprint={p['footprint']}")
+                fields.append(f"footprint={payload_safe(p['footprint'])}")
+            part_no = p.get("part_id")
+            if part_no is not None:
+                fields.append("part_id=" + str(int(part_no)))
             op_strs.append(";".join(fields))
 
         if not op_strs:
@@ -2945,10 +4048,9 @@ def register_generic_tools(mcp):
             refusal = await _focus_sheet(bridge, document_path)
         if refusal is not None:
             return refusal
+        batch = {"placements": "~~".join(op_strs), "tidy": str(bool(tidy)).lower()}
         return await bridge.send_command_async(
-            "generic.place_sch_components_from_library",
-            {"placements": "~~".join(op_strs)},
-        )
+            "generic.place_sch_components_from_library", batch)
 
     @mcp.tool()
     async def sch_place_vault_components(
@@ -2992,8 +4094,8 @@ def register_generic_tools(mcp):
                 continue
             fields = [
                 f"design_item_id={payload_safe(item_id)}",
-                f"x={int(p.get('x', 0))}",
-                f"y={int(p.get('y', 0))}",
+                f"x={_mils(p.get('x', 0))}",
+                f"y={_mils(p.get('y', 0))}",
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):

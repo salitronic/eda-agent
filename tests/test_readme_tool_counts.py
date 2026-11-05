@@ -276,6 +276,8 @@ def _registered_both() -> set[str]:
         registry = ToolRegistry()
         register_backend(registry, backend, "full")
         names |= {t.name for t in asyncio.run(registry.list_tools())}
+        # Reached through a family tool or a bulk tool, and listed so.
+        names |= set(getattr(registry, "hidden", {}) or {})
     return names
 
 

@@ -32,6 +32,7 @@ the pointer nor need the window in front.
 """
 from __future__ import annotations
 
+import threading
 from collections import deque
 from typing import Any, Optional
 
@@ -47,10 +48,15 @@ try:                                            # pragma: no cover - platform
 except Exception:                               # pragma: no cover - platform
     _AVAILABLE = False
 
-#: Cached automation object. Creating it is the expensive part and it is
-#: stateless, so one per process is right. A fresh one per call showed up
-#: as latency on every read.
-_AUTOMATION = None
+#: Cached automation object, ONE PER THREAD. Creating it is the expensive
+#: part, so it is kept (a fresh one per call showed up as latency on every
+#: read), but COM is per thread: an object made on the event loop thread
+#: and used from an executor worker, or any call on a worker that never
+#: initialised COM, found no elements at all. app_press_dialog_button runs
+#: in an executor and reported "no element named 'Save'" with nothing
+#: offered on a WPF "Unsaved Changes" that app_invoke_element, on the loop
+#: thread, pressed nine seconds later.
+_LOCAL = threading.local()
 
 
 def available() -> bool:
@@ -59,16 +65,23 @@ def available() -> bool:
 
 
 def _uia():
-    global _AUTOMATION
     if not _AVAILABLE:
         return None
-    if _AUTOMATION is None:
+    auto = getattr(_LOCAL, "automation", None)
+    if auto is None:
         try:
-            _AUTOMATION = _cc.CreateObject(
+            # Left initialised: an executor's workers are reused, and
+            # the object made here lives as long as the thread.
+            _cc.comtypes.CoInitialize()
+        except Exception:                       # noqa: BLE001
+            pass
+        try:
+            auto = _cc.CreateObject(
                 _UIA.CUIAutomation, interface=_UIA.IUIAutomation)
         except Exception:                       # noqa: BLE001
             return None
-    return _AUTOMATION
+        _LOCAL.automation = auto
+    return auto
 
 
 def _element(hwnd: int):
@@ -193,6 +206,19 @@ def text_of(hwnd: int) -> list:
             seen.add(name)
             out.append(name)
     return out
+
+
+def element_info(hwnd: int, name: str,
+                 control_type: Optional[str] = None) -> Optional[dict]:
+    """One element's description by name or automation id, or None.
+
+    For a caller that waits for an element to appear or go, such as a
+    popup drawn inside the main window rather than as a dialog of its own.
+    """
+    if not _AVAILABLE:
+        return None
+    hit = _find(hwnd, name, control_type)
+    return hit[1] if hit else None
 
 
 def _find(hwnd: int, name: str, control_type: Optional[str] = None):

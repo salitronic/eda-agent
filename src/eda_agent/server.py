@@ -197,16 +197,26 @@ _ENGINE_PARAGRAPHS = {
 # in a plan to edit 1,499 symbols through the Properties panel. The API
 # route existed for two of the three; the third was a real gap, now fixed.
 # "Usually" is the accurate word, and a genuine gap is worth reporting.
+# The paragraph then told sessions to ask the user before driving the
+# interface, and they did: they asked George to click things they could
+# click themselves. His rule (2026-10-23): the API route when there is
+# one, otherwise the interface, without asking.
 _UI_AUTOMATION_ALTIUM = (
-    "The app_ tools that press buttons, pick menus and type into Altium's\n"
-    "dialogs (app_click_menu, app_run_ui_command, app_set_dialog_control,\n"
-    "app_canvas and the rest) are a last resort, not a second route. When\n"
-    "an API tool seems to fail or be missing, the cause has usually been a\n"
-    "wrong argument or a tool that was not found, and driving a dialog\n"
-    "instead has ended with Altium crashed. Before reaching for one,\n"
-    "{reach} with what you are trying to do. If it still finds nothing,\n"
-    "say so and ask the user before driving the interface: a genuine gap\n"
-    "is worth reporting, because it gets fixed.\n"
+    "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
+    "press buttons, pick menus and type into Altium's dialogs\n"
+    "(app_menu, app_ui, app_press_dialog_button, app_drive_dialogs and\n"
+    "the rest) come second to an API tool. When an API tool seems to fail or be\n"
+    "missing, the cause has usually been a wrong argument or a tool that\n"
+    "was not found, and driving a dialog instead has ended with Altium\n"
+    "crashed, so first {reach} with what you are trying to do. When there\n"
+    "is no API route, drive the interface yourself and carry on: never\n"
+    "ask the user to click, pick a menu or press a button you can press.\n"
+    "Read every dialog you raise (app_list_open_dialogs, app_screenshot)\n"
+    "and answer it as the task requires; needs_a_human marks one the\n"
+    "dialog driver will not answer blindly, not one to hand to the user.\n"
+    "Ask the user only for a decision that is theirs, never for a click.\n"
+    "Say in your report which step needed the interface: a missing API\n"
+    "route is worth reporting, because it gets fixed.\n"
     "\n"
 )
 
@@ -215,6 +225,18 @@ _UI_AUTOMATION_PARAGRAPHS = {
     "both": _UI_AUTOMATION_ALTIUM,
     "easyeda": "",
     "kicad": "",
+}
+
+
+#: The units sentence. KiCad's tools take millimetres, as its files and API
+#: do, and every distance argument names its unit.
+_UNITS = {
+    "altium": "Coordinates are in mils throughout.\n",
+    "easyeda": "Coordinates are in mils throughout.\n",
+    "kicad": ("Coordinates are in millimetres on KiCad, as in its files: every\n"
+              "distance argument says so (x_mm, width_mm).\n"),
+    "both": ("Coordinates are in mils, except on the kicad_ tools, which take\n"
+             "millimetres and say so in each argument (x_mm, width_mm).\n"),
 }
 
 
@@ -243,6 +265,19 @@ def build_server_instructions(
     ui = _UI_AUTOMATION_PARAGRAPHS.get(
         (backend or DEFAULT_BACKEND).strip().lower(), _UI_AUTOMATION_ALTIUM)
     ui = ui.replace("{reach}", reach)
+    altium = (backend or DEFAULT_BACKEND).strip().lower() in ("altium", "both")
+    items = (
+        "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
+        "arguments, one dict per item, with arguments given beside it\n"
+        "applying to all. Twenty arcs, ten pin renames or a column of net\n"
+        + ("labels are one call and one undo step in Altium, not twenty.\n"
+           "The reply gives each item's result in order and says which\n"
+           "failed; items run before a failure stay applied.\n"
+           if altium else
+           "labels are one call, not twenty. The reply lists each item's\n"
+           "result in order.\n")
+        + "A single call works as it always has.\n"
+        "\n")
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -261,8 +296,12 @@ def build_server_instructions(
         "category.\n"
         "\n"
         + ui
-        + engine +
-        "Coordinates are in mils throughout, on every backend.\n"
+        + engine + items
+        + _UNITS.get((backend or DEFAULT_BACKEND).strip().lower(), _UNITS["altium"])
+        + "\n"
+        "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
+        "the user what is new and ask; call server_update(apply=True) only\n"
+        "after they agree.\n"
     )
 
 
@@ -294,15 +333,69 @@ def compact_text_blocks(blocks):
     return out
 
 
-class _CompactFastMCP(FastMCP):
-    """FastMCP whose tool results carry compact JSON text.
+def add_update_notice(result, news):
+    """Put ``news`` under ``update`` on a tool result: in the structured
+    copy and in the JSON text copy when the reply is an object, else as a
+    text block of its own. A reply that already says ``update`` is kept."""
+    import json
+    from mcp.types import TextContent
+    blocks, structured = (result if isinstance(result, tuple) else (result, None))
+    if not isinstance(blocks, list):
+        return result
+    if isinstance(structured, dict) and "update" not in structured:
+        structured = {**structured, "update": news}
+    out, placed = [], False
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if not placed and isinstance(text, str) and text[:1] == "{":
+            try:
+                body = json.loads(text)
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                body.setdefault("update", news)
+                block = block.model_copy(update={"text": json.dumps(body)})
+                placed = True
+        out.append(block)
+    if not placed:
+        out.append(TextContent(type="text", text=json.dumps({"update": news})))
+    return (out, structured) if isinstance(result, tuple) else out
 
-    structuredContent is left exactly as FastMCP builds it: Claude Code
-    reads that copy, and only the text copy carried the indentation.
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text, and the news of
+    a newer eda-agent on the first reply after it is found; requests are
+    read from a private copy of standard input (stdin_handle.py).
+
+    structuredContent is left as FastMCP builds it apart from that news:
+    Claude Code reads that copy, and only the text copy carried the
+    indentation.
     """
 
+    async def run_stdio_async(self) -> None:
+        from io import TextIOWrapper
+
+        import anyio
+        from mcp.server.stdio import stdio_server
+
+        from .stdin_handle import private_stdin
+
+        stdin = anyio.wrap_file(TextIOWrapper(private_stdin(), encoding="utf-8",
+                                              errors="replace"))
+        async with stdio_server(stdin=stdin) as (read_stream, write_stream):
+            await self._mcp_server.run(read_stream, write_stream,
+                                       self._mcp_server.create_initialization_options())
+
     async def call_tool(self, name, arguments):
+        logger.info("Tool call: %s", name)
         result = await super().call_tool(name, arguments)
+        try:
+            from . import updates
+            news = updates.notice_once()
+        except Exception:  # noqa: BLE001  news never breaks a tool
+            news = None
+        if news:
+            result = add_update_notice(result, news)
         if isinstance(result, tuple):
             return (compact_text_blocks(result[0]), result[1])
         if isinstance(result, list):
@@ -455,11 +548,23 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
                      name="workspace-housekeeping", daemon=True).start()
 
+    # The first 3D model would otherwise wait on a cold CadQuery import.
+    from .design.models3d import warm_cadquery
+    warm_cadquery()
+
     # Record this server and warn (stderr only) about others on the same
     # workspace. Never refuses and never stops anything: several sessions
     # at once are allowed. app_ping and app_get_status repeat the warning.
-    from . import server_registry
+    from . import server_registry, updates
     server_registry.register(config.workspace_dir)
+    # Once a day at most, in the background, while the server runs: a newer
+    # eda-agent is then reported on the next tool reply and by app_ping and
+    # app_context, never installed unasked.
+    updates.start_background_check()
+    # Altium never runs the panel's own wheel events, so the server scrolls
+    # the Config tab while the cursor is over it.
+    from .ui import panel_wheel
+    panel_wheel.start()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
     if duplicate:
@@ -795,6 +900,25 @@ def main() -> int:
                             help="Print the command instead of running it.")
     relaunch_p.add_argument("--force", action="store_true",
                             help="Run it even when the bridge answers a ping.")
+    relaunch_p.add_argument("--restart", action="store_true",
+                            help="Stop the running loop after its current "
+                                 "command and start it again (after "
+                                 "install-scripts). Other sessions' calls "
+                                 "wait through it instead of failing.")
+
+    # update -- pull a newer eda-agent into this clone, after asking
+    update_p = subparsers.add_parser(
+        "update",
+        help=("Show what a newer eda-agent brings and, once you agree, "
+              "fast-forward this clone, reinstall if needed, copy the "
+              "scripts and restart the Altium loop."),
+    )
+    update_p.add_argument("--check", action="store_true",
+                          help="Only show what an update would bring.")
+    update_p.add_argument("--yes", action="store_true",
+                          help="Update without asking.")
+    update_p.add_argument("--no-relaunch", action="store_true",
+                          help="Leave the Altium loop running the old scripts.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -837,6 +961,30 @@ def main() -> int:
     dash_p.add_argument("--host", default="127.0.0.1")
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
+
+    # altium365-login -- sign in to Nexar once for the Altium 365 tools
+    subparsers.add_parser(
+        "altium365-login",
+        help=("Sign in to Nexar in the browser for the altium365_ tools "
+              "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
+              "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
+    )
+    subparsers.add_parser(
+        "altium365-logout",
+        help="Forget the saved Nexar login of altium365-login.",
+    )
+
+    # sdk-reach -- how much of Altium's SDK the property tools reach
+    sdk_p = subparsers.add_parser(
+        "sdk-reach",
+        help=("Count the properties Altium's SDK declares on each object type "
+              "and the share obj_query/obj_modify reach. Reads the SDK index in "
+              "reference/altium_sdk (or EDA_AGENT_SDK_INDEX)."),
+    )
+    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
+                       help="List up to N properties not reached, per type.")
+    sdk_p.add_argument("--json", action="store_true",
+                       help="Every type with every name not reached, as JSON.")
 
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
@@ -945,6 +1093,13 @@ def main() -> int:
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
 
+    if (args.command is None or args.command == "serve") \
+            and os.environ.get("EDA_AGENT_RELOAD") == "1":
+        # Development: a proxy runs the server as a child and restarts it
+        # when the source changes, so the client never reconnects.
+        from .devproxy import main as reload_main
+        return reload_main(sys.argv[1:])
+
     if args.command is None or args.command == "serve":
         # Honour the flag whether it was given at the top level
         # (`eda-agent --no-dashboard`) or on the serve subcommand
@@ -966,7 +1121,10 @@ def main() -> int:
         return cli.cmd_easyeda_extension(args.action, out=args.out)
     if args.command == "relaunch":
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
-                                force=args.force)
+                                force=args.force, restart=args.restart)
+    if args.command == "update":
+        return cli.cmd_update(check_only=args.check, assume_yes=args.yes,
+                              relaunch=not args.no_relaunch)
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([
@@ -993,8 +1151,9 @@ def main() -> int:
                 # On Windows, SIGTERM isn't honoured for native procs;
                 # use TerminateProcess via taskkill for reliability.
                 import subprocess as _sp
+                from .noconsole import no_window
                 _sp.run(["taskkill", "/PID", str(pid), "/F"],
-                        capture_output=True, check=False)
+                        capture_output=True, check=False, **no_window())
             else:
                 _os.kill(pid, _sig.SIGTERM)
             print(f"stopped dashboard pid {pid}")
@@ -1004,6 +1163,40 @@ def main() -> int:
         except Exception as e:
             print(f"could not stop dashboard pid {pid}: {e}")
             return 1
+    if args.command == "altium365-login":
+        import webbrowser
+        from .altium365 import Altium365Error, browser_login, read_environment
+        try:
+            print(browser_login(read_environment(), webbrowser.open))
+            return 0
+        except Altium365Error as exc:
+            print(f"Not signed in: {exc}")
+            return 1
+    if args.command == "altium365-logout":
+        from .altium365 import forget_login, read_environment
+        path = read_environment().saved_login
+        try:
+            gone = forget_login(path)
+        except OSError as exc:
+            print(f"Could not remove {path}: {exc}")
+            return 1
+        print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
+        return 0
+    if args.command == "sdk-reach":
+        import json
+        from .diag import sdk_reach
+        path = sdk_reach.index_path()
+        if not path.is_file():
+            print(f"No SDK index at {path}. It is made from an Altium install "
+                  "(reference/altium_sdk/dump_sdk.ps1); set EDA_AGENT_SDK_INDEX "
+                  "to point at one.")
+            return 1
+        rows = sdk_reach.measure(sdk_reach.SdkIndex(path))
+        if args.json:
+            print(json.dumps(sdk_reach.as_dict(rows), indent=2))
+        else:
+            print(sdk_reach.report(rows, args.detail))
+        return 0
     if args.command == "review":
         return _run_review(args)
     if args.command == "bom":

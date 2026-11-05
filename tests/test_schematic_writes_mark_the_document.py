@@ -29,7 +29,9 @@ from tests.pascal_source import load, strip_comments
 _PAS = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas"
 
 #: Not a handler: a helper called by handlers that mark for themselves.
-_HELPERS = {"SetCompParamText"}
+#: Build an object for a caller that registers and marks it on the sheet;
+#: they never touch a document themselves.
+_HELPERS = {"SetCompParamText", "NewParamSet"}
 
 
 @pytest.fixture(scope="module")

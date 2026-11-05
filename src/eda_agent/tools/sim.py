@@ -35,8 +35,9 @@ from typing import Any
 
 from ..bridge import get_bridge
 from ..sim.sdf import SdfError, latest_charts, read_sdf, summarise
-from ..sim.simcfg import (DEFAULT_NAME, SimCfgError, analysis_changes, apply,
-                          new_simcfg, read_simcfg, write_simcfg)
+from ..sim.simcfg import (ANALYSES, DEFAULT_NAME, SimCfgError, analysis_changes,
+                          apply, describe, new_simcfg, only_analyses, read_simcfg,
+                          write_simcfg)
 from .bulk_hints import BulkHintTracker
 
 #: The results document the last sim_run produced, so sim_get_results can
@@ -144,6 +145,103 @@ def _guidance_block(
     }
 
 
+#: Chart names in a results file, by the analysis key sim_run takes.
+_CHART_KEYS = {"operating point": "op", "dc sweep": "dc",
+               "transient analysis": "transient", "ac analysis": "ac"}
+
+
+async def _chart_count(bridge) -> dict[str, int]:
+    """Charts already in the focused project's results file, by its path.
+
+    Altium writes a schematic run's results to Simulation\\<project>.sdf
+    beside the project, adding a chart per analysis per run.
+    """
+    try:
+        focused = await bridge.send_command_async("project.get_focused", {})
+    except Exception:  # noqa: BLE001 - the count is a nicety, the run decides
+        return {}
+    project = (focused or {}).get("project_path", "") if isinstance(focused, dict) else ""
+    if not project:
+        return {}
+    sdf = Path(project).parent / "Simulation" / (Path(project).stem + ".sdf")
+    try:
+        return {str(sdf).lower(): len(read_sdf(sdf))} if sdf.exists() else {}
+    except (OSError, SdfError):
+        return {}
+
+
+async def _project_simcfg(bridge, project_path: str) -> dict[str, Any]:
+    """The project (focused when not given), its documents and its .simcfg."""
+    if not project_path:
+        focused = await bridge.send_command_async("project.get_focused", {})
+        project_path = (focused or {}).get("project_path", "") \
+            if isinstance(focused, dict) else ""
+    if not project_path or not project_path.lower().endswith(".prjpcb"):
+        return {"success": False, "error": "NO_PROJECT",
+                "message": "no PCB project is focused; pass project_path"}
+    docs = await bridge.send_command_async(
+        "project.get_documents", {"project_path": project_path})
+    if isinstance(docs, dict):
+        docs = docs.get("result") or docs.get("documents") or []
+    simcfg = next((d.get("file_path") for d in docs or []
+                   if str(d.get("document_kind", "")).lower() == "simcfg"
+                   or str(d.get("file_path", "")).lower().endswith(".simcfg")), "")
+    return {"success": True, "project_path": project_path, "docs": docs or [],
+            "simcfg": simcfg}
+
+
+async def _change_simcfg(bridge, project_path: str, changes: dict) -> dict[str, Any]:
+    """Write ``changes`` into the project's .simcfg and have Altium reload it."""
+    found = await _project_simcfg(bridge, project_path)
+    if not found.get("success"):
+        return found
+    project_path, docs, simcfg = found["project_path"], found["docs"], found["simcfg"]
+
+    created = False
+    if simcfg:
+        saved = await bridge.send_command_async(
+            "generic.simcfg_document", {"action": "save", "file_path": simcfg})
+        if isinstance(saved, dict) and saved.get("success") is False:
+            return {"success": False, "error": "SIMCFG_NOT_SAVED",
+                    "message": "Altium's settings could not be saved first, "
+                               "so changing the file would lose them",
+                    "detail": saved}
+        cfg = read_simcfg(simcfg)
+    else:
+        simcfg = str(Path(project_path).parent / DEFAULT_NAME)
+        cfg = read_simcfg(simcfg) if Path(simcfg).exists() else new_simcfg()
+        created = not Path(simcfg).exists()
+
+    from ..saving import refused, saving_off
+    if saving_off():
+        return refused(f"Changing the simulation settings writes {simcfg}.")
+    try:
+        write_simcfg(apply(cfg, changes), simcfg)
+    except OSError as exc:
+        return {"success": False, "error": "NOT_WRITTEN",
+                "message": f"cannot write {simcfg}: {exc}"}
+
+    if created or not any(str(d.get("file_path", "")).lower() == simcfg.lower()
+                          for d in docs):
+        added = await bridge.send_command_async(
+            "project.add_document",
+            {"document_path": simcfg, "project_path": project_path})
+        if isinstance(added, dict) and added.get("success") is False:
+            return {"success": False, "error": "NOT_ADDED", "simcfg": simcfg,
+                    "message": "the settings file was written but could not "
+                               "be added to the project", "detail": added}
+    reload = await bridge.send_command_async(
+        "generic.simcfg_document", {"action": "reload", "file_path": simcfg})
+    reloaded = bool(isinstance(reload, dict) and reload.get("done"))
+    if isinstance(reload, dict) and reload.get("success") is False:
+        return {"success": False, "error": "NOT_RELOADED", "simcfg": simcfg,
+                "message": "the file was changed but Altium did not reload "
+                           "it, so the next run would use its old settings",
+                "detail": reload}
+    return {"success": True, "simcfg": simcfg, "created": created,
+            "reloaded": reloaded, "set": changes}
+
+
 def register_sim_tools(mcp):
     """Register SPICE / simulation tools with the MCP server."""
 
@@ -152,7 +250,11 @@ def register_sim_tools(mcp):
         """Audit every component on the active schematic for SPICE readiness.
 
         Step 1 of any simulation. Each component lands in one bucket:
-        ``ready`` (SpicePrefix set), ``needs_primitive`` (R/L/C or a
+        ``ready`` (SpicePrefix set AND a SIM model linked, which is what
+        Altium's netlister reads), ``no_sim_model`` (SpicePrefix written
+        but no model link: the netlister reports "Missing component
+        models" for these; sim_run_deck runs a plain SPICE deck without
+        them), ``needs_primitive`` (R/L/C or a
         V/I/D/Q source needing SpicePrefix and Value; pass them all to
         sim_attach_primitives in one call) or ``needs_file`` (an IC or
         active part needing the vendor's .mdl/.ckt/.lib, for
@@ -166,7 +268,8 @@ def register_sim_tools(mcp):
 
         Returns:
             Dict with:
-              - ready, ready_count
+              - ready, ready_count (each with sim_model)
+              - no_sim_model, no_sim_model_count
               - needs_primitive, needs_primitive_count
                 (each entry has designator, comment, suggested_prefix,
                  suggested_value)
@@ -226,13 +329,30 @@ def register_sim_tools(mcp):
         )
 
     @mcp.tool()
-    async def sim_run(analysis: str = "") -> dict[str, Any]:
+    async def sim_run(
+        analysis: str = "",
+        analyses: list[str] | None = None,
+        sheet: str = "",
+    ) -> dict[str, Any]:
         """Run Altium's mixed-signal simulation of the focused project.
 
-        Runs the analyses set up for the project: with sim_setup_analysis,
-        or in Altium's Simulation Dashboard. A run started from a script
-        performs an operating point, DC sweep, transient and AC together
-        (MEASURED: the dashboard's on/off switches are not honoured).
+        Runs the sheet's setup the way the Simulation Dashboard's Run
+        does (set with sim_setup_analysis, or in the dashboard), and
+        reports in ``ran_analyses`` which analyses this run produced,
+        read back from the results.
+
+        MEASURED on AD 26.11: Altium takes the on/off switches from the
+        setup at the first run after the project opens and keeps that
+        selection until the project is reopened; each run also switches
+        operating point, DC, transient and AC back on in the setup. So
+        ``analyses`` writes the switches and is applied by the first run
+        after opening; otherwise the run does what Altium kept, and
+        ``selection_applied`` is false. sim_get_results(analysis=...)
+        reads one analysis either way.
+
+        With no sheet in front and none given, the project's first
+        simulator output runs instead (``run_mode`` "project"), which
+        always does those four.
 
         Succeeds only when a results document (.sdf) appears, else
         SIM_NOT_RUN; the reply summarises each wave, sim_get_results
@@ -241,21 +361,42 @@ def register_sim_tools(mcp):
 
         Args:
             analysis: Free-form label echoed back in the response.
-                Does not drive Altium, the project's setup does.
+            analyses: switch on only these before the run: "op", "dc",
+                "transient", "ac".
+            sheet: the schematic whose setup to run; empty uses the
+                sheet in front.
 
         Returns:
             Dict with success, ran, results_document (the .sdf path),
-            results_saved, results (per analysis, per wave: unit, points,
-            min, max, first, last; magnitude for an AC wave), analysis
-            and note.
+            results_saved, run_mode ("sheet" or "project"), sheet,
+            ran_analyses, results (this run's analyses, per wave: unit,
+            points, min, max, first, last; magnitude for an AC wave),
+            analysis and note; with analyses, ``switched`` and
+            ``selection_applied``.
         """
         bridge = get_bridge()
+        before = await _chart_count(bridge)
+        switched = None
+        if analyses:
+            try:
+                changes = only_analyses(analyses)
+            except SimCfgError as exc:
+                return {"success": False, "error": "BAD_ANALYSES", "message": str(exc)}
+            switched = await _change_simcfg(bridge, "", changes)
+            if not switched.get("success"):
+                return switched
         params: dict[str, Any] = {}
         if analysis:
             params["analysis"] = analysis
+        if sheet:
+            params["sheet"] = sheet
         reply = await bridge.send_command_async(
             "generic.run_simulation", params, timeout=600.0
         )
+        if isinstance(reply, dict) and switched is not None:
+            reply["switched"] = {"simcfg": switched.get("simcfg"),
+                                 "on": sorted(a for a in ANALYSES
+                                              if changes[ANALYSES[a]] == "True")}
         if not (isinstance(reply, dict) and reply.get("ran")):
             return reply
         path = reply.get("results_document") or ""
@@ -265,6 +406,93 @@ def register_sim_tools(mcp):
             reply["results_note"] = (
                 "the results document could not be saved, so its values "
                 "were not read; they are open in Altium")
+            return reply
+        try:
+            every = read_sdf(path)
+        except (OSError, SdfError) as exc:
+            reply["results_note"] = f"the results file could not be read: {exc}"
+            return reply
+        # A results file gains one chart per analysis per run; one that
+        # shrank was started again.
+        start = before.get(path.lower(), 0)
+        fresh = every[start:] if len(every) > start else every
+        charts = latest_charts(fresh)
+        ran = []
+        for chart in fresh:
+            key = _CHART_KEYS.get(chart.name.strip().lower(), chart.name)
+            if key not in ran:
+                ran.append(key)
+        reply["ran_analyses"] = ran
+        if switched is not None:
+            applied = sorted(ran) == reply["switched"]["on"]
+            reply["selection_applied"] = applied
+            if not applied:
+                reply["selection_note"] = (
+                    "Altium kept the analysis selection it loaded at this "
+                    "project's first run since it was opened; the switches "
+                    "are saved in the setup and apply after the project is "
+                    "reopened. sim_get_results(analysis=...) reads one.")
+        reply["results"] = _results(charts, waves=None, max_points=0)
+        return reply
+
+    @mcp.tool()
+    async def sim_run_deck(deck: str, file_path: str) -> dict[str, Any]:
+        """Run a SPICE deck in Altium's simulator; the waves open as a chart.
+
+        The way to simulate a circuit that is not a schematic of parts with
+        simulation models: a hot-plug, an inrush, a supply under a load
+        step. Write it as plain SPICE (elements, models, one analysis such
+        as .TRAN, a .PLOT line per analysis naming the waves to chart, and
+        .END). Altium opens the results as a chart in front, and the reply
+        gives each wave's figures. Passive and source values are yours to
+        state; an IC's behaviour needs its vendor's model (SPICE_MODEL_RULES).
+
+        A schematic of your own symbols does not run through sim_run: each
+        part needs a simulation model link, and the parameters
+        sim_attach_primitives writes are not one (Altium answers "Missing
+        component models").
+
+        Args:
+            deck: the SPICE text, e.g. "* hot-plug\\nV1 in 0 PULSE(0 5 10u
+                1u)\\nR1 in out 0.25\\nC1 out 0 22u\\n.TRAN 1u 2m\\n.PLOT TRAN
+                V(out)\\n.END".
+            file_path: where to write it: a full path ending in .nsx, in
+                the project's folder. An existing deck there is replaced.
+
+        Returns:
+            ``ran``, ``deck``, ``results_document`` (the .sdf), and
+            ``results`` per analysis per wave (unit, points, min, max,
+            first, last); sim_get_results gives the traces.
+        """
+        import os
+
+        if not file_path or not os.path.isabs(file_path) \
+                or not file_path.lower().endswith(".nsx"):
+            return {"success": False, "error": "file_path must be a full path ending in .nsx"}
+        text = (deck or "").replace("\r\n", "\n").strip()
+        if not text:
+            return {"success": False, "error": "the deck is empty"}
+        if not any(line.strip().upper().startswith((".TRAN", ".AC", ".DC", ".OP"))
+                   for line in text.splitlines()):
+            return {"success": False, "error": "the deck has no analysis (.TRAN, .AC, .DC or .OP)"}
+        if text.splitlines()[-1].strip().upper() != ".END":
+            text += "\n.END"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8", newline="\r\n") as fh:
+            fh.write(text + "\n")
+
+        bridge = get_bridge()
+        reply = await bridge.send_command_async(
+            "generic.run_spice_deck", {"file_path": file_path}, timeout=600.0)
+        if not (isinstance(reply, dict) and reply.get("ran")):
+            return reply
+        path = reply.get("results_document") or ""
+        if path:
+            _last_results["path"] = path
+        if not reply.get("results_saved"):
+            reply["results_note"] = (
+                "the results document could not be saved, so its values "
+                "were not read; the chart is open in Altium")
             return reply
         try:
             charts = latest_charts(read_sdf(path))
@@ -298,11 +526,11 @@ def register_sim_tools(mcp):
                 ["v(out)", "i(v1)"].
             project_path: the project; empty uses the focused one.
 
-        MEASURED: a scripted run performs operating point, DC, transient
-        and AC together whatever the dashboard switches say, so an
-        analysis not set here runs on its last settings;
-        sim_get_results(analysis=...) picks one. Dashboard changes are
-        saved first and kept; a project without a .simcfg gets one.
+        Each analysis set here is switched on; one already on stays on
+        and runs on its last settings. sim_run(analyses=[...]) runs only
+        the ones named, and sim_get_setup shows what is on. Dashboard
+        changes are saved first and kept; a project without a .simcfg
+        gets one.
 
         Returns:
             Dict with simcfg (the file), set (the keys written), reloaded,
@@ -313,64 +541,71 @@ def register_sim_tools(mcp):
                                        outputs=outputs)
         except SimCfgError as exc:
             return {"success": False, "error": "BAD_SETTINGS", "message": str(exc)}
+        return await _change_simcfg(get_bridge(), project_path, changes)
 
+    @mcp.tool()
+    async def sim_get_setup(sheet: str = "", project_path: str = "") -> dict[str, Any]:
+        """What a simulation run would do: the analyses on and their settings.
+
+        Reads the project's .simcfg as Altium last saved it (its edits in
+        the dashboard are saved first). Altium uses a sheet's own settings
+        when ``affect`` is Document and the project's when it is Project;
+        ``source`` says which were read.
+
+        Args:
+            sheet: the schematic to report for; empty uses the sheet in
+                front.
+            project_path: the project; empty uses the focused one.
+
+        Returns:
+            Dict with simcfg, affect, source, enabled (of op, dc,
+            transient, ac), other_enabled (any other analysis switched
+            on), settings (per enabled analysis: its sweep or times and
+            its output expressions), sheets with settings of their own,
+            and results (each recorded run: name, type, date, locked).
+        """
         bridge = get_bridge()
-        if not project_path:
-            focused = await bridge.send_command_async("project.get_focused", {})
-            project_path = (focused or {}).get("project_path", "") \
-                if isinstance(focused, dict) else ""
-        if not project_path or not project_path.lower().endswith(".prjpcb"):
-            return {"success": False, "error": "NO_PROJECT",
-                    "message": "no PCB project is focused; pass project_path"}
-
-        docs = await bridge.send_command_async(
-            "project.get_documents", {"project_path": project_path})
-        if isinstance(docs, dict):
-            docs = docs.get("result") or docs.get("documents") or []
-        simcfg = next((d.get("file_path") for d in docs or []
-                       if str(d.get("document_kind", "")).lower() == "simcfg"
-                       or str(d.get("file_path", "")).lower().endswith(".simcfg")), "")
-
-        created = False
-        if simcfg:
-            saved = await bridge.send_command_async(
-                "generic.simcfg_document", {"action": "save", "file_path": simcfg})
-            if isinstance(saved, dict) and saved.get("success") is False:
-                return {"success": False, "error": "SIMCFG_NOT_SAVED",
-                        "message": "Altium's settings could not be saved first, "
-                                   "so changing the file would lose them",
-                        "detail": saved}
-            cfg = read_simcfg(simcfg)
-        else:
-            simcfg = str(Path(project_path).parent / DEFAULT_NAME)
-            cfg = read_simcfg(simcfg) if Path(simcfg).exists() else new_simcfg()
-            created = not Path(simcfg).exists()
-
+        found = await _project_simcfg(bridge, project_path)
+        if not found.get("success"):
+            return found
+        simcfg = found["simcfg"]
+        if not simcfg:
+            return {"success": False, "error": "NO_SETUP",
+                    "project_path": found["project_path"],
+                    "message": "the project has no simulation settings yet; "
+                               "a run uses Altium's default, an operating point "
+                               "(sim_setup_analysis creates them)"}
+        await bridge.send_command_async(
+            "generic.simcfg_document", {"action": "save", "file_path": simcfg})
+        if not sheet:
+            active = await bridge.send_command_async("application.get_active_document", {})
+            path = str((active or {}).get("file_path", "")) if isinstance(active, dict) else ""
+            if path.lower().endswith(".schdoc"):
+                sheet = path
         try:
-            write_simcfg(apply(cfg, changes), simcfg)
-        except OSError as exc:
-            return {"success": False, "error": "NOT_WRITTEN",
-                    "message": f"cannot write {simcfg}: {exc}"}
+            setup = describe(read_simcfg(simcfg), sheet)
+        except (OSError, SimCfgError) as exc:
+            return {"success": False, "error": "NOT_READ", "simcfg": simcfg,
+                    "message": f"cannot read {simcfg}: {exc}"}
+        return {"success": True, "simcfg": simcfg, "sheet": sheet, **setup}
 
-        if created or not any(str(d.get("file_path", "")).lower() == simcfg.lower()
-                              for d in docs or []):
-            added = await bridge.send_command_async(
-                "project.add_document",
-                {"document_path": simcfg, "project_path": project_path})
-            if isinstance(added, dict) and added.get("success") is False:
-                return {"success": False, "error": "NOT_ADDED", "simcfg": simcfg,
-                        "message": "the settings file was written but could not "
-                                   "be added to the project", "detail": added}
-        reload = await bridge.send_command_async(
-            "generic.simcfg_document", {"action": "reload", "file_path": simcfg})
-        reloaded = bool(isinstance(reload, dict) and reload.get("done"))
-        if isinstance(reload, dict) and reload.get("success") is False:
-            return {"success": False, "error": "NOT_RELOADED", "simcfg": simcfg,
-                    "message": "the file was changed but Altium did not reload "
-                               "it, so the next run would use its old settings",
-                    "detail": reload}
-        return {"success": True, "simcfg": simcfg, "created": created,
-                "reloaded": reloaded, "set": changes}
+    @mcp.tool()
+    async def sim_get_probes() -> dict[str, Any]:
+        """List the probes on the focused project's sheets.
+
+        Each probe with its sheet, location and parameters. ``simulation``
+        is true for a probe the simulator uses (it carries
+        SimulationProbe: V, I, P, VD+ or VD-, given as ``kind``);
+        ProbeName is the node Altium resolved ("Empty Probe" when it sits
+        off a wire), ProbeCustomName the name shown instead, and
+        ProbeValueDisplay the value shown on the sheet. Sheets that are
+        not open are listed in ``not_loaded`` (proj_load_sheets opens
+        them).
+
+        Returns:
+            Dict with project, count, probes and not_loaded.
+        """
+        return await get_bridge().send_command_async("generic.get_probes", {})
 
     @mcp.tool()
     async def sim_get_results(

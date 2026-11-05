@@ -168,3 +168,58 @@ def test_a_pair_whose_ends_disagree_on_polarity_is_left_to_the_router():
     entry = rep["pairs"][0]
     assert not entry["routed"] and entry["reason"] == "polarity swap needed"
     assert drc.completion == 1.0 and not drc.violations
+
+
+def test_a_usb_c_pair_with_two_pads_a_line_is_routed_coupled():
+    # A USB-C receptacle carries each data line twice, interleaved for
+    # either plug orientation: B7 (D-), A6 (D+), A7 (D-), B6 (D+) at 0.5 mm.
+    # A demo board's pair fell back to two loose tracks: both ends were
+    # picked on the connector ("two lanes come too close").
+    b = _pair_board()
+    b.pads = [_long("J1", "B7", 80.3, 120, "USB_DM", 11.8, 43),
+              _long("J1", "A6", 100, 120, "USB_DP", 11.8, 43),
+              _long("J1", "A7", 119.7, 120, "USB_DM", 11.8, 43),
+              _long("J1", "B6", 139.4, 120, "USB_DP", 11.8, 43),
+              _long("U1", "1", 600, 399.7, "USB_DP", 40, 11.8),
+              _long("U1", "2", 600, 380.0, "USB_DM", 40, 11.8),
+              _pad("D1", "1", 330, 160, "USB_DP", size=12.0),
+              _pad("D1", "2", 349.7, 160, "USB_DM", size=12.0)]
+    r, out, drc, rep = _route(b)
+    entry = rep["pairs"][0]
+    assert entry["routed"], entry
+    assert drc.completion == 1.0 and not drc.violations
+
+
+def test_a_pair_is_followed_through_an_esd_part():
+    """The round LED board's USBLC6 joined USB_DP/USB_DM (pins 1, 3) to the
+    connector's NetJ1_A6/NetJ1_A7 (pins 6, 4): only the named half was
+    routed as a pair, the connector half as two loose tracks."""
+    b = _board()
+    esd = {"1": "USB_DP", "2": "GND", "3": "USB_DM", "4": "NetJ1_A7",
+           "5": "VBUS", "6": "NetJ1_A6"}
+    mcu = {str(i): f"N{i}" for i in range(1, 21)}
+    mcu.update({"17": "USB_DM", "18": "USB_DP"})
+    b.pads = ([_pad("U1", k, 50 + 10 * int(k), 50, n) for k, n in esd.items()]
+              + [_pad("U3", k, 50 + 10 * int(k), 150, n) for k, n in mcu.items()]
+              + [_pad("J1", "A6", 300, 50, "NetJ1_A6"), _pad("J1", "A7", 310, 50, "NetJ1_A7")])
+    got = {(p, n, src) for _, p, n, src in find_pairs(b)}
+    assert ("NetJ1_A6", "NetJ1_A7", "through U1") in got
+    # The MCU mirrors its USB pins onto N3/N4: not a pass-through part.
+    assert not any("U3" in src for _, _, src in got)
+    b.diff_pairs = [DiffPair("USB", "USB_DP", "USB_DM")]
+    got = [(p, n, src) for _, p, n, src in find_pairs(b)]
+    assert got == [("USB_DP", "USB_DM", "defined"), ("NetJ1_A6", "NetJ1_A7", "through U1")]
+
+
+def test_the_plane_beside_a_pair_is_named():
+    """07b's bottom-layer pair ran over the +5 V plane while the summary
+    said ground; the report never said which plane it had."""
+    from eda_agent.layout.model import Layer
+    from eda_agent.layout.route.diffpair import reference_plane
+    b = _board()
+    b.layers = [Layer("TopLayer", "signal", 0), Layer("IP1", "plane", 1, "GND"),
+                Layer("IP2", "plane", 2, "+5V"), Layer("BottomLayer", "signal", 3)]
+    assert reference_plane(b, "BottomLayer") == [
+        {"layer": "IP2", "net": "+5V", "layers_away": 1}]
+    assert reference_plane(b, "TopLayer") == [
+        {"layer": "IP1", "net": "GND", "layers_away": 1}]

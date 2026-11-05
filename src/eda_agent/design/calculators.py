@@ -165,6 +165,10 @@ def via_inductance(plane_spacing_mils: float, via_diameter_mils: float,
 
     Only the part inside the interplane space; pads and traces add their
     own. Johnson's measurements matched to within about 10 %."""
+    for value in (plane_spacing_mils, via_diameter_mils, return_spacing_mils):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(value):
+            return _bad("plane spacing, diameter and return spacing are numbers")
     h, s, r = plane_spacing_mils, return_spacing_mils, via_diameter_mils / 2.0
     if h <= 0 or r <= 0 or s <= r:
         return _bad("plane spacing and diameter must be positive, and the "

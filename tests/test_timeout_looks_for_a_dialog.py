@@ -37,6 +37,9 @@ def bridge(tmp_path, monkeypatch):
     b = AltiumBridge()
     b.config.workspace_dir = tmp_path
     monkeypatch.setattr(b, "_note_fault", lambda *a, **k: None)
+    # No pointer naming another workspace: an earlier test in the session
+    # may have written one, and the timeout would then name it instead.
+    monkeypatch.setenv("EDA_AGENT_POINTER_FILE", str(tmp_path / "no-pointer.txt"))
     return b
 
 

@@ -577,6 +577,15 @@ Begin
     Else Result := Lowest;
 End;
 
+{ SessionFocusAction -- copied VERBATIM from Main.pas (test_session_document checks it). }
+Function SessionFocusAction(Pin : String; Current : String) : String;
+Begin
+    Result := 'keep';
+    If Pin = '' Then Exit;
+    If UpperCase(Pin) = UpperCase(Current) Then Exit;
+    Result := 'restore';
+End;
+
 { ---------------------------------------------------------------------------
   IEEE pin-symbol converters, copied VERBATIM from scripts/altium/Utils.pas.
   These decide whether an active-low pin gets its inversion bubble and a clock
@@ -961,40 +970,6 @@ Begin
     Else If Orient = 3 Then Result := RootY - PinLen;
 End;
 
-{ --- From Dispatcher.pas. Kept byte-identical to the original; }
-{ tests/test_netlist_cache_staleness.py fails if they diverge.  }
-Function ActionHasPrefix(Verb : String; Prefix : String) : Boolean;
-Begin
-    Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
-End;
-
-Function CommandIsReadOnly(Command : String) : Boolean;
-Var
-    Verb : String;
-    DotPos : Integer;
-Begin
-    Verb := LowerCase(Trim(Command));
-    DotPos := Pos('.', Verb);
-    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
-
-    Result := ActionHasPrefix(Verb, 'get_')
-           Or ActionHasPrefix(Verb, 'list_')
-           Or ActionHasPrefix(Verb, 'query')
-           Or ActionHasPrefix(Verb, 'read_')
-           Or ActionHasPrefix(Verb, 'find_')
-           Or ActionHasPrefix(Verb, 'count')
-           Or ActionHasPrefix(Verb, 'audit_')
-           Or ActionHasPrefix(Verb, 'check_')
-           Or ActionHasPrefix(Verb, 'calc_')
-           Or ActionHasPrefix(Verb, 'export_')
-           Or ActionHasPrefix(Verb, 'render_')
-           Or ActionHasPrefix(Verb, 'probe_')
-           Or ActionHasPrefix(Verb, 'inspect_')
-           Or ActionHasPrefix(Verb, 'diff_')
-           Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
-End;
-
 function B64Decode(S : String) : String;
 begin
   { Convention: '_' means empty string (avoids empty base64 fields) }
@@ -1075,14 +1050,6 @@ begin
                                     StrToInt(B64Decode(Parts[3]))));
     end
 
-    { --- CommandIsReadOnly: args = command --- }
-    else if FnName = 'CommandIsReadOnly' then
-    begin
-      if CommandIsReadOnly(B64Decode(Parts[1])) then
-        ResultStr := 'true'
-      else
-        ResultStr := 'false';
-    end
 
     { --- ExtractJsonValue: args = json_str, key --- }
     else if FnName = 'ExtractJsonValue' then
@@ -1108,6 +1075,12 @@ begin
       ResultStr := PickSession(B64Decode(Parts[1]), B64Decode(Parts[2]),
                                StrToInt(B64Decode(Parts[3])),
                                StrToInt(B64Decode(Parts[4])));
+    end
+
+    { --- SessionFocusAction: args = pin, current --- }
+    else if FnName = 'SessionFocusAction' then
+    begin
+      ResultStr := SessionFocusAction(B64Decode(Parts[1]), B64Decode(Parts[2]));
     end
 
     { --- GetBatchTail: args = op, key --- }

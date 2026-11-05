@@ -98,7 +98,8 @@ def test_a_clean_template_is_drawn_in_order(tools):
         "generic.set_sch_components_parameters")]
     assert order == sorted(order)
     stamps = dict(bridge.calls)["generic.set_sch_components_parameters"]["stamps"]
-    assert "designator=R1;Comment=10k" in stamps
+    # Value writes the Comment and the part's own Value parameter.
+    assert "designator=R1;Value=10k" in stamps
     ports = dict(bridge.calls)["generic.place_power_ports"]["ports"]
     assert "text=GND" in ports and "style=gnd_power;orientation=3" in ports
     assert "style=bar;orientation=1" in ports
@@ -181,7 +182,7 @@ def test_the_plan_fills_the_parts_and_stamps_its_part_data(tools):
     stamps = dict(bridge.calls)["generic.set_sch_components_parameters"]["stamps"]
     r1 = next(s for s in stamps.split("~~") if s.startswith("designator=R1;"))
     for field in ("Manufacturer=Yageo", "Manufacturer Part Number=RC0603FR-0710KL",
-                  "Footprint=R0603", "Value=10k", "Comment=10k"):
+                  "Footprint=R0603", "Value=10k"):
         assert field in r1
     # R3 is on the plan's sheet and not drawn: said, not refused.
     assert any("R3" in n["where"] for n in out["plan_notes"])
@@ -207,3 +208,35 @@ def test_a_part_the_plan_lacks_is_refused(tools):
         {"designator": "C9", "lib_reference": "CAP", "x": 0, "y": 0}])
     out = asyncio.run(fns["sch_preview_template"](extra, plan_json=_plan()))
     assert not out["ok"] and "C9 is not a part of the plan" in out["errors"][0]
+
+
+def test_a_redraw_keeps_each_parts_unique_id(tools):
+    """A follow-up take redrew two sheets and set the ids back one call at
+    a time afterwards; 7 parts still came back unlinked from the board."""
+    fns, mod, mp, tmp = tools
+    ids = {"R1": "AAAAAAAA", "R2": "BBBBBBBB"}
+
+    class _IdBridge(_Bridge):
+        def __init__(self):
+            super().__init__()
+            self.set: dict[str, str] = {}
+
+        async def send_command_async(self, command, params=None, **kw):
+            if command == "generic.set_component_unique_id":
+                # R2's write does not take.
+                if params["designator"] != "R2":
+                    self.set[params["designator"]] = params["unique_id"]
+            if command == "generic.query_objects":
+                self.calls.append((command, dict(params)))
+                return {"objects": [{"Designator.Text": r, "UniqueId": self.set.get(r, "NEW")}
+                                    for r in ("R1", "R2")]}
+            return await super().send_command_async(command, params, **kw)
+
+    bridge = _IdBridge()
+    mp.setattr(mod, "get_bridge", lambda: bridge)
+    template = {**TEMPLATE, "parts": [dict(p, unique_id=ids[p["designator"]])
+                                      for p in TEMPLATE["parts"]]}
+    out = asyncio.run(fns["sch_draw_template"](template, "S.SchDoc",
+                                               png_path=str(tmp / "p.png")))
+    assert out["unique_ids"] == {"set": 1, "failed": 1, "failed_refdes": ["R2"]}
+    assert out["ok"] is False, "a part left unlinked is a failed redraw"

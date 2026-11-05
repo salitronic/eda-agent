@@ -5,7 +5,7 @@
 ``proj_set_parameter`` writes through ``DM_AddParameter``: a user-defined
 parameter, the kind a title block references. Project OPTIONS are a
 different mechanism entirely, reached through their own ``DM_`` accessors
-and mostly read-only from a script.
+(proj_project_setup sets the ones this bridge can write).
 
 WHY THIS EXISTS. Asking ``proj_set_parameter`` for ``hierarchy_mode``
 creates a parameter called ``hierarchy_mode``, reads it back, verifies
@@ -28,14 +28,13 @@ from typing import Optional
 _OPTIONS = {
     "hierarchy_mode": (
         "the project's Net Identifier Scope, read by proj_get_options as "
-        "hierarchy_mode (0 = Flat, 1 = GlobalScope). It is READ-ONLY here: "
-        "Project.pas has no setter and no DM_SetHierarchyMode exists in "
-        "the reference corpus. Change it in Project > Project Options > "
-        "Options, or drive that dialog with app_click_menu plus "
-        "app_set_dropdown"),
+        "hierarchy_mode. Set it with proj_project_setup hierarchy_mode "
+        "(automatic, flat, hierarchical, global, strict_hierarchical), "
+        "then proj_save"),
     "output_path": (
         "the project's output path, read by proj_get_options. Setting a "
-        "parameter of this name does not move the output directory"),
+        "parameter of this name does not move the output directory; "
+        "proj_project_setup output_path does"),
     "project_name": (
         "read by proj_get_options and derived from the file name. A "
         "parameter of this name does not rename the project"),

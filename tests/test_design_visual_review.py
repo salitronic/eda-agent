@@ -118,9 +118,9 @@ async def test_auto_detects_pcb(tmp_path, monkeypatch):
     out = await tool(output_path=str(tmp_path / "r.svg"), rasterize=False)
     assert out["target"] == "pcb"
     assert out["counts"] == {"tracks": 9}
-    # PCB rubric points at the outline audit.
+    # PCB rubric points at the outline audit, by the tool that runs it.
     audits = {a for item in out["rubric"] for a in item["audits"]}
-    assert "audit_find_components_outside_board_outline" in audits
+    assert "audit kind=components_outside_board_outline" in audits
 
 
 @pytest.mark.asyncio

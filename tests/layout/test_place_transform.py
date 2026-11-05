@@ -72,7 +72,11 @@ def test_flipping_twice_puts_everything_back():
                     assert y[k] == pytest.approx(x[k], abs=1e-9), (key, k)
                 else:
                     assert y[k] == x[k] or k == "copper", (key, k)
-    assert after["components"][0]["courtyard"] == pytest.approx(before["components"][0]["courtyard"])
+    # Point by point: pytest 9.2 refuses approx on a list of points.
+    was, now = before["components"][0]["courtyard"], after["components"][0]["courtyard"]
+    assert len(now) == len(was)
+    for p, q in zip(was, now):
+        assert tuple(q) == pytest.approx(tuple(p))
 
 
 def test_a_flipped_pad_shape_lands_where_its_mirror_image_is():

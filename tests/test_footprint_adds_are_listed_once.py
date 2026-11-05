@@ -90,5 +90,5 @@ def test_settling_makes_the_same_footprint_current_again():
 
 def test_the_self_settling_writer_does_restore_the_footprint():
     body = _body(_text(), "Lib_RedrawAssembly")
-    tail = body[body.index("PCBServer.PostProcess"):]
+    tail = body[body.index("PcbEndEdit(0)"):]
     assert "PcbLib.SetState_CurrentComponent(SavedCurrent)" in tail

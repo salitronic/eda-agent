@@ -35,7 +35,9 @@ def test_kicad_backend_registers_calculators():
     from eda_agent.tools import register_backend
     m = FastMCP("test")
     register_backend(m, "kicad")
-    names = {t.name for t in asyncio.run(m.list_tools())}
+    # The calculators are kinds of pcb_calc, kept by their own names.
+    assert "pcb_calc" in {t.name for t in asyncio.run(m.list_tools())}
+    names = set(m.hidden)
     assert {"pcb_calc_trace_width_for_current", "pcb_calc_termination",
             "pcb_calc_thermal_vias", "pcb_calc_trace_width_for_impedance",
             "pcb_calc_length_match",
@@ -51,7 +53,8 @@ def test_both_backend_does_not_double_register_calculators():
     # Would raise on a duplicate tool name if calc were double-registered.
     register_backend(m, "both")
     names = [t.name for t in asyncio.run(m.list_tools())]
-    assert names.count("pcb_calc_thermal_vias") == 1
+    assert names.count("pcb_calc") == 1
+    assert "pcb_calc_thermal_vias" in m.hidden
 
 
 def test_trace_width_for_current_and_roundtrip(calc_mcp):

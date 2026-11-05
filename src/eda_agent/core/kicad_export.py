@@ -17,6 +17,8 @@ import os
 import time
 from typing import Any, Optional
 
+from ..noconsole import no_window
+
 _CLI_TIMEOUT = 600.0
 
 
@@ -27,7 +29,8 @@ async def run_cli(cli_path: str, args: list[str],
         raise RuntimeError(f"kicad-cli not found at {cli_path}")
     proc = await asyncio.create_subprocess_exec(
         cli_path, *args,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        **no_window())
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:

@@ -41,10 +41,32 @@ class _Proc:
     def create_time(self):
         return self._created
 
+    def parent(self):
+        # ``parents`` maps a pid to its parent's pid, or None for a server
+        # whose session is gone; a pid not in it has a live session.
+        up = self.parents.get(self.pid, 1)
+        return None if up is None else _Parent(up, self.parents)
+
+    parents: dict = {}
+
+
+class _Parent:
+    def __init__(self, pid, parents):
+        self.pid = pid
+        self._parents = parents
+
+    def name(self):
+        return "eda-agent.exe" if self.pid in self._parents else "claude.exe"
+
+    def parent(self):
+        up = self._parents.get(self.pid, 1)
+        return None if up is None else _Parent(up, self._parents)
+
 
 @pytest.fixture
 def procs(monkeypatch):
     _Proc.table = {os.getpid(): STARTED}
+    _Proc.parents = {}
     monkeypatch.setattr(reg.psutil, "Process", _Proc)
     return _Proc.table
 
@@ -70,7 +92,30 @@ def test_a_server_records_itself_and_is_not_its_own_duplicate(tmp_path, procs):
 def test_a_live_other_server_is_listed_with_its_start(tmp_path, procs):
     procs[40001] = STARTED - 3600
     _write(tmp_path, 40001, STARTED - 3600)
-    assert reg.others(tmp_path) == [{"pid": 40001, "started": "2026-10-01T09:00:00"}]
+    assert reg.others(tmp_path) == [{"pid": 40001, "started": "2026-10-01T09:00:00",
+                                     "orphaned": False}]
+
+
+def test_a_server_whose_session_is_gone_is_orphaned(procs):
+    procs[40010] = STARTED
+    _Proc.parents = {40010: None}
+    assert reg.orphaned(40010)
+
+
+def test_a_server_behind_a_dead_launcher_is_orphaned(procs):
+    procs[40011] = STARTED
+    _Proc.parents = {40011: 50011, 50011: None}      # launcher with no session
+    assert reg.orphaned(40011)
+
+
+def test_a_server_of_a_live_session_is_not(procs):
+    procs[40012] = STARTED
+    _Proc.parents = {40012: 50012}                   # launcher under claude.exe
+    assert not reg.orphaned(40012)
+
+
+def test_a_vanished_process_is_not_called_orphaned(procs):
+    assert not reg.orphaned(49999)
 
 
 def test_stale_records_are_removed(tmp_path, procs):
@@ -98,10 +143,19 @@ def test_an_unreadable_record_is_skipped_not_deleted(tmp_path, procs):
 
 
 def test_the_warning_names_pids_and_says_nothing_was_stopped():
-    text = reg.duplicate_warning([{"pid": 7, "started": "2026-09-18T08:00:00"}])
+    text = reg.duplicate_warning([
+        {"pid": 7, "started": "2026-09-18T08:00:00", "orphaned": True},
+        {"pid": 8, "started": "2026-09-18T09:00:00", "orphaned": False}])
     assert "pid 7" in text and "2026-09-18T08:00:00" in text
+    assert "pid 8" not in text, "a server of a running session is normal"
+    assert "1 of the 2" in text
     assert "Nothing was stopped" in text
     assert reg.duplicate_warning([]) is None
+
+
+def test_servers_of_running_sessions_raise_no_warning():
+    assert reg.duplicate_warning([{"pid": 8, "orphaned": False},
+                                  {"pid": 9, "orphaned": False}]) is None
 
 
 def _tools(monkeypatch, servers):
@@ -124,7 +178,7 @@ def _tools(monkeypatch, servers):
 
 @pytest.mark.parametrize("tool", ["app_ping", "app_get_status"])
 def test_both_tools_carry_the_warning(monkeypatch, tool):
-    servers = [{"pid": 40001, "started": "2026-09-18T08:00:00"}]
+    servers = [{"pid": 40001, "started": "2026-09-18T08:00:00", "orphaned": True}]
     out = asyncio.run(_tools(monkeypatch, servers)[tool]())
     assert out["other_servers"] == servers
     assert any("pid 40001" in w for w in out["warnings"])

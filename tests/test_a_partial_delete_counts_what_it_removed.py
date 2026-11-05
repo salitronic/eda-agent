@@ -64,7 +64,7 @@ def test_the_fault_is_cleared_per_request():
 
 def test_the_batch_counts_a_failed_operation_too():
     body = load(_ALT / "Generic.pas")["Gen_BatchDelete"]
-    read = body.index("OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);")
+    read = body.index("OpMatched := StrToIntDef(JsonValueAnywhere(OpResult, 'matched'), 0);")
     assert read < body.index("Pos('\"success\":false', OpResult)"), (
         "matched is read only on success, so a partial delete counts 0")
     assert "'partial: '" in body

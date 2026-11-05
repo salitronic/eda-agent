@@ -123,6 +123,51 @@ def test_a_path_resolves_in_english_or_translated(install):
     assert altium_menus.resolve("Design|Rules", "SCH") is None
 
 
+#: A Place menu built as Altium builds the schematic one: copied onto the
+#: menu bar with an id suffix, then changed by an Insertion and a Deletion
+#: that name the suffixed ids.
+_SCH_RCS = (
+    "PL PLSch:Wire Command='Sch:PlaceWire' Caption='&Wire' End\n"
+    "PL PLSch:Arc Command='Sch:PlaceArc' Caption='&Arc' End\n"
+    "PL PLSch:Note Command='Sch:PlaceNote' Caption='&Note' End\n"
+    "PL PLSch:Comment Command='Sch:CreateCommentThread' Caption='Comment...'\n"
+    "    Shortcut1='Ctrl+Alt+C' Params='Source=PlaceMenu' End\n"
+    "Tree MNSchematic_Place Caption='&Place'\n"
+    "    Link MNSchematic_Place10 PLID='PLSch:Wire' End\n"
+    "    Tree MNSchematic_PlaceTools Caption='&Drawing Tools'\n"
+    "        Link MNSchematic_PlaceTools1 PLID='PLSch:Arc' End\n"
+    "    End\n"
+    "    Link MNSchematic_Place30 PLID='PLSch:Note' End\n"
+    "End\n"
+    "Tree MNSchematicMenu Caption='Schematic Menu' TopLevel=True\n"
+    "    TreeCopy MNSchematic_Place2 OriginalID=MNSchematic_Place IDSuffix='_Menu' End\n"
+    "End\n"
+    "Insertion MNSchematic_Place_Ins1 TargetID='MNSchematic_Place_Menu'\n"
+    "    RefID0='MNSchematic_PlaceTools_Menu' InsertType='After'\n"
+    "    Link MNSchematic_Place190 PLID='PLSch:Comment' End\n"
+    "End\n"
+    "Insertion MNSchematic_Place_Ins2 TargetID='MNSchematic_Place_EsdMenu'\n"
+    "    RefID0='MNSchematic_PlaceTools_EsdMenu' InsertType='After'\n"
+    "    Link MNSchematic_Place200 PLID='PLSch:Wire' End\n"
+    "End\n"
+    "Deletion MNSchematic_Del1 TargetID='MNSchematic_Place_Menu'\n"
+    "    DeleteID='MNSchematic_Place30_Menu' End\n")
+
+
+def test_insertions_and_deletions_shape_the_menu(install):
+    """Place > Comment reaches the schematic menu only through an
+    Insertion. Read as a one-line leaf, its Link was dropped and the item
+    was missing from every search."""
+    (install / "System" / "AdvSch.rcs").write_text(_SCH_RCS, encoding="latin-1")
+    paths = ["|".join(i.path) for i in altium_menus.menu_items("SCH")]
+    assert paths == ["Place|Wire", "Place|Drawing Tools|Arc", "Place|Comment"]
+    hit = altium_menus.resolve("Place|Comment...", "SCH")
+    assert (hit.command, hit.params, hit.shortcut) == (
+        "Sch:CreateCommentThread", "Source=PlaceMenu", "Ctrl+Alt+C")
+    assert [h["path"] for h in altium_menus.search("comment", "SCH")] == \
+        ["Place|Comment"]
+
+
 def test_a_misspelt_path_gets_the_nearest(install):
     assert [h["path"] for h in altium_menus.nearest("Desgn|Rules", "PCB")] \
         == ["Design|Rules"]
@@ -152,7 +197,7 @@ def test_a_later_session_reads_the_cache_until_altium_changes(
     altium_locale.translations("&Tools")
     cached = sorted(p.name.split("-")[0] for p in
                     (tmp_path / "cache").glob("*.json"))
-    assert cached == ["locale", "menus"]
+    assert cached == ["locale", altium_menus._CACHE_FORMAT]
 
     # A new session: nothing in memory, and the files cannot be parsed.
     altium_menus._items.cache_clear()

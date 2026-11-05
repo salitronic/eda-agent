@@ -102,6 +102,30 @@ def _alive(pid: int, created: Any) -> bool:
         return True
 
 
+def orphaned(pid: int) -> bool:
+    """Whether the session that started this server is gone.
+
+    A server is started by its Claude session, directly or through the
+    eda-agent launcher, and serves only it. With nothing above it the
+    server is left over and polling for nobody. Measured 2026-10-23: all
+    22 servers on this machine belonged to 11 live sessions, two each
+    (the full and the minimal server), and a warning that called them
+    worth closing sent sessions hunting for leftovers that did not exist.
+    Anything unreadable counts as not orphaned.
+    """
+    try:
+        parent = psutil.Process(pid).parent()
+        if parent is None:
+            return True
+        if parent.name().lower().startswith("eda-agent"):
+            return parent.parent() is None
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return False
+    return False
+
+
 def others(workspace: Path) -> list[dict[str, Any]]:
     """Other live servers recorded in this workspace, oldest pid first.
 
@@ -124,7 +148,8 @@ def others(workspace: Path) -> list[dict[str, Any]]:
         if not isinstance(pid, int) or pid == me:
             continue
         if _alive(pid, record.get("create_time")):
-            found.append({"pid": pid, "started": record.get("started")})
+            found.append({"pid": pid, "started": record.get("started"),
+                          "orphaned": orphaned(pid)})
         else:
             try:
                 entry.unlink()
@@ -135,11 +160,12 @@ def others(workspace: Path) -> list[dict[str, Any]]:
 
 def duplicate_warning(servers: list[dict[str, Any]]) -> Optional[str]:
     """The warning for ``others()``, or None when there are none."""
-    if not servers:
+    left = [s for s in servers if s.get("orphaned")]
+    if not left:
         return None
     listed = ", ".join(f"pid {s['pid']} (started {s.get('started') or 'unknown'})"
-                       for s in servers)
-    return (f"{len(servers)} other eda-agent server(s) share this workspace "
-            f"and its request directory: {listed}. Several sessions at once "
-            f"are fine; one left running from an old session is worth "
-            f"closing. Nothing was stopped.")
+                       for s in left)
+    return (f"{len(left)} of the {len(servers)} other eda-agent servers on "
+            f"this workspace outlived the session that started them: {listed}. "
+            f"They poll for nobody and can be ended. The rest belong to "
+            f"running sessions, which is normal. Nothing was stopped.")

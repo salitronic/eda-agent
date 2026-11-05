@@ -113,8 +113,11 @@ def test_placed_component_labels_can_be_shown_and_moved() -> None:
     designator left placed parts without one."""
     set_body = GENERIC["SetSchProperty"]
     get_body = GENERIC["GetSchProperty"]
-    for name in ("Designator.IsHidden", "Designator.Location.X",
-                 "Comment.IsHidden", "Comment.Location.Y"):
-        assert f"'{name}'" in set_body, name
-        assert f"'{name}'" in get_body, name
+    # One parser answers every label name, sheet symbols' too; it is run by
+    # fpc on these names in test_labels_are_autopositioned.
+    assert "SchLabelPropWhich(PropName) <> ''" in set_body
+    assert "SchLabelPropWhich(PropName) <> ''" in get_body
+    parser = GENERIC["SchLabelPropWhich"]
+    for field in ("IsHidden", "Location.X", "Location.Y", "Autoposition"):
+        assert f"'{field}'" in parser, field
     assert "Autoposition := False" in GENERIC["SetSchComponentLabelProp"]

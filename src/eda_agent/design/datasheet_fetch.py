@@ -28,6 +28,7 @@ import datetime as _dt
 import hashlib
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,8 +43,13 @@ __all__ = ["MAX_BYTES", "TIMEOUT_S", "datasheet_dir", "fetch_datasheet",
 #: Largest datasheet accepted, bytes. Big enough for a full family
 #: reference manual, small enough to bound memory and disk.
 MAX_BYTES = 50 * 1024 * 1024
-#: Seconds to wait for the server.
-TIMEOUT_S = 60.0
+#: Seconds to wait on the server for each step (connect, each read). Per
+#: step, so a slow download that keeps moving still finishes; at 60 a host
+#: that never answers (st.com) cost a minute on every try.
+TIMEOUT_S = 20.0
+#: How long a host that failed to answer is answered from memory.
+HOST_FAILURE_MEMORY_S = 600.0
+_failed_hosts: dict[str, tuple[float, str]] = {}
 #: The header is looked for in the first kilobyte rather than at byte 0,
 #: so a server that prepends a few bytes of whitespace still passes.
 _HEADER_WINDOW = 1024
@@ -145,6 +151,15 @@ def fetch_datasheet(url: str, part_number: str = "", *,
         except (OSError, ValueError):
             stale = "the cached sidecar could not be read"
 
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    seen = _failed_hosts.get(host)
+    if seen and time.monotonic() - seen[0] < HOST_FAILURE_MEMORY_S:
+        return _refuse(
+            f"{host} did not answer {int(time.monotonic() - seen[0])} s ago "
+            f"({seen[1]}), so it was not tried again. Download the datasheet "
+            "in a browser and read the local file, or try another source",
+            url=url, host_unreachable=True)
+
     request = urllib.request.Request(url, headers={
         "User-Agent": _UA, "Accept": "application/pdf,*/*;q=0.8"})
     chunks: list[bytes] = []
@@ -174,8 +189,11 @@ def fetch_datasheet(url: str, part_number: str = "", *,
     except urllib.error.HTTPError as exc:
         return _refuse(f"HTTP {exc.code} from {url}", url=url)
     except urllib.error.URLError as exc:
+        _failed_hosts[host] = (time.monotonic(), str(exc.reason))
         return _refuse(f"cannot reach {url}: {exc.reason}", url=url)
     except (OSError, ValueError) as exc:
+        if isinstance(exc, (TimeoutError, ConnectionError)):
+            _failed_hosts[host] = (time.monotonic(), str(exc) or type(exc).__name__)
         return _refuse(f"cannot fetch {url}: {exc}", url=url)
 
     problem = _check_url(final_url)

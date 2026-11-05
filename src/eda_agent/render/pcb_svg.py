@@ -473,6 +473,15 @@ def _render_layer(layer: str, bucket: dict[str, list[dict[str, Any]]],
         if not pts:
             continue
         net = r.get("net", "")
+        if layer == "MultiLayer" and not net:
+            # Not copper: the board's own region (a shaped board carries
+            # one the size of the outline). Filled, it was drawn over every
+            # layer and a routed board rendered as vias on a grey disc.
+            out.append(
+                f'<polygon class="region region-outline" data-net="" '
+                f'points="{pts}" fill="none" stroke="{color}" stroke-width="4"/>'
+            )
+            continue
         out.append(
             f'<polygon class="region" data-net="{_xml(net)}" '
             f'points="{pts}" fill="{color}" stroke="none"/>'

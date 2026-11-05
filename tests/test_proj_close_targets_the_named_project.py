@@ -97,7 +97,11 @@ def test_success_requires_that_nothing_else_closed(close):
         "the failure reply does not name the projects that closed")
 
 
-def test_focusing_only_shows_documents_already_loaded(project):
+def test_focusing_shows_a_loaded_member_before_opening_one(project):
+    """A loaded member is shown first. Only when none is loaded is one
+    opened, through the Client API, which keeps the project membership:
+    a project with no loaded documents could not be closed at all, and
+    loading a member (as load_project_sheets does) let it close."""
     body = project["FocusProjectForClose"]
     assert "Client.GetDocumentByPath(Path)" in body
     assert "Client.ShowDocument(ServerDoc)" in body
@@ -106,7 +110,9 @@ def test_focusing_only_shows_documents_already_loaded(project):
     assert body.index("Client.ShowDocument(ServerDoc)") < body.rindex(
         "FocusedProjectPathIs(Target)"), (
         "focus is assumed rather than checked after showing a document")
-    for opener in ("OpenDocument", "OpenObject"):
+    assert body.index("Client.GetDocumentByPath(Path)") < body.index(
+        "Client.OpenDocument("), "a member is opened before a loaded one is tried"
+    for opener in ("RunProcess", "OpenObject"):
         assert opener not in body, (
             f"{opener} loads a member as a free document and focuses nothing")
 

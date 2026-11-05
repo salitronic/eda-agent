@@ -56,19 +56,31 @@ def test_request_reader_avoids_ad26_sharing_violation_modal():
     assert "LoadTextFile(SL, FilePath)" in _pascal_function("ReadFileContent")
 
 
+# The Layer Stack Manager document has no load-from-string, so the stack
+# resync writes its model to a file and loads that. It is the document's own
+# reader, not a TStringList, and the file is one the handler has just written.
+_LOAD_FROM_FILE_EXEMPT = {("PCB.pas", "Doc.LoadFromFile(Path, 0);")}
+
+
 def test_no_script_reads_a_file_with_load_from_file():
     """Every file read goes through LoadTextFile, so no reader can raise the
     modal that LoadFromFile's failed open produced on AD26."""
-    offenders = [
-        f"{pas.name}:{n}"
-        for pas in sorted(_SCRIPTS.glob("*.pas"))
-        if pas.name != "Altium_MCP.pas"
-        for n, line in enumerate(
-            pas.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1
-        )
-        if ".LoadFromFile(" in line
-    ]
+    offenders = []
+    exempt_seen = set()
+    for pas in sorted(_SCRIPTS.glob("*.pas")):
+        if pas.name == "Altium_MCP.pas":
+            continue
+        lines = pas.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        for n, line in enumerate(lines, 1):
+            if ".LoadFromFile(" not in line:
+                continue
+            key = (pas.name, line.strip())
+            if key in _LOAD_FROM_FILE_EXEMPT:
+                exempt_seen.add(key)
+            else:
+                offenders.append(f"{pas.name}:{n}")
     assert offenders == []
+    assert exempt_seen == _LOAD_FROM_FILE_EXEMPT, "an exemption no longer matches"
 
 
 class TestRequestFormat:

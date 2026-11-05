@@ -44,9 +44,10 @@ def _json_type(annotation: Any) -> str:
     text = str(annotation)
     if annotation is inspect.Parameter.empty:
         return "any"
-    for needle, name in (("bool", "boolean"), ("int", "integer"),
-                         ("float", "number"), ("str", "string"),
-                         ("list", "array"), ("dict", "object")):
+    # The container first: "list[str]" is an array, not a string.
+    for needle, name in (("list", "array"), ("dict", "object"),
+                         ("bool", "boolean"), ("int", "integer"),
+                         ("float", "number"), ("str", "string")):
         if needle in text:
             return name
     return "any"
@@ -99,15 +100,18 @@ class ToolRegistry:
         """
         self._delegate = delegate
         self._tools: dict[str, ToolSpec] = {}
+        self._meta: dict[str, Any] = {}
 
     # -- registration -------------------------------------------------
     def tool(self, *args: Any, **kwargs: Any):
         """Stand in for ``@mcp.tool()``."""
         def deco(fn: Callable) -> Callable:
+            # The tool as an advertised one runs: with ``items`` (bulk.py).
+            from .bulk import with_items
             self._tools[fn.__name__] = ToolSpec(
                 name=fn.__name__,
                 description=inspect.getdoc(fn) or "",
-                fn=fn,
+                fn=with_items(fn, fn.__name__),
             )
             if self._delegate is not None:
                 self._delegate.tool(*args, **kwargs)(fn)
@@ -139,10 +143,15 @@ class ToolRegistry:
         spec = self._tools.get(name)
         if spec is None:
             raise KeyError(f"unknown tool: {name}")
-        result = spec.fn(**(arguments or {}))
-        if inspect.isawaitable(result):
-            result = await result
-        return result
+        # The arguments checked against the tool's types, as the advertised
+        # tool's are: a bare "A" for a list[str] is refused, not walked as
+        # the list "A".
+        meta = self._meta.get(name)
+        if meta is None:
+            from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+            meta = self._meta[name] = func_metadata(spec.fn)
+        return await meta.call_fn_with_arg_validation(
+            spec.fn, inspect.iscoroutinefunction(spec.fn), arguments or {}, None)
 
     # -- plain accessors ----------------------------------------------
     @property

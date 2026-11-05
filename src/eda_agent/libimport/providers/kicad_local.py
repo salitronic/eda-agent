@@ -129,6 +129,15 @@ def _library_dir(kind: str, env_vars: tuple[str, ...]) -> Optional[Path]:
     return None
 
 
+def _wildcard_match(symbol: str, needle: str) -> bool:
+    """Whether ``needle`` (lower case) is ``symbol`` with each of its x
+    standing for one letter or digit, as KiCad names a part family."""
+    low = symbol.lower()
+    if "x" not in low or len(low) != len(needle):
+        return False
+    return re.fullmatch(re.escape(low).replace("x", "[a-z0-9]"), needle) is not None
+
+
 def _symbol_dir() -> Optional[Path]:
     return _library_dir(
         "symbols", ("EDA_AGENT_KICAD_SYMBOL_DIR", "KICAD_SYMBOL_DIR"))
@@ -276,10 +285,18 @@ class KicadLocalProvider:
         if not needle:
             return []
         hits: list[PartHit] = []
+        wild: list[PartHit] = []
+        cap = max(1, int(limit))
         for lib, symbol in self._index():
-            if needle not in symbol.lower() and needle not in lib.lower():
+            exact = needle in symbol.lower() or needle in lib.lower()
+            # KiCad names a family with x for the letters that vary
+            # (STM32F042F6Px); a full part number searched for missed it.
+            if not exact and not (len(wild) < cap and _wildcard_match(symbol, needle)):
                 continue
-            hits.append(PartHit(
+            extra = {"library": lib, "symbol": symbol}
+            if not exact:
+                extra["wildcard"] = True
+            hit = PartHit(
                 provider=self.name,
                 part_id=f"{lib}:{symbol}",
                 mpn=symbol,
@@ -289,11 +306,12 @@ class KicadLocalProvider:
                 # inventing them would be worse than admitting it.
                 provenance=f"KiCad standard library {lib}",
                 license="CC-BY-SA-4.0 with exception",
-                extra={"library": lib, "symbol": symbol},
-            ))
-            if len(hits) >= max(1, int(limit)):
+                extra=extra,
+            )
+            (hits if exact else wild).append(hit)
+            if len(hits) >= cap:
                 break
-        return hits
+        return (hits + wild)[:cap]
 
     def _resolve(self, part_id: str) -> dict[str, Any]:
         """Locate a symbol and everything derivable from it.

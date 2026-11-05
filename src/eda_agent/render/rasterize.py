@@ -18,6 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from ..noconsole import no_window
+
 _VIEWBOX_RE = re.compile(
     r'viewBox="\s*([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s*"'
 )
@@ -135,17 +137,14 @@ def rasterize_svg(
     cmd = build_screenshot_cmd(browser, str(svg.resolve()), png_path,
                                int(width), int(height))
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                              **no_window())
     except Exception as exc:  # subprocess timeout / OS error
         return {"ok": False, "reason": f"rasterize failed: {exc}", "png_path": None}
 
     if Path(png_path).exists():
         return {"ok": True, "png_path": png_path}
-    stderr = b""
-    try:
-        stderr = proc.stderr or b""
-    except Exception:
-        pass
+    stderr = proc.stderr or b""
     return {
         "ok": False,
         "reason": "browser produced no PNG",

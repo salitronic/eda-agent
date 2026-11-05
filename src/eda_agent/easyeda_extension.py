@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .noconsole import no_window
+
 #: The files the wheel carries, the tracked source of the extension.
 SOURCE_FILES = (
     "main.js",
@@ -76,6 +78,6 @@ def build(out_dir: Optional[str] = None) -> tuple[int, str]:
                    "loads it, and that needs Node.js on the PATH; install "
                    f"Node and run this again. The source is in {target}")
     done = subprocess.run([sys.executable, "build.py"], cwd=str(target),
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, **no_window())
     output = (done.stdout + done.stderr).strip()
     return done.returncode, output

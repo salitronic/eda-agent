@@ -2,8 +2,9 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Response-time nudge that steers callers toward bulk tools.
 
-Each singular tool that has a bulk equivalent registers every call
-with ``BulkHintTracker``. If the same tool is called more than
+Each singular tool that has a bulk equivalent, and every tool that
+takes ``items`` (see bulk.py), registers every call with
+``BulkHintTracker``. If the same tool is called more than
 ``_THRESHOLD`` times inside ``_WINDOW_SEC`` seconds, the next response
 carries a ``_hint_bulk`` field pointing at the batch variant. The
 nudge fires at most once per window so repeated callers see it once
@@ -43,16 +44,16 @@ class BulkHintTracker:
     # singular_tool -> (bulk_tool_name, one-line nudge text)
     BULK_EQUIVALENTS: dict[str, tuple[str, str]] = {
         "obj_modify": (
-            "obj_batch_modify",
-            "When each target needs a different value, obj_batch_modify does them all in one call.",
+            "obj_modify",
+            "When each target needs a different value, give obj_modify items=[{filter, set}, ...]: one call, one Altium transaction.",
         ),
         "obj_create": (
-            "obj_batch_create",
-            "Pass a list of create ops to obj_batch_create to bundle them in one IPC call.",
+            "obj_create",
+            "Give obj_create items=[{object_type, properties}, ...] to create them all in one call.",
         ),
         "obj_delete": (
-            "obj_batch_delete",
-            "Pass a list of delete ops to obj_batch_delete to bundle them in one IPC call.",
+            "obj_delete",
+            "Give obj_delete items=[{object_type, filter}, ...] to delete them all in one call.",
         ),
         "proj_get_connectivity": (
             "proj_get_connectivity_many",
@@ -96,9 +97,18 @@ class BulkHintTracker:
         return cls._EXPENSIVE_THRESHOLD if tool_name in cls._EXPENSIVE else cls._THRESHOLD
 
     @classmethod
-    def record_and_hint(cls, tool_name: str) -> dict[str, str] | None:
-        """Record a call. Return a hint dict if the threshold just tripped."""
+    def record_and_hint(cls, tool_name: str,
+                        takes_items: bool = False) -> dict[str, str] | None:
+        """Record a call. Return a hint dict if the threshold just tripped.
+
+        A tool not listed above is tracked when it ``takes_items``, and its
+        hint points at that argument.
+        """
         bulk = cls.BULK_EQUIVALENTS.get(tool_name)
+        if bulk is None and takes_items:
+            bulk = (tool_name,
+                    f"Give {tool_name} items=[{{...}}, ...], one dict of its "
+                    "arguments per item: one call, one undo step.")
         if bulk is None:
             return None
 

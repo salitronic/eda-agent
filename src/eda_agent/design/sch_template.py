@@ -18,6 +18,11 @@ A template is a dict::
      "labels": [{"net": "PG", "at": [3900, 3600]}],
      "nets":   {"VIN": ["U1.11", "C1.1"]}}
 
+A multi-part symbol takes one entry per part placed, the same designator
+with ``"part": 2`` and so on (absent means part 1); its pins are reached by
+designator, whichever part shows them, so ``"U2.B22"`` finds the pin on U2's
+part 2.
+
 A path point is ``[x, y]`` in mils or a pin anchor ``"U1.11"`` / ``"U1.PVIN"``
 (the pin's electrical end, worked out from the placed symbol). Two points
 that differ in both x and y get one corner, horizontal first, or vertical
@@ -64,6 +69,8 @@ class PinEnd:
     root_x: int     # body side
     root_y: int
     orientation: int
+    #: Which part of a multi-part symbol shows the pin (1 for most parts).
+    part: int = 1
 
 
 @dataclass
@@ -140,13 +147,13 @@ def _rotate(x: int, y: int, rotation: int) -> tuple[int, int]:
 
 
 def place_symbol_pins(designator: str, lib_pins: Iterable[dict], x: int, y: int,
-                      rotation: int = 0) -> list[PinEnd]:
+                      rotation: int = 0, part: int = 1) -> list[PinEnd]:
     """Sheet positions of a symbol's pins once placed at (x, y), rotated.
 
     ``lib_pins`` are rows as lib_get_pin_list returns them: designator,
     name, x, y (the pin's body-side root, symbol-local), orientation and
-    length. Alternate display modes, hidden pins and the pins of sub-parts
-    after the first are skipped: the sheet shows part 1.
+    length. Alternate display modes and hidden pins are skipped, and so
+    are the pins of every part but ``part``: the sheet shows that one.
     """
     if rotation % 90:
         raise TemplateError(f"{designator}: rotation must be 0, 90, 180 or 270")
@@ -155,8 +162,9 @@ def place_symbol_pins(designator: str, lib_pins: Iterable[dict], x: int, y: int,
     for p in lib_pins:
         if int(p.get("display_mode", 0) or 0) != 0 or p.get("hidden") in (True, "true"):
             continue
-        # A multi-part symbol is placed as part 1; Part Zero pins go with it.
-        if int(p.get("owner_part_id", 1) or 0) > 1:
+        # Only the placed part's pins, and Part Zero's, which go with every part.
+        owner = int(p.get("owner_part_id", 1) or 0)
+        if owner not in (0, part):
             continue
         rx, ry = _rotate(int(p.get("x", 0)), int(p.get("y", 0)), rotation)
         orient = (int(p.get("orientation", 0)) + turns) % 4
@@ -165,7 +173,7 @@ def place_symbol_pins(designator: str, lib_pins: Iterable[dict], x: int, y: int,
         out.append(PinEnd(designator, str(p.get("designator", "")),
                           str(p.get("name", "")),
                           x + rx + dx * length, y + ry + dy * length,
-                          x + rx, y + ry, orient))
+                          x + rx, y + ry, orient, part))
     return out
 
 
@@ -180,9 +188,13 @@ def pins_from_sheet(rows: Iterable[dict]) -> dict[str, list[PinEnd]]:
         length = int(r.get("pin_length_mils", 0))
         rx, ry = int(r.get("x_mils", 0)), int(r.get("y_mils", 0))
         dx, dy = _DIRS[orient]
+        # part_id is the instance's part: generic.get_sch_doc_pins returns
+        # only the pins that instance shows, so U2 placed as parts 1 to 3
+        # gives each pin once, under the part that carries it.
         out.setdefault(ref, []).append(PinEnd(
             ref, str(r.get("pin_number", "")), str(r.get("pin_name", "")),
-            rx + dx * length, ry + dy * length, rx, ry, orient))
+            rx + dx * length, ry + dy * length, rx, ry, orient,
+            max(1, int(r.get("part_id", 1) or 1))))
     return out
 
 
@@ -304,6 +316,19 @@ class _Union:
             self.parent[ra] = rb
 
 
+def part_number(part: dict) -> int:
+    """Which part of its symbol a template entry places (1 when not said)."""
+    try:
+        return max(1, int(part.get("part", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def body_name(ref: str, number: int) -> str:
+    """How a part's body is named in checks and pictures: U2, U2/2, U2/3."""
+    return ref if number == 1 else f"{ref}/{number}"
+
+
 def build(template: dict, pins: dict[str, list[PinEnd]], *,
           grid: int = 100) -> Drawing:
     """Turn a template into segments, ports and labels, and check them.
@@ -322,12 +347,15 @@ def build(template: dict, pins: dict[str, list[PinEnd]], *,
 
     for part in d.parts:
         ref = str(part.get("designator", ""))
-        if ref not in pins:
-            errors.append({"check": "part", "where": ref,
-                           "detail": f"no pins known for {ref}"})
-        box = body_box(pins.get(ref, []))
+        number = part_number(part)
+        mine = [p for p in pins.get(ref, []) if p.part == number]
+        if not mine:
+            errors.append({"check": "part", "where": body_name(ref, number),
+                           "detail": f"no pins known for {ref}"
+                                     + (f" part {number}" if number > 1 else "")})
+        box = body_box(mine)
         if box:
-            d.bodies[ref] = box
+            d.bodies[body_name(ref, number)] = box
 
     # Wires as straight segments.
     raw: list[Segment] = []
@@ -374,7 +402,8 @@ def build(template: dict, pins: dict[str, list[PinEnd]], *,
                 orient = item.get("orientation")
                 entry["style"] = style
                 entry["orientation"] = int(orient) if orient is not None else (
-                    3 if style in GROUND_STYLES else 1)
+                    3 if (style in GROUND_STYLES
+                          or "GND" in str(entry.get("net", "")).upper()) else 1)
                 d.ports.append(entry)
             else:
                 entry["orientation"] = int(item.get("orientation", 0))
@@ -392,6 +421,7 @@ def build(template: dict, pins: dict[str, list[PinEnd]], *,
     _check_overlaps(d)
     _check_crossings(d)
     _check_bodies(d)
+    _check_text(d)
     _connectivity(d, template.get("nets"))
     return d
 
@@ -469,6 +499,72 @@ def _check_bodies(d: Drawing) -> None:
             if (a["x"], a["y"]) == (b["x"], b["y"]):
                 d.warnings.append({"check": "stacked", "where": [a["x"], a["y"]],
                                    "detail": f"{a['net']} and {b['net']} sit on the same point"})
+
+
+#: Text as the preview draws it, in mils: per character and line height.
+_CHAR_W, _TEXT_H = 50, 100
+
+
+def text_boxes(d: Drawing) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """(what, box) for every designator, value, port and label text, and
+    every power port's symbol, where the preview draws them."""
+    by_ref = {body_name(str(p.get("designator", "")), part_number(p)): p
+              for p in d.parts}
+    out: list[tuple[str, tuple[int, int, int, int]]] = []
+    for ref, (x0, y0, x1, y1) in d.bodies.items():
+        part = by_ref.get(ref, {})
+        name = str(part.get("designator", ref))
+        out.append((f"{ref} designator",
+                    (x1 + 20, y1, x1 + 20 + _CHAR_W * len(name), y1 + _TEXT_H)))
+        if part.get("value"):
+            val = str(part["value"])
+            out.append((f"{ref} value",
+                        (x1 + 20, y0 - _TEXT_H, x1 + 20 + _CHAR_W * len(val), y0)))
+    for o in d.ports:
+        dx, dy = _DIRS[o["orientation"] % 4]
+        sx, sy = o["x"] + dx * 60, o["y"] + dy * 60
+        out.append((f"port {o['net']} symbol",
+                    (min(o["x"], sx) - 40, min(o["y"], sy) - 40,
+                     max(o["x"], sx) + 40, max(o["y"], sy) + 40)))
+        tx, ty = o["x"] + dx * 80, o["y"] + dy * 80
+        half = _CHAR_W * len(o["net"]) // 2
+        out.append((f"port {o['net']} text",
+                    (tx - half, ty if dy >= 0 else ty - _TEXT_H,
+                     tx + half, ty + _TEXT_H if dy >= 0 else ty)))
+    for o in d.labels:
+        out.append((f"label {o['net']}",
+                    (o["x"], o["y"] + 15, o["x"] + _CHAR_W * len(o["net"]), o["y"] + 15 + _TEXT_H)))
+    return out
+
+
+def _check_text(d: Drawing) -> None:
+    """Text that would sit on other text, on another part or on a power
+    port's symbol: found only on the Altium screenshot before (cap values
+    over ground symbols, port text over designators), and redrawn."""
+    boxes = text_boxes(d)
+
+    def hit(a, b) -> bool:
+        return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+    for i, (what, box) in enumerate(boxes):
+        own = what.split(" ")[0]
+        for other, obox in boxes[i + 1:]:
+            if other.split(" ")[0] == own and not what.startswith(("port", "label")):
+                continue
+            if what.endswith("symbol") and other.endswith("symbol"):
+                continue                       # stacked ports are their own check
+            if hit(box, obox):
+                d.warnings.append({"check": "text_overlap",
+                                   "where": [box[0], box[1]],
+                                   "detail": f"{what} overlaps {other} (approximate: "
+                                             "Altium places texts from the symbol)"})
+        if what.endswith("symbol"):
+            continue
+        for ref, body in d.bodies.items():
+            if ref != own and hit(box, body):
+                d.warnings.append({"check": "text_overlap",
+                                   "where": [box[0], box[1]],
+                                   "detail": f"{what} lies on {ref}'s body (approximate)"})
 
 
 def _connectivity(d: Drawing, expected: Optional[dict]) -> None:
@@ -566,15 +662,31 @@ def _compare_netlist(d: Drawing, expected: dict) -> None:
             by_anchor[f"{ref}.{p.number}"] = f"{ref}.{p.number}"
             if p.name and sum(1 for q in plist if q.name == p.name) == 1:
                 by_anchor[f"{ref}.{p.name}"] = f"{ref}.{p.number}"
+    # A multi-part symbol's pins on parts this sheet does not draw (U2's
+    # part 1 on another sheet) are expected to be missing here: the plan's
+    # nets name them all. Only for those designators is a missing pin a
+    # warning; anywhere else it is a mistake.
+    counts: dict[str, int] = {}
+    for part in d.parts:
+        ref = str(part.get("designator", ""))
+        counts[ref] = counts.get(ref, 0) + 1 + (part_number(part) > 1)
+    split_symbols = {ref for ref, n in counts.items() if n > 1}
     for net, members in expected.items():
         resolved = []
         for m in members:
             key = by_anchor.get(str(m))
             if key is None:
-                d.errors.append({"check": "netlist", "where": net,
-                                 "detail": f"{m} is not a pin of the template"})
+                if str(m).partition(".")[0] in split_symbols:
+                    d.warnings.append({"check": "netlist", "where": net,
+                                       "detail": f"{m} is on none of the parts of "
+                                                 "its symbol drawn here"})
+                else:
+                    d.errors.append({"check": "netlist", "where": net,
+                                     "detail": f"{m} is not a pin of the template"})
                 continue
             resolved.append(key)
+        if not resolved:
+            continue
         drawn = {pin_net.get(k) for k in resolved}
         if len(drawn) > 1 or None in drawn:
             split = {}
@@ -606,7 +718,8 @@ def render_png(d: Drawing, path: str, *, title: str = "") -> str:
     from matplotlib.patches import Rectangle
 
     fig, ax = plt.subplots(figsize=(11, 8))
-    by_ref = {str(p.get("designator", "")): p for p in d.parts}
+    by_ref = {body_name(str(p.get("designator", "")), part_number(p)): p
+              for p in d.parts}
     for ref, (x0, y0, x1, y1) in d.bodies.items():
         ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, facecolor="#fffde7",
                                edgecolor="#8d6e63", linewidth=1.0, zorder=2))

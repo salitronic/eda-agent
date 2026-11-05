@@ -16,11 +16,14 @@ New tools should match the family they belong to rather than invent a third
 shape.
 """
 
+from typing import Any
+
 from .application import (
     register_application_tools,
     register_meta_tools,
 )
 from .guidance import register_guidance_tools
+from .update import register_update_tools
 from .uiauto import register_uiauto_tools
 from .project import register_project_tools
 from .library import register_library_tools
@@ -35,12 +38,18 @@ from .route import register_route_tools
 from .sch_template import register_sch_template_tools
 from .easyeda import register_easyeda_tools
 from .kicad import register_kicad_tools
+from .kicad_board import register_kicad_board_tools
+from .kicad_sch import register_kicad_sch_tools
+from .kicad_lib import register_kicad_lib_tools
 from .eda import register_eda_tools
 from .calc import register_calc_tools, register_physics_calc_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
 from .footprint import register_footprint_tools
+from .conventions import register_convention_tools
+from .altium365 import register_altium365_tools
+from .requests import register_request_prompts
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -101,6 +110,9 @@ OFFLINE_DESIGN_TOOLS = (
     "design_list_stackups",
     "design_load_fab_profile",
     "design_next_action",
+    "design_phase_answer",
+    "design_phase_gate",
+    "design_phase_standing",
     "design_plan_hierarchy",
     "design_review_file",
     "design_session_log",
@@ -108,6 +120,7 @@ OFFLINE_DESIGN_TOOLS = (
     "design_session_resume",
     "design_session_start",
     "design_session_status",
+    "design_simulate_deck",
     "design_solve_netlist_file",
     "design_suggest_diff_pair_traces",
     "design_suggest_partition",
@@ -195,6 +208,8 @@ def register_all_tools(mcp):
     register_audit_tools(mcp)
     register_route_tools(mcp)
     register_sch_template_tools(mcp)
+    register_convention_tools(mcp)
+    register_altium365_tools(mcp)
 
 
 def register_backend(
@@ -215,8 +230,44 @@ def register_backend(
     if toolset not in TOOLSETS:
         toolset = DEFAULT_TOOLSET
     if toolset == "minimal":
-        return _register_minimal(mcp, backend)
-    return _register_full(mcp, backend)
+        name = _register_minimal(mcp, backend)
+    else:
+        name = _register_full(mcp, backend)
+    _drop_schema_titles(mcp)
+    # The canned requests go on the real server under either toolset: a
+    # minimal server hides tools, not the prompts a user picks from.
+    register_request_prompts(mcp, name)
+    return name
+
+
+def _without_titles(schema: Any) -> Any:
+    """A JSON schema without the "title" keywords pydantic generates.
+
+    Each one repeats its property's name ("layer" -> "Layer") and is sent
+    with every tool listing. A property that is itself called "title" is
+    a name under "properties", not the keyword, and is kept.
+    """
+    if isinstance(schema, list):
+        return [_without_titles(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+            out[key] = {name: _without_titles(sub) for name, sub in value.items()}
+        else:
+            out[key] = _without_titles(value)
+    return out
+
+
+def _drop_schema_titles(mcp) -> None:
+    manager = getattr(mcp, "_tool_manager", None)
+    if manager is None:
+        return
+    for tool in manager.list_tools():
+        tool.parameters = _without_titles(tool.parameters)
 
 
 def _register_minimal(mcp, backend: str) -> str:
@@ -240,7 +291,17 @@ def _register_minimal(mcp, backend: str) -> str:
     return name
 
 
-def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
+def _register_full(server, backend: str = DEFAULT_BACKEND) -> str:
+    # Families of tools that differ by a mode register as one tool each;
+    # see folds.py. The members stay reachable through tool_invoke.
+    from .folds import FoldingServer
+    mcp = FoldingServer(server)
+    backend = _register_surface(mcp, backend)
+    mcp.finish()
+    return backend
+
+
+def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     backend = (backend or DEFAULT_BACKEND).strip().lower()
     if backend not in BACKENDS:
         backend = DEFAULT_BACKEND
@@ -257,14 +318,18 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_all_tools(mcp)
     if backend in ("kicad", "both"):
         register_kicad_tools(mcp)
+        register_kicad_board_tools(mcp)
+        register_kicad_sch_tools(mcp)
+        register_kicad_lib_tools(mcp)
     # The engineering calculators (pcb_calc_*) are pure physics and
     # EDA-independent. Altium's register_all_tools already defines them, so add
     # them only for a KiCad-only server to reach calculator parity without
     # double-registering under "both".
     if backend == "easyeda":
         register_easyeda_tools(mcp)
-        # The plan-building half of the design family; EasyEDA draws the
-        # plan with its own template tools.
+    if backend in ("easyeda", "kicad"):
+        # The plan-building half of the design family. EasyEDA draws the
+        # plan with its own template tools, KiCad with kicad_generate_*.
         register_offline_design_tools(mcp)
     if backend in ("kicad", "easyeda"):
         register_calc_tools(mcp)
@@ -278,6 +343,8 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # any one EDA tool, so they belong on every backend too. They also have to
     # exist for the minimal toolset to be possible at all.
     register_meta_tools(mcp)
+    # Updating eda-agent itself belongs to no EDA tool either.
+    register_update_tools(mcp)
     # tool_guide answers which tool for which DOCUMENT, and what is proven
     # impossible. That is a different question from tool_catalog's "what is
     # this called", and it is the one that has been getting wrong answers,
@@ -304,6 +371,9 @@ __all__ = [
     "register_backend",
     "register_easyeda_tools",
     "register_kicad_tools",
+    "register_kicad_board_tools",
+    "register_kicad_sch_tools",
+    "register_kicad_lib_tools",
     "register_eda_tools",
     "register_calc_tools",
     "register_physics_calc_tools",
@@ -320,9 +390,13 @@ __all__ = [
     "register_guidance_tools",
     "register_uiauto_tools",
     "register_meta_tools",
+    "register_update_tools",
     "register_parts_tools",
     "register_live_tools",
     "register_footprint_tools",
+    "register_convention_tools",
+    "register_altium365_tools",
+    "register_request_prompts",
     "register_project_tools",
     "register_library_tools",
     "register_generic_tools",

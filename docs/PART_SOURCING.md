@@ -240,7 +240,7 @@ Check the result against the manufacturer land pattern with
 
 ## KiCad
 
-KiCad support talks to a running KiCad over its own supported IPC API (`kicad-python`), so - unlike the Altium side - there are no scripts to install. Requirements: KiCad 9+, the API server enabled (Preferences → Plugins → KiCad API server), a board open in the PCB editor, and `pip install -e .[kicad]`.
+KiCad support talks to a running KiCad over its API socket, so - unlike the Altium side - there are no scripts to install and no extra packages. Requirements: KiCad 10, its API enabled (Preferences → Plugins → Enable KiCad API), and the board open in the PCB editor. KiCad 10.0 answers board requests only, so schematic work goes through the `.kicad_sch` file and `kicad-cli`.
 
 The KiCad backend covers, at parity with what KiCad's API and CLI expose:
 

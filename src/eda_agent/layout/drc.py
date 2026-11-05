@@ -280,6 +280,55 @@ def connectivity(board: LayoutBoard, items: list[Item] | None = None,
     it attaches, not whether.
     """
     items = items if items is not None else conductive_items(board)
+    uf = _joined(board, items, grid, dist)
+    groups: dict[str, dict[int, set[int]]] = {}
+    for n, it in enumerate(items):
+        if it.kind != "pad" or not it.net:
+            continue
+        groups.setdefault(it.net, {}).setdefault(uf.find(n), set()).add(it.idx)
+    return {net: list(g.values()) for net, g in groups.items()}
+
+
+def pads_on_a_barrel(board: LayoutBoard) -> set[int]:
+    """Surface pads that existing copper already joins to a via or a
+    plated hole of their own net: such a pad reaches every layer, and a
+    plane of its net, already.
+
+    The plane fan-out used to give every surface pad of a plane net its
+    own dog-bone whatever was there: on a board whose LED supply pads all
+    had their via and stub already, it added 303 more vias.
+    """
+    return set(pad_barrels(board))
+
+
+def pad_barrels(board: LayoutBoard) -> dict[int, list[tuple[float, float]]]:
+    """For each surface pad that existing copper joins to a via or plated
+    hole of its net, where those barrels are."""
+    items = conductive_items(board)
+    uf = _joined(board, items)
+    at: dict[int, set] = {}
+    for n, it in enumerate(items):
+        if not it.net:
+            continue
+        if it.kind == "via":
+            v = board.vias[it.idx]
+            at.setdefault(uf.find(n), set()).add((v.x, v.y))
+        elif it.kind == "pad" and not board.pads[it.idx].is_smd:
+            p = board.pads[it.idx]
+            at.setdefault(uf.find(n), set()).add((p.x, p.y))
+    out: dict[int, list[tuple[float, float]]] = {}
+    for n, it in enumerate(items):
+        if it.kind == "pad" and it.net and board.pads[it.idx].is_smd:
+            got = at.get(uf.find(n))
+            if got:
+                out.setdefault(it.idx, [])
+                out[it.idx] = sorted(set(out[it.idx]) | got)
+    return out
+
+
+def _joined(board: LayoutBoard, items: list[Item], grid: "_Grid | None" = None,
+            dist: "_Distances | None" = None) -> _UF:
+    """Union of every pair of items copper joins (see connectivity)."""
     grid = grid or _Grid(items, _cell_size(items, TOUCH), TOUCH)
     dist = dist or _Distances(items)
     uf = _UF(len(items))
@@ -340,13 +389,7 @@ def connectivity(board: LayoutBoard, items: list[Item] | None = None,
                 uf.union(first_item[key], n)
             else:
                 first_item[key] = n
-
-    groups: dict[str, dict[int, set[int]]] = {}
-    for n, it in enumerate(items):
-        if it.kind != "pad" or not it.net:
-            continue
-        groups.setdefault(it.net, {}).setdefault(uf.find(n), set()).add(it.idx)
-    return {net: list(g.values()) for net, g in groups.items()}
+    return uf
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +490,212 @@ def run_drc(board: LayoutBoard, rules: RuleSet | None = None,
                     "clearance", ia.layer, ia.label, ib.label,
                     gap, required, ((bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2)))
     return report
+
+
+# ---------------------------------------------------------------------------
+# Solder mask slivers
+# ---------------------------------------------------------------------------
+
+def mask_openings(board: LayoutBoard, rules: RuleSet) -> list[tuple[Item, float]]:
+    """Every opening in the top and bottom solder mask, with its expansion.
+
+    An opening is a pad's or via's copper on an outer layer, grown by its
+    expansion: the one set on the object by hand, else the board's mask
+    rule. Taken from the hole edge, the hole is grown instead. A side the
+    object is tented on has no opening.
+    """
+    order = board.copper_layers()
+    if not order:
+        return []
+    sides = {order[0]: 0}
+    if len(order) > 1:
+        sides[order[-1]] = 1
+    out: list[tuple[Item, float]] = []
+
+    def add(kind, idx, obj, layer, shape, comp):
+        side = sides[layer]
+        if (obj.tent_top, obj.tent_bottom)[side]:
+            return
+        if obj.mask_from_hole and getattr(obj, "hole", 0.0) > 0:
+            shape = geom.circle(obj.x, obj.y, obj.hole)
+        item = Item(kind, idx, obj.net, layer, shape, comp)
+        if obj.mask_manual:
+            expansion = float(obj.mask_manual[side])
+        else:
+            expansion = rules.mask_expansion(rules.facts(item, board))
+        out.append((item, expansion))
+
+    for i, p in enumerate(board.pads):
+        for layer in sides:
+            s = p.shape_on(layer)
+            if s is not None:
+                add("pad", i, p, layer, s, p.comp)
+    for i, v in enumerate(board.vias):
+        spanned = set(board.layers_between(v.low_layer, v.high_layer))
+        for layer in sides:
+            if layer in spanned:
+                add("via", i, v, layer, v.shape_on(layer), v.comp)
+    return out
+
+
+def usual_via_mask(board: LayoutBoard) -> tuple | None:
+    """The solder mask a via added to the board gets: (tent_top,
+    tent_bottom, mask_from_hole, mask_manual) of most of the board's own
+    vias, open on both sides when it has none. None when the board was
+    read without its mask data.
+    """
+    if not board.meta.get("mask_read"):
+        return None
+    from collections import Counter
+    old = [x for x in board.vias if not x.comp]
+    if not old:
+        return (False, False, False, None)
+    tt, tb, fh, manual = Counter(
+        (x.tent_top, x.tent_bottom, x.mask_from_hole, tuple(x.mask_manual or ()))
+        for x in old).most_common(1)[0][0]
+    return (tt, tb, fh, list(manual) or None)
+
+
+def mask_slivers(board: LayoutBoard, rules: RuleSet | None = None,
+                 limit: int = 500) -> list[Violation] | None:
+    """Mask webs narrower than the board's Minimum Solder Mask Sliver rule.
+
+    Two openings closer than the rule leave a strip of mask too thin to
+    stay on the board; openings that meet merge into one and leave none.
+    None when the board was read without its mask data (tenting and hand
+    set expansions), so the check cannot know which openings exist.
+    """
+    if not board.meta.get("mask_read"):
+        return None
+    rules = rules or RuleSet.from_board(board)
+    if not rules.of_type("mask_sliver"):
+        return []
+    openings = mask_openings(board, rules)
+    items = [it for it, _ in openings]
+    grow = [e for _, e in openings]
+    reach = max((rr.values.get("gap", 0.0) for rr in rules.of_type("mask_sliver")),
+                default=0.0) + 2 * max(grow, default=0.0)
+    grid = _Grid(items, _cell_size(items, reach), reach)
+    out: list[Violation] = []
+    for a, b in grid.candidate_pairs():
+        ia, ib = items[a], items[b]
+        if ia.kind == ib.kind and ia.idx == ib.idx:
+            continue
+        required = rules.mask_sliver(rules.facts(ia, board), rules.facts(ib, board))
+        if required <= 0:
+            continue
+        gap = geom.clearance(ia.shape, ib.shape) - grow[a] - grow[b]
+        if 0.0 < gap < required - TOLERANCE:
+            bx = ia.shape.bbox
+            out.append(Violation("mask_sliver", ia.layer, ia.label, ib.label, gap, required,
+                                 ((bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2)))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def drill_holes(board: LayoutBoard) -> list[Item]:
+    """Every drilled hole: each via's and each pad's, a slot as the capsule
+    it is cut as. Layer "MultiLayer": a hole goes through the board."""
+    out: list[Item] = []
+    for i, v in enumerate(board.vias):
+        if v.hole > 0:
+            out.append(Item("via", i, v.net, "MultiLayer", geom.circle(v.x, v.y, v.hole), v.comp))
+    for i, p in enumerate(board.pads):
+        if p.hole <= 0:
+            continue
+        if p.hole_type == "slot" and p.hole_width > p.hole:
+            half = (p.hole_width - p.hole) / 2
+            a = math.radians(p.rotation + p.hole_rotation)
+            dx, dy = half * math.cos(a), half * math.sin(a)
+            s = geom.capsule(p.x - dx, p.y - dy, p.x + dx, p.y + dy, p.hole)
+        else:
+            s = geom.circle(p.x, p.y, p.hole)
+        out.append(Item("pad", i, p.net, "MultiLayer", s, p.comp))
+    return out
+
+
+def hole_gaps(board: LayoutBoard, rules: RuleSet | None = None,
+              limit: int = 500) -> list[Violation]:
+    """Holes closer than the board's Hole To Hole Clearance rule, edge to
+    edge, whatever their nets: a drill breaks through between two holes too
+    close together, same net or not."""
+    rules = rules or RuleSet.from_board(board)
+    if not rules.of_type("hole_to_hole"):
+        return []
+    items = drill_holes(board)
+    reach = max(rr.values.get("gap", 0.0) for rr in rules.of_type("hole_to_hole"))
+    grid = _Grid(items, _cell_size(items, reach), reach)
+    out: list[Violation] = []
+    for a, b in grid.candidate_pairs():
+        ia, ib = items[a], items[b]
+        rr = rules.binary("hole_to_hole", rules.facts(ia, board), rules.facts(ib, board))
+        required = rr.values.get("gap", 0.0) if rr else 0.0
+        if required <= 0:
+            continue
+        gap = geom.clearance(ia.shape, ib.shape)
+        if gap < required - TOLERANCE:
+            bx = ia.shape.bbox
+            out.append(Violation("hole_to_hole", "MultiLayer", ia.label, ib.label, gap,
+                                 required, ((bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2)))
+            if len(out) >= limit:
+                break
+    return out
+
+
+#: The rule kinds ``verdict`` applies. An unevaluated rule of one of these
+#: makes the verdict incomplete; the others are listed as not checked.
+CHECKED_KINDS = ("clearance", "mask_sliver", "soldermask", "hole_to_hole")
+
+#: Board rules this DRC does not apply at all, named so a pass is not read
+#: as covering them. Altium's batch DRC is the referee for these.
+UNCHECKED_KINDS = ("silk_to_silk", "silk_to_mask", "board_outline",
+                   "annular_ring", "hole_size", "width", "component_clearance")
+
+
+def verdict(board: LayoutBoard, rules: RuleSet | None = None, limit: int = 500,
+            report: DrcReport | None = None) -> dict:
+    """The DRC's answer as pass, fail or incomplete, with what it examined.
+
+    ``fail`` when any violation was found. ``incomplete`` when nothing was
+    found but a rule this check applies could not be evaluated, or the
+    mask was not read: nothing found is then not the same as nothing
+    there. ``pass`` only when every applicable rule was applied.
+    """
+    rules = rules or RuleSet.from_board(board)
+    report = report or run_drc(board, rules, limit=limit)
+    slivers = mask_slivers(board, rules, limit=limit)
+    unknown = rules.unevaluated(CHECKED_KINDS)
+    present = {rr.type for rr in rules.rules}
+    not_checked = [k for k in UNCHECKED_KINDS if k in present]
+    notes = []
+    if slivers is None and "mask_sliver" in present:
+        not_checked.insert(0, "mask_sliver")
+        notes.append("the board was read without its solder mask data (tenting, hand set "
+                     "expansions), so mask slivers were not checked; deploy the current "
+                     "scripts and read it again")
+    if unknown:
+        notes.append(f"{len(unknown)} rule(s) this check applies use a scope it cannot "
+                     "evaluate and were not applied")
+    holes = hole_gaps(board, rules, limit=limit)
+    violations = list(report.violations) + list(slivers or []) + holes
+    if violations:
+        status = "fail"
+    elif unknown or (slivers is None and "mask_sliver" in present):
+        status = "incomplete"
+    else:
+        status = "pass"
+    return {
+        "status": status,
+        "violations": violations,
+        "counts": {"violations": len(violations),
+                   "clearance": len(report.violations),
+                   "mask_sliver": len(slivers or []),
+                   "hole_to_hole": len(holes),
+                   "checked_pairs": report.checked_pairs,
+                   "unevaluated_rules": len(unknown)},
+        "unevaluated_rules": unknown,
+        "not_checked": not_checked,
+        "notes": notes,
+        "report": report,
+    }

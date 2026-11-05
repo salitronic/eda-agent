@@ -195,6 +195,7 @@ class TestIntegrationWithRegisteredTools:
                 return decorator
 
         application.register_application_tools(DummyMcp())
+        monkeypatch.setattr(application, "_reminder_calls", 0)
         result = await captured["app_attach"]()
         reminder = result.get("_system_reminder")
         assert reminder is not None

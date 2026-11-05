@@ -96,8 +96,12 @@ def _registered() -> set[str]:
                     return fn
                 return deco
 
-        register_backend(_Mcp(), backend)
+        server = _Mcp()
+        register_backend(server, backend)
         names |= set(captured)
+        # Reached through a family tool or a bulk tool; the reference
+        # lists each with the tool that runs it.
+        names |= set(getattr(server, "hidden", {}) or {})
     return names
 
 

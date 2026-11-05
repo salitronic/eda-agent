@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from ..bench import copy_board
-from ..drc import run_drc
+from ..drc import usual_via_mask, verdict
 from ..model import LayoutBoard
 from .router import route_adaptive
 from .stages import finish_report
@@ -38,12 +38,24 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                        stages=params.get("stages"),
                        log=live.progress_logger("route"))
     out = r.apply()
+    # The router's own tracks laid again as the shortest clean 45/90 runs;
+    # the board's tracks before it stay as they are (gloss.py).
+    glossed = None
+    if params.get("gloss", True):
+        from .gloss import gloss
+        glossed = gloss(out, tracks=out.tracks[len(board.tracks):]).as_dict()
     new_tracks = out.tracks[len(board.tracks):]
-    new_vias = out.vias[len(board.vias):]
-    drc = run_drc(out)
+    new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
+    mask_note = _mask_like_board(board, out.vias[len(board.vias):])
+    # Judged as written: a via on one already there is never sent, and
+    # counted it is a hole drilled twice that no board will have.
+    out.vias = out.vias[:len(board.vias)] + new_vias
+    v = verdict(out)
+    drc = v["report"]
     stages = finish_report(r, out)
     pub = live.publish_safe(out, f"Routed: {len(drc.unrouted)} nets still open, "
-                      f"{len(drc.violations)} clearance violations.", "route")
+                      f"{len(drc.violations)} clearance violations, "
+                      f"{v['counts']['mask_sliver']} mask slivers.", "route")
     rep = r.report
     wanted = set(nets) if nets else None
     unrouted = {n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
@@ -55,7 +67,12 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "completion": round(drc.completion, 4),
             "missing_connections": drc.missing_connections,
             "unrouted_nets": len(unrouted),
-            "violations": len(drc.violations),
+            # pass, fail or incomplete: see drc.verdict. Zero violations
+            # with a rule left unevaluated is incomplete, not a pass.
+            "drc_status": v["status"],
+            "violations": len(v["violations"]),
+            "mask_slivers": v["counts"]["mask_sliver"],
+            "unevaluated_rules": len(v["unevaluated_rules"]),
             "tracks": len(new_tracks),
             "vias": len(new_vias),
             "routing_layers": list(r.grid.layers),
@@ -68,6 +85,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "sharp_bends": stages["sharp_bends"],
             "unreached_pads": len(stages["unreached"]),
             "vias_in_pads": len(stages["via_in_pad"]),
+            "gloss": glossed,
         },
         "unrouted": unrouted,
         # What the planned stages did (see stages.py): every via in a pad,
@@ -80,13 +98,15 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "fanout": stages["fanout"],
         "pin_lanes": stages["pin_lanes"],
         "fallback": stages["fallback"],
-        "violations": [v.as_dict() for v in drc.violations[:50]],
+        "violations": [x.as_dict() for x in v["violations"][:50]],
+        "unevaluated_rules": v["unevaluated_rules"],
+        "not_checked": v["not_checked"],
         "tracks": [{"x1": t.x1, "y1": t.y1, "x2": t.x2, "y2": t.y2, "width": t.width,
                     "layer": t.layer, "net_name": t.net} for t in new_tracks],
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": _notes(r) + _stage_notes(stages),
+        "notes": _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
     }
 
 
@@ -103,6 +123,48 @@ def _stage_notes(stages: dict) -> list[str]:
         notes.append(f"{len(stages['unreached'])} pads could not be reached; unreached gives "
                      "each one's place and the nets in its way.")
     return notes
+
+
+def _mask_like_board(board: LayoutBoard, new) -> list[str]:
+    """Give the router's vias the solder mask most of the board's vias have.
+
+    A via placed later takes its tenting and expansion from Altium, not
+    from the router, so the sliver check judges new vias like the board's
+    own. With no vias to go by they stay open, which can only find more
+    slivers, never fewer.
+    """
+    usual = usual_via_mask(board)
+    if not new or usual is None:
+        return []
+    if not [x for x in board.vias if not x.comp]:
+        return ["New vias were judged with open solder mask on both sides: the board "
+                "has no vias of its own to say whether vias are tented."]
+    tt, tb, fh, manual = usual
+    for x in new:
+        x.tent_top, x.tent_bottom, x.mask_from_hole = tt, tb, fh
+        x.mask_manual = list(manual) if manual else None
+    sides = {(True, True): "tented on both sides", (False, False): "open on both sides",
+             (True, False): "tented on top only", (False, True): "tented on the bottom only"}
+    return [f"New vias were judged {sides[(tt, tb)]}, like most of the board's vias; check "
+            "the mask of the placed vias if Altium's via defaults differ."]
+
+
+def _unique_vias(existing, new) -> list:
+    """The new vias less any that repeat one already there or listed.
+
+    A second (plane fan-out) run on a live take left two vias on one
+    spot, which Altium then reported as a short to itself. Not
+    reproduced; a via is never wanted twice in the same place, so the
+    list sent to the board holds each once.
+    """
+    seen = {(round(v.x, 3), round(v.y, 3), v.net) for v in existing}
+    out = []
+    for v in new:
+        key = (round(v.x, 3), round(v.y, 3), v.net)
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
 
 
 def _without_old_pours(board: LayoutBoard) -> tuple[LayoutBoard, list[str]]:

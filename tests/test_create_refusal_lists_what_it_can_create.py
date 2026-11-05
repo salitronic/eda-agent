@@ -28,7 +28,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 _PCB_TYPES = ["eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
               "eArcObject", "eFillObject", "eTextObject", "ePolyObject",
               "eRegionObject", "eRuleObject", "eDimensionObject",
-              "eComponentBodyObject", "eConnectionObject"]
+              "eComponentBodyObject", "eConnectionObject", "eSplitPlaneObject"]
 
 
 def _code(name: str) -> str:

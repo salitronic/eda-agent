@@ -16,6 +16,10 @@ APIs are unlikely to land without prior agreement.
   [`SECURITY.md`](SECURITY.md).
 - By contributing you agree your contribution is licensed under
   Apache-2.0 (the project licence).
+- Every edit to a design or library file goes through the Delphi bridge and
+  Altium. Modifying a file directly is not accepted unless it is strictly
+  unavoidable or well constrained, and reading design files directly is
+  discouraged too; the few exceptions are agreed in an issue first.
 
 ## Development environment
 
@@ -50,6 +54,16 @@ Pascal side; the workspace pointer lives at
 - `EDA_AGENT_INTEGRATION=1 pytest` adds the live-Altium tests
 - `python tests/test_cross_validate.py` runs the offline Pascal validator
   (requires Free Pascal in PATH)
+- `python scripts/check.py` runs the fast checks before a push: the Pascal
+  lint, the generated command rules, the repo-wide guards (copyright
+  lines, dispatch tables, declared imports, docs counts) and the tests
+  that name what your branch changed. Run
+  `git config core.hooksPath .githooks` once and the pre-push hook runs it
+  for you.
+
+The command rules (read-only, deleting, closing) live in
+`src/eda_agent/safety.py`. `StatusForm.pas` carries a generated copy: edit
+the Python, then run `python scripts/altium/sync_rules.py`.
 
 **A plain `pytest` does not touch a running Altium.** The nine tests
 under `tests/integration/` drive a real session, and they are skipped at
@@ -121,7 +135,8 @@ from a table naming a tool nobody wrote.
   `app_ping` names any unit still running an older compile in
   `stale_units`.
 - Add or update tests when behaviour changes.
-- Run `pytest --ignore=tests/integration` locally before requesting review.
+- Run `python scripts/check.py` before pushing, and
+  `pytest --ignore=tests/integration` before requesting review.
 
 ## Commit messages
 
@@ -144,7 +159,8 @@ commit that makes the substantive change, and is not mentioned in it.
 
 See [`.github/ISSUE_TEMPLATE/bug_report.md`](.github/ISSUE_TEMPLATE/bug_report.md).
 Include the Altium version, the `eda-agent --version` output, and, if you
-can, the contents of the workspace `response.json` from the failing call.
+can, the failing call's line from the workspace `activity.log`, which
+holds the command and Altium's full reply.
 
 ## Suggesting features
 

@@ -52,7 +52,8 @@ def test_every_tool_the_guide_names_exists_on_that_backend(
     assert guide["backend"] == backend
 
     for stage in guide["stages"]:
-        unknown = [t for t in stage["tools"] if t not in available]
+        # A family tool is named with its kind: "pcb_calc kind=impedance".
+        unknown = [t for t in stage["tools"] if t.split()[0] not in available]
         assert not unknown, (
             f"the {backend} guide tells stage {stage['stage']!r} to call "
             f"{unknown}, which that backend does not register")
@@ -267,7 +268,11 @@ def test_the_altium_guide_is_unchanged_by_the_filtering(monkeypatch):
     import eda_agent.design.autonomy as mod
     monkeypatch.setattr(mod, "_BACKEND_TOOLS", {})
 
+    from eda_agent.tools.folds import call_form
+
     for stage in autonomy_guide()["stages"]:
-        assert stage["tools"] == STAGE_PLAYBOOKS[stage["stage"]]["tools"], (
+        wanted = list(dict.fromkeys(
+            call_form(t) for t in STAGE_PLAYBOOKS[stage["stage"]]["tools"]))
+        assert stage["tools"] == wanted, (
             f"the Altium guide altered stage {stage['stage']!r}")
         assert "tools_not_on_this_backend" not in stage

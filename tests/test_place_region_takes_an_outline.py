@@ -30,7 +30,7 @@ def test_a_malformed_or_short_list_is_refused_before_anything_is_made():
     body = _body()
     count = body.index("NPts := RegionPointCount(PointsStr);")
     refuse = body.index("'BAD_POINTS'")
-    assert count < refuse < body.index("PCBServer.PreProcess;")
+    assert count < refuse < body.index("PcbBeginEdit(0);")
     assert "If NPts < 3 Then" in body[count:refuse]
 
 

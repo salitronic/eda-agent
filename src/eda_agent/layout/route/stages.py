@@ -69,7 +69,12 @@ class StageOptions:
     stall_stop: bool = False
     # Where a via may go into a pad: "bga" (a BGA's balls and an exposed
     # pad only), "ic" (also an IC's pins, never a passive's) or "any".
-    pad_vias: str = "ic"
+    # "bga" by default: a via in a pin wicks the solder unless it is
+    # filled and capped, and a demo board under "ic" came out with 90 of
+    # them, a USB connector's pins among them. The fallback (route_adaptive)
+    # still widens it to "ic" when that alone leaves connections unmade,
+    # and says so in stage_report.fallback.
+    pad_vias: str = "bga"
     # Intra-pair skew left after bumps.
     pair_skew: float = 5.0
     # Pair width and gap when the board has no differential pair rule.
@@ -116,6 +121,27 @@ class StageOptions:
     # completion on all 160; on the public boards bunny_brain_D 99.57% in
     # 920 s became 100% in 378 s.
     quick_release: bool = True
+    # Reach a surface pad only along one of its axes, from cells outside it
+    # far enough for the track to clear the pad before it turns: straight
+    # out of the centre, never slantwise across the pad's copper or its
+    # corner. An IC's elongated pin is left only through its short ends.
+    axis_entry: bool = False
+    # Route a net at its rule's width even where one of its pads is
+    # narrower, necking down to that pad's width only on the stub into it.
+    # Off: a net is routed at what its narrowest pad takes, all the way.
+    neck_pads: bool = False
+    # Route only what the board's own copper leaves apart: a net its
+    # tracks already join whole is not routed, and one partly joined is
+    # routed by joining its pieces, each reachable anywhere along its
+    # copper. Off: every net's pads are joined afresh.
+    join_existing: bool = False
+    # Copper layers routed on by no net, by name (an inner layer kept clear
+    # for a pour or a sensitive signal). A layer a net's surface pad is on
+    # is refused: its pads could not be reached.
+    exclude_layers: tuple = ()
+    # A through via of a net already on the board is a free layer change
+    # for the net's routes, where no second via is laid.
+    reuse_vias: bool = False
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -126,6 +152,8 @@ class StageOptions:
         return not (self.any() or self.class_order or self.stall_stop or self.bends
                     or self.straight or self.global_stall or self.repair_clean
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
+                    or self.axis_entry or self.neck_pads or self.join_existing
+                    or bool(self.exclude_layers) or self.reuse_vias
                     or self.pad_vias != "any")
 
     @classmethod
@@ -328,6 +356,10 @@ class StageContext:
                 if geom.bboxes_near(disc, s, self.web) and \
                         geom.clearance(disc, s) < self.web - EPS:
                     return False
+        # Its solder mask opening leaves the board's web to every other.
+        if not r.options.legacy() and r.via_leaves_web(via, via.x, via.y,
+                                                       pad if in_pad else None):
+            return False
         return True
 
     # -- laying copper -------------------------------------------------------

@@ -168,6 +168,13 @@ STAGE_PLAYBOOKS = {
 }
 
 
+def _advertised(tools) -> list:
+    """Each tool named by the advertised tool that runs it."""
+    from ..tools.folds import call_form
+
+    return list(dict.fromkeys(call_form(t) for t in tools))
+
+
 def next_action(state: SessionState) -> NextAction:
     """Decide the single next action for a design session."""
     sid = state.session_id
@@ -222,7 +229,7 @@ def next_action(state: SessionState) -> NextAction:
         status=status,
         stage=stage,
         goal=play.get("goal", ""),
-        suggested_tools=list(play.get("tools", [])),
+        suggested_tools=_advertised(play.get("tools", [])),
         exit_gate=play.get("exit_gate", ""),
         guidance=(
             f"{prefix}{play.get('goal', stage)} "

@@ -196,14 +196,290 @@ def relaunch_command(exe: str, prjscr: str) -> list[str]:
                  f"|ProcName=Dispatcher.pas>StartMCPServer)"]
 
 
+#: How long --restart waits for the running loop to finish its command and
+#: stop, while a handler is visibly running (a progress file), and while
+#: nothing is (a loop that is not running never takes the stop file).
+RESTART_STOP_WAIT_S = 300.0
+RESTART_IDLE_STOP_WAIT_S = 15.0
+#: The same wait when nothing answered a ping and the halted script was
+#: stopped: no loop is left to take the stop file.
+RESTART_DEAD_STOP_WAIT_S = 2.0
+#: How long --restart waits for the new loop to answer.
+RESTART_PING_WAIT_S = 90.0
+#: How long a dialog that is not a script error box may block the new loop
+#: before --restart stops waiting and says which dialog it is.
+RESTART_DIALOG_GIVE_UP_S = 10.0
+
+
+def _wait_for_loop_to_stop(workspace: Path, trust_progress: bool = True,
+                           idle_wait: Optional[float] = None) -> str:
+    """Drop the stop file and wait for the loop to take it.
+
+    The loop deletes it between commands, so a command in flight always
+    finishes first. Returns "stopped", or "not running" when nothing took
+    it and no handler was running (the file is then removed, so a later
+    start does not stop at once).
+
+    ``trust_progress`` False ignores progress files: a handler that halted
+    in the debugger leaves its progress file behind, and read as a command
+    still running it held the restart for the whole long wait.
+    """
+    import time
+
+    stop = workspace / "stop"
+    stop.write_text("", encoding="ascii")
+    start = time.monotonic()
+    while stop.exists():
+        waited = time.monotonic() - start
+        busy = trust_progress and any(workspace.glob("progress_*.json"))
+        if waited > RESTART_STOP_WAIT_S or (
+                not busy and waited > (RESTART_IDLE_STOP_WAIT_S
+                                       if idle_wait is None else idle_wait)):
+            try:
+                stop.unlink()
+            except OSError:
+                pass
+            return "not running"
+        time.sleep(0.2)
+    return "stopped"
+
+
+def _stop_halted_script(command: list) -> None:
+    """Ask Altium to stop a script parked in the debugger.
+
+    A handler that hits an undeclared identifier halts the loop but leaves
+    the script running in the engine, and the new loop then fails with
+    "Another script executing now". Run > Stop (EditScript:Stop, as the
+    install's EditScript.rcs names it) frees the engine; with nothing
+    running it does nothing. Measured 2026-10-25: after it, StartMCPServer
+    came up at once.
+    """
+    import subprocess
+
+    try:
+        subprocess.Popen([command[0], "-REditScript:Stop"],
+                         close_fds=True).wait(timeout=30)
+    except Exception:                            # noqa: BLE001
+        pass
+
+
+def _blocked_by_dialog(pid: int, consequence: str) -> bool:
+    """Say so and return True when Altium sits behind a blocking dialog.
+
+    Only a window that BLOCKS the loop counts: a hover preview
+    (FormPreviewPopup) is listed as a dialog and blocks nothing. A plain
+    relaunch used to skip this: with "Unsaved Changes" up, the ping failed,
+    so relaunch started the script, and X2.EXE -R went to a NEW Altium
+    instead of the busy one.
+    """
+    from .ui import dialog_report, windows
+
+    if not windows.available():
+        return False
+    report = dialog_report.report(pid)
+    if report.get("blocked"):
+        print(f"ERROR: Altium has a dialog open, so {consequence}: "
+              f"{report.get('summary')}. Close it first.", file=sys.stderr)
+        return True
+    return False
+
+
+def _restart(command: list, frames_pid: int) -> int:
+    """Stop the running loop and start a new one, with other sessions'
+    calls waiting through it instead of failing.
+
+    maintenance.json tells every eda-agent server that this is a restart
+    on purpose: a call that is not taken keeps waiting rather than
+    reporting a dead loop, and the loop keeps the requests on disk across
+    the stop and the start instead of purging them. It is removed when the
+    new loop answers, or when this gives up.
+    """
+    import json
+    import os
+    import subprocess
+    import time
+
+    from .bridge.altium_bridge import MAINTENANCE_FILE
+    from .config import get_config
+    from .diag.doctor import _ping_altium
+    from .ui import windows
+
+    from .bridge.script_crash import clear_error_boxes
+
+    def clear(stage: str) -> str:
+        """Clear script error boxes; what still blocks, "" for nothing.
+
+        A modal holds the stop, the start and the ping alike, and waiting
+        one out took 80 s behind a box nobody was pressing (2026-10-30).
+        """
+        found = clear_error_boxes(frames_pid)
+        for box in found["cleared"]:
+            said = "; ".join(box["said"][:2]) if box["said"] else "no readable text"
+            print(f"{stage}: Altium showed {box['title']!r} ({said}); "
+                  f"OK {box['pressed']}.")
+        return found["blocking"]
+
+    from .bridge.altium_bridge import _trace_log
+
+    began = time.monotonic()
+
+    def phase(name: str) -> None:
+        """Say how far the restart is, with the time, on the output and in
+        the bridge trace: a recovery took 145 s (2026-10-30) and nothing
+        said where."""
+        line = f"[{time.monotonic() - began:5.1f}s] {name}"
+        print(line)
+        try:
+            _trace_log(Path(get_config().workspace_dir), f"RESTART {line}")
+        except Exception:                        # noqa: BLE001
+            pass
+
+    clear("Before the restart")
+    if _blocked_by_dialog(frames_pid, "the loop cannot take the stop file"):
+        return 1
+
+    workspace = Path(get_config().workspace_dir)
+    # THE LOOP THAT IS RUNNING, not the one the config names: after a demo
+    # take the pointer named the normal workspace while the loop still
+    # served the demo one, and the stop file went where nobody read it.
+    # Capped: with the loop dead the bridge's own wait ran 267 s before
+    # the restart even began.
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(1)
+    try:
+        ping = pool.submit(_ping_altium).result(timeout=5.0)
+    except concurrent.futures.TimeoutError:
+        ping = None
+    finally:
+        pool.shutdown(wait=False)
+    running = Path(str((ping or {}).get("workspace_dir") or "")) if ping else None
+    if running and str(running) not in ("", ".") and running.is_dir() \
+            and running.resolve() != workspace.resolve():
+        print(f"The running loop serves {running}, not {workspace}; "
+              f"stopping that one.")
+        workspace = running
+    marker = workspace / MAINTENANCE_FILE
+    marker.write_text(json.dumps({"reason": "relaunch --restart",
+                                  "started": time.time(), "pid": os.getpid()}),
+                      encoding="utf-8")
+    try:
+        # Nothing answers: the script may be parked at a breakpoint after a
+        # handler crashed. Run > Stop it first, so the stop file waits only
+        # the short idle limit, not out a progress file the crash left behind.
+        phase("pinged: " + ("the loop answers" if ping else "nothing answers"))
+        if ping is None:
+            _stop_halted_script(command)
+            phase("Run > Stop sent to a halted script")
+            clear("After stopping the halted script")
+        state = _wait_for_loop_to_stop(workspace, trust_progress=ping is not None,
+                                       idle_wait=(RESTART_DEAD_STOP_WAIT_S
+                                                  if ping is None else None))
+        phase(f"stop file: {state}")
+        print(f"The loop {'stopped' if state == 'stopped' else 'was not running'}; "
+              f"other sessions' calls are waiting for the new one.")
+        if state != "stopped" and ping is None:
+            print(f"Nothing answered a ping through {workspace}, so any script "
+                  f"left halted in Altium was stopped first. If Altium still "
+                  f"says \"Another script executing now\", a loop is serving "
+                  f"another workspace: put an empty file named stop in that "
+                  f"workspace and run this again.")
+        frames = windows.visible_main_frames(frames_pid)
+        launcher = subprocess.Popen(command, close_fds=True)
+        phase("StartMCPServer handed to Altium")
+        _reshow_hidden_frames(launcher, frames)
+        phase("hand-off done")
+        deadline = time.monotonic() + RESTART_PING_WAIT_S
+        blocked_since: Optional[float] = None
+        while time.monotonic() < deadline:
+            ping = _ping_altium()
+            if ping is None:
+                # The new loop cannot start behind a modal: clear an error
+                # box at once, and give up on any other within seconds
+                # rather than waiting out the whole timeout.
+                blocking = clear("Starting the loop")
+                if not blocking:
+                    blocked_since = None
+                elif blocked_since is None:
+                    blocked_since = time.monotonic()
+                elif time.monotonic() - blocked_since > RESTART_DIALOG_GIVE_UP_S:
+                    print(f"ERROR: Altium has a dialog open, so the new loop "
+                          f"cannot start: {blocking}. Answer it, then run "
+                          f"`eda-agent relaunch --restart` again.",
+                          file=sys.stderr)
+                    return 1
+            if ping is not None:
+                phase("the new loop answers")
+                waiting = len(list(workspace.glob("request_*.json")))
+                print(f"The bridge answers again (version "
+                      f"{ping.get('script_version', '?')}); {waiting} waiting "
+                      f"call{'' if waiting == 1 else 's'} now being served.")
+                return 0
+            time.sleep(1.0)
+        print("ERROR: the new loop did not answer within "
+              f"{RESTART_PING_WAIT_S:.0f}s. Check Altium's status window, or "
+              "run `eda-agent doctor`.", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
+def cmd_update(check_only: bool = False, assume_yes: bool = False,
+               relaunch: bool = True) -> int:
+    """Show what a newer eda-agent brings, and install it once agreed."""
+    from . import updates
+
+    info = updates.check(force=True)
+    if info.get("update_available") is None:
+        print(info.get("how") or info.get("error") or "Could not check for an update.")
+        return 1
+    if not info.get("update_available"):
+        print("eda-agent is up to date.")
+        return 0
+    print(f"{info['behind']} new commit(s) on {updates.REMOTE}/{updates.BRANCH}:")
+    for title in info.get("new_commits", []):
+        print(f"  - {title}")
+    if check_only:
+        return 0
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print("Re-run with --yes to update.", file=sys.stderr)
+            return 1
+        try:
+            reply = input("Update now? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Not updated.")
+            return 1
+    out = updates.apply(relaunch=relaunch)
+    if not out.get("updated"):
+        print(f"Not updated: {out.get('reason') or out.get('error') or out}",
+              file=sys.stderr)
+        return 1
+    print(f"Updated {out['from']} -> {out['to']}.")
+    for step in out.get("steps", []):
+        print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
+        if not step["ok"] and step.get("output"):
+            print("    " + step["output"].replace("\n", "\n    "))
+    print(out["next_step"])
+    return 1 if out.get("failed_steps") else 0
+
+
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
-                 force: bool = False) -> int:
+                 force: bool = False, restart: bool = False) -> int:
     """Start the bridge script in the running Altium, when you ask for it.
 
     Nothing runs this on its own: starting a script inside someone's
     Altium is their call. Request files already in the workspace are
     left alone, since another session may be waiting on them, and a
     bridge that already answers a ping is left running unless --force.
+
+    ``restart`` stops a running loop first, after its current command,
+    and other sessions' calls wait through the restart (see _restart),
+    which is how a deploy reaches a loop several sessions are using.
     """
     if sys.platform != "win32":
         print("ERROR: relaunch runs on Windows, where Altium is", file=sys.stderr)
@@ -233,6 +509,11 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
     if dry_run:
         print(" ".join(f'"{part}"' if " " in part else part for part in command))
         return 0
+    if restart:
+        return _restart(command, selection.process.pid)
+    if _blocked_by_dialog(selection.process.pid,
+                          "a script started now would go to a second Altium"):
+        return 1
     if not force:
         from .diag.doctor import _ping_altium
 
@@ -240,6 +521,7 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
             print("The bridge already answers a ping; nothing was started. "
                   "Pass --force to run StartMCPServer anyway.")
             return 0
+        _stop_halted_script(command)
 
     import subprocess
 

@@ -102,7 +102,7 @@ def test_the_tools_send_the_footprint_only_when_named(monkeypatch, tool, kwargs)
 def test_a_linked_body_is_moved_onto_its_footprint_origin():
     body = _routine("Lib_Link3DModel")
     assert "OrgX := FootprintOriginX(Footprint)" in body
-    assert "Body.MoveByXY(OrgX + MilsToCoord(OffX), OrgY + MilsToCoord(OffY))" in body
+    assert "Body.MoveByXY(OrgX + MilsToCoordF(OffX), OrgY + MilsToCoordF(OffY))" in body
     # The move is not skipped just because the caller gave no offset.
     assert "If (OrgX <> 0) Or (OrgY <> 0) Or (OffX <> 0) Or (OffY <> 0) Then" in body
 

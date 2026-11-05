@@ -525,9 +525,10 @@ def _node_rect(node):
     return int(left), int(top), int(width), int(height)
 
 
-def _click_node(node) -> bool:
+def _click_node(node, hwnd: int) -> bool:
     """Real click at a node's centre. The last resort, and it moves the
-    pointer, so everything above tries not to need it."""
+    pointer, so everything above tries not to need it. ``hwnd`` is the
+    window the node belongs to, which must own the foreground."""
     rect = _node_rect(node)
     if rect is None:
         return False
@@ -616,7 +617,7 @@ def select_item(hwnd: int, name: str, settle: float = 0.6) -> dict:
             except COMError:
                 acted = False
         else:
-            acted = _click_node(node)
+            acted = _click_node(node, hwnd)
         if not acted:
             continue
 
@@ -671,7 +672,7 @@ def expand(hwnd: int, name: str, want: bool = True,
                 "changed": False, "note": "already in that state"}
 
     for how in ("default_action", "click"):
-        acted = _default_action(node) if how == "default_action"             else _click_node(node)
+        acted = _default_action(node) if how == "default_action"             else _click_node(node, hwnd)
         if not acted:
             continue
         win.wait_until(lambda: expanded() == want, settle)
@@ -767,7 +768,7 @@ def set_cell(hwnd: int, row_name: str, column: str, text: str,
     # Put the cell into edit mode. A grid that answers the default action
     # opens its editor without the pointer moving; otherwise click it.
     if not _default_action(cell):
-        if not _click_node(cell):
+        if not _click_node(cell, hwnd):
             return {"ok": False, "reason": (
                 "that cell has no screen rectangle and refused its default "
                 "action, so there is no way to start editing it")}
@@ -887,7 +888,7 @@ def select_tab(window, name: str, settle: float = 0.6) -> dict:
             except COMError:
                 acted = False
         else:
-            acted = _click_node(node)
+            acted = _click_node(node, window.hwnd)
         if not acted:
             continue
         win.wait_until(lambda: _state_has(node, _STATE_SELECTED), settle)

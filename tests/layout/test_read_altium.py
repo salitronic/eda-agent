@@ -402,3 +402,22 @@ def test_a_cutout_drawn_wholly_on_the_board_edge_is_a_region_not_a_hole():
     b.cutouts = [strip, hole, notch]
     assert clean_cutouts(b) == 1
     assert b.cutouts == [hole, notch]
+
+
+def test_an_unnamed_pours_copper_is_still_set_aside_for_routing():
+    """The round LED board's GND pours had no names: their copper read as a
+    fixed region, and routing +3V3 after pouring took 8 minutes and failed
+    until the agent emptied the pours by hand."""
+    from eda_agent.layout.route.job import _without_old_pours
+    sq = [[0, 0], [100 * C, 0], [100 * C, 100 * C], [0, 100 * C]]
+    b = read_board(_copper_only([
+        {"k": "polygon", "pts": sq, "layer": "TopLayer", "net": "GND", "name": "",
+         "in_polygon": False, **_COMMON},
+        {"k": "region", "kind": 0, "cutout": False, "copper": True, "pts": sq,
+         "holes": [], "layer": "TopLayer", "net": "", "in_polygon": True,
+         "pour": "", "pour_net": "GND", **_COMMON},
+    ]))
+    assert {r.source for r in b.regions} == {"polygon:"}
+    out, dropped = _without_old_pours(b)
+    assert [r.kind for r in out.regions] == ["pour_boundary"]
+    assert dropped == ["TopLayer:GND"]

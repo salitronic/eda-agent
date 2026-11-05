@@ -31,8 +31,9 @@ def test_the_window_uses_it_only_for_its_own_reply():
     dispatch = body.index("ProcessCommand(Command, Params, RequestId)")
     assert reset < dispatch, "a previous request's message could be shown"
     use = body.index("DashDetail := LastErrorMsg;")
-    guard = body.rindex("If (LastErrorId = RequestId) And (LastErrorCode = DashCode)", 0, use)
-    assert body.index("DashCode    := ExtractJsonValue(DashErrPayload, 'code');") < guard
+    guard = body.rindex("If (LastErrorId = RequestId) And (LastErrorCode <> '')", 0, use)
+    # Only when this reply carries the code the handler recorded.
+    assert "Pos('\"error\":{\"code\":\"' + LastErrorCode + '\"'," in body[guard:use]
 
 
 def test_the_wire_reply_is_unchanged():

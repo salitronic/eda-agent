@@ -17,9 +17,11 @@ landing on users and costing debugging sessions, so they are pinned here:
     undeclared. Try/Except can NOT guard compile-time undeclared identifiers
     in DelphiScript; the whole file fails to compile. Use UnitSystem instead.
 
-4.  ``Try ... .MemberCount ... Except`` / ``Try ... .MemberName[...]``:
-    IPCB_ObjectClass has no per-member enumeration surface; these are
-    compile-time errors.
+4.  ``Try ... .MemberCount ... Except``: IPCB_ObjectClass has no member
+    count; it is a compile-time error. ``MemberName[I]`` IS declared:
+    measured on AD 26.11 (2026-10-28), PCB_CreateXSignals read a new
+    xSignal's name back from its class with it. With no count, the names
+    are read until one is empty or raises.
 
 The linter walks ``scripts/altium/*.pas`` excluding the legacy monolithic
 ``Altium_MCP.pas`` (not in the active PrjScr) and fails any test whose rule
@@ -171,9 +173,9 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "SchDoc.UseMetricUnit  →  SchDoc.UnitSystem = eMetric",
     ),
     (
-        re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberName\s*\["),
-        "IPCB_ObjectClass has no per-member enumeration surface",
-        "ObjClass.MemberCount / ObjClass.MemberName[I]  →  iterate nets and group",
+        re.compile(r"IPCB_ObjectClass.*\.MemberCount"),
+        "IPCB_ObjectClass has no MemberCount",
+        "ObjClass.MemberCount  →  read MemberName[I] until it is empty or raises",
     ),
     (
         re.compile(r"\beElectricBiDir\b"),

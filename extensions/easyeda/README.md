@@ -20,14 +20,18 @@ the source as unreachable until it is running.
 python extensions/easyeda/build.py
 ```
 
-Then in EasyEDA Pro: **Settings > Extensions**, install from this
-folder.
+or `eda-agent easyeda-extension build`. It needs Node.js on the `PATH`.
+It writes `dist/index.js` and packs it with the manifest into
+`eda-agent-bridge.eext`. Then in EasyEDA Pro: **Settings > Extensions**,
+import that `.eext` file. The installer takes a file, not a folder.
 
-The build is a copy. `main.js` is a single ES module with no imports, so
-there is nothing to bundle, and `build.py` exists to check that rather
-than to pretend at a toolchain: if the source ever grows an import it
-refuses, because a copy would then produce an entry point with
-unresolved dependencies that fails at load time instead of build time.
+`main.js` is a single ES module with no imports, so there is nothing to
+bundle: the entry point is the same source with its `export` keywords
+removed, because EasyEDA loads it as a function body, where an `export`
+is a syntax error. The build refuses a source that grows an import (a
+copy would then fail at load time instead of build time) or an export it
+cannot remove, and it checks with Node that the result parses the way
+EasyEDA loads it.
 
 `dist/` is not committed, the same way the built Altium script is not.
 
@@ -163,7 +167,8 @@ measurement as yours. A fresh clone therefore starts with everything
 unverified, and that is the intended default rather than a warning
 about the code.
 
-Run the smoke script against your editor to populate it.
+Run the smoke script (`scripts/easyeda_smoke.py`) against your editor to
+populate it.
 
 ## Layers are named, never numbered
 
@@ -193,8 +198,10 @@ and the rule has one home rather than one per call site.
 
 ## Destructive commands
 
-`pcb.clear_routing`, `pcb.auto_route` and `pcb.delete_primitives` change
-or remove work wholesale. All three refuse unless `confirm` is true, and
-**both halves check independently**: the extension is reachable by
+Commands that change or remove work wholesale refuse unless `confirm` is
+true: clearing and auto-routing, deleting board or schematic primitives,
+importing schematic changes onto the board, reducing the copper layer
+count, and any reflective `invoke` whose method name looks destructive.
+**Both halves check independently**: the extension is reachable by
 anything speaking this protocol, so it cannot assume a caller already
 checked.

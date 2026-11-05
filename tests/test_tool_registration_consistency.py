@@ -72,6 +72,7 @@ _AGGREGATORS = {
     "register_all_tools",
     "register_backend",
     "_register_full",
+    "_register_surface",
     "_register_minimal",
 }
 

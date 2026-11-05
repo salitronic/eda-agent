@@ -40,7 +40,7 @@ def test_an_undecodable_pointer_is_reported_not_raised(tmp_path, monkeypatch):
 def test_the_response_reader_tolerates_a_byte_order_mark():
     from eda_agent.bridge import altium_bridge
     src = inspect.getsource(altium_bridge)
-    reads = [ln for ln in src.splitlines()
-             if "open(response_path" in ln and '"r"' in ln]
-    assert reads, "the response read moved; point this test at it"
-    assert all('encoding="utf-8-sig"' in ln for ln in reads), reads
+    # The reply is read through _read_response_json, which decodes UTF-8
+    # with the mark dropped before falling back to the Windows codepage.
+    assert "data = _read_response_json(response_path)" in src
+    assert 'raw.decode("utf-8-sig")' in inspect.getsource(altium_bridge._read_response_json)

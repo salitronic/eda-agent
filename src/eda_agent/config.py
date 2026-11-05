@@ -71,6 +71,69 @@ def _default_workspace_dir() -> Path:
     return Path.home() / "EDA Agent" / "workspace"
 
 
+def read_workspace_pointer() -> Optional[Path]:
+    """The workspace the pointer file names, or None when there is none to read.
+
+    Under pytest the machine-global pointer is not read, for the reason it is
+    not written: it names the live bridge's workspace.
+    """
+    target = workspace_pointer_file()
+    if target == WORKSPACE_POINTER_FILE and _running_under_pytest():
+        return None
+    try:
+        text = target.read_text(encoding=_pointer_encoding()).strip()
+    except (OSError, UnicodeDecodeError, LookupError):
+        return None
+    text = text.rstrip("\\/")
+    return Path(text) if text else None
+
+
+def _bound_workspace() -> Optional[Path]:
+    """The workspace a running bridge is already bound to, if the pointer
+    names one that exists: a directory holding the runtime config that
+    ``ensure_workspace`` writes."""
+    bound = read_workspace_pointer()
+    if bound is not None and (bound / CONFIG_FILE_NAME).is_file():
+        return bound
+    return None
+
+
+def _workspace_dir() -> Path:
+    """The workspace this process uses.
+
+    ``EDA_AGENT_WORKSPACE`` when set. Otherwise the workspace the pointer
+    already names, so a process started without the override (a relaunch
+    from another terminal, a health check) joins the bridge that is running
+    instead of repointing it: Altium reads the pointer, so writing the
+    default there sent the restarted loop to one directory while the MCP
+    server kept sending to another, and every call timed out as though the
+    loop were dead. The per-user default only when the pointer names none.
+    """
+    if os.environ.get("EDA_AGENT_WORKSPACE"):
+        return _default_workspace_dir()
+    return _bound_workspace() or _default_workspace_dir()
+
+
+def pointer_mismatch(workspace_dir: Path) -> Optional[str]:
+    """A sentence for a timeout when the pointer names another workspace.
+
+    The script reads the pointer once at startup, so a loop started while it
+    named another directory is alive and answering there."""
+    named = read_workspace_pointer()
+    if named is None:
+        return None
+    try:
+        if named.resolve() == Path(workspace_dir).resolve():
+            return None
+    except OSError:
+        return None
+    return (f"The workspace pointer ({workspace_pointer_file()}) names "
+            f"{named}, while this server uses {workspace_dir}: a polling loop "
+            f"started since then serves that directory, not this one. "
+            f"Relaunch with EDA_AGENT_WORKSPACE={workspace_dir} so the loop "
+            f"and this server meet in one place.")
+
+
 def _pointer_encoding() -> str:
     """Codec for the pointer file, which DelphiScript reads a byte at a time.
 
@@ -205,7 +268,7 @@ class MCPRuntimeConfig(BaseModel):
 class AltiumConfig(BaseModel):
     """Top-level configuration."""
 
-    workspace_dir: Path = Field(default_factory=_default_workspace_dir)
+    workspace_dir: Path = Field(default_factory=_workspace_dir)
     altium_process_name: str = "X2.exe"
     default_units: str = "mils"
     runtime: MCPRuntimeConfig = Field(default_factory=MCPRuntimeConfig)
@@ -249,8 +312,7 @@ class AltiumConfig(BaseModel):
             from .schemas import write_schemas_to
             from .schemas import commands  # noqa: F401  (registers commands)
             write_schemas_to(self.workspace_dir)
-        except Exception:
-            # Schema export must not break MCP server startup.
+        except Exception:  # schema export must not stop the server starting
             pass
 
     def write_runtime_config(self) -> None:

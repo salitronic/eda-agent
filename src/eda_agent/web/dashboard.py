@@ -1023,7 +1023,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
                 LINT_SEVERITY as _LINT_SEVERITY,
                 LINT_AUDIT_LIST as _LINT_AUDIT_LIST,
             )
-        except Exception:
+        except ImportError:  # the review tools are optional to the dashboard
             _LINT_SEVERITY = {}
             _LINT_AUDIT_LIST = []
 
@@ -1234,7 +1234,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             try:
                 data = _bridge_call("project.dashboard_snapshot", {},
                                     timeout=45.0)
-            except Exception:
+            except Exception:  # None, not cached: the next caller retries
                 return None
             return {"ok": True, "data": data} if data is not None else None
         val = _cached("project.dashboard_snapshot", 15.0, call)
@@ -1640,7 +1640,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             try:
                 from eda_agent.bridge import get_bridge
                 alive = get_bridge().is_altium_running()
-            except Exception:
+            except Exception:  # only words the message; either way it says no board
                 alive = False
             msg = ("No PCB geometry yet -- open a PcbDoc and refresh"
                    if alive else "Altium is not running")
@@ -1675,7 +1675,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             # carries the short summary.
             try:
                 app.logger.error("render_pcb_svg failed: %s\n%s", e, tb)
-            except Exception:
+            except Exception:  # the reply below still carries the error
                 pass
             return Response(
                 _empty_drawing_svg(f"PCB render failed: {e}"),
@@ -2040,8 +2040,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        try: srv.shutdown()
-        except Exception: pass
+        try:
+            srv.shutdown()
+        except Exception:  # shutting down anyway
+            pass
     return 0
 
 

@@ -13,13 +13,17 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.23.2';
+    SCRIPT_VERSION = '2026.11.04.16';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
     // that in practice stops in the low tens. The bound is reported back so a
     // pair above it is known to have been skipped rather than judged clean.
     MechScanLimit = 64;
+
+    // The colour Altium gives a net label by default: maroon, RGB(128, 0, 0),
+    // packed as BGR. Every net label a tool places takes it.
+    NET_LABEL_COLOR = 128;
 
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns
@@ -40,6 +44,8 @@ Const
     SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
+    SAVING_FILE = 'saving.json';
+    PREFS_FILE = 'preferences.json';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -101,6 +107,9 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { Full paths of the OutJobs proj_run_outjob opened, each
+      wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
+    RunOutJobsOpened : String;
     { Documents the current save pass has already handled, wrapped in '|'.
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
@@ -111,12 +120,44 @@ Var
       flush app_save_all relies on. See SaveOneDocByDocRef. }
     SaveScope : String;
     CleanLeftAlone : Integer;
+    { The dashboard's Saving switch. False (saving allowed) unless the     }
+    { switch was turned off; kept in SAVING_FILE so it outlasts a restart. }
+    { SavesHeld and HeldFiles count what the current command did not write. }
+    SavingOff : Boolean;
+    SavesHeld : Integer;
+    HeldFiles : String;
+    { The Config tab's choices, kept in PREFS_FILE. ValueFormat is how a  }
+    { component value is written back: 'none' (left as it is), 'rkm'    }
+    { (4K7, 2u2) or 'si' (4.7k, 2.2u). ValueUnit is 'with' to add the     }
+    { unit symbol under SI (100nF, 10uH, 3.3V; never on resistors).      }
+    ValueFormat : String;
+    ValueUnit : String;
+    { EditsMode 'readonly' refuses every command that is not a read;      }
+    { UiAutomationMode 'off' stops menus, dialogs and keystrokes (the     }
+    { Python side enforces it); KeepInViewMode 'on' fits the view after   }
+    { each edit (the Python side does it). Defaults: allowed, on, off.    }
+    EditsMode : String;
+    { DeletingMode / ClosingMode 'refused' turn away a command that deletes }
+    { or removes, or that closes a document or project. Default allowed.  }
+    DeletingMode : String;
+    ClosingMode : String;
+    UiAutomationMode : String;
+    KeepInViewMode : String;
+    { DialogMode 'auto' lets a tool answer the dialog it opens (the      }
+    { change order, the Teardrops options); 'manual' leaves it to the    }
+    { user. Default auto; the Python side does the answering.            }
+    DialogMode : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
     { ProcessCommand; see ProjectSheet and SheetCoverage.                  }
     SheetsSeen : Integer;
     SheetsSkipped : Integer;
+    { Writes that raised inside a Try whose handler had nothing else to do, }
+    { in the current request, and where (the first few). Reset per request }
+    { by ResetItemState; see NoteWriteFailed and WriteFailures.             }
+    WritesFailed : Integer;
+    WritesFailedAt : String;
     { The board GetPCBBoardAnywhere answered from when none was focused,  }
     { and the kind of the document that was in front; reset per request   }
     { and put on the reply by BoardFallbackNote. BoardMissWhy says why it }
@@ -124,6 +165,29 @@ Var
     BoardFallbackPath : String;
     BoardFallbackFrom : String;
     BoardMissWhy : String;
+
+    { How many board edits are open, and how many of them were opened by  }
+    { a bulk call. Only the outermost PcbBeginEdit and PcbEndEdit reach   }
+    { Altium, so a bulk call is one edit however many items it runs. See  }
+    { PcbBeginEdit and RunBulk.                                           }
+    PcbEditDepth : Integer;
+
+    { The schematic and SchLib edits that are open, as '|' then one entry  }
+    { per edit, 'R' (it called Altium) or 'N' (nested inside one that did) }
+    { followed by the document path and '|'. While SchBulkHold is set, the }
+    { last edit a bulk item closes stays open as SchHeldDoc, so the next   }
+    { item on the same document joins it. See SchBeginEdit.               }
+    SchEditOpen : String;
+    SchBulkHold : Boolean;
+    SchHeld : Boolean;
+    SchHeldDoc : ISch_Document;
+    SchHeldPath : String;
+
+    { The symbol a lib_component scope names, and its part (0 = none     }
+    { asked for), for the walk that follows. Set by ApplyLibComponentScope }
+    { on every call, cleared per request by ProcessOne.                    }
+    LibScopeName : String;
+    LibScopePart : Integer;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -138,6 +202,15 @@ Var
     { ObjectId-checking should have ruled out. Surfaced via application.ping }
     { as cast_errors so a non-zero value at session end isn't invisible.     }
     CastErrorCount : Integer;
+
+    { The last four JSON documents read by key, each with its index of
+      top-level keys. See JsonIndexOf. }
+    JsonIdxDoc0, JsonIdxDoc1, JsonIdxDoc2, JsonIdxDoc3 : String;
+    JsonIdx0, JsonIdx1, JsonIdx2, JsonIdx3 : String;
+    JsonIdxNext : Integer;
+    { Keys asked for that were present only below the top level, each
+      wrapped in '|'. See ExtractJsonValue. }
+    JsonNestedSeen : String;
 
     { Tracks the most recently created/selected library component so the    }
     { Lib_Add* primitive helpers can target it directly. SchLib's           }
@@ -499,6 +572,179 @@ Begin
     Result := (Ext = '.SCHLIB') Or (Ext = '.PCBLIB');
 End;
 
+{..............................................................................}
+{ Open and close a board edit. Only the outermost pair calls Altium's         }
+{ PreProcess and PostProcess, so a bulk call that wraps its items in one pair }
+{ makes every item's own pair part of the same edit. A single call works as   }
+{ before: its pair is the outermost.                                          }
+{..............................................................................}
+
+Procedure PcbBeginEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth <= 0 Then
+    Begin
+        PcbEditDepth := 0;
+        PCBServer.PreProcess;
+    End;
+    PcbEditDepth := PcbEditDepth + 1;
+End;
+
+Procedure PcbEndEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth > 0 Then PcbEditDepth := PcbEditDepth - 1;
+    If PcbEditDepth = 0 Then PCBServer.PostProcess;
+End;
+
+{..............................................................................}
+{ Open and close a schematic or SchLib edit. The schematic server takes the   }
+{ document, so the open edits are kept per document path: an edit on a        }
+{ document that already has one open is nested and does not reach Altium,    }
+{ one on another document does. During a bulk call the last edit an item      }
+{ closes is held open, and the next item on the same document joins it, so    }
+{ the whole call is one undo step per document. RunBulk closes what is held.  }
+{..............................................................................}
+
+Function SchDocPath(Doc : ISch_Document) : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    Try Result := Doc.DocumentName; Except End;
+End;
+
+Procedure SchReleaseHeld(Dummy : Integer);
+Begin
+    If Not SchHeld Then Exit;
+    SchHeld := False;
+    Try SchServer.ProcessControl.PostProcess(SchHeldDoc, 'Edit'); Except End;
+    SchHeldDoc := Nil;
+    SchHeldPath := '';
+End;
+
+{ Removes the last open edit on Path and returns its kind, 'R' or 'N', or '' }
+{ when none is open on it.                                                   }
+Function SchPopEdit(Path : String) : String;
+Var
+    Rest, Entry, Kept : String;
+    P, N, Last : Integer;
+Begin
+    Result := '';
+    { First the position of the last entry on Path, then the list without it. }
+    Last := 0;
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If Copy(Entry, 2, Length(Entry)) = Path Then Last := N;
+    End;
+    If Last = 0 Then Exit;
+    Kept := '';
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If N = Last Then
+            Result := Copy(Entry, 1, 1)
+        Else
+            Kept := Kept + Entry + '|';
+    End;
+    SchEditOpen := '|' + Kept;
+End;
+
+Procedure SchBeginEdit(Doc : ISch_Document; Name : String);
+Var
+    Path : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0)
+        Or (SchHeld And (SchHeldPath = Path)) Then
+    Begin
+        SchEditOpen := SchEditOpen + 'N' + Path + '|';
+        Exit;
+    End;
+    { Another document: what a previous bulk item held is finished. }
+    If SchHeld And (SchEditOpen = '|') Then SchReleaseHeld(0);
+    SchServer.ProcessControl.PreProcess(Doc, Name);
+    SchEditOpen := SchEditOpen + 'R' + Path + '|';
+End;
+
+Procedure SchEndEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If Kind = 'N' Then Exit;
+    If (Kind = 'R') And SchBulkHold And (SchEditOpen = '|') Then
+    Begin
+        If SchHeld And (SchHeldPath <> Path) Then SchReleaseHeld(0);
+        SchHeld := True;
+        SchHeldDoc := Doc;
+        SchHeldPath := Path;
+        Exit;
+    End;
+    { One more close than opens on the held document ends the held edit. }
+    If (Kind = '') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
+End;
+
+{ SchEndEdit for a handler that reads back what Altium does AT the commit   }
+{ (a UniqueId reminted at PostProcess): the edit reaches Altium now, even   }
+{ when a bulk call would have held it. Nested in the same handler's own     }
+{ edit on the document, it closes as SchEndEdit would.                      }
+Procedure SchCommitEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0) Then Exit;
+    If (Kind <> 'R') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
+End;
+
+{ A write that raised inside a Try whose handler has nothing else to do.  }
+{ Counted and named for the reply (see WriteFailures, later in this unit, }
+{ and the note above it). Defined here, ahead of every helper that calls  }
+{ it: DelphiScript has no forward declarations.                           }
+Procedure NoteWriteFailed(Where : String);
+Begin
+    Inc(WritesFailed);
+    { The first eight places are enough to find the cause; the count says }
+    { how many more there were.                                           }
+    If WritesFailed <= 8 Then
+    Begin
+        If WritesFailedAt <> '' Then WritesFailedAt := WritesFailedAt + ',';
+        { Labels are code names; a quote is the one character that could  }
+        { break the JSON (EscapeJsonString is in a later unit).            }
+        WritesFailedAt := WritesFailedAt + '"'
+            + StringReplace(StringReplace(Where, '\', '/', MkSet(rfReplaceAll)),
+                            '"', '''', MkSet(rfReplaceAll)) + '"';
+    End;
+End;
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -507,7 +753,7 @@ Begin
     NoteDocEdited(FilePath);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 End;
 
 {..............................................................................}
@@ -831,6 +1077,25 @@ Begin
         Why := 'The only open board, ' + OnePath + ', could not be opened.';
 End;
 
+{ SaveHeldBack - True when the dashboard's Saving switch is off, in which   }
+{ case the caller must not write Path. Every save the bridge makes asks    }
+{ this first. Each one held back is counted for the reply, so a command    }
+{ that edited something says its edit is still only in Altium.             }
+Function SaveHeldBack(Path : String) : Boolean;
+Var
+    Name : String;
+Begin
+    Result := SavingOff;
+    If Not Result Then Exit;
+    SavesHeld := SavesHeld + 1;
+    Name := ExtractFileName(Path);
+    If (Name <> '') And (Pos('|' + Name + '|', '|' + HeldFiles + '|') = 0) Then
+    Begin
+        If HeldFiles <> '' Then HeldFiles := HeldFiles + '|';
+        HeldFiles := HeldFiles + Name;
+    End;
+End;
+
 { Save every modified IServerDocument the workspace knows about, both     }
 { project-attached docs and free-floating docs (libraries opened           }
 { standalone, scratch docs). Free docs live inside the synthetic           }
@@ -880,6 +1145,15 @@ Begin
             End;
         End;
 
+        { Saving switched off: nothing is written, and only a document with }
+        { something to write is reported as held back.                      }
+        If SavingOff Then
+        Begin
+            If ServerDoc.Modified Or DocWasEdited(Path) Then
+                If SaveHeldBack(Path) Then Exit;
+            Exit;
+        End;
+
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
         { Altium builds, so checking it can leave docs unsaved. DoFileSave    }
@@ -887,8 +1161,8 @@ Begin
         SaveAttempts := SaveAttempts + 1;
         AgeBefore := -1;
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
-        Try ServerDoc.SetModified(True); Except End;
-        Try ServerDoc.DoFileSave(''); Except End;
+        Try ServerDoc.SetModified(True); Except { the file age below decides } End;
+        Try ServerDoc.DoFileSave(''); Except { the file age below decides } End;
         { Once written, a document has nothing pending until the next edit. }
         { Any kind, not only libraries: a stop saves what was edited, and a  }
         { sheet left marked would be rewritten by every later stop.          }
@@ -914,10 +1188,11 @@ Begin
     Path := '';
     Try Path := Project.DM_ProjectFullPath; Except End;
     If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    If SaveHeldBack(Path) Then Exit;
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
-    Try ProjDoc.SetModified(True); Except End;
+    Try ProjDoc.SetModified(True); Except { the save below decides Result } End;
     Try
         ProjDoc.DoFileSave('');
         Result := True;
@@ -938,8 +1213,11 @@ Begin
     Try
         ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
-            Try ProjectServerDoc.DoFileSave(''); Except End;
-    Except End;
+            If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
+            Begin
+                Try ProjectServerDoc.DoFileSave(''); Except { CountDirtyInProject reports what stayed unsaved } End;
+            End;
+    Except { CountDirtyInProject reports what stayed unsaved } End;
 End;
 
 { CountDirtyInProject / CountDirtyDocuments - how many documents are STILL     }
@@ -1599,15 +1877,20 @@ End;
 { open or focus by the other spelling loaded a second copy from disk, the   }
 { tool then edited that copy, and an edit after it raised "Object accessed  }
 { after being destroyed" in ADVPCB (measured 2026-10-18). Only a value under }
-{ a key ending in "path" that is a drive or UNC path is rewritten, so a     }
-{ menu_path like "File|Open" passes untouched.                              }
+{ a key ending in "path", "library" or "_file", or named "destination",     }
+{ that is a drive or UNC path is rewritten, so a menu_path like "File|Open" }
+{ passes untouched. source_library once kept its forward slashes, missed    }
+{ the open library and copied a footprint into a hidden second copy.        }
 Function CanonicalPathValue(Key : String; Value : String) : String;
 Var
     K : String;
 Begin
     Result := Value;
     K := LowerCase(Key);
-    If (Length(K) < 4) Or (Copy(K, Length(K) - 3, 4) <> 'path') Then Exit;
+    If Not ((Copy(K, Length(K) - 3, 4) = 'path')
+        Or (Copy(K, Length(K) - 6, 7) = 'library')
+        Or (Copy(K, Length(K) - 4, 5) = '_file')
+        Or (K = 'destination')) Then Exit;
     If (Length(Value) >= 3) And (Copy(Value, 2, 1) = ':')
         And ((Copy(Value, 3, 1) = '/') Or (Copy(Value, 3, 1) = '\')) Then
         Result := StringReplace(Value, '/', '\', -1)
@@ -1615,7 +1898,10 @@ Begin
         Result := StringReplace(Value, '/', '\', -1);
 End;
 
-Function ExtractJsonValue(Json : String; Key : String) : String;
+{ The first value stored under Key at ANY depth. For a handler reading its   }
+{ own reply, where the field sits inside the data or error object. A        }
+{ request is read with ExtractJsonValue, which takes top-level keys only.   }
+Function JsonValueAnywhere(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
     SearchKey : String;
@@ -1713,6 +1999,173 @@ Begin
 End;
 
 {..............................................................................}
+{ Reading a JSON object by its top-level keys.                                 }
+{                                                                              }
+{ A document is parsed once into an index of its top-level keys and the span  }
+{ of each value, written as |key=start,end|key=start,end|, and keys are       }
+{ looked up there. A key of the same name inside a nested object or array is  }
+{ not a top-level key, so it is never read in its place: parameters holding   }
+{ an items array whose entries carry "layer" have no "layer" of their own.    }
+{ The first of two equal top-level keys wins. A key holding a bar or an equals }
+{ sign is not indexed, and no caller asks for one.                            }
+{..............................................................................}
+Function JsonBuildIndex(Json : String) : String;
+Var
+    I, N, Depth, StrStart, ValStart, LastNonWs : Integer;
+    Ch, Key, Keys : String;
+    InStr, ExpectKey, InValue : Boolean;
+Begin
+    Keys := '|';
+    N := Length(Json);
+    Depth := 0;
+    InStr := False;
+    ExpectKey := False;
+    InValue := False;
+    Key := '';
+    StrStart := 0;
+    ValStart := 0;
+    LastNonWs := 0;
+    I := 1;
+    While I <= N Do
+    Begin
+        Ch := Copy(Json, I, 1);
+        If InStr Then
+        Begin
+            If Ch = '\' Then
+                I := I + 1
+            Else If Ch = '"' Then
+            Begin
+                InStr := False;
+                LastNonWs := I;
+                If (Depth = 1) And ExpectKey Then
+                Begin
+                    Key := Copy(Json, StrStart + 1, I - StrStart - 1);
+                    ExpectKey := False;
+                End;
+            End;
+        End
+        Else If (Ch <> ' ') And (Ch <> #9) And (Ch <> #10) And (Ch <> #13) Then
+        Begin
+            If InValue And (ValStart = 0) Then ValStart := I;
+            If Ch = '"' Then
+            Begin
+                InStr := True;
+                StrStart := I;
+            End
+            Else If (Ch = '{') Or (Ch = '[') Then
+            Begin
+                Inc(Depth);
+                If (Depth = 1) And (Ch = '{') Then ExpectKey := True;
+                LastNonWs := I;
+            End
+            Else If (Depth = 1) And (Ch = ':') And (Key <> '') And (Not InValue) Then
+            Begin
+                InValue := True;
+                ValStart := 0;
+            End
+            Else If (Depth = 1) And ((Ch = ',') Or (Ch = '}')) Then
+            Begin
+                If InValue And (ValStart > 0) And (Pos('|', Key) = 0)
+                    And (Pos('=', Key) = 0)
+                    And (Pos('|' + Key + '=', Keys) = 0) Then
+                    Keys := Keys + Key + '=' + IntToStr(ValStart) + ','
+                        + IntToStr(LastNonWs) + '|';
+                InValue := False;
+                Key := '';
+                If Ch = ',' Then
+                    ExpectKey := True
+                Else
+                    Break;
+            End
+            Else If (Ch = '}') Or (Ch = ']') Then
+            Begin
+                Dec(Depth);
+                LastNonWs := I;
+            End
+            Else
+                LastNonWs := I;
+        End;
+        I := I + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The index of a document, from the last four read or freshly built. A     }
+{ handler reads many keys from one set of parameters, often between reads  }
+{ of an item, so each document is parsed once.                             }
+Function JsonIndexOf(Json : String) : String;
+Var
+    Keys : String;
+Begin
+    If Json = JsonIdxDoc0 Then Keys := JsonIdx0
+    Else If Json = JsonIdxDoc1 Then Keys := JsonIdx1
+    Else If Json = JsonIdxDoc2 Then Keys := JsonIdx2
+    Else If Json = JsonIdxDoc3 Then Keys := JsonIdx3
+    Else
+    Begin
+        Keys := JsonBuildIndex(Json);
+        If JsonIdxNext = 1 Then
+        Begin
+            JsonIdxDoc1 := Json;
+            JsonIdx1 := Keys;
+        End
+        Else If JsonIdxNext = 2 Then
+        Begin
+            JsonIdxDoc2 := Json;
+            JsonIdx2 := Keys;
+        End
+        Else If JsonIdxNext = 3 Then
+        Begin
+            JsonIdxDoc3 := Json;
+            JsonIdx3 := Keys;
+        End
+        Else
+        Begin
+            JsonIdxDoc0 := Json;
+            JsonIdx0 := Keys;
+        End;
+        If JsonIdxNext >= 3 Then JsonIdxNext := 0 Else JsonIdxNext := JsonIdxNext + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The value of a top-level key: a string unescaped, any other value (number, }
+{ true, false, null, object or array) as its JSON text, '' when the key is   }
+{ not a top-level key of the object.                                         }
+Function ExtractJsonValue(Json : String; Key : String) : String;
+Var
+    Keys, Span, Value : String;
+    P, S, E : Integer;
+Begin
+    Result := '';
+    If (Key = '') Or (Pos('"' + Key + '"', Json) = 0) Then Exit;
+    Keys := JsonIndexOf(Json);
+    P := Pos('|' + Key + '=', Keys);
+    If P = 0 Then
+    Begin
+        { The name is in the text but not as a top-level key: nested, or a
+          string value. Logged once per key, so a caller that meant a
+          nested value shows up in activity.log. }
+        If Pos('|' + Key + '|', JsonNestedSeen) = 0 Then
+        Begin
+            JsonNestedSeen := JsonNestedSeen + '|' + Key + '|';
+            AppendLog(FormatLogStamp(0) + ',0,_json_key_not_top_level,' + Key);
+        End;
+        Exit;
+    End;
+    Span := Copy(Keys, P + Length(Key) + 2, Length(Keys));
+    Span := Copy(Span, 1, Pos('|', Span) - 1);
+    S := StrToIntDef(Copy(Span, 1, Pos(',', Span) - 1), 0);
+    E := StrToIntDef(Copy(Span, Pos(',', Span) + 1, Length(Span)), 0);
+    If (S <= 0) Or (E < S) Then Exit;
+    If Copy(Json, S, 1) = '"' Then
+        Value := CanonicalPathValue(Key, UnescapeJsonString(Copy(Json, S + 1, E - S - 1)))
+    Else
+        Value := Copy(Json, S, E - S + 1);
+    Result := Value;
+End;
+
+{..............................................................................}
 { JSON envelope builders.                                                       }
 {                                                                               }
 { All responses include protocol_version so the Python side can detect a       }
@@ -1770,6 +2223,41 @@ Begin
         + 'and were NOT read, so counts and findings cover only the rest. '
         + 'Run proj_load_sheets and ask again."';
     { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{..............................................................................}
+{ A WRITE THAT RAISED IS NOT A WRITE THAT HAPPENED.                           }
+{                                                                              }
+{ Most property writes sit in a Try so one refused value does not abort the   }
+{ rest of an edit. With an empty handler the reply still said success, and   }
+{ the caller had no way to tell the value was never set. A handler with      }
+{ nothing else to do calls NoteWriteFailed; WriteFailures puts the count and  }
+{ the places on the reply at the one dispatch point, as SheetCoverage does.  }
+{..............................................................................}
+
+{ NoteWriteFailed itself is defined near the top of this unit, before the  }
+{ first helper that calls it.                                                }
+
+{ The reply with the failed writes added. Only a success whose data is an    }
+{ object is touched: an error already says it failed.                        }
+Function WriteFailures(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If WritesFailed = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"writes_failed":' + IntToStr(WritesFailed)
+        + ',"writes_failed_at":[' + WritesFailedAt + ']'
+        + ',"writes_warning":"' + IntToStr(WritesFailed) + ' write(s) in this '
+        + 'call raised and did not take effect, although the call went on: '
+        + 'read the objects back before relying on them."';
     If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
@@ -1940,6 +2428,76 @@ Begin
         WorkspaceDir := ResolveDefaultWorkspaceDir(0);
     If Not DirectoryExists(WorkspaceDir) Then
         ForceDirectories(WorkspaceDir);
+End;
+
+{ The command refused because saving is switched off. What says why the  }
+{ command cannot run without writing a file.                            }
+Function SavingOffError(RequestId : String; What : String) : String;
+Begin
+    Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+        What + ' Saving is switched off on the bridge dashboard, so nothing '
+        + 'was written. Turn the Saving switch back on there to save.');
+End;
+
+{ The Saving switch outlasts a restart of the bridge and of Altium: it is  }
+{ read from SAVING_FILE in the workspace when the pump starts. No file, or }
+{ one that does not say off, means saving is allowed.                     }
+Procedure LoadSavingSwitch(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    SavingOff := False;
+    If Not FileExists(WorkspaceDir + SAVING_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + SAVING_FILE);
+    SavingOff := LowerCase(ExtractJsonValue(Content, 'saving')) = 'off';
+End;
+
+Procedure StoreSavingSwitch(Dummy : Integer);
+Begin
+    If SavingOff Then
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"off"}')
+    Else
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"on"}');
+End;
+
+{ The Config tab's choices outlast a restart: read from PREFS_FILE when the }
+{ pump starts. No file, or a value this script does not know, means 'none' }
+{ and 'without': nothing is reformatted unless the user chose a format.    }
+Procedure LoadPreferences(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    ValueFormat := 'none';
+    ValueUnit := 'without';
+    EditsMode := 'allowed';
+    DeletingMode := 'allowed';
+    ClosingMode := 'allowed';
+    UiAutomationMode := 'on';
+    KeepInViewMode := 'off';
+    DialogMode := 'auto';
+    If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
+    ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
+    If (ValueFormat <> 'rkm') And (ValueFormat <> 'si') Then ValueFormat := 'none';
+    ValueUnit := LowerCase(ExtractJsonValue(Content, 'value_unit'));
+    { Only SI takes a unit: the RKM code of IEC 60062 has none. }
+    If (ValueUnit <> 'with') Or (ValueFormat <> 'si') Then ValueUnit := 'without';
+    If LowerCase(ExtractJsonValue(Content, 'edits')) = 'readonly' Then EditsMode := 'readonly';
+    If LowerCase(ExtractJsonValue(Content, 'deleting')) = 'refused' Then DeletingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'closing')) = 'refused' Then ClosingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
+    If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+End;
+
+Procedure StorePreferences(Dummy : Integer);
+Begin
+    WriteFileContent(WorkspaceDir + PREFS_FILE,
+        '{"value_format":"' + ValueFormat + '","value_unit":"' + ValueUnit
+        + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
+        + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
+        + '","keep_in_view":"' + KeepInViewMode
+        + '","dialogs":"' + DialogMode + '"}');
 End;
 
 {..............................................................................}
@@ -2122,6 +2680,29 @@ Begin
     Else Result := Lowest;
 End;
 
+{ SessionFocusAction - whether to put a session's document back in front    }
+{ before its command runs. Most commands act on the focused document, and   }
+{ any session can move it between two calls of another: measured on        }
+{ 2026-10-23, 309 of about 1500 commands in a day were set_active_document, }
+{ sessions taking the focus back from each other, with a gap in which a    }
+{ write could land on the wrong document. Pin is the document the session  }
+{ last had in front, Current what is in front now, both canonical.         }
+{   'keep'    no pin, or the pin is already in front                      }
+{   'restore' put the pin back in front first                             }
+{ A session's command always runs on the document that session chose, even }
+{ when a person at the keyboard clicked elsewhere in between, by choice    }
+{ (2026-10-23): a write on a document the session never picked             }
+{ is worse than a view that moves. A session is pointed at another         }
+{ document by focusing it, which moves its pin.                           }
+{ Pure strings, so the Free Pascal cross-check runs a verbatim copy.       }
+Function SessionFocusAction(Pin : String; Current : String) : String;
+Begin
+    Result := 'keep';
+    If Pin = '' Then Exit;
+    If UpperCase(Pin) = UpperCase(Current) Then Exit;
+    Result := 'restore';
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
     Files, Tags, BestSeq, BestName : TStringList;
@@ -2249,11 +2830,22 @@ End;
 {                                                                              }
 { The purged count is logged, so an operator can tell "the loop is slow" from }
 { "the loop is draining a backlog".                                          }
+{ EXCEPT DURING A RESTART. eda-agent relaunch --restart writes             }
+{ maintenance.json for as long as it takes, and other sessions' calls wait  }
+{ through it instead of failing, so the requests on disk then are live      }
+{ callers waiting for the new loop, not orphans. Each one still runs on its }
+{ own session's document (SessionFocus), and a caller that gave up has      }
+{ withdrawn its own request.                                               }
 Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
     Files : TStringList;
     I, Purged : Integer;
 Begin
+    If FileExists(WorkspaceDir + 'maintenance.json') Then
+    Begin
+        AppendLog(FormatLogStamp(0) + ',0,_purge_requests,kept for restart,0,');
+        Exit;
+    End;
     Purged := 0;
     Files := TStringList.Create;
     Try

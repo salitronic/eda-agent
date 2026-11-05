@@ -56,7 +56,22 @@ def world(monkeypatch):
         assert title_prefix == AltiumProcessManager.STATUS_FORM_TITLE
         return set(state["form"])
 
+    def native_pids(wanted):
+        return [(p, "X2.exe") for p in state["pids"] if "X2.EXE" in wanted]
+
+    class _Live:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def exe(self):
+            return r"C:\Altium\X2.exe"
+
+        def cmdline(self):
+            return ["X2.exe"]
+
     monkeypatch.setattr(pm.psutil, "process_iter", process_iter)
+    monkeypatch.setattr(pm, "_native_process_pids", native_pids)
+    monkeypatch.setattr(pm.psutil, "Process", _Live)
     monkeypatch.setattr(AltiumProcessManager, "_window_owner_pids",
                         staticmethod(window_owner_pids))
     return state

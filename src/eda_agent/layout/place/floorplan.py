@@ -218,6 +218,39 @@ def keepouts(board) -> list[tuple[geom.Shape, tuple[str, ...]]]:
     return out
 
 
+def free_copper(board) -> list[tuple[geom.Shape, tuple[str, ...]]]:
+    """Copper already on the board that belongs to no part, with the sides
+    it closes to parts: tracks, arcs, fills and regions on the top or
+    bottom layer, and vias on the outer layers they reach. Moving a part
+    leaves this copper where it is; placed on it, the part's pads short it
+    (two moved resistors took a board's batch DRC from 0 to 10, a short
+    and a clearance among them). Poured copper is left out: the pour is
+    poured again round the parts. Copper on inner layers matters only to
+    through-hole parts and is left to the DRC of the placed board."""
+    outer = {"TopLayer": ("top",), "BottomLayer": ("bottom",)}
+    out = []
+    for t in board.tracks:
+        if not t.comp and not t.keepout and t.layer in outer:
+            out.append((t.shape(), outer[t.layer]))
+    for a in board.arcs:
+        if not a.comp and not a.keepout and a.layer in outer:
+            out += [(s, outer[a.layer]) for s in a.shapes()]
+    for r in board.regions:
+        if (not r.comp and r.kind == "copper" and r.layer in outer
+                and len(r.outline) >= 3):
+            out.append((geom.polygon(r.outline, r.holes), outer[r.layer]))
+    copper = board.copper_layers()
+    for v in board.vias:
+        if v.comp:
+            continue
+        spanned = board.layers_between(v.low_layer, v.high_layer)
+        sides = tuple(s for layer, s in (("TopLayer", "top"), ("BottomLayer", "bottom"))
+                      if layer in spanned and layer in copper)
+        if sides:
+            out.append((geom.circle(v.x, v.y, v.diameter), sides))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Floorplan
 # ---------------------------------------------------------------------------
@@ -287,6 +320,8 @@ class Floorplan:
                 self._stamp_shape(occ, self.pl._sides(p), geom.polygon(pts), grow)
         for shape, sides in keepouts(self.board):
             self._stamp_shape(occ, sides, shape, half)
+        for shape, sides in free_copper(self.board):
+            self._stamp_shape(occ, sides, shape, self.pl.spacing / 2 + half)
         return occ
 
     def _world(self, p, q):
@@ -794,14 +829,8 @@ class Legaliser:
         self.grid = grid
         self.flag_at = flag_at
         self.step = int(round(grid / placer.cell))
-        occ, occ_cu = placer._occupancy()
-        c = placer.cell
-        for shape, sides in keepouts(placer.board):
-            j0, i0, m = self._raster_shape(shape, 0.71 * c)
-            for s in sides:
-                placer._stamp(occ[s], j0, i0, m)
-                placer._stamp(occ_cu[s], j0, i0, m)
-        placer.occ, placer.occ_cu = occ, occ_cu
+        # Keepouts and the board's own copper are in the occupancy already.
+        placer.occ, placer.occ_cu = placer._occupancy()
         placer.body_overlaps = []
         self.moves: list[dict] = []
         self.failed: list[str] = []
@@ -811,19 +840,6 @@ class Legaliser:
         offs = [(dj, di) for dj in range(-k, k + 1) for di in range(-k, k + 1)
                 if (dj or di) and math.hypot(dj, di) * grid <= flag_at]
         self.shifts = sorted(offs, key=lambda o: (math.hypot(*o), o))
-
-    def _raster_shape(self, s: geom.Shape, grow: float):
-        pl = self.pl
-        c = pl.cell
-        x0, y0, x1, y1 = s.bbox
-        i0 = int(math.floor((x0 - grow - pl.box[0]) / c))
-        j0 = int(math.floor((y0 - grow - pl.box[1]) / c))
-        i1 = int(math.ceil((x1 + grow - pl.box[0]) / c)) + 1
-        j1 = int(math.ceil((y1 + grow - pl.box[1]) / c)) + 1
-        X = pl.box[0] + (np.arange(i0, i1) + 0.5) * c
-        Y = pl.box[1] + (np.arange(j0, j1) + 0.5) * c
-        d = shape_distance(geom.Shape(s.kind, s.pts, s.r + grow, s.holes), X[None, :], Y[:, None])
-        return j0, i0, d <= 0.0
 
     def _cell(self, x: float, y: float) -> tuple[int, int]:
         pl = self.pl

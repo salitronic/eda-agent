@@ -373,7 +373,7 @@ def register_render_tools(mcp):
             if isinstance(focused, dict):
                 project_name = (focused.get("project_name")
                                 or focused.get("name") or "")
-        except Exception:
+        except Exception:  # the name only labels the export; it runs without it
             pass
 
         html_str = render_bom_html(bom, title=title, project=project_name)

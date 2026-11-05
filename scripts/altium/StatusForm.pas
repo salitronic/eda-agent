@@ -9,11 +9,17 @@
 {   - Inline last-error display                                                }
 {   - Prominent "Open Dashboard" button (writes a sentinel the Python bridge  }
 {     watches and opens the user's default browser at the web dashboard)      }
-{   - Pause / Cancel-current / Renew / Clear / Detach action row              }
+{   - Pause / Cancel-current / Renew / Clear / Detach action row, and the   }
+{     Saving switch, which stops every save the bridge makes (kept across   }
+{     restarts in saving.json in the workspace)                             }
 {   - Filter box + Hide-pings / Only->100ms / Always-on-top toggles           }
 {   - Log tab with newest-on-top entries, request-ID column, inline error    }
 {     detail rows, free-text filter                                            }
 {   - Perf tab with per-command stats, sorted by max duration desc            }
+{   - Config tab: the user's choices for the bridge, kept across restarts in  }
+{     preferences.json in the workspace: component value format, read-only  }
+{     edits, deleting, closing documents, interface automation and keeping  }
+{     the board in view                                                      }
 {                                                                              }
 { State lives in module-level TStringLists, function locals avoid fixed-size  }
 { arrays per [[delphiscript_fixed_string_array_bug]]. Module-level fixed-size }
@@ -65,25 +71,44 @@ Var
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
 
+    { Altium's own tooltip timeout, put back when the form is hidden. Its  }
+    { 2.5 s default hid a tip while the pointer was still on the button.  }
+    SavedHintHidePause : Integer;
 
-{ Static UI constants. Modern dark palette intended for the StatusForm.   }
+
+{ Static UI constants: Altium's dark theme, read off AD 26.11's own      }
+{ panels, status bar and buttons, so the form looks like one of them.    }
 { DelphiScript color literals are BGR-ordered Cardinals (8 hex digits      }
 { after the $); a malformed 7-digit literal bombs the parser without an   }
 { obvious error location, so always double-count.                          }
 Const
-    COLOR_BG_BASE       = $001A1B1E;
-    COLOR_BG_CARD       = $0025262B;
-    COLOR_BG_ELEVATED   = $002E2F35;
-    COLOR_ACCENT_BLUE   = $00FF9E4A;   { #4A9EFF in BGR }
+    COLOR_BG_BASE       = $00353535;   { panel body }
+    COLOR_BG_CARD       = $00404040;   { title strip, tab strip, status bar }
+    COLOR_BG_ELEVATED   = $00545454;   { button }
+    COLOR_BG_HOVER      = $00646464;   { button under the mouse }
+    COLOR_BG_LOG        = $002B2B2B;   { log and input fields }
+    COLOR_ACCENT_BLUE   = $00FFB363;   { #63B3FF in BGR }
     COLOR_ACCENT_AMBER  = $00589EE0;   { #E09E58 in BGR }
     COLOR_ACCENT_RED    = $005C5CFF;   { #FF5C5C in BGR }
     COLOR_ACCENT_GREEN  = $006BC464;   { #64C46B in BGR }
-    COLOR_TEXT_BODY     = $00E1E2E6;
-    COLOR_TEXT_MUTED    = $008B8E96;
-    COLOR_TEXT_FAINT    = $00696C73;
+    COLOR_TEXT_BODY     = $00E5E5E5;
+    COLOR_TEXT_MUTED    = $00A0A0A0;
+    COLOR_TEXT_FAINT    = $00808080;
 
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
+
+
+{ The notice line under the figures takes no room until there is something }
+{ to say: the last error, or why Dashboard did nothing.                     }
+Procedure ShowNotice(Text : String);
+Begin
+    Try lbl_LastErr.Caption := Text; Except End;
+    Try
+        If Text = '' Then pnl_ErrBar.Height := 0
+        Else pnl_ErrBar.Height := 16;
+    Except End;
+End;
 
 
 Function PadLeft(S : String; Width : Integer) : String;
@@ -120,20 +145,6 @@ Begin
     Else
         Result := '\';
     End;
-End;
-
-
-{ Hidden from the Run Script dialog by its argument; Dummy is never
-  read. See KnownPCBPropertyList in PCBGeneric for why. }
-Function FilledDot(Dummy : Integer) : String;
-Begin
-    Result := '[x]';
-End;
-
-{ Hidden from the Run Script dialog by its argument; Dummy is never read. }
-Function HollowDot(Dummy : Integer) : String;
-Begin
-    Result := '[ ]';
 End;
 
 
@@ -344,10 +355,9 @@ Begin
     Begin
         Try
             If ErrorDetail <> '' Then
-                lbl_LastErr.Caption := '! '
-                    + Command + ': ' + ErrorDetail
+                ShowNotice('! ' + Command + ': ' + ErrorDetail)
             Else
-                lbl_LastErr.Caption := '! last error: ' + Command;
+                ShowNotice('! last error: ' + Command);
         Except End;
     End;
 End;
@@ -397,6 +407,155 @@ Begin
 End;
 
 
+{ Tooltips. Each button's icon is a label lying on top of it, so the label }
+{ carries the same hint, or hovering the icon would show nothing. The      }
+{ delay before a hint appears is Altium's own, the same as its toolbars.  }
+{ Altium's hint window does not wrap, so a long hint is broken into lines }
+{ here at the first space after 50 characters.                            }
+Function WrapTip(Text : String) : String;
+Var
+    I, LineLen : Integer;
+    C, Wrapped : String;
+Begin
+    Wrapped := '';
+    LineLen := 0;
+    For I := 1 To Length(Text) Do
+    Begin
+        C := Copy(Text, I, 1);
+        If (C = ' ') And (LineLen >= 50) Then
+        Begin
+            Wrapped := Wrapped + #13#10;
+            LineLen := 0;
+        End
+        Else
+        Begin
+            Wrapped := Wrapped + C;
+            LineLen := LineLen + 1;
+        End;
+    End;
+    Result := Wrapped;
+End;
+
+Procedure SetTip(Ctl : TControl; Text : String);
+Begin
+    Try
+        Ctl.Hint := WrapTip(Text);
+        Ctl.ShowHint := True;
+    Except End;
+End;
+
+Const
+    TIP_OPENWEB_ON = 'Open the web dashboard in your browser: design review, '
+        + 'components, nets, libraries and the plan for the open project.';
+    TIP_OPENWEB_OFF = 'The web dashboard is not running. Start it with the '
+        + 'command at the bottom of this window, then this button opens it.';
+    TIP_PAUSE = 'Stop handling commands from the AI. New requests wait until '
+        + 'you resume (the AI may give up on them if the pause is long), and '
+        + 'the bridge does not switch itself off while paused.';
+    TIP_RESUME = 'Start handling commands from the AI again.';
+    TIP_SAVING_ON = 'Saving is allowed: the bridge saves documents when a '
+        + 'command asks it to. Click to turn saving off, so edits stay '
+        + 'unsaved in Altium until you save them yourself. Kept across restarts.';
+    TIP_SAVING_OFF = 'Saving is off: the bridge refuses every save, and its '
+        + 'edits stay unsaved in Altium until you save them yourself. Click '
+        + 'to allow saving again. Kept across restarts.';
+
+Procedure ApplyTips(Dummy : Integer);
+Var
+    Tip : String;
+Begin
+    Tip := 'What the bridge is doing now. Green: idle and ready. Amber: '
+        + 'running a command, shown with its name and elapsed time. '
+        + 'Grey: paused.';
+    SetTip(pnl_StatusDot, Tip);  SetTip(lbl_Status, Tip);
+    SetTip(lbl_Spinner, Tip);
+    SetTip(lbl_Version, 'Version of the eda-agent scripts loaded in Altium.');
+
+    Tip := 'How long this bridge session has been running in Altium.';
+    SetTip(pnl_K1, Tip);  SetTip(lbl_LblUp, Tip);  SetTip(lbl_ValUp, Tip);
+    Tip := 'Commands handled in this session, keep-alive pings included.';
+    SetTip(pnl_K2, Tip);  SetTip(lbl_LblReq, Tip);  SetTip(lbl_ValReq, Tip);
+    Tip := 'Total time Altium has spent running commands in this session. '
+        + 'The rest of the time it is free for you to work.';
+    SetTip(pnl_K3, Tip);  SetTip(lbl_LblMs, Tip);  SetTip(lbl_ValMs, Tip);
+    Tip := 'Time left before the bridge stops on its own when no commands '
+        + 'arrive. Every command starts the countdown again, and so does '
+        + 'Renew. Amber under two minutes, red under 30 seconds; it does not '
+        + 'run while paused.';
+    SetTip(pnl_K4, Tip);  SetTip(lbl_LblStop, Tip);  SetTip(lbl_ValStop, Tip);
+
+    Tip := 'The latest error or notice from the bridge.';
+    SetTip(pnl_ErrBar, Tip);  SetTip(lbl_LastErr, Tip);
+
+    SetTip(btn_OpenWeb, TIP_OPENWEB_OFF);  SetTip(ico_OpenWeb, TIP_OPENWEB_OFF);
+    SetTip(btn_Pause, TIP_PAUSE);  SetTip(ico_Pause, TIP_PAUSE);
+    SetTip(ico_Resume, TIP_RESUME);
+    Tip := 'Start the auto-off countdown again, so the bridge stays '
+        + 'connected for another full period.';
+    SetTip(btn_Renew, Tip);  SetTip(ico_Renew, Tip);
+    Tip := 'Empty the command log below. Altium, the Perf tab and the '
+        + 'session totals are not affected.';
+    SetTip(btn_ClearLog, Tip);  SetTip(ico_ClearLog, Tip);
+    SetTip(btn_Saving, TIP_SAVING_ON);  SetTip(ico_Saving, TIP_SAVING_ON);
+    Tip := 'Disconnect the AI from Altium: the bridge stops and this window '
+        + 'closes. Nothing is saved, so unsaved edits stay open in Altium.';
+    SetTip(btn_Detach, Tip);  SetTip(ico_Detach, Tip);
+
+    Tip := 'Show only new log lines that contain this text (any case). '
+        + 'Changing it clears the log.';
+    SetTip(ico_Filter, Tip);  SetTip(edt_Filter, Tip);
+    SetTip(chk_HidePings, 'Leave out the keep-alive pings the AI client '
+        + 'sends every 30 seconds, so the log shows real work. Changing it '
+        + 'clears the log.');
+    SetTip(chk_OnlySlow, 'Show only commands that took 100 ms or more, '
+        + 'and every error. Changing it clears the log.');
+    SetTip(chk_OnTop, 'Keep this window in front of Altium''s other windows.');
+
+    SetTip(tab_Log, 'Commands as they run, newest at the top: time taken '
+        + 'in ms, request id and command.');
+    SetTip(tab_Perf, 'Totals per command for this session: how many times '
+        + 'it ran, and its average and longest time in ms.');
+    SetTip(tab_Config, 'Your choices for how the bridge works. Kept across '
+        + 'restarts.');
+    Tip := 'How a component value is written when it is cleaned up. '
+        + 'Kept across restarts.';
+    SetTip(lbl_CfgValue, Tip);
+    SetTip(opt_FmtNone, 'Leave every value as it is written.');
+    SetTip(opt_FmtRkm, 'RKM code of IEC 60062: the letter in place of the '
+        + 'decimal point, so a lost point cannot change the value. No unit.');
+    SetTip(opt_FmtSi, 'A decimal point and an SI prefix, without the unit.');
+    SetTip(opt_FmtSiUnit, 'A decimal point and an SI prefix, with the unit '
+        + 'symbol. Resistors carry no unit, since the ohm sign cannot pass '
+        + 'through the bridge.');
+    Tip := 'Whether the AI may change designs. Read-only refuses every '
+        + 'command that is not a read. EDA_AGENT_READONLY in the AI client''s '
+        + 'config also makes it read-only, whatever this says.';
+    SetTip(lbl_CfgEdits, Tip);  SetTip(opt_EditsAllowed, Tip);
+    SetTip(opt_EditsReadOnly, Tip);
+    Tip := 'Whether the AI may delete or remove anything: objects, parts, '
+        + 'footprints, nets, sheets, rules, variants, layers, documents from a '
+        + 'project, routing. Other edits still run.';
+    SetTip(lbl_CfgDelete, Tip);  SetTip(opt_DeleteAllowed, Tip);
+    SetTip(opt_DeleteRefused, Tip);
+    Tip := 'Whether the AI may close a document or a project.';
+    SetTip(lbl_CfgClose, Tip);  SetTip(opt_CloseAllowed, Tip);
+    SetTip(opt_CloseRefused, Tip);
+    Tip := 'Whether the AI may pick menus, press dialog buttons and type into '
+        + 'Altium. EDA_AGENT_UI_AUTOMATION=0 in the AI client''s config also '
+        + 'turns it off, whatever this says.';
+    SetTip(lbl_CfgAuto, Tip);  SetTip(opt_AutoOn, Tip);  SetTip(opt_AutoOff, Tip);
+    Tip := 'Fit the board or sheet in the window after each edit the AI '
+        + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
+        + 'in the AI client''s config also turns it on.';
+    SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'What happens to a dialog a tool opens, such as the Engineering '
+        + 'Change Order or the Teardrops options. Automatic: the AI answers '
+        + 'it as the tool was asked, then reads the result back. Manual: the '
+        + 'dialog waits for you.';
+    SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
+End;
+
+
 { Open-Dashboard button reflects actual dashboard availability via a         }
 { heartbeat file the Python dashboard process writes every ~3s: a Unix      }
 { epoch timestamp in workspace/dashboard.heartbeat. If the timestamp is     }
@@ -439,17 +598,21 @@ Begin
     Try
         If NewEnabled Then
         Begin
-            btn_OpenWeb.Color := COLOR_ACCENT_BLUE;
-            btn_OpenWeb.Font.Color := $00FFFFFF;
+            btn_OpenWeb.Color := COLOR_BG_ELEVATED;
+            btn_OpenWeb.Font.Color := COLOR_TEXT_BODY;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_BODY; Except End;
             btn_OpenWeb.Cursor := crHandPoint;
-            btn_OpenWeb.Caption := 'Open Dashboard';
+            SetTip(btn_OpenWeb, TIP_OPENWEB_ON);
+            SetTip(ico_OpenWeb, TIP_OPENWEB_ON);
         End
         Else
         Begin
             btn_OpenWeb.Color := COLOR_BG_CARD;
             btn_OpenWeb.Font.Color := COLOR_TEXT_FAINT;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_FAINT; Except End;
             btn_OpenWeb.Cursor := crDefault;
-            btn_OpenWeb.Caption := 'Open Dashboard  (not running)';
+            SetTip(btn_OpenWeb, TIP_OPENWEB_OFF);
+            SetTip(ico_OpenWeb, TIP_OPENWEB_OFF);
         End;
     Except End;
 End;
@@ -554,10 +717,25 @@ End;
 Procedure SetCheckCaption(Pnl : TPanel; Checked : Boolean; LabelText : String);
 Begin
     Try
+        Pnl.Caption := LabelText;
         If Checked Then
-            Pnl.Caption := '  ' + FilledDot(0) + '  ' + LabelText
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End
         Else
-            Pnl.Caption := '  ' + HollowDot(0) + '  ' + LabelText;
+        Begin
+            Pnl.Color := COLOR_BG_BASE;
+            Pnl.Font.Color := COLOR_TEXT_MUTED;
+        End;
+    Except End;
+End;
+
+Procedure LeaveToggle(Pnl : TPanel; Checked : Boolean);
+Begin
+    Try
+        If Checked Then Pnl.Color := COLOR_BG_ELEVATED
+        Else Pnl.Color := COLOR_BG_BASE;
     Except End;
 End;
 
@@ -577,14 +755,167 @@ Begin
     OwnPanelColours(pnl_KPIs);      OwnPanelColours(pnl_K1);
     OwnPanelColours(pnl_K2);        OwnPanelColours(pnl_K3);
     OwnPanelColours(pnl_K4);        OwnPanelColours(pnl_ErrBar);
-    OwnPanelColours(pnl_Primary);   OwnPanelColours(btn_OpenWeb);
+    OwnPanelColours(btn_OpenWeb);
     OwnPanelColours(pnl_Controls);  OwnPanelColours(btn_Pause);
     OwnPanelColours(btn_Renew);     OwnPanelColours(btn_ClearLog);
     OwnPanelColours(btn_Detach);    OwnPanelColours(chk_HidePings);
     OwnPanelColours(chk_OnlySlow);  OwnPanelColours(chk_OnTop);
     OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
-    OwnPanelColours(btn_CopyCmd);
+    OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
+    OwnPanelColours(btn_CopyLog);   OwnPanelColours(tab_Config);
+    OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
+    OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
+    OwnPanelColours(opt_FmtSiUnit);
+    OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
+    OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
+    OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
+    OwnPanelColours(sep_Cfg3);
+    OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
+    OwnPanelColours(opt_CloseAllowed);  OwnPanelColours(opt_CloseRefused);
+    OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
+    OwnPanelColours(sep_Cfg6);
+    OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
+End;
+
+
+{ Saving allowed: an ordinary button. Off: amber, so it cannot be missed }
+{ while edits are piling up unsaved in Altium.                           }
+Procedure PaintSavingSwitch(Dummy : Integer);
+Begin
+    Try
+        If SavingOff Then
+        Begin
+            btn_Saving.Caption := 'Saving OFF';
+            btn_Saving.Color := COLOR_ACCENT_AMBER;
+            btn_Saving.Font.Color := $00111111;
+            ico_Saving.Font.Color := $00111111;
+            SetTip(btn_Saving, TIP_SAVING_OFF);
+            SetTip(ico_Saving, TIP_SAVING_OFF);
+        End
+        Else
+        Begin
+            btn_Saving.Caption := 'Saving on';
+            btn_Saving.Color := COLOR_BG_ELEVATED;
+            btn_Saving.Font.Color := COLOR_TEXT_BODY;
+            ico_Saving.Font.Color := COLOR_TEXT_BODY;
+            SetTip(btn_Saving, TIP_SAVING_ON);
+            SetTip(ico_Saving, TIP_SAVING_ON);
+        End;
+    Except End;
+End;
+
+
+{ One option of a choice: the chosen one in the accent colour. }
+Procedure PaintOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_BLUE;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ A restrictive choice, once chosen, shows amber like Saving OFF. }
+Procedure PaintWarnOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_AMBER;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ The value format on the Config tab, with what the choice does. }
+Procedure PaintValueFormat(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_FmtNone, ValueFormat = 'none');
+        PaintOption(opt_FmtRkm, ValueFormat = 'rkm');
+        PaintOption(opt_FmtSi, (ValueFormat = 'si') And (ValueUnit <> 'with'));
+        PaintOption(opt_FmtSiUnit, (ValueFormat = 'si') And (ValueUnit = 'with'));
+        If ValueFormat = 'rkm' Then
+            lbl_CfgValueHint.Caption := 'RKM code of IEC 60062, the letter in '
+                + 'place of the decimal point: 4K7, 2u2, 100n, 3V3, 0R1.'
+        Else If (ValueFormat = 'si') And (ValueUnit = 'with') Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix, '
+                + 'with the unit: 4.7k, 2.2uF, 100nF, 10uH, 3.3V. Resistors '
+                + 'carry no unit.'
+        Else If ValueFormat = 'si' Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix: '
+                + '4.7k, 2.2u, 100n, 3.3V, 0.1.'
+        Else
+            lbl_CfgValueHint.Caption := 'Values are left as they are written. '
+                + 'Nothing is reformatted.';
+    Except End;
+End;
+
+
+{ The agent and view settings on the Config tab, with what each does. }
+Procedure PaintAgentSettings(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_EditsAllowed, EditsMode <> 'readonly');
+        PaintWarnOption(opt_EditsReadOnly, EditsMode = 'readonly');
+        If EditsMode = 'readonly' Then
+            lbl_CfgEditsHint.Caption := 'Read-only: every command that changes '
+                + 'a design is refused. Reads, checks and exports still run.'
+        Else
+            lbl_CfgEditsHint.Caption := 'The AI may change the open designs.';
+        PaintOption(opt_DeleteAllowed, DeletingMode <> 'refused');
+        PaintWarnOption(opt_DeleteRefused, DeletingMode = 'refused');
+        If DeletingMode = 'refused' Then
+            lbl_CfgDeleteHint.Caption := 'Refused: nothing is deleted or '
+                + 'removed. Other edits still run.'
+        Else
+            lbl_CfgDeleteHint.Caption := 'The AI may delete objects, parts, '
+                + 'nets, rules and the like.';
+        PaintOption(opt_CloseAllowed, ClosingMode <> 'refused');
+        PaintWarnOption(opt_CloseRefused, ClosingMode = 'refused');
+        If ClosingMode = 'refused' Then
+            lbl_CfgCloseHint.Caption := 'Refused: the AI cannot close a '
+                + 'document or a project.'
+        Else
+            lbl_CfgCloseHint.Caption := 'The AI may close documents and projects.';
+        PaintOption(opt_AutoOn, UiAutomationMode <> 'off');
+        PaintWarnOption(opt_AutoOff, UiAutomationMode = 'off');
+        If UiAutomationMode = 'off' Then
+            lbl_CfgAutoHint.Caption := 'Off: the AI cannot pick menus, press '
+                + 'dialog buttons or type. Some tasks have no other route.'
+        Else
+            lbl_CfgAutoHint.Caption := 'The AI may pick menus, press dialog '
+                + 'buttons and type where there is no API route.';
+        PaintOption(opt_ViewOff, KeepInViewMode <> 'on');
+        PaintOption(opt_ViewOn, KeepInViewMode = 'on');
+        If KeepInViewMode = 'on' Then
+            lbl_CfgViewHint.Caption := 'After each edit the window is fitted '
+                + 'to the whole board or sheet, at most every 2 seconds.'
+        Else
+            lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_EcoAuto, DialogMode <> 'manual');
+        PaintOption(opt_EcoManual, DialogMode = 'manual');
+        If DialogMode = 'manual' Then
+            lbl_CfgEcoHint.Caption := 'A dialog a tool opens waits for you '
+                + 'to answer it.'
+        Else
+            lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
+                + 'open: change orders, teardrops.';
+    Except End;
 End;
 
 
@@ -610,9 +941,20 @@ Begin
         OpenWebEnabled  := False;
 
         OwnAllPanelColours(0);
-        SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
-        SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
-        SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');
+        Try
+            If Application.HintHidePause < 30000 Then
+            Begin
+                SavedHintHidePause := Application.HintHidePause;
+                Application.HintHidePause := 30000;
+            End;
+        Except End;
+        SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
+        SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  'Slow only');
+        SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'On top');
+        ApplyTips(0);
+        PaintSavingSwitch(0);
+        PaintValueFormat(0);
+        PaintAgentSettings(0);
         ApplyAlwaysOnTop(0);
 
         ResetPerfStats(0);
@@ -641,7 +983,7 @@ Begin
         Try lbl_Version.Caption := 'v' + SCRIPT_VERSION; Except End;
         Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;
         Try lbl_Status.Caption := 'idle'; Except End;
-        Try lbl_LastErr.Caption := ''; Except End;
+        ShowNotice('');
         { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState(0);
     Except End;
@@ -651,6 +993,9 @@ Procedure HideStatusForm(Dummy : Integer);
 Begin
     Try
         If StatusForm.Visible Then StatusForm.Hide;
+    Except End;
+    Try
+        If SavedHintHidePause > 0 Then Application.HintHidePause := SavedHintHidePause;
     Except End;
 End;
 
@@ -671,7 +1016,7 @@ End;
 Procedure btn_ClearLogClick(Sender : TObject);
 Begin
     Try mmo_Log.Lines.Clear; Except End;
-    Try lbl_LastErr.Caption := ''; Except End;
+    ShowNotice('');
 End;
 
 Procedure btn_PauseClick(Sender : TObject);
@@ -683,6 +1028,9 @@ Begin
             btn_Pause.Caption := 'Resume';
             btn_Pause.Color := COLOR_ACCENT_AMBER;
             btn_Pause.Font.Color := $00111111;
+            Try ico_Pause.Visible := False; Except End;
+            Try ico_Resume.Visible := True; Except End;
+            SetTip(btn_Pause, TIP_RESUME);
             pnl_StatusDot.Color := COLOR_TEXT_FAINT;
             lbl_Status.Caption := 'paused';
             lbl_Status.Font.Color := COLOR_TEXT_MUTED;
@@ -690,8 +1038,11 @@ Begin
         Else
         Begin
             btn_Pause.Caption := 'Pause';
-            btn_Pause.Color := $002A2C32;
+            btn_Pause.Color := COLOR_BG_ELEVATED;
             btn_Pause.Font.Color := COLOR_TEXT_BODY;
+            Try ico_Resume.Visible := False; Except End;
+            Try ico_Pause.Visible := True; Except End;
+            SetTip(btn_Pause, TIP_PAUSE);
             If Not InFlightActive Then
             Begin
                 pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
@@ -724,13 +1075,13 @@ Var
 Begin
     If Not OpenWebEnabled Then
     Begin
-        Try lbl_LastErr.Caption := 'no dashboard running - copy the command below'; Except End;
+        ShowNotice('no dashboard running - copy the command below');
         Exit;
     End;
     Try
         SentinelPath := WorkspaceDir + 'open_dashboard.url';
         WriteFileContent(SentinelPath, 'http://127.0.0.1:8766/');
-        Try lbl_LastErr.Caption := ''; Except End;
+        ShowNotice('');
     Except End;
 End;
 
@@ -752,13 +1103,31 @@ Begin
 End;
 
 
+{ Copy whichever tab is showing, so a log or the timings can be pasted }
+{ into a bug report.                                                   }
+Procedure btn_CopyLogClick(Sender : TObject);
+Begin
+    Try
+        If mmo_Perf.Visible Then
+            Clipboard.AsText := mmo_Perf.Lines.Text
+        Else
+            Clipboard.AsText := mmo_Log.Lines.Text;
+        btn_CopyLog.Caption := #59643;
+    Except End;
+End;
+
+{ The tick shown after a copy turns back into the copy icon on leaving. }
+Procedure btn_CopyLogLeave(Sender : TObject);
+Begin Try btn_CopyLog.Caption := #59592; Except End; End;
+
+
 { Toggles ================================================================== }
 
 Procedure chk_HidePingsClick(Sender : TObject);
 Begin
     Try
         HidePingsFlag := Not HidePingsFlag;
-        SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
+        SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
         RebuildVisibleLog(0);
     Except End;
 End;
@@ -767,7 +1136,7 @@ Procedure chk_OnlySlowClick(Sender : TObject);
 Begin
     Try
         OnlySlowFlag := Not OnlySlowFlag;
-        SetCheckCaption(chk_OnlySlow, OnlySlowFlag, '>100ms');
+        SetCheckCaption(chk_OnlySlow, OnlySlowFlag, 'Slow only');
         RebuildVisibleLog(0);
     Except End;
 End;
@@ -776,8 +1145,23 @@ Procedure chk_OnTopClick(Sender : TObject);
 Begin
     Try
         AlwaysOnTopFlag := Not AlwaysOnTopFlag;
-        SetCheckCaption(chk_OnTop, AlwaysOnTopFlag, 'pin');
+        SetCheckCaption(chk_OnTop, AlwaysOnTopFlag, 'On top');
         ApplyAlwaysOnTop(0);
+    Except End;
+End;
+
+{ The Saving switch. Turning it off stops every save the bridge makes, and }
+{ the choice is written to the workspace so a restart keeps it.           }
+Procedure btn_SavingClick(Sender : TObject);
+Begin
+    Try
+        SavingOff := Not SavingOff;
+        StoreSavingSwitch(0);
+        PaintSavingSwitch(0);
+        If SavingOff Then
+            mmo_Log.Lines.Insert(0, '      saving switched OFF: the bridge writes no documents')
+        Else
+            mmo_Log.Lines.Insert(0, '      saving switched on');
     Except End;
 End;
 
@@ -791,74 +1175,85 @@ End;
 { Hover handlers ============================================================ }
 
 Procedure btn_DetachEnter(Sender : TObject);
-Begin Try btn_Detach.Color := $00D05050; Except End; End;
+Begin Try btn_Detach.Color := $004040E0; Except End; End;
 Procedure btn_DetachLeave(Sender : TObject);
-Begin Try btn_Detach.Color := $00B14545; Except End; End;
+Begin Try btn_Detach.Color := $003030C8; Except End; End;
 
 Procedure btn_ClearLogEnter(Sender : TObject);
-Begin Try btn_ClearLog.Color := $003A3C42; Except End; End;
+Begin Try btn_ClearLog.Color := COLOR_BG_HOVER; Except End; End;
 Procedure btn_ClearLogLeave(Sender : TObject);
-Begin Try btn_ClearLog.Color := $002A2C32; Except End; End;
+Begin Try btn_ClearLog.Color := COLOR_BG_ELEVATED; Except End; End;
 
 Procedure btn_PauseEnter(Sender : TObject);
 Begin
     Try
-        If PausedFlag Then btn_Pause.Color := $00B388F0
-        Else btn_Pause.Color := $003A3C42;
+        If PausedFlag Then btn_Pause.Color := $0070B4F0
+        Else btn_Pause.Color := COLOR_BG_HOVER;
     Except End;
 End;
 Procedure btn_PauseLeave(Sender : TObject);
 Begin
     Try
         If PausedFlag Then btn_Pause.Color := COLOR_ACCENT_AMBER
-        Else btn_Pause.Color := $002A2C32;
+        Else btn_Pause.Color := COLOR_BG_ELEVATED;
     Except End;
 End;
 
+Procedure btn_SavingEnter(Sender : TObject);
+Begin
+    Try
+        If SavingOff Then btn_Saving.Color := $0070B4F0
+        Else btn_Saving.Color := COLOR_BG_HOVER;
+    Except End;
+End;
+Procedure btn_SavingLeave(Sender : TObject);
+Begin
+    PaintSavingSwitch(0);
+End;
+
 Procedure btn_RenewEnter(Sender : TObject);
-Begin Try btn_Renew.Color := $003A3C42; Except End; End;
+Begin Try btn_Renew.Color := COLOR_BG_HOVER; Except End; End;
 Procedure btn_RenewLeave(Sender : TObject);
-Begin Try btn_Renew.Color := $002A2C32; Except End; End;
+Begin Try btn_Renew.Color := COLOR_BG_ELEVATED; Except End; End;
 
 Procedure btn_OpenWebEnter(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := $00FFAE6A; Except End;
+        Try btn_OpenWeb.Color := COLOR_BG_HOVER; Except End;
 End;
 Procedure btn_OpenWebLeave(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_ACCENT_BLUE; Except End
+        Try btn_OpenWeb.Color := COLOR_BG_ELEVATED; Except End
     Else
         Try btn_OpenWeb.Color := COLOR_BG_CARD; Except End;
 End;
 
 Procedure chk_HidePingsEnter(Sender : TObject);
-Begin Try chk_HidePings.Color := $00252630; Except End; End;
+Begin Try chk_HidePings.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_HidePingsLeave(Sender : TObject);
-Begin Try chk_HidePings.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_HidePings, HidePingsFlag); End;
 
 Procedure chk_OnlySlowEnter(Sender : TObject);
-Begin Try chk_OnlySlow.Color := $00252630; Except End; End;
+Begin Try chk_OnlySlow.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_OnlySlowLeave(Sender : TObject);
-Begin Try chk_OnlySlow.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_OnlySlow, OnlySlowFlag); End;
 
 Procedure chk_OnTopEnter(Sender : TObject);
-Begin Try chk_OnTop.Color := $00252630; Except End; End;
+Begin Try chk_OnTop.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_OnTopLeave(Sender : TObject);
-Begin Try chk_OnTop.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_OnTop, AlwaysOnTopFlag); End;
 
 Procedure tab_LogEnter(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := $00252630
-        Else tab_Log.Color := $002A2C32;
+        If Not mmo_Log.Visible Then tab_Log.Color := $004A4A4A;
     Except End;
 End;
 Procedure tab_LogLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_BASE
+        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_LOG
         Else tab_Log.Color := COLOR_BG_CARD;
     Except End;
 End;
@@ -866,43 +1261,151 @@ End;
 Procedure tab_PerfEnter(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := $00252630
-        Else tab_Perf.Color := $002A2C32;
+        If Not mmo_Perf.Visible Then tab_Perf.Color := $004A4A4A;
     Except End;
 End;
 Procedure tab_PerfLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_BASE
+        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_LOG
         Else tab_Perf.Color := COLOR_BG_CARD;
     Except End;
 End;
 
 
-Procedure tab_LogClick(Sender : TObject);
+{ Show one of the three tabs: 0 Log, 1 Perf, 2 Config. }
+Procedure PaintTab(Pnl : TPanel; Open : Boolean);
 Begin
     Try
-        mmo_Log.Visible := True;
-        mmo_Perf.Visible := False;
-        tab_Log.Color := COLOR_BG_BASE;
-        tab_Log.Font.Color := COLOR_ACCENT_BLUE;
-        tab_Perf.Color := COLOR_BG_CARD;
-        tab_Perf.Font.Color := COLOR_TEXT_MUTED;
+        If Open Then
+        Begin
+            Pnl.Color := COLOR_BG_LOG;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_CARD;
+            Pnl.Font.Color := COLOR_TEXT_MUTED;
+        End;
     Except End;
 End;
 
-Procedure tab_PerfClick(Sender : TObject);
+Procedure ShowTab(Which : Integer);
 Begin
     Try
-        RefreshPerfPanel(0);
-        mmo_Log.Visible := False;
-        mmo_Perf.Visible := True;
-        tab_Perf.Color := COLOR_BG_BASE;
-        tab_Perf.Font.Color := COLOR_ACCENT_BLUE;
-        tab_Log.Color := COLOR_BG_CARD;
-        tab_Log.Font.Color := COLOR_TEXT_MUTED;
+        If Which = 1 Then RefreshPerfPanel(0);
+        mmo_Log.Visible := Which = 0;
+        mmo_Perf.Visible := Which = 1;
+        pnl_Config.Visible := Which = 2;
+        lbl_LogHint.Visible := Which <> 2;
+        btn_CopyLog.Visible := Which <> 2;
+        PaintTab(tab_Log, Which = 0);
+        PaintTab(tab_Perf, Which = 1);
+        PaintTab(tab_Config, Which = 2);
     Except End;
 End;
+
+Procedure tab_LogClick(Sender : TObject);
+Begin ShowTab(0); End;
+
+Procedure tab_PerfClick(Sender : TObject);
+Begin ShowTab(1); End;
+
+Procedure tab_ConfigClick(Sender : TObject);
+Begin ShowTab(2); End;
+
+Procedure tab_ConfigEnter(Sender : TObject);
+Begin
+    Try
+        If Not pnl_Config.Visible Then tab_Config.Color := $004A4A4A;
+    Except End;
+End;
+
+Procedure tab_ConfigLeave(Sender : TObject);
+Begin
+    Try
+        If pnl_Config.Visible Then tab_Config.Color := COLOR_BG_LOG
+        Else tab_Config.Color := COLOR_BG_CARD;
+    Except End;
+End;
+
+{ A value format chosen on the Config tab is stored at once, so the server }
+{ and a restart see it. Only SI takes a unit.                             }
+Procedure ChooseValueFormat(Choice : String; UnitChoice : String);
+Begin
+    Try
+        ValueFormat := Choice;
+        ValueUnit := UnitChoice;
+        StorePreferences(0);
+        PaintValueFormat(0);
+        mmo_Log.Lines.Insert(0, '      value format set to ' + Choice + ', unit '
+            + UnitChoice);
+    Except End;
+End;
+
+Procedure opt_FmtNoneClick(Sender : TObject);
+Begin ChooseValueFormat('none', 'without'); End;
+
+Procedure opt_FmtRkmClick(Sender : TObject);
+Begin ChooseValueFormat('rkm', 'without'); End;
+
+Procedure opt_FmtSiClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'without'); End;
+
+Procedure opt_FmtSiUnitClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'with'); End;
+
+{ An agent or view setting chosen on the Config tab, stored at once. }
+Procedure ChooseAgentSetting(Setting : String; Choice : String);
+Begin
+    Try
+        If Setting = 'edits' Then EditsMode := Choice
+        Else If Setting = 'deleting' Then DeletingMode := Choice
+        Else If Setting = 'closing' Then ClosingMode := Choice
+        Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
+        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'dialogs' Then DialogMode := Choice;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
+    Except End;
+End;
+
+Procedure opt_EditsAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'allowed'); End;
+
+Procedure opt_EditsReadOnlyClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'readonly'); End;
+
+Procedure opt_DeleteAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'allowed'); End;
+
+Procedure opt_DeleteRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'refused'); End;
+
+Procedure opt_CloseAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'allowed'); End;
+
+Procedure opt_CloseRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'refused'); End;
+
+Procedure opt_EcoAutoClick(Sender : TObject);
+Begin ChooseAgentSetting('dialogs', 'auto'); End;
+
+Procedure opt_EcoManualClick(Sender : TObject);
+Begin ChooseAgentSetting('dialogs', 'manual'); End;
+
+Procedure opt_AutoOnClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'on'); End;
+
+Procedure opt_AutoOffClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'off'); End;
+
+Procedure opt_ViewOffClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'off'); End;
+
+Procedure opt_ViewOnClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'on'); End;
 
 
 { ============================================================================ }
@@ -1007,7 +1510,141 @@ Begin
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
-Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
+{ SavingRefusal - with the Saving switch off, the error for a command whose  }
+{ whole job is writing a file, or whose close would drop unsaved edits. ''  }
+{ when the command may run. Commands that only save on the side still run: }
+{ SaveHeldBack stops their writes and SavingNote reports them.             }
+Function SavingRefusal(Command : String; Params : String; RequestId : String) : String;
+Var
+    Named : String;
+Begin
+    Result := '';
+    If Not SavingOff Then Exit;
+    If (Command = 'application.save_all') Or (Command = 'project.save_all')
+        Or (Command = 'application.save_document') Or (Command = 'project.save') Then
+    Begin
+        Result := SavingOffError(RequestId, 'This command saves documents.');
+        Exit;
+    End;
+    If (Command = 'application.create_document') Or (Command = 'generic.add_sheet') Then
+    Begin
+        Result := SavingOffError(RequestId, 'A new document is created by writing its file.');
+        Exit;
+    End;
+    If (Command = 'pcb.make_library') Or (Command = 'pcb.make_pad_via_library') Then
+    Begin
+        Result := SavingOffError(RequestId, 'The library is made by writing a new file.');
+        Exit;
+    End;
+    If (Command = 'pcb.save_copy_as')
+        And (LowerCase(ExtractJsonValue(Params, 'check_only')) <> 'true') Then
+    Begin
+        Result := SavingOffError(RequestId, 'A copy is made by saving the board to a new file.');
+        Exit;
+    End;
+    If (Command = 'generic.simcfg_document')
+        And (LowerCase(ExtractJsonValue(Params, 'action')) = 'save') Then
+    Begin
+        Result := SavingOffError(RequestId, 'This saves the simulation settings file.');
+        Exit;
+    End;
+    If (Command = 'project.close') And (ExtractJsonValue(Params, 'save') <> 'false') Then
+    Begin
+        Result := SavingOffError(RequestId, 'Closing with save writes the project first; '
+            + 'pass save=false to close without saving. Nothing was closed.');
+        Exit;
+    End;
+    If Command = 'application.execute_menu' Then
+    Begin
+        If Pos('SAVE', UpperCase(ExtractJsonValue(Params, 'menu_path'))) > 0 Then
+            Result := SavingOffError(RequestId, 'This menu item saves.');
+        Exit;
+    End;
+    If (Command = 'application.run_process') Or (Command = 'generic.run_process') Then
+    Begin
+        Named := ExtractJsonValue(Params, 'process_name') + ExtractJsonValue(Params, 'process');
+        If Pos('SAVE', UpperCase(Named)) > 0 Then
+            Result := SavingOffError(RequestId, 'The process ' + Named + ' saves.');
+    End;
+End;
+
+{ SavingNote - a command that edited a document while saving was off says  }
+{ what it did not write: the edit is in Altium and nowhere on disk. Only a }
+{ success whose data is an object is touched, as in BoardFallbackNote.      }
+Function SavingNote(Response : String) : String;
+Var
+    Marker, Added, Names, Rest, Name : String;
+    P, Bar : Integer;
+Begin
+    Result := Response;
+    If SavesHeld = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Names := '';
+    Rest := HeldFiles;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Name := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Name := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Names <> '' Then Names := Names + ',';
+        Names := Names + '"' + EscapeJsonString(Name) + '"';
+    End;
+    Added := '"saving_off":true,"not_saved":[' + Names + ']'
+        + ',"saving_note":"Saving is switched off on the bridge dashboard, so '
+        + 'these were not written. The edits are in Altium only."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{..............................................................................}
+{ Per-request state, set back to its starting value in one place.             }
+{                                                                              }
+{ The unit-level variables below describe ONE request or one item of a bulk  }
+{ call. Each is reset here and nowhere else at the start of its run, so a     }
+{ variable added later is listed here or it carries over into the next        }
+{ request. Session-lifetime variables (the pump, the dashboard, the config,   }
+{ the save pass, the JSON index) are not reset; the test that pins this list  }
+{ names them.                                                                 }
+{                                                                              }
+{ Not here: the next-step note and the last error, which the pump clears      }
+{ before it restores the session's document, because that step can note one. }
+{..............................................................................}
+Procedure ResetItemState(Dummy : Integer);
+Begin
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
+    WritesFailed := 0;
+    WritesFailedAt := '';
+    LibScopeName := '';
+    LibScopePart := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
+    SavesHeld := 0;
+    HeldFiles := '';
+End;
+
+Procedure ResetRequestState(Dummy : Integer);
+Begin
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchBulkHold := False;
+    ResetPropertyDiag(0);
+    ResetItemState(0);
+End;
+
+Function ProcessOne(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
     DotPos : Integer;
@@ -1031,11 +1668,9 @@ Begin
         Exit;
     End;
 
-    SheetsSeen := 0;
-    SheetsSkipped := 0;
-    BoardFallbackPath := '';
-    BoardFallbackFrom := '';
-    BoardMissWhy := '';
+    ResetItemState(0);
+    Result := SavingRefusal(Command, Params, RequestId);
+    If Result <> '' Then Exit;
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -1050,7 +1685,125 @@ Begin
             'commands, or audit.* for design-lint checks.');
     End;
     Result := SheetCoverage(Result);
+    Result := WriteFailures(Result);
     Result := BoardFallbackNote(Result);
+    Result := SavingNote(Result);
+End;
+
+{..............................................................................}
+{ Whether one item's reply is a failure. Every reply starts with its           }
+{ protocol_version, id and success keys, in that order, so the first success   }
+{ key is the envelope's own and not one inside its data.                       }
+{..............................................................................}
+
+Function ReplyFailed(Reply : String) : Boolean;
+Var
+    P : Integer;
+Begin
+    P := Pos('"success":', Reply);
+    Result := (P = 0) Or (Copy(Reply, P + 10, 5) = 'false');
+End;
+
+{..............................................................................}
+{ A bulk call: the params carry bulk_count and the items as bulk_item_0 to     }
+{ bulk_item_<count-1>, each the parameters one call of the command takes. The  }
+{ items run through ProcessOne in order inside ONE board edit, and the edits   }
+{ on one schematic join up, so a bulk call is one undo step per document.      }
+{ Every item's reply comes back whole, in order,                               }
+{ under "items". The run stops at the first failed item unless bulk_continue   }
+{ is true, and the items after it are reported as skipped.                     }
+{..............................................................................}
+
+Function ProcessBulk(Command : String; Params : String; RequestId : String) : String;
+Var
+    Count, I, Ran, Failed, Skipped, Depth : Integer;
+    ItemParams, ItemReply, Replies, Category, SchOpen : String;
+    KeepGoing, Stopped, OnBoard : Boolean;
+Begin
+    Count := StrToIntDef(ExtractJsonValue(Params, 'bulk_count'), 0);
+    If Count <= 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER',
+            'bulk_count must be a positive number of items.');
+        Exit;
+    End;
+    If Copy(Command, 1, 12) = 'application.' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER',
+            Command + ' runs once per call and takes no items.');
+        Exit;
+    End;
+    KeepGoing := LowerCase(ExtractJsonValue(Params, 'bulk_continue')) = 'true';
+    { Board, footprint library and object commands edit through PCBServer, }
+    { so their items share one board edit.                                 }
+    Category := Copy(Command, 1, Pos('.', Command) - 1);
+    OnBoard := ((Category = 'pcb') Or (Category = 'generic')
+        Or (Category = 'library')) And (PCBServer <> Nil);
+
+    Replies := '';
+    Ran := 0;
+    Failed := 0;
+    Skipped := 0;
+    Stopped := False;
+    If OnBoard Then PcbBeginEdit(0);
+    { Schematic edits name their document, so they are joined as they }
+    { come: see SchBeginEdit.                                         }
+    SchBulkHold := True;
+    Try
+        For I := 0 To Count - 1 Do
+        Begin
+            If Replies <> '' Then Replies := Replies + ',';
+            If Stopped Then
+            Begin
+                Replies := Replies + '{"success":false,"skipped":true}';
+                Skipped := Skipped + 1;
+                Continue;
+            End;
+            ItemParams := ExtractJsonValue(Params, 'bulk_item_' + IntToStr(I));
+            If ItemParams = '' Then ItemParams := '{}';
+            { A handler that exits before ending its edit leaves the count  }
+            { up; one that ends an edit twice takes it to zero, and that    }
+            { closed the shared edit, so it is opened again. Either way the }
+            { next item finds the depth as this one did.                    }
+            Depth := PcbEditDepth;
+            SchOpen := SchEditOpen;
+            ItemReply := ProcessOne(Command, ItemParams, RequestId);
+            If OnBoard And (Depth > 0) And (PcbEditDepth <= 0) Then
+                PCBServer.PreProcess;
+            PcbEditDepth := Depth;
+            SchEditOpen := SchOpen;
+            Ran := Ran + 1;
+            If ReplyFailed(ItemReply) Then
+            Begin
+                Failed := Failed + 1;
+                If Not KeepGoing Then Stopped := True;
+            End;
+            Replies := Replies + ItemReply;
+        End;
+    Finally
+        If OnBoard Then PcbEndEdit(0);
+        SchBulkHold := False;
+        SchReleaseHeld(0);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"bulk":true,"count":' + IntToStr(Count)
+        + ',"ran":' + IntToStr(Ran)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"skipped":' + IntToStr(Skipped)
+        + ',"items":[' + Replies + ']}');
+End;
+
+Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
+Begin
+    { A handler that crashed mid-edit leaves the edit count up, and every   }
+    { later edit would then skip PreProcess. Each request starts clean.     }
+    ResetRequestState(0);
+    SchReleaseHeld(0);
+    If ExtractJsonValue(Params, 'bulk_count') <> '' Then
+        Result := ProcessBulk(Command, Params, RequestId)
+    Else
+        Result := ProcessOne(Command, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -1087,31 +1840,126 @@ Begin
     Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
 End;
 
+{ BEGIN COMMAND RULES, generated from safety.py: edit the Python. }
+
+{ The verb of a command: lower case, after the first dot. }
+Function CommandVerb(Command : String) : String;
+Var
+    Verb : String;
+Begin
+    Verb := LowerCase(Trim(Command));
+    If Pos('.', Verb) > 0 Then Verb := Copy(Verb, Pos('.', Verb) + 1, Length(Verb));
+    Result := Verb;
+End;
+
 Function CommandIsReadOnly(Command : String) : Boolean;
 Var
     Verb : String;
-    DotPos : Integer;
 Begin
-    Verb := LowerCase(Trim(Command));
-    DotPos := Pos('.', Verb);
-    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
-
+    Verb := CommandVerb(Command);
     Result := ActionHasPrefix(Verb, 'get_')
-           Or ActionHasPrefix(Verb, 'list_')
-           Or ActionHasPrefix(Verb, 'query')
-           Or ActionHasPrefix(Verb, 'read_')
-           Or ActionHasPrefix(Verb, 'find_')
-           Or ActionHasPrefix(Verb, 'count')
-           Or ActionHasPrefix(Verb, 'audit_')
-           Or ActionHasPrefix(Verb, 'check_')
-           Or ActionHasPrefix(Verb, 'calc_')
-           Or ActionHasPrefix(Verb, 'export_')
-           Or ActionHasPrefix(Verb, 'render_')
-           Or ActionHasPrefix(Verb, 'probe_')
-           Or ActionHasPrefix(Verb, 'inspect_')
-           Or ActionHasPrefix(Verb, 'diff_')
-           Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
+        Or ActionHasPrefix(Verb, 'list_')
+        Or ActionHasPrefix(Verb, 'query')
+        Or ActionHasPrefix(Verb, 'read_')
+        Or ActionHasPrefix(Verb, 'find_')
+        Or ActionHasPrefix(Verb, 'count')
+        Or ActionHasPrefix(Verb, 'audit_')
+        Or ActionHasPrefix(Verb, 'check_')
+        Or ActionHasPrefix(Verb, 'calc_')
+        Or ActionHasPrefix(Verb, 'export_')
+        Or ActionHasPrefix(Verb, 'render_')
+        Or ActionHasPrefix(Verb, 'probe_')
+        Or ActionHasPrefix(Verb, 'inspect_')
+        Or ActionHasPrefix(Verb, 'diff_')
+        Or ActionHasPrefix(Verb, 'compare_')
+        Or (Verb = 'ping')
+        Or (Verb = 'format_value');
+End;
+
+Function CommandDeletes(Command : String; Params : String) : Boolean;
+Var
+    Verb, Op : String;
+Begin
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Result := ActionHasPrefix(Verb, 'delete_')
+        Or ActionHasPrefix(Verb, 'remove_')
+        Or (Verb = 'batch_delete')
+        Or (Verb = 'unroute')
+        Or (ActionHasPrefix(Verb, 'clear_') And (Pos('source', Verb) > 0))
+        Or (Op = 'delete')
+        Or (Op = 'remove');
+End;
+
+Function CommandCloses(Command : String) : Boolean;
+Var
+    Cmd : String;
+Begin
+    Cmd := LowerCase(Trim(Command));
+    Result := (Cmd = 'application.close_document')
+        Or (Cmd = 'project.close');
+End;
+
+{ END COMMAND RULES }
+
+Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
+Begin
+    Result := '';
+    If (EditsMode = 'readonly') And Not CommandIsReadOnly(Command) Then
+        Result := BuildErrorResponse(RequestId, 'READ_ONLY',
+            Command + ' is refused: edits are set to read-only on the '
+            + 'Config tab of the bridge panel in Altium. Only commands '
+            + 'that leave the design alone run.')
+    Else If (DeletingMode = 'refused') And CommandDeletes(Command, Params) Then
+        Result := BuildErrorResponse(RequestId, 'DELETE_REFUSED',
+            Command + ' is refused: deleting is switched off on the Config '
+            + 'tab of the bridge panel in Altium. Nothing was deleted.')
+    Else If (ClosingMode = 'refused') And CommandCloses(Command) Then
+        Result := BuildErrorResponse(RequestId, 'CLOSE_REFUSED',
+            Command + ' is refused: closing documents is switched off on the '
+            + 'Config tab of the bridge panel in Altium. Nothing was closed.');
+End;
+
+{ SessionFocus - put the session's own document back in front, in the same }
+{ turn of the loop as its command, so nothing can move it in between. Pin   }
+{ is the session_doc_path its server sent. Returns the envelope field that }
+{ says what happened, '' when nothing did. Only an open document is shown: }
+{ a closed one is reported, never reopened, because reopening outside its  }
+{ project makes it a free document.                                        }
+Function SessionFocus(PinIn : String) : String;
+Var
+    Pin, Current, After : String;
+    ServerDoc : IServerDocument;
+Begin
+    Result := '';
+    { Both spelled one way: C:/x and C:\x name the same file but open as two }
+    { documents, and a mismatch here would re-show it on every command.    }
+    Pin := CanonicalPathValue('file_path', PinIn);
+    Current := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If SessionFocusAction(Pin, Current) <> 'restore' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Pin); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('missing', Pin) + ',' + JsonStr('kept', Current) + ',' +
+            JsonStr('note', 'This session''s document is no longer open, so '
+                + 'the command ran on the one in front.'));
+        Exit;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
+    After := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If UpperCase(After) <> UpperCase(Pin) Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('not_restored', Pin) + ',' + JsonStr('kept', After) + ',' +
+            JsonStr('note', 'The focus had moved and this session''s '
+                + 'document could not be put back, so the command ran on '
+                + 'the one in front.'));
+        Exit;
+    End;
+    Result := '"session_document":' + JsonObj(
+        JsonStr('restored', Pin) + ',' + JsonStr('from', Current));
 End;
 
 Function ProcessSingleRequest(Dummy : Integer): Boolean;
@@ -1120,7 +1968,7 @@ Var
     RequestContent, ResponseContent : String;
     Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
-    FocusBefore, FocusAfter : String;
+    FocusBefore, FocusAfter, SessionNote : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
@@ -1213,7 +2061,10 @@ Begin
       session spent a long time looking for a placement bug that was not
       there.
       Captured here rather than per handler because there are hundreds of
-      them and this is the one place every command passes through. }
+      them and this is the one place every command passes through.
+      Taken AFTER the session's own document is put back, so the note
+      below reports only what the handler itself moved. }
+    SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
     ResetNextStep(0);
 
@@ -1228,7 +2079,11 @@ Begin
     LastErrorMsg := '';
     Try
         Try
-            ResponseContent := ProcessCommand(Command, Params, RequestId);
+            { The Config tab's permissions: refused here, where every request
+              passes, so a client running older Python is held to them too. }
+            ResponseContent := SettingRefusal(Command, Params, RequestId);
+            If ResponseContent = '' Then
+                ResponseContent := ProcessCommand(Command, Params, RequestId);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
@@ -1262,6 +2117,9 @@ Begin
             ResponseContent := AppendEnvelopeField(ResponseContent,
                 JsonStr('next_step', PendingNextStep(0)));
 
+        If SessionNote <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent, SessionNote);
+
         FocusAfter := CurrentFocusedDocPath(0);
         If FocusAfter <> FocusBefore Then
             ResponseContent := AppendEnvelopeField(ResponseContent,
@@ -1284,22 +2142,38 @@ Begin
               + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
-    { error banner) when the response is success=false. ExtractJsonValue   }
-    { handles the nested error/code/message path via two successive calls. }
+    { error banner) when the response is success=false.                    }
+    { The reply is never parsed whole here: indexing a reply of several    }
+    { hundred KB character by character held Altium's main thread for      }
+    { minutes after the reply was already sent. The envelope says          }
+    { success:false within its first fields; only then is the error read,  }
+    { from what the handler recorded when it built it, else from a reply   }
+    { small enough to parse. The recorded error is used only when it is    }
+    { this reply's: a failed reply has data null, so its code sits in the  }
+    { first few hundred characters.                                        }
     DashIsError := (ResultTag = 'EXCEPTION');
-    DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+    DashErrPayload := '';
     DashDetail := '';
     DashCode := '';
-    If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+    If Pos('"success":false', Copy(ResponseContent, 1, 200)) > 0 Then
     Begin
         DashIsError := True;
-        DashCode    := ExtractJsonValue(DashErrPayload, 'code');
-        DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
-        { The message as the handler wrote it, when this reply is the error }
-        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
-        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
-            And (LastErrorMsg <> '') Then
+        If (LastErrorId = RequestId) And (LastErrorCode <> '')
+            And (Pos('"error":{"code":"' + LastErrorCode + '"',
+                     Copy(ResponseContent, 1, 400)) > 0) Then
+        Begin
+            DashCode := LastErrorCode;
             DashDetail := LastErrorMsg;
+        End
+        Else If Length(ResponseContent) <= 65536 Then
+        Begin
+            DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+            If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+            Begin
+                DashCode    := ExtractJsonValue(DashErrPayload, 'code');
+                DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+            End;
+        End;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then
@@ -1357,7 +2231,7 @@ Begin
 
     { FIRST, and unconditionally. A tick that fires after this point would }
     { run against an engine Altium may already be unloading.                }
-    Try tmr_Poll.Enabled := False; Except End;
+    Try tmr_Poll.Enabled := False; Except { the engine is going away; nothing is left to tell } End;
 
     QuitTag := 'no';
     If PumpQuitting Then QuitTag := 'yes';
@@ -1531,7 +2405,7 @@ Begin
                 If PumpInterval <> PollIntervalActiveMs Then
                 Begin
                     PumpInterval := PollIntervalActiveMs;
-                    Try tmr_Poll.Interval := PumpInterval; Except End;
+                    Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
@@ -1555,7 +2429,7 @@ Begin
                     If PumpInterval <> PollIntervalIdleMs Then
                     Begin
                         PumpInterval := PollIntervalIdleMs;
-                        Try tmr_Poll.Interval := PumpInterval; Except End;
+                        Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                     End;
                 End;
                 If (PumpIdleCount Mod 10) = 0 Then
@@ -1611,6 +2485,8 @@ Begin
     InitDefaultConfig(0);
     EnsureWorkspaceDir(0);
     LoadMCPConfig(0);
+    LoadSavingSwitch(0);
+    LoadPreferences(0);
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
@@ -1624,6 +2500,10 @@ Begin
     { stopped the loop on "Undeclared identifier". Start with none held.   }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
+    JsonIdxDoc0 := ''; JsonIdxDoc1 := ''; JsonIdxDoc2 := ''; JsonIdxDoc3 := '';
+    JsonIdx0 := ''; JsonIdx1 := ''; JsonIdx2 := ''; JsonIdx3 := '';
+    JsonIdxNext := 0;
+    JsonNestedSeen := '';
 
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';
@@ -1654,7 +2534,7 @@ Begin
     Try
         tmr_Poll.Interval := PumpInterval;
         tmr_Poll.Enabled := True;
-    Except End;
+    Except { read back below } End;
     { Read back: an arm that raised inside the Try used to leave a session }
     { that logged _session_start and then served nothing, with no sign.    }
     Try Armed := tmr_Poll.Enabled; Except Armed := False; End;

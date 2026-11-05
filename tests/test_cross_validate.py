@@ -1077,6 +1077,9 @@ def run_python(fn_name: str, args: list[str]) -> str:
     elif fn_name == 'PickSession':
         return pick_session(args[0], args[1], int(args[2]), int(args[3]))
 
+    elif fn_name == 'SessionFocusAction':
+        return session_focus_action(args[0], args[1])
+
     elif fn_name == 'BatchFieldSweep':
         return batch_field_sweep(args[0], args[1])
 
@@ -1305,6 +1308,14 @@ def pick_session(tags: str, current: str, elapsed_ms: int, slot_ms: int) -> str:
     return after[0] if after else min(pending)
 
 
+def session_focus_action(pin: str, current: str) -> str:
+    """Main.pas SessionFocusAction: put the session's document back unless
+    it has none or it is already in front (paths compared ignoring case)."""
+    if not pin or pin.upper() == current.upper():
+        return "keep"
+    return "restore"
+
+
 def get_batch_tail(op: str, key: str) -> str:
     """Main.pas GetBatchTail: everything after the first ';<key>=', or after
     '<key>=' at the very start."""
@@ -1388,6 +1399,12 @@ def generate_batch_field_cases():
         ("PickSession", ["cccc3333|aaaa1111", "bbbb2222", "0", "30000"]),
         ("PickSession", ["legacy|aaaa1111", "aaaa1111", "30000", "30000"]),
         ("PickSession", ["", "aaaa1111", "0", "30000"]),
+        # A session with no document acts on whatever is in front.
+        ("SessionFocusAction", ["", r"C:\B\b.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"C:\A\a.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"c:\a\A.PCBDOC"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"C:\B\b.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", ""]),
     ]
 
     # And the real thing: payloads the Altium emitter produces.
@@ -1464,8 +1481,8 @@ def generate_batch_field_cases():
     for model in (qfn, holes):
         plan = altium_plan(model, layers)
         payload, _ = _lib._pads_payload(plan["pads"], "mm")
-        for key in ("x", "hole_length", "plated", "paste_expansion",
-                    "mask_expansion"):
+        for key in ("x", "hole_length", "hole_rotation", "plated",
+                    "paste_expansion", "mask_expansion"):
             cases.append(("BatchFieldSweep", [payload, key]))
         if plan["regions"]:
             regions, _ = _lib._regions_payload(plan["regions"])

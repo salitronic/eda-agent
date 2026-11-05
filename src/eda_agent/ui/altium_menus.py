@@ -39,7 +39,11 @@ EDITOR_MENUS = {
 
 _TOKEN = re.compile(r"//[^\n]*|'(?:[^']|'')*'|=|[^\s=']+")
 _LEAVES = {"PL", "PLRepeat", "Link", "LinkRepeat", "Separator", "TreeCopy",
-           "Insertion", "Deletion", "TreeLink"}
+           "Deletion", "TreeLink"}
+
+#: Part of the disk cache's name. Raised when the walk changes, so items
+#: read by an older walk are not served again.
+_CACHE_FORMAT = "menus2"
 
 
 @dataclass
@@ -69,8 +73,20 @@ def _value(token: str) -> str:
 
 def parse_rcs(text: str):
     """(PL entries by id, trees by id) from one .rcs file."""
+    entries, trees, _edits = _parse(text)
+    return entries, trees
+
+
+def _parse(text: str):
+    """(PL entries, trees, edits) from one .rcs file.
+
+    An edit is an Insertion block (items added to the tree TargetID, next
+    to RefID0) or a Deletion (DeleteID removed from TargetID). Altium adds
+    some menu items only this way: Place > Comment on a schematic is an
+    Insertion, and reading Insertion as a one-line leaf dropped it.
+    """
     tokens = [t for t in _TOKEN.findall(text) if not t.startswith("//")]
-    entries, trees, stack = {}, {}, []
+    entries, trees, edits, stack = {}, {}, [], []
 
     def attrs(i):
         found = {}
@@ -95,6 +111,14 @@ def parse_rcs(text: str):
             if stack:
                 stack[-1]["children"].append(node)
             stack.append(node)
+        elif word == "Insertion" and i + 1 < len(tokens):
+            # A block: its items are children, and its own End closes it.
+            ident = tokens[i + 1]
+            found, i = attrs(i + 2)
+            node = {"kind": word, "id": ident, "attrs": found,
+                    "children": []}
+            edits.append(node)
+            stack.append(node)
         elif word in _LEAVES and i + 1 < len(tokens):
             ident = tokens[i + 1]
             found, i = attrs(i + 2)
@@ -103,11 +127,13 @@ def parse_rcs(text: str):
             node = {"kind": word, "id": ident, "attrs": found}
             if word in ("PL", "PLRepeat"):
                 entries[ident] = node
+            elif word == "Deletion":
+                edits.append(node)
             elif stack:
                 stack[-1]["children"].append(node)
         else:
             i += 1
-    return entries, trees
+    return entries, trees, edits
 
 
 def _caption(text: str) -> str:
@@ -117,36 +143,68 @@ def _caption(text: str) -> str:
 
 @lru_cache(maxsize=4)
 def _load(install: str):
-    entries, trees = {}, {}
+    entries, trees, edits = {}, {}, {}
     system = Path(install) / "System"
     for path in sorted(system.iterdir()) if system.is_dir() else []:
         if path.suffix.lower() != ".rcs":
             continue
         try:
-            found, nested = parse_rcs(path.read_text(encoding="latin-1"))
+            found, nested, changes = _parse(path.read_text(encoding="latin-1"))
         except OSError:
             continue
         entries.update(found)
         trees.update(nested)
-    return entries, trees
+        for change in changes:
+            target = change["attrs"].get("TargetID", "")
+            if target:
+                edits.setdefault(target, []).append(change)
+    return entries, trees, edits
 
 
-def _walk(node, trees, entries, path, ids, out, depth=0):
+def _children(node, suffix: str, edits: dict) -> list:
+    """(child, suffix) pairs of a tree as Altium builds it.
+
+    A TreeCopy gives every id under it the copy's IDSuffix, so the Place
+    menu on the schematic menu bar is MNSchematic_Place + "_Menu". Edits
+    name their target and reference by those built ids. Inserted items
+    keep their own ids.
+    """
+    out = [(child, suffix) for child in node.get("children", [])]
+    for change in edits.get(node["id"] + suffix, []):
+        if change["kind"] == "Deletion":
+            gone = change["attrs"].get("DeleteID", "")
+            out = [(c, s) for c, s in out if c["id"] + s != gone]
+            continue
+        ref = change["attrs"].get("RefID0", "")
+        at = next((n for n, (c, s) in enumerate(out) if c["id"] + s == ref), None)
+        added = [(child, "") for child in change.get("children", [])]
+        if at is None:
+            out += added
+        elif change["attrs"].get("InsertType", "").lower() == "before":
+            out[at:at] = added
+        else:
+            out[at + 1:at + 1] = added
+    return out
+
+
+def _walk(node, trees, entries, path, ids, out, depth=0, suffix="", edits=None):
     if depth > 12:
         return
-    for child in node.get("children", []):
+    for child, child_suffix in _children(node, suffix, edits or {}):
         kind = child["kind"]
         if kind == "Tree":
             _walk(child, trees, entries,
                   path + [_caption(child["attrs"].get("Caption", ""))],
-                  ids + [f"Tree {child['id']}"], out, depth + 1)
+                  ids + [f"Tree {child['id']}"], out, depth + 1,
+                  child_suffix, edits)
         elif kind == "TreeCopy":
             original = trees.get(child["attrs"].get("OriginalID", ""))
             if original is not None:
                 name = (child["attrs"].get("Caption")
                         or original["attrs"].get("Caption", ""))
                 _walk(original, trees, entries, path + [_caption(name)],
-                      ids + [f"Tree {original['id']}"], out, depth + 1)
+                      ids + [f"Tree {original['id']}"], out, depth + 1,
+                      child["attrs"].get("IDSuffix", "") + child_suffix, edits)
         elif kind == "Link":
             entry = entries.get(child["attrs"].get("PLID", ""))
             if entry is None:
@@ -166,17 +224,18 @@ def _walk(node, trees, entries, path, ids, out, depth=0):
 def _items(install: str, editor: str) -> tuple:
     """One editor's items, from the disk cache when this install has
     been read before."""
-    stored = altium_locale.disk_cache_read(f"menus-{editor}", Path(install))
+    stored = altium_locale.disk_cache_read(f"{_CACHE_FORMAT}-{editor}",
+                                           Path(install))
     if stored is not None:
         return tuple(MenuItem(**row) for row in stored)
-    entries, trees = _load(install)
+    entries, trees, edits = _load(install)
     root = trees.get(EDITOR_MENUS.get(editor, ""))
     if root is None:
         return ()
     out: list = []
-    _walk(root, trees, entries, [], [], out)
+    _walk(root, trees, entries, [], [], out, edits=edits)
     altium_locale.disk_cache_write(
-        f"menus-{editor}", Path(install),
+        f"{_CACHE_FORMAT}-{editor}", Path(install),
         [{"path": i.path, "command": i.command, "params": i.params,
           "shortcut": i.shortcut, "plid": i.plid,
           "description": i.description, "ids": i.ids} for i in out])

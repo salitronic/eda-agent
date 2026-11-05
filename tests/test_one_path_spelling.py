@@ -18,12 +18,13 @@ from tests.test_handlers_verify_their_outcome import _body, _decommented, _src
 
 def test_every_string_value_goes_through_the_canonical_path():
     body = _decommented(_body(_src("Main.pas"), "ExtractJsonValue"))
-    assert "Result := CanonicalPathValue(Key," in body
+    assert "Value := CanonicalPathValue(Key," in body
 
 
 def test_only_path_keys_with_a_drive_or_unc_value_are_rewritten():
     body = _decommented(_body(_src("Main.pas"), "CanonicalPathValue"))
-    assert "<> 'path'" in body
+    for suffix in ("= 'path'", "= 'library'", "= '_file'", "K = 'destination'"):
+        assert suffix in body, suffix
     assert "Copy(Value, 2, 1) = ':'" in body
     assert "'//'" in body and "'\\\\'" in body
     assert "StringReplace(Value, '/', '\\', -1)" in body

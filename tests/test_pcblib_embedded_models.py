@@ -161,3 +161,48 @@ def test_the_tool_extracts_what_altium_says_the_footprint_uses(monkeypatch, tmp_
     assert [w["name"] for w in got["written"]] == ["part.step"]
     assert Path(got["written"][0]["path"]).parent == tmp_path / "models" / "Lib"
     assert bridge.sent[0][0] == "library.get_footprint_primitives"
+
+
+class _Storages(_Ole):
+    def listdir(self):
+        return [name.split("/") for name in self.streams]
+
+    def openstream(self, name):
+        import io
+        return io.BytesIO(self.streams["/".join(name) if isinstance(name, list) else name])
+
+
+def _footprint(name: str, *bodies: dict) -> bytes:
+    # A Data stream opens with a 4-byte length, a 1-byte name length and
+    # the name; each body is binary, then its text record.
+    head = struct.pack("<I", len(name) + 1) + bytes([len(name)]) + name.encode("latin-1")
+    out = head + b"\x01<\x00\x00\x00"
+    for body in bodies:
+        text = "|V7_LAYER=MECHANICAL13|" + "|".join(f"{k}={v}" for k, v in body.items())
+        out += b"\x0c\x10\x00\x00\x00" + b"\xff" * 16 + struct.pack("<I", len(text) + 1) \
+            + text.encode("latin-1") + b"\x00"
+    return out
+
+
+def test_saved_bodies_are_read_per_footprint_by_their_whole_name(monkeypatch):
+    # The values measured live on AD 26.11 after SetState(10, 20, 30, 12 mil).
+    sot = {"MODELID": "{1}", "MODEL.NAME": "SOT.step", "MODEL.3D.ROTX": "10.000",
+           "MODEL.3D.ROTY": "20.000", "MODEL.3D.ROTZ": "30.000",
+           "MODEL.3D.DZ": "12mil", "MODEL.MODELTYPE": "1"}
+    extruded = {"MODELID": "{2}", "MODEL.NAME": "", "MODEL.3D.ROTX": "0.000",
+                "MODEL.3D.ROTY": "0.000", "MODEL.3D.ROTZ": "0.000",
+                "MODEL.3D.DZ": "0.65mm", "MODEL.MODELTYPE": "0"}
+    longname = "16-VFQFN Exposed Pad(TXB0106RGYR)"
+    streams = {"SOT-23-3/Data": _footprint("SOT-23-3", sot, extruded),
+               longname[:31] + "/Data": _footprint(longname, sot),
+               "Library/Models/Data": b""}
+    monkeypatch.setattr(pm, "_open", lambda path: _Storages(streams))
+
+    got = pm.saved_body_models("x.PcbLib", "SOT-23-3")
+    assert [b["model_file"] for b in got] == ["SOT.step", ""]
+    assert got[0]["rotation_deg"] == [10.0, 20.0, 30.0]
+    assert got[0]["model_z_offset_mils"] == 12.0 and got[0]["model_type"] == 1
+    assert got[1]["model_z_offset_mils"] == pytest.approx(25.5906, abs=1e-4)
+    assert len(pm.saved_body_models("x.PcbLib", longname)) == 1
+    assert pm.saved_body_models("x.PcbLib", longname[:31]) is None
+    assert pm.saved_body_models("x.PcbLib", "SOT-23") is None

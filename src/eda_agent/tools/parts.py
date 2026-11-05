@@ -14,6 +14,47 @@ from typing import Any
 __all__ = ["register_parts_tools"]
 
 
+
+#: Above this many characters the provider's detail is written to the
+#: workspace and the reply carries its outline. An EasyEDA part's raw shapes
+#: came to 89 KB, which Claude Code set aside in a file under the user's
+#: profile and showed the path of.
+_DETAIL_INLINE_CHARS = 20_000
+
+
+def _outline(value: Any, depth: int = 0) -> Any:
+    """``value`` with its short scalars kept and everything bulky counted."""
+    if isinstance(value, dict):
+        if depth >= 2:
+            return f"<{len(value)} keys>"
+        return {k: _outline(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return f"<{len(value)} entries>"
+    if isinstance(value, str) and len(value) > 300:
+        return f"<text, {len(value)} characters>"
+    return value
+
+
+def _fit_detail(detail: Any, provider: str, part_id: str) -> dict[str, Any]:
+    """Nothing when ``detail`` fits one reply; else its outline in place of
+    it, and the whole of it written to the workspace (``detail_path``)."""
+    import json
+
+    from ..config import get_config
+
+    text = json.dumps(detail, default=str)
+    if len(text) <= _DETAIL_INLINE_CHARS:
+        return {}
+    folder = get_config().workspace_dir / "parts"
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in f"{provider}_{part_id}")
+    path = folder / f"{safe}.json"
+    path.write_text(text, encoding="utf-8")
+    return {"detail": _outline(detail), "detail_trimmed": len(text),
+            "detail_path": str(path),
+            "detail_note": ("the provider's full detail is in detail_path; "
+                            "summary holds what a part choice needs")}
+
 def register_parts_tools(mcp):
     """Register the provider-neutral part tools with the MCP server."""
 
@@ -177,6 +218,7 @@ def register_parts_tools(mcp):
             "summary": summary,
             "detail": detail,
         }
+        result.update(_fit_detail(detail, source.name, part_id))
 
         if download_dir:
             download = getattr(source, "download", None)

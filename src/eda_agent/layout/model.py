@@ -67,6 +67,13 @@ class Pad:
     hole_width: float = 0.0       # slot length
     hole_rotation: float = 0.0
     plated: bool = True
+    #: Solder mask, as on the object: tented per side, the expansion taken
+    #: from the hole edge, and a hand-set (top, bottom) expansion in mils.
+    #: None leaves the expansion to the board's mask rule.
+    tent_top: bool = False
+    tent_bottom: bool = False
+    mask_from_hole: bool = False
+    mask_manual: list[float] | None = None
 
     @property
     def key(self) -> str:
@@ -163,6 +170,11 @@ class Via:
     # means ``diameter`` on every layer it spans.
     layer_diameters: dict[str, float] = field(default_factory=dict)
     comp: str = ""                # part of a footprint (thermal vias) when set
+    #: Solder mask, as on Pad.
+    tent_top: bool = False
+    tent_bottom: bool = False
+    mask_from_hole: bool = False
+    mask_manual: list[float] | None = None
 
     def shape_on(self, layer: str) -> geom.Shape:
         return geom.circle(self.x, self.y,

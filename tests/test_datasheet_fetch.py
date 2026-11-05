@@ -132,14 +132,39 @@ def test_a_file_over_the_cap_is_refused(monkeypatch, tmp_path):
     assert dsf.MAX_BYTES == 50 * 1024 * 1024
 
 
+@pytest.fixture(autouse=True)
+def _no_remembered_hosts():
+    dsf._failed_hosts.clear()
+    yield
+    dsf._failed_hosts.clear()
+
+
 def test_http_errors_and_unreachable_hosts(monkeypatch, tmp_path):
     fake = FakeNet(error=urllib.error.HTTPError(URL, 404, "Not Found", {}, None))
     monkeypatch.setattr(dsf.urllib.request, "urlopen", fake)
     assert "HTTP 404" in dsf.fetch_datasheet(URL, directory=tmp_path)["reason"]
-    fake.error = urllib.error.URLError("no route")
-    assert "cannot reach" in dsf.fetch_datasheet(URL, directory=tmp_path)["reason"]
     fake.error = TimeoutError("timed out")
     assert "timed out" in dsf.fetch_datasheet(URL, directory=tmp_path)["reason"]
+    dsf._failed_hosts.clear()
+    fake.error = urllib.error.URLError("no route")
+    assert "cannot reach" in dsf.fetch_datasheet(URL, directory=tmp_path)["reason"]
+
+
+def test_a_host_that_did_not_answer_is_not_waited_on_again(monkeypatch, tmp_path):
+    """st.com timed out at 60 s on every try during a take."""
+    fake = FakeNet(error=TimeoutError("timed out"))
+    monkeypatch.setattr(dsf.urllib.request, "urlopen", fake)
+    dsf.fetch_datasheet(URL, directory=tmp_path)
+    again = dsf.fetch_datasheet(URL + "?2", directory=tmp_path)
+    assert len(fake.calls) == 1, "the dead host was asked again"
+    assert again["host_unreachable"] and "browser" in again["reason"]
+    # An HTTP answer is an answer: the host is not remembered for it.
+    dsf._failed_hosts.clear()
+    fake.error = urllib.error.HTTPError(URL, 403, "Forbidden", {}, None)
+    dsf.fetch_datasheet(URL, directory=tmp_path)
+    dsf.fetch_datasheet(URL, directory=tmp_path)
+    assert len(fake.calls) == 3
+    assert dsf.TIMEOUT_S <= 30
 
 
 def test_a_redirect_off_http_is_refused(monkeypatch, tmp_path):

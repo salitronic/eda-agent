@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.pascal_source import load, strip_comments
+from tests.pascal_source import functions, load, strip_comments
 
 _PAS = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "PCBGeneric.pas"
 
@@ -41,8 +41,10 @@ def resolver(source: str) -> str:
     assert "Function PCBPrimitivePos(" in source, (
         "the per-type position resolver is gone; X and Y are back to being "
         "read off whichever member the base interface happens to publish")
-    return source.split("Function PCBPrimitivePos(", 1)[1].split(
-        "Function GetPCBProperty(", 1)[0]
+    # The function alone: slicing up to GetPCBProperty took in every
+    # helper between the two, and a filter set naming eTrackObject in one
+    # of them read as a position given to a track.
+    return functions(source)["PCBPrimitivePos"]
 
 
 def test_the_base_interface_is_never_asked_for_a_position(source: str):

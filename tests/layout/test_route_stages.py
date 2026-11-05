@@ -281,13 +281,14 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": True,
                                         "pin_lanes": True, "bus_lanes": False}
     assert StageOptions.coerce(sent["params"]["stages"]).diff_pairs
-    # The defaults are the measured set: pairs, pin lanes and buses on,
-    # plane fanout off, no via in a passive's pad (vias allowed in IC pins).
+    # The defaults: pairs, pin lanes and buses on, plane fanout off, and a
+    # via only in a BGA ball or an exposed pad (the fallback widens that to
+    # IC pins when it alone leaves connections unmade).
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc")
     chosen = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": False,
                                         "pin_lanes": True, "bus_lanes": True}
-    assert chosen.pad_vias == "ic" and chosen.bends and chosen.class_order
+    assert chosen.pad_vias == "bga" and chosen.bends and chosen.class_order
     # All four off is the router as it was before the stages.
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc", diff_pairs=False,
                                  pin_lanes=False, bus_lanes=False)

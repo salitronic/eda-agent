@@ -19,8 +19,9 @@ def test_schematic_rubric_shape():
 def test_pcb_rubric_references_real_audits():
     g = visual_review_guidance("pcb")
     audits = {a for item in g["rubric"] for a in item["audits"]}
-    # A few audits we know exist and that the PCB rubric should point at.
-    assert "audit_find_components_outside_board_outline" in audits
+    # A few audits we know exist and that the PCB rubric should point at,
+    # each by the tool that runs it.
+    assert "audit kind=components_outside_board_outline" in audits
     assert "pcb_check_placement_collision" in audits
 
 

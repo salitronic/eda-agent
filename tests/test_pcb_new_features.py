@@ -86,11 +86,14 @@ async def test_import_placement_nothing_valid_sends_nothing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_teardrops_both_hit_one_handler(monkeypatch):
+    from eda_agent.tools import answering
+    monkeypatch.setattr(answering, "driver", lambda title, steps, on_the_way=None: None)
     b = RecBridge()
     tools = _pcb(monkeypatch, b)
     await tools["pcb_add_teardrops"]()
     await tools["pcb_remove_teardrops"]()
-    assert [c[0] for c in b.calls] == ["pcb.teardrops", "pcb.teardrops"]
+    assert [c[0] for c in b.calls if c[0] != "generic.get_object_count"] == [
+        "pcb.teardrops", "pcb.teardrops"]
 
 
 @pytest.mark.asyncio
@@ -174,12 +177,17 @@ async def test_generate_fab_package_extras(monkeypatch, tmp_path):
             return {"containers": [{"name": "Fab"}]}
         if cmd == "project.run_outjob":
             return {"success": True, "output_dir": str(tmp_path)}
-        if cmd == "project.export_step":
-            return {"success": True, "file": "x.step"}
+        if cmd == "application.get_active_document":
+            return {"file_path": str(tmp_path / "Board.PcbDoc")}
         return {"ok": True}
 
+    from eda_agent.tools import uiauto
+    monkeypatch.setattr(uiauto, "_altium_pid", lambda reads_only=False: (
+        None, {"ok": False, "reason": "no Altium in this test"}))
     b = RecBridge(responder)
     tools = _project(monkeypatch, b)
     out = await tools["proj_generate_fab_package"](include_step=True)
-    assert "step" in out["extras"]
-    assert any(c[0] == "project.export_step" for c in b.calls)
+    # Through proj_export_step, which answers the exporter's dialogs; the
+    # bare command would wait on them forever.
+    assert out["extras"]["step"]["reason"] == "no Altium in this test"
+    assert not any(c[0] == "project.export_step" for c in b.calls)

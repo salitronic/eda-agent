@@ -13,7 +13,7 @@ mils, so a gate can name a number and the harness can read it back:
   keepout or a mounting hole, parts off the board;
 * ``connectivity_summary``: nets routed, partly routed and not started,
   and every pad copper has not reached yet;
-* ``drc``: the exact clearance check of ``drc.run_drc``;
+* ``drc``: the exact clearance and mask sliver check of ``drc.verdict``;
 * ``corner_audit``: track junctions that bend sharper than 45 degrees;
 * ``return_via_audit``: signal vias with no ground or plane via near;
 * ``plane_region_audit``: pour and plane copper that has broken into
@@ -36,7 +36,7 @@ from typing import Any, Callable, Optional
 
 from ..core.net_naming import is_ground_net
 from . import geom
-from .drc import TOUCH, connectivity, run_drc
+from .drc import TOUCH, connectivity, run_drc, verdict
 from .model import BOTTOM, TOP, LayoutBoard, Pad, PadCopper
 from .rules import RuleSet
 
@@ -427,23 +427,21 @@ def connectivity_summary(board: LayoutBoard, limit: int = LIMIT) -> dict:
 
 
 def drc_summary(board: LayoutBoard, limit: int = LIMIT) -> dict:
-    """The exact clearance DRC (``drc.run_drc``), counted in full."""
-    rules = RuleSet.from_board(board)
-    rep = run_drc(board, rules, limit=10 ** 7)
-    unknown = rules.unevaluated()
-    items, truncated = _cut([v.as_dict() for v in rep.violations], limit)
-    notes = []
-    if unknown:
-        notes.append(f"{len(unknown)} rule(s) use a scope this check cannot evaluate "
-                     "and were not applied")
+    """The exact DRC: clearance and solder mask slivers, counted in full.
+
+    ``status`` is pass, fail or incomplete (``drc.verdict``); ``pass`` is
+    True only for a pass, so an unevaluated rule is never read as one."""
+    v = verdict(board, limit=10 ** 7)
+    items, truncated = _cut([x.as_dict() for x in v["violations"]], limit)
     return {
-        "pass": not rep.violations,
-        "counts": {"violations": len(rep.violations), "checked_pairs": rep.checked_pairs,
-                   "unevaluated_rules": len(unknown)},
+        "pass": v["status"] == "pass",
+        "status": v["status"],
+        "counts": v["counts"],
         "violations": items,
-        "unevaluated_rules": unknown[:limit],
+        "unevaluated_rules": v["unevaluated_rules"][:limit],
+        "not_checked": v["not_checked"],
         "truncated": truncated,
-        "notes": notes,
+        "notes": v["notes"],
     }
 
 
@@ -757,9 +755,11 @@ def run_audits(board: LayoutBoard, checks: Optional[list[str]] = None, *,
                limit: int = LIMIT) -> dict:
     """Run the named checks (all of ``CHECKS`` when None) on one board.
 
-    Returns ``{"board", "pass", "summary", "checks"}``: ``pass`` is True
-    when every check run passed, ``summary`` gives each check's pass and
-    counts, and ``checks`` each check's full result. ``nets`` and
+    Returns ``{"board", "pass", "status", "summary", "checks"}``: ``pass``
+    is True when every check run passed, ``status`` is fail, incomplete
+    (nothing found, but a check could not apply all its rules) or pass,
+    ``summary`` gives each check's pass, status and counts, and ``checks``
+    each check's full result. ``nets`` and
     ``max_distance_mils`` go to ``return_via_audit``. Raises ValueError
     naming any check it does not know.
     """
@@ -767,15 +767,33 @@ def run_audits(board: LayoutBoard, checks: Optional[list[str]] = None, *,
     unknown = [n for n in names if n not in CHECKS]
     if unknown:
         raise ValueError(f"unknown check(s) {unknown}; known: {list(CHECKS)}")
+    import logging
+    import time
+
     results: dict[str, dict] = {}
+    seconds: dict[str, float] = {}
     for name in dict.fromkeys(names):
+        t0 = time.perf_counter()
         if name == "return_via_audit":
             results[name] = return_via_audit(board, nets, max_distance_mils, limit)
         else:
             results[name] = CHECKS[name](board, limit=limit)
+        seconds[name] = round(time.perf_counter() - t0, 2)
+    # A take's audit of the round LED board took 4.5 min in the server; the
+    # same board read back takes 4.5 s outside it. Logged per check so the
+    # next slow run says where the time went.
+    logging.getLogger(__name__).info("layout audit %s: %s", board.name, seconds)
+    statuses = {n: r.get("status") or ("pass" if r["pass"] else "fail")
+                for n, r in results.items()}
     return {
         "board": board.name,
         "pass": all(r["pass"] for r in results.values()),
-        "summary": {n: {"pass": r["pass"], **r["counts"]} for n, r in results.items()},
+        # fail before incomplete: a found defect outranks a check that
+        # could not finish; pass only when every check ran in full.
+        "status": ("fail" if "fail" in statuses.values() else
+                   "incomplete" if "incomplete" in statuses.values() else "pass"),
+        "summary": {n: {"pass": r["pass"], "status": statuses[n], **r["counts"]}
+                    for n, r in results.items()},
         "checks": results,
+        "seconds": seconds,
     }

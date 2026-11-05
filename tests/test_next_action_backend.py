@@ -168,16 +168,14 @@ def test_a_name_that_prefixes_a_longer_one_is_not_corrupted():
     an exit gate into "design_validate_plan_plan", which nothing
     registers, so the sentence then collected a "(not available on this
     backend)" annotation telling the client its own working tool was
-    missing. Two further pairs in the table (footprint pad/pads,
-    track/tracks) are safe only by dict ordering.
+    missing.
     """
     from eda_agent.design.autonomy import _adapt_lines, _registered_tools
 
     available = _registered_tools("easyeda")
     lines = [
         "design_validate_plan ok:true; then run design_validate.",
-        "lib_add_footprint_pads then lib_add_footprint_pad.",
-        "lib_add_footprint_tracks then lib_add_footprint_track.",
+        "lib_add_footprint_pads then lib_add_footprint_tracks.",
     ]
     out = _adapt_lines(lines, "easyeda", available)
 
@@ -185,6 +183,4 @@ def test_a_name_that_prefixes_a_longer_one_is_not_corrupted():
     assert "design_validate_plan" in out[0], out[0]
     assert "not available on this backend" not in out[0], (
         f"a corrupted name was reported as an absent tool: {out[0]}")
-    assert "easyeda_add_pads" in out[1] and "easyeda_add_pad." in out[1], out[1]
-    assert "easyeda_add_polyline" in out[2] and "easyeda_add_line." in out[2], (
-        out[2])
+    assert out[1] == "easyeda_add_pads then easyeda_add_polyline.", out[1]

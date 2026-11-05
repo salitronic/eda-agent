@@ -187,7 +187,19 @@ def test_drc_is_confirmed_by_a_fresh_report_not_an_old_one():
     """
     text = _decommented(_src("PCB.pas"))
     assert "Result := FileAge(ReportPath)" in _body(text, "DrcReportAge")
-    body = _body(text, "PCB_RunDRC")
+    whole = _body(text, "PCB_RunDRC")
+    # The batch check (the default) writes its own report in the workspace
+    # and deletes the old one FIRST, so there a report present afterwards
+    # is this run's, and existence is the right test. Only after that
+    # branch's Exit does the dialog route, where an old report proves
+    # nothing, begin.
+    batch_start = whole.index("If Not AllowModal Then")
+    batch_end = whole.index("Exit;", batch_start)
+    batch = whole[batch_start:batch_end]
+    assert batch.index("DeleteFile(ReportPath)") < batch.index(
+        "Board.RunBatchDesignRuleCheck(") < batch.index(
+        "ReportPresent := FileExists(ReportPath)")
+    body = whole[batch_end:]
     run = body.index("RunProcess('PCB:DesignRuleCheck')")
     before = body.index("ReportBefore := DrcReportAge(")
     after = body.index("ReportAfter := DrcReportAge(")
@@ -281,10 +293,53 @@ def test_batch_failures_say_which_item_and_why():
 def test_the_measured_modal_tools_are_declared_modal():
     """Published as silent, each one blocks the bridge on a dialog."""
     from eda_agent.tools.metadata import INTERACTION_OVERRIDES, MODAL
-    for name in ("pcb_run_drc", "proj_export_pdf", "proj_run_output",
+    for name in ("proj_export_pdf", "proj_run_output",
                  "lib_reload_library", "proj_remove_document", "proj_close"):
         assert INTERACTION_OVERRIDES.get(name) == MODAL, (
             f"{name} was measured raising a modal that blocks the bridge")
+
+
+def test_drc_runs_without_its_dialog_unless_asked():
+    """pcb_run_drc's default is the batch check, measured with no dialog;
+    the Design Rule Checker dialog is only reached with allow_modal."""
+    import asyncio
+    from eda_agent.tools import pcb as pcb_tools
+    from eda_agent.tools.metadata import INTERACTION_OVERRIDES, SILENT
+
+    assert INTERACTION_OVERRIDES.get("pcb_run_drc") == SILENT
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, dict(params or {})))
+            return {}
+
+    class _Mcp:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *a, **k):
+            def reg(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return reg
+
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(pcb_tools, "get_bridge", lambda: _Bridge())
+        mcp = _Mcp()
+        pcb_tools.register_pcb_tools(mcp)
+        asyncio.run(mcp.tools["pcb_run_drc"]())
+        asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
+    finally:
+        mp.undo()
+    assert sent == [("pcb.run_drc", {}), ("pcb.run_drc", {"allow_modal": "true"})]
+    body = _body(_decommented(_src("PCB.pas")), "PCB_RunDRC")
+    batch = body.index("Board.RunBatchDesignRuleCheck(ReportPath, 0, False, False)")
+    assert batch < body.index("RunProcess('PCB:DesignRuleCheck')")
+    assert "WorkspaceDir + 'drc_batch_report.html'" in body, (
+        "the batch report belongs in the workspace, not the project folder")
 
 
 def test_the_press_tool_can_answer_a_handleless_dialog():
@@ -421,13 +476,15 @@ def test_pcb_transactions_survive_an_exception():
     exception there is an ordinary outcome rather than a remote one.
     """
     body = _body(_decommented(_src("PCBGeneric.pas")), "ProcessPCBBoardObjects")
-    assert body.count("PCBServer.PreProcess") >= 1
-    # Every PreProcess must be followed by a Finally before the function ends.
-    for m in re.finditer(r"PCBServer\.PreProcess", body):
+    # Board edits open and close through PcbBeginEdit / PcbEndEdit, which
+    # reach PCBServer.PreProcess / PostProcess (Main.pas).
+    assert body.count("PcbBeginEdit(0)") >= 1
+    # Every edit opened must be followed by a Finally before the function ends.
+    for m in re.finditer(r"PcbBeginEdit\(0\)", body):
         rest = body[m.end():]
-        fin, post = rest.find("Finally"), rest.find("PCBServer.PostProcess")
+        fin, post = rest.find("Finally"), rest.find("PcbEndEdit(0)")
         assert fin != -1 and post != -1 and fin < post, (
-            "a PCBServer.PreProcess is not unwound by a Finally; an "
+            "a PcbBeginEdit is not unwound by a Finally; an "
             "exception in the loop would leave Altium unable to save any "
             "PCB document until it is restarted")
 
@@ -543,5 +600,7 @@ def test_a_footprint_stamp_counts_only_when_it_reads_back():
         branch = branch[:branch.index("Else")]
         assert "SetPlacedFootprintName(" in branch, (
             f"{func} must write the footprint, not skip it")
-        assert "If SetPlacedFootprintName(" in branch, (
-            f"{func} must count the footprint only on read-back")
+        counted = ("If SetPlacedFootprintName(" in branch
+                   or ("FpOk := SetPlacedFootprintName(" in branch
+                       and "If FpOk Then Inc(" in branch))
+        assert counted, f"{func} must count the footprint only on read-back"

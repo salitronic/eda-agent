@@ -171,6 +171,18 @@ def groups(router, job) -> list[dict]:
             k = where.get(tuple(c))
             if k is not None:
                 parent[find(i)] = find(k)
+    # A pad the board's own copper already takes down a via: the via joins
+    # it to the piece it stands in. Without this a pad with its stub and
+    # via laid was routed to the pour again with a second via.
+    barrels = getattr(router, "pad_barrels", None) or {}
+    spec = router.grid.spec
+    for i, t in enumerate(job.terminals):
+        for x, y in barrels.get(t.pad, ()):
+            ci, cj = spec.cell(x, y)
+            for li in range(router.L):
+                k = where.get((li, cj, ci))
+                if k is not None:
+                    parent[find(i)] = find(k)
     out: dict[int, dict] = {}
     for i, t in enumerate(job.terminals):
         g = out.setdefault(find(i), {"terminals": [], "cells": []})

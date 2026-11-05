@@ -202,15 +202,22 @@ def _tool_descriptions(backend: str):
 # UI automation is a last resort, and only Altium has it
 # --------------------------------------------------------------------------
 
-def test_altium_is_told_ui_automation_is_a_last_resort():
+def test_altium_is_told_api_first_then_the_interface_without_asking():
     """Three sessions in one week fell back to driving dialogs.
 
-    Placement ended in the Place Part dialog and a crashed Altium. The
-    preamble is the one place every agent reads before choosing a tool.
+    Placement ended in the Place Part dialog and a crashed Altium, so the
+    API comes first. The paragraph then said to ask the user before
+    driving the interface, and sessions asked George to click things
+    they could click themselves. His rule (2026-10-23): with no API
+    route, drive the interface without asking. The preamble is the one
+    place every agent reads before choosing a tool.
     """
     text = build_server_instructions("full", "altium")
-    assert "last resort" in text
-    assert "app_click_menu" in text, (
+    assert "API FIRST" in text
+    assert "drive the interface yourself" in text
+    assert "never ask the user to click" in " ".join(text.split())
+    assert "ask the user before driving" not in text
+    assert "app_menu" in text, (
         "name the tools, or an agent does not recognise the ones meant")
 
 
@@ -218,12 +225,12 @@ def test_altium_is_told_ui_automation_is_a_last_resort():
 def test_backends_without_ui_tools_are_not_told_about_them(backend):
     """KiCad and EasyEDA register no app_ interface tools."""
     text = build_server_instructions("full", backend)
-    assert "app_click_menu" not in text
-    assert "last resort" not in text
+    assert "app_menu" not in text
+    assert "API FIRST" not in text
 
 
 def test_the_ui_paragraph_reaches_tool_guide_the_same_way_minimal_can():
     """Under minimal, 'call tool_guide' names a tool the client cannot see."""
     text = build_server_instructions("minimal", "altium")
-    assert "last resort" in text
+    assert "API FIRST" in text
     assert "call tool_guide" not in text

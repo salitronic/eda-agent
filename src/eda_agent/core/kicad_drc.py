@@ -20,6 +20,8 @@ import os
 import tempfile
 from typing import Any
 
+from ..noconsole import no_window
+
 _DRC_TIMEOUT = 180.0
 
 
@@ -46,6 +48,7 @@ async def run_kicad_cli_drc(cli_path: str, board_path: str) -> dict[str, Any]:
             board_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **no_window(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -96,6 +99,7 @@ async def run_kicad_cli_erc(cli_path: str, sch_path: str) -> dict[str, Any]:
             sch_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **no_window(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(

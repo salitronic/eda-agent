@@ -34,7 +34,11 @@ def _routine(unit: str, name: str) -> str:
 
 def test_step_export_claims_a_file_only_when_a_new_one_is_there():
     body = _routine("Project.pas", "Proj_ExportSTEP")
-    compare = body.index("RunProcess('PCB:ExportSTEP3D')")
+    compare = body.index("RunProcess('PCB:Export')")
+    # The registered exporter, as a filter of PCB:Export. The old name was
+    # not a process at all and did nothing.
+    assert "AddStringParameter('Format', 'STEP 3D')" in body
+    assert "ExportSTEP3D'" not in body
     assert body.index("ResolvePCBBoard(") < compare, "the board is focused first"
     assert body.index("AgeBefore := FileAge(OutputPath)") < compare
     check = body.index("(AgeAfter <> -1) And (AgeAfter <> AgeBefore)")

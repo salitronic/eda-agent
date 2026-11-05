@@ -30,7 +30,8 @@ class _User32:
         def call(*args):
             self.calls.append((name, args))
             if name == "GetSystemMetrics":
-                return 1920 if args[0] == win._SM_CXVIRTUALSCREEN else 1080
+                return {win._SM_CXVIRTUALSCREEN: 1920,
+                        win._SM_CYVIRTUALSCREEN: 1080}.get(args[0], 0)
             if name == "WindowFromPoint":
                 return 4242
             return 1
@@ -72,3 +73,26 @@ def test_click_at_reaches_the_pointer_calls(user32):
 def test_window_at_answers_the_window_under_the_point(user32):
     assert win.window_at(5, 5) == 4242
     assert user32.names() == ["WindowFromPoint"]
+
+
+def test_click_at_moves_across_the_whole_virtual_desktop(user32):
+    win.click_at(50, 60)
+    move = next(args for name, args in user32.calls if name == "mouse_event")
+    # Without VIRTUALDESK the absolute range is the primary monitor only.
+    assert move[0] & win._ME_VIRTUALDESK and move[0] & win._ME_ABSOLUTE
+
+
+def test_to_absolute_subtracts_a_negative_virtual_origin():
+    """Three 2560x1440 monitors, one left of the primary at X=-2560.
+
+    The reported failure: a click at 4183 on the right-hand monitor
+    landed on the primary, because the origin and VIRTUALDESK were
+    both ignored.
+    """
+    desk = (-2560, 0, 7680, 1440)
+    assert win._to_absolute(-2560, 0, desk) == (0, 0)
+    assert win._to_absolute(5119, 1439, desk) == (65535, 65535)
+    x, _ = win._to_absolute(4183, 117, desk)
+    assert x == round((4183 + 2560) * 65535 / 7679)
+    # The primary's left edge is a third of the way across, not zero.
+    assert win._to_absolute(0, 0, desk)[0] == round(2560 * 65535 / 7679)
