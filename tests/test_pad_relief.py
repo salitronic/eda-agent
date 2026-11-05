@@ -271,11 +271,26 @@ def test_every_value_is_checked_before_the_board_is_touched():
         assert body.index(refusal) < first, refusal
 
 
-def test_a_thru_hole_pad_is_refused_before_any_write():
+def test_a_thru_hole_pad_takes_a_layer_like_a_via():
     body = _units()["PCB_PadRelief"]
-    refuse = body.index("'NOT_SUPPORTED'")
-    assert body.index("IsSmd := (L = eTopLayer) Or (L = eBottomLayer);") < refuse
-    assert refuse < body.index("PcbBeginEdit(0);")
+    smd = body.index("If IsSmd And (LayerS <> '') Then")
+    assert body.index("IsSmd := (L = eTopLayer) Or (L = eBottomLayer);") < smd
+    assert smd < body.index("PcbBeginEdit(0);")
+    th = body.index("If Not IsSmd Then")
+    assert "If Not PadReliefLayer(Board, LayerS, L) Then" in body[th:th + 200]
+    assert "'NOT_SUPPORTED'" not in body
+    assert "Body := Body + PadReliefScope(Pad.Mode)" in body
+    scope = _units()["PadReliefScope"]
+    assert "JsonStr('mode', 'simple') + ',' + JsonStr('record_scope', 'all layers')" in scope
+    assert "JsonStr('mode', 'top-middle-bottom') + ',' + JsonStr('record_scope', 'inner layers')" in scope
+    # Measured: a simple stack shares ONE spoke list across layers.
+    simple = scope.index("JsonStr('mode', 'simple')")
+    assert "JsonStr('spoke_scope', 'all layers')" in scope[simple:scope.index("Else If Mode = 1")]
+    tmb = scope.index("Else If Mode = 1")
+    full = scope.index("JsonStr('mode', 'full stack')")
+    assert "JsonStr('spoke_scope', 'per layer')" in scope[tmb:full]
+    # Measured: a full stack has a list on every copper layer, planes too.
+    assert "JsonStr('spoke_scope', 'per layer')" in scope[full:]
 
 
 def test_a_spoke_write_adds_before_it_clears_and_replaces_the_list():
@@ -309,10 +324,10 @@ def test_a_spoke_not_narrower_than_the_pad_is_refused_before_any_write():
 def test_a_via_is_a_free_via_named_by_x_and_y_with_a_layer_for_its_spokes():
     body = _units()["PCB_PadRelief"]
     assert "If IsVia And ((Des <> '') Or (PadName <> '') Or (XS = '') Or (YS = '')) Then" in body
-    assert "If (Not IsVia) And (LayerS <> '') Then" in body
     assert "Via := PadReliefFindVia(Board, XS, YS, Count)" in body
-    assert "If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer" in body
-    assert "Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1" in body
+    layer = _units()["PadReliefLayer"]
+    assert "If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer" in layer
+    assert "Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1" in layer
     find = _units()["PadReliefFindVia"]
     assert "Iter.AddFilter_ObjectSet(MkSet(eViaObject));" in find
     assert "Iter.AddFilter_Method(eProcessFree);" in find
@@ -322,10 +337,7 @@ def test_a_via_says_which_layers_its_record_covers():
     # Measured: on a top-middle-bottom via the empty key reaches the
     # MIDDLE record only; a simple via has one record for every layer.
     body = _units()["PCB_PadRelief"]
-    simple = body.index("If Via.Mode = 0 Then")
-    assert body.index("Scope := 'all layers';", simple) < body.index("Else If Via.Mode = 1 Then")
-    tmb = body.index("Else If Via.Mode = 1 Then")
-    assert "Scope := 'inner layers';" in body[tmb:tmb + 200]
+    assert "+ PadReliefScope(Via.Mode)" in body
     assert "PadMin := CoordToMilsF(Via.Size)" in body
 
 
@@ -421,6 +433,7 @@ def test_a_dry_run_or_a_refusal_writes_nothing(monkeypatch):
     reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_oblong(),
                         designator="C1", pad="1", spokes=["N"])
     assert reply["ok"] is False and len(sent) == 1
-    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=dict(_rect(), side="thru"),
-                        designator="J1", pad="1", spokes=["N"])
-    assert reply["ok"] is False and "thru-hole" in reply["reason"] and len(sent) == 1
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=dict(_round(), side="thru"),
+                        designator="J1", pad="1", layer="bottom", spokes=["0"])
+    assert [s[1]["action"] for s in sent] == ["read", "spokes"]
+    assert sent[1][1]["layer"] == "bottom"

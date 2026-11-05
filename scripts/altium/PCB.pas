@@ -30212,6 +30212,40 @@ Begin
     End;
 End;
 
+{ The layer whose spoke list / outline a via or thru-hole pad call means:  }
+{ top (default), bottom, mid (the first inner layer: every inner layer of a }
+{ top-middle-bottom stack), or a copper layer name. False for anything else. }
+Function PadReliefLayer(Board : IPCB_Board; LayerS : String; Var L : TLayer) : Boolean;
+Begin
+    L := eTopLayer;
+    If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer
+    Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1
+    Else If (LayerS <> '') And (LowerCase(LayerS) <> 'top') Then
+        L := ResolveLayerId(Board, LayerS);
+    Result := ((L >= eTopLayer) And (L <= eBottomLayer))
+        Or ((L >= eInternalPlane1) And (L <= eInternalPlane16));
+End;
+
+{ Stack mode 0 simple, 1 top-middle-bottom, 2 full stack, and the layers   }
+{ the record the empty key reaches covers (measured on vias: the MIDDLE    }
+{ record on a top-middle-bottom stack).                                     }
+Function PadReliefScope(Mode : Integer) : String;
+Begin
+    { Spoke lists: ONE for every layer on a simple stack (a write to any     }
+    { layer replaces it), one each for top / inner / bottom on a             }
+    { top-middle-bottom stack (measured on a via and a thru-hole pad), one   }
+    { per copper layer, planes included, on a full stack (thru-hole pad).    }
+    If Mode = 0 Then
+        Result := JsonStr('mode', 'simple') + ',' + JsonStr('record_scope', 'all layers')
+            + ',' + JsonStr('spoke_scope', 'all layers')
+    Else If Mode = 1 Then
+        Result := JsonStr('mode', 'top-middle-bottom') + ',' + JsonStr('record_scope', 'inner layers')
+            + ',' + JsonStr('spoke_scope', 'per layer')
+    Else
+        Result := JsonStr('mode', 'full stack') + ',' + JsonStr('record_scope', 'unknown')
+            + ',' + JsonStr('spoke_scope', 'per layer');
+End;
+
 { The free via at exact x / y (mils from the board origin). }
 Function PadReliefFindVia(Board : IPCB_Board; XS, YS : String; Var Count : Integer) : IPCB_Via;
 Var
@@ -30391,13 +30425,13 @@ End;
 {           style rule drops the pad's own values and takes no other value.  }
 {   spokes: points = "segment:fraction;..." on the relief outline, replacing  }
 {           the custom list; width / gap optional.                            }
+{ A thru-hole pad takes a layer like a via (its record and spokes behave    }
+{ the same way: a record, and a spoke list per layer).                      }
 { kind = via: a free via by exact x + y; layer = top (default) | mid |      }
 { bottom | a layer name picks the spoke list. A simple via has one record    }
 { for every layer; on a top-middle-bottom via the record this key reaches   }
 { is the MIDDLE one (every inner layer): top and bottom records need the    }
 { key's layer field, which stops the script. Spokes are per layer on both.  }
-{ Writes are SMD pads and vias only: a thru-hole pad has one relief per     }
-{ plane layer, which this record does not name.                              }
 Function PCB_PadRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -30405,7 +30439,7 @@ Var
     Via : IPCB_Via;
     Obj, Item, D : Variant;
     Des, PadName, XS, YS, Action, Style, SpokesS, WidthS, GapS, RotS, CustomS : String;
-    Points, Rest, Body, Outline, Net, Side, Kind, LayerS, ModeS, Scope : String;
+    Points, Rest, Body, Outline, Net, Side, Kind, LayerS : String;
     L : TLayer;
     Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge, FinalStyle : Integer;
     Width, Gap, Frac, PadMin, SpokeW, Spare : Double;
@@ -30444,12 +30478,6 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
             'a via is named by x + y only (a free via)');
-        Exit;
-    End;
-    If (Not IsVia) And (LayerS <> '') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'layer is for vias; a pad''s relief is on its own layer');
         Exit;
     End;
     If (Des <> '') And (PadName = '') Then
@@ -30582,13 +30610,7 @@ Begin
     If IsVia Then
     Begin
         Obj := Via;
-        L := eTopLayer;
-        If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer
-        Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1
-        Else If (LayerS <> '') And (LowerCase(LayerS) <> 'top') Then
-            L := ResolveLayerId(Board, LayerS);
-        If Not (((L >= eTopLayer) And (L <= eBottomLayer))
-            Or ((L >= eInternalPlane1) And (L <= eInternalPlane16))) Then
+        If Not PadReliefLayer(Board, LayerS, L) Then
         Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
                 'layer is top, mid, bottom or a copper layer name: ' + LayerS);
@@ -30601,12 +30623,23 @@ Begin
         Obj := Pad;
         L := Pad.Layer;
         IsSmd := (L = eTopLayer) Or (L = eBottomLayer);
-    End;
-    If (Action <> 'read') And Not IsSmd Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
-            'thru-hole pad: one relief per plane layer, not written here');
-        Exit;
+        If IsSmd And (LayerS <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'an SMD pad''s relief is on its own layer; layer is for vias and thru-hole pads');
+            Exit;
+        End;
+        If Not IsSmd Then
+        Begin
+            If Not PadReliefLayer(Board, LayerS, L) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                    'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+                Exit;
+            End;
+            { Like a via from here: a record and a spoke list per layer. }
+            IsSmd := True;
+        End;
     End;
     SegCount := 0;
     Outline := '[]';
@@ -30713,26 +30746,12 @@ Begin
     Try If Obj.Net <> Nil Then Net := Obj.Net.Name; Except End;
     If IsVia Then
     Begin
-        { Via mode 0 simple, 1 top-middle-bottom, 2 full stack. }
-        ModeS := 'full stack';
-        Scope := 'unknown';
-        If Via.Mode = 0 Then
-        Begin
-            ModeS := 'simple';
-            Scope := 'all layers';
-        End
-        Else If Via.Mode = 1 Then
-        Begin
-            ModeS := 'top-middle-bottom';
-            Scope := 'inner layers';
-        End;
         Body := JsonStr('kind', 'via') + ','
             + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Via.X - Board.XOrigin))) + ','
             + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Via.Y - Board.YOrigin))) + ','
             + JsonStr('layer', LayerDisplayName(L)) + ','
             + JsonStr('side', 'via') + ','
-            + JsonStr('mode', ModeS) + ','
-            + JsonStr('record_scope', Scope) + ','
+            + PadReliefScope(Via.Mode) + ','
             + JsonRaw('pad_rotation', '0') + ','
             + JsonStr('shape', 'round') + ','
             + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
@@ -30741,8 +30760,8 @@ Begin
     End
     Else
     Begin
-        If L = eTopLayer Then Side := 'top'
-        Else If L = eBottomLayer Then Side := 'bottom'
+        If Pad.Layer = eTopLayer Then Side := 'top'
+        Else If Pad.Layer = eBottomLayer Then Side := 'bottom'
         Else Side := 'thru';
         Body := JsonStr('kind', 'pad') + ',' + JsonStr('designator', Des) + ','
             + JsonStr('pad', Pad.Name) + ','
@@ -30754,6 +30773,9 @@ Begin
             + JsonStr('shape', LmShapeName(Pad.TopShape)) + ','
             + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Pad.TopXSize))) + ','
             + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Pad.TopYSize))) + ',';
+        If Side = 'thru' Then
+            Body := Body + PadReliefScope(Pad.Mode) + ','
+                + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Pad.HoleSize))) + ',';
     End;
     Body := Body + JsonStr('net', Net) + ','
         + PadReliefRecord(D) + ','
