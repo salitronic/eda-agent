@@ -2331,8 +2331,10 @@ def register_pcb_tools(mcp):
 
     def _relief_target(designator: str, pad: str, x: Optional[float],
                        y: Optional[float], kind: str = "pad",
-                       layer: str = "") -> dict[str, str]:
+                       layer: str = "", footprint: str = "") -> dict[str, str]:
         params: dict[str, str] = {}
+        if footprint.strip():
+            params["footprint_name"] = footprint.strip()
         if kind.strip().lower() == "via":
             params["kind"] = "via"
         if layer.strip():
@@ -2352,11 +2354,14 @@ def register_pcb_tools(mcp):
         y: Optional[float] = None, style: str = "", spokes: int = 0,
         width: Optional[float] = None, gap: Optional[float] = None,
         rotation: int = 0, custom: Optional[bool] = None, read_spokes: bool = False,
-        kind: str = "pad", layer: str = "",
+        kind: str = "pad", layer: str = "", footprint: str = "",
     ) -> dict[str, Any]:
         """Read or set ONE pad's or free via's own thermal relief.
 
         This is the pad's Properties > Thermal Relief, not a design rule.
+        With a PcbLib in front it acts on a footprint's pad or via instead
+        (the current footprint, or ``footprint``), which carries the relief
+        onto every board the footprint is placed on.
         With no value given it reads; with any value it writes the pad
         (SMD pads only) and reads it back. The pour shows a pad's own
         relief only where the polygon connect rule lets the pad decide;
@@ -2391,6 +2396,9 @@ def register_pcb_tools(mcp):
                 "all layers"); a top-middle-bottom stack has one each for
                 top, inner and bottom, a full stack one per copper layer,
                 planes included ("per layer").
+            footprint: With a PcbLib in front: the footprint to act on
+                (made current); empty = the current one. x / y are then
+                mils from the library's origin.
 
         Returns:
             The pad (``x`` / ``y``, ``layer``, ``side``, ``pad_rotation``,
@@ -2400,7 +2408,7 @@ def register_pcb_tools(mcp):
             (segments: a line's start, or an arc's centre / radius /
             angles) and, when read, ``custom_spokes``.
         """
-        params = _relief_target(designator, pad, x, y, kind, layer)
+        params = _relief_target(designator, pad, x, y, kind, layer, footprint)
         values: dict[str, str] = {}
         if style.strip():
             values["style"] = style.strip().lower()
@@ -2426,6 +2434,7 @@ def register_pcb_tools(mcp):
         x: Optional[float] = None, y: Optional[float] = None, frame: str = "pad",
         width: Optional[float] = None, gap: Optional[float] = None,
         dry_run: bool = False, kind: str = "pad", layer: str = "",
+        footprint: str = "",
     ) -> dict[str, Any]:
         """Place ONE pad's or free via's custom relief spokes, by direction.
 
@@ -2459,6 +2468,8 @@ def register_pcb_tools(mcp):
                 top-middle-bottom via, "bottom", or a layer name); the
                 other layers keep theirs. Width and gap go to the via's
                 record (see pcb_pad_relief ``record_scope``).
+            footprint: With a PcbLib in front: the footprint whose pad or
+                via is meant (see pcb_pad_relief).
 
         Returns:
             ``planned`` (per spoke: ``segment``, ``fraction`` and the
@@ -2470,7 +2481,7 @@ def register_pcb_tools(mcp):
         if not spokes:
             return {"ok": False, "reason": "spokes is required"}
         frame = frame.strip().lower()
-        params = _relief_target(designator, pad, x, y, kind, layer)
+        params = _relief_target(designator, pad, x, y, kind, layer, footprint)
         read = await get_bridge().send_command_async(
             "pcb.pad_relief", dict(params, action="read"))
         if not isinstance(read, dict):
