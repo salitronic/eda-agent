@@ -229,6 +229,7 @@
  "Net labels not on any wire (silent phantom net)": "Étiquettes de net hors de tout fil (net fantôme silencieux)",
  "Net labels that merge, short, or sit on a pin root": "Étiquettes de net qui fusionnent, court-circuitent ou se trouvent à la base d'une broche",
  "Net mixes thin + wide tracks (>2× ratio, hotspot risk)": "Net mêlant pistes fines + larges (rapport >2×, risque de point chaud)",
+ "Objects a search by area or their net cannot find": "Objets introuvables par une recherche de zone ou par leur net",
  "Nets": "Nets",
  "Nets routed": "Réseaux routés",
  "Nets selected in Altium": "Réseaux sélectionnés dans Altium",

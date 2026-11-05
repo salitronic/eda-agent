@@ -4580,6 +4580,9 @@ Begin
         Begin
             Group := Net.GroupIterator_Create;
             Try
+                Group.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    ePadObject, eFillObject, eRegionObject, eTextObject,
+                    eComponentBodyObject));
                 Member := Group.FirstPCBObject;
                 While Member <> Nil Do
                 Begin
@@ -4632,7 +4635,7 @@ Begin
                             ItemsJson := ItemsJson + JsonObj(
                                 JsonStr('read_path', 'index') + ','
                                 + JsonStr('type', Name) + ','
-                                + JsonStr('layer', GetLayerString(Obj.Layer)) + ','
+                                + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
                                 + JsonStr('owner', Owner) + ','
                                 + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
                                 + JsonFloat('bottom', CoordToMilsF(BR.Bottom)) + ','
@@ -4658,7 +4661,7 @@ Begin
                                     JsonStr('read_path', 'net') + ','
                                     + JsonStr('type', Name) + ','
                                     + JsonStr('net', NetName) + ','
-                                    + JsonStr('layer', GetLayerString(Obj.Layer)) + ','
+                                    + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
                                     + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
                                     + JsonFloat('bottom', CoordToMilsF(BR.Bottom)));
                                 Inc(Shown);
