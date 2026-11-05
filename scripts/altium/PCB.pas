@@ -30236,6 +30236,72 @@ Begin
     End;
 End;
 
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is named only after this says yes   }
+{ (see GetPCBBoardAnywhere).                                                 }
+Function PadReliefLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
+{ The one pad (by name or exact x / y) or via (exact x / y) in a footprint, }
+{ mils from the library's origin. Count says how many matched.              }
+Function PadReliefFindInFootprint(Board : IPCB_Board; Footprint : IPCB_LibComponent;
+    IsVia : Boolean; PadName, XS, YS : String; Var Count : Integer) : IPCB_Primitive;
+Var
+    GIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Name : String;
+    X, Y : Double;
+    ByXY, Hit : Boolean;
+Begin
+    Result := Nil;
+    Count := 0;
+    ByXY := (XS <> '') And (YS <> '');
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    GIter := Footprint.GroupIterator_Create;
+    Try
+        If IsVia Then GIter.AddFilter_ObjectSet(MkSet(eViaObject))
+        Else GIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Prim := GIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If ByXY Then
+                Hit := (Abs(CoordToMilsF(Prim.X - Board.XOrigin) - X) < 0.001)
+                    And (Abs(CoordToMilsF(Prim.Y - Board.YOrigin) - Y) < 0.001)
+            Else
+            Begin
+                Name := '';
+                Try Name := Prim.Name; Except End;
+                Hit := Name = PadName;
+            End;
+            If Hit Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Prim;
+            End;
+            Prim := GIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GIter);
+    End;
+End;
+
 { The relief record as JSON members. }
 Function PadReliefRecord(D : Variant) : String;
 Var
@@ -30390,6 +30456,10 @@ End;
 { for every layer; on a top-middle-bottom via the record this key reaches   }
 { is the MIDDLE one (every inner layer): top and bottom records need the    }
 { key's layer field, which stops the script. Spokes are per layer on both.  }
+{ With a PcbLib in front it acts on a footprint (the current one, or         }
+{ footprint_name made current), whose pads and vias carry the same relief    }
+{ into every board the footprint is placed on; x / y are then mils from the  }
+{ library's origin. GetPCBBoardAnywhere would answer from another board.     }
 Function PCB_PadRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -30402,8 +30472,12 @@ Var
     Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge, FinalStyle : Integer;
     Width, Gap, Frac, PadMin, SpokeW, Spare : Double;
     IsSmd, ReadSpokes, IsVia : Boolean;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    FootS, Problem : String;
 Begin
     Des := Trim(ExtractJsonValue(Params, 'designator'));
+    FootS := Trim(ExtractJsonValue(Params, 'footprint_name'));
     PadName := Trim(ExtractJsonValue(Params, 'pad'));
     XS := Trim(ExtractJsonValue(Params, 'x'));
     YS := Trim(ExtractJsonValue(Params, 'y'));
@@ -30543,13 +30617,54 @@ Begin
         End;
     End;
 
-    Board := GetPCBBoardAnywhere(0);
+    Footprint := Nil;
+    If PadReliefLibInFront(0) Then
+    Begin
+        If Des <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a footprint has no parts: name the pad by pad name or x + y');
+            Exit;
+        End;
+        PcbLib := Nil;
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'The PcbLib in front could not be reached');
+            Exit;
+        End;
+        Footprint := PcbLibTarget(PcbLib, FootS, Problem);
+        If Footprint = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', Problem);
+            Exit;
+        End;
+        Board := PcbLib.Board;
+    End
+    Else
+    Begin
+        If FootS <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'footprint_name is for a PcbLib in front');
+            Exit;
+        End;
+        Board := GetPCBBoardAnywhere(0);
+    End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    If IsVia Then
+    If Footprint <> Nil Then
+    Begin
+        If IsVia Then
+            Via := PadReliefFindInFootprint(Board, Footprint, True, '', XS, YS, Count)
+        Else
+            Pad := PadReliefFindInFootprint(Board, Footprint, False, PadName, XS, YS, Count);
+    End
+    Else If IsVia Then
         Via := PadReliefFindVia(Board, XS, YS, Count)
     Else
         Pad := PadReliefFind(Board, Des, PadName, XS, YS, Count);
@@ -30680,6 +30795,7 @@ Begin
         Finally
             PcbEndEdit(0);
         End;
+        If Footprint <> Nil Then MarkDocDirtyByPath(Board.FileName);
     End
     Else If ReadSpokes And IsSmd And (SegCount > 0) Then
     Begin
@@ -30743,6 +30859,8 @@ Begin
     If IsSmd And (SegCount > 0) And D.UseCustomRelief
         And ((Action = 'spokes') Or ReadSpokes) Then
         Body := Body + ',' + JsonRaw('custom_spokes', PadReliefSpokes(Board, Obj, L));
+    If Footprint <> Nil Then
+        Body := Body + ',' + JsonStr('footprint', Footprint.Name);
     Result := BuildSuccessResponse(RequestId, '{' + Body + '}');
 End;
 

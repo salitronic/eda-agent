@@ -357,6 +357,46 @@ def test_an_ambiguous_pad_is_refused():
     assert "If Count > 1 Then" in body and "'AMBIGUOUS'" in body
 
 
+def test_a_pcblib_in_front_is_its_own_footprint_never_another_board():
+    body = _units()["PCB_PadRelief"]
+    lib = body.index("If PadReliefLibInFront(0) Then")
+    board = body.index("Board := GetPCBBoardAnywhere(0);")
+    # The library is asked first; another open board is only the fallback.
+    assert lib < board
+    branch = body[lib:board]
+    assert "Footprint := PcbLibTarget(PcbLib, FootS, Problem);" in branch
+    assert "Board := PcbLib.Board;" in branch
+    assert "'a footprint has no parts: name the pad by pad name or x + y'" in branch
+    assert "'footprint_name is for a PcbLib in front'" in body[board - 400:board]
+    # Found inside the footprint, not by a board walk.
+    assert ("Via := PadReliefFindInFootprint(Board, Footprint, True, '', XS, YS, Count)"
+            in body)
+    assert ("Pad := PadReliefFindInFootprint(Board, Footprint, False, PadName, XS, YS, Count)"
+            in body)
+    # PCBServer only after the DM layer said PcbLib (see GetPCBBoardAnywhere).
+    front = _units()["PadReliefLibInFront"]
+    assert "Doc := Workspace.DM_FocusedDocument;" in front
+    assert "Result := Kind = 'PCBLIB';" in front
+    assert "PCBServer" not in front
+
+
+def test_a_footprint_object_is_found_by_its_own_iterator_and_origin():
+    find = _units()["PadReliefFindInFootprint"]
+    assert "GIter := Footprint.GroupIterator_Create;" in find
+    assert "Footprint.GroupIterator_Destroy(GIter);" in find
+    assert "If IsVia Then GIter.AddFilter_ObjectSet(MkSet(eViaObject))" in find
+    assert "Else GIter.AddFilter_ObjectSet(MkSet(ePadObject));" in find
+    assert "Abs(CoordToMilsF(Prim.X - Board.XOrigin) - X) < 0.001" in find
+    assert "Hit := Name = PadName;" in find
+
+
+def test_a_footprint_write_marks_the_library_and_names_the_footprint():
+    body = _units()["PCB_PadRelief"]
+    end = body.index("PcbEndEdit(0);", body.index("Obj.EndModify;"))
+    assert "If Footprint <> Nil Then MarkDocDirtyByPath(Board.FileName);" in body[end:end + 120]
+    assert "Body := Body + ',' + JsonStr('footprint', Footprint.Name);" in body
+
+
 # --- the tools -------------------------------------------------------------
 
 class _Mcp:
@@ -437,3 +477,13 @@ def test_a_dry_run_or_a_refusal_writes_nothing(monkeypatch):
                         designator="J1", pad="1", layer="bottom", spokes=["0"])
     assert [s[1]["action"] for s in sent] == ["read", "spokes"]
     assert sent[1][1]["layer"] == "bottom"
+
+
+def test_the_footprint_is_passed(monkeypatch):
+    _, sent = _tool(monkeypatch, "pcb_pad_relief", pad="1", footprint=" MH1 ")
+    assert sent[0][1] == {"footprint_name": "MH1", "pad": "1", "action": "read"}
+    via = dict(_round(), size_x=35.4, size_y=35.4, side="via")
+    _, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=via, x=0, y=0, kind="via",
+                    footprint="MH1", spokes=["0"], frame="board")
+    assert [s[1]["action"] for s in sent] == ["read", "spokes"]
+    assert all(s[1]["footprint_name"] == "MH1" for s in sent)
