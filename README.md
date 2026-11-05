@@ -629,3 +629,7 @@ This project is not affiliated with, endorsed by, or sponsored by Altium Limited
 eda-agent was created and is maintained by [George Saliba](https://salitronic.com), an independent electronics design engineer. Thanks to everyone who has contributed, see the [contributors](https://github.com/salitronic/eda-agent/graphs/contributors).
 
 If you need hardware designed, I take on design work, see [salitronic.com](https://salitronic.com).
+
+## Native IPC batch extension
+
+This fork adds `lib_generate_ipc_batch` for native table import, PCB library generation and verified embedded STEP output in Altium. See [usage and validation](docs/native-ipc-batch.md).

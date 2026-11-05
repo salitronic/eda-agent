@@ -103,13 +103,15 @@ def _safe_name(name: str, index: int) -> str:
 
 def extract_embedded_models(library_path: str | Path, out_dir: str | Path, *,
                             names: Optional[list[str]] = None,
-                            overwrite: bool = False) -> dict[str, Any]:
+                            overwrite: bool = False,
+                            per_record_directory: bool = False) -> dict[str, Any]:
     """Write the original files of the library's embedded models.
 
     ``names`` limits it to those model file names (case-insensitive);
     every embedded model otherwise. A file is written only when its
     checksum matches Altium's record; an existing file is kept unless
-    ``overwrite``.
+    ``overwrite``. Set ``per_record_directory`` to keep each model in its
+    own indexed folder when multiple records share an original filename.
     """
     path = Path(library_path)
     out = Path(out_dir)
@@ -138,11 +140,12 @@ def extract_embedded_models(library_path: str | Path, out_dir: str | Path, *,
                 refused.append({**info, "reason": f"checksum {got} does not match "
                                 f"Altium's {info['checksum']}; not written"})
                 continue
-            target = out / _safe_name(info["name"], i)
+            record_out = out / str(i) if per_record_directory else out
+            target = record_out / _safe_name(info["name"], i)
             if target.exists() and not overwrite:
                 refused.append({**info, "reason": f"{target} exists; pass overwrite"})
                 continue
-            out.mkdir(parents=True, exist_ok=True)
+            record_out.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             is_step = info["name"].lower().endswith((".step", ".stp"))
             written.append({**info, "path": str(target), "bytes": len(data),
