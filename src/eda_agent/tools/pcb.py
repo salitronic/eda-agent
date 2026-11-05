@@ -2330,8 +2330,13 @@ def register_pcb_tools(mcp):
         return reply
 
     def _relief_target(designator: str, pad: str, x: Optional[float],
-                       y: Optional[float]) -> dict[str, str]:
+                       y: Optional[float], kind: str = "pad",
+                       layer: str = "") -> dict[str, str]:
         params: dict[str, str] = {}
+        if kind.strip().lower() == "via":
+            params["kind"] = "via"
+        if layer.strip():
+            params["layer"] = layer.strip()
         if designator.strip():
             params["designator"] = designator.strip()
         if pad.strip():
@@ -2347,8 +2352,9 @@ def register_pcb_tools(mcp):
         y: Optional[float] = None, style: str = "", spokes: int = 0,
         width: Optional[float] = None, gap: Optional[float] = None,
         rotation: int = 0, custom: Optional[bool] = None, read_spokes: bool = False,
+        kind: str = "pad", layer: str = "",
     ) -> dict[str, Any]:
-        """Read or set ONE pad's own thermal relief: how it joins a pour.
+        """Read or set ONE pad's or free via's own thermal relief.
 
         This is the pad's Properties > Thermal Relief, not a design rule.
         With no value given it reads; with any value it writes the pad
@@ -2373,6 +2379,12 @@ def register_pcb_tools(mcp):
                 board modified (one undo step): the list is made sure of
                 by adding and removing a spoke, because reading a list
                 that was never made stops Altium's script.
+            kind: "via" for a free via, named by x / y. A simple via has
+                one record for every layer; on a top-middle-bottom via the
+                record reached is the MIDDLE one (every inner layer) --
+                ``record_scope`` in the reply says which.
+            layer: For a via: which layer's spoke list and outline to read
+                ("top" by default, "mid", "bottom" or a layer name).
 
         Returns:
             The pad (``x`` / ``y``, ``layer``, ``side``, ``pad_rotation``,
@@ -2382,7 +2394,7 @@ def register_pcb_tools(mcp):
             (segments: a line's start, or an arc's centre / radius /
             angles) and, when read, ``custom_spokes``.
         """
-        params = _relief_target(designator, pad, x, y)
+        params = _relief_target(designator, pad, x, y, kind, layer)
         values: dict[str, str] = {}
         if style.strip():
             values["style"] = style.strip().lower()
@@ -2407,9 +2419,9 @@ def register_pcb_tools(mcp):
         spokes: Union[list[str], str], designator: str = "", pad: str = "",
         x: Optional[float] = None, y: Optional[float] = None, frame: str = "pad",
         width: Optional[float] = None, gap: Optional[float] = None,
-        dry_run: bool = False,
+        dry_run: bool = False, kind: str = "pad", layer: str = "",
     ) -> dict[str, Any]:
-        """Place ONE SMD pad's custom thermal relief spokes, by direction.
+        """Place ONE SMD pad's or free via's custom relief spokes, by direction.
 
         Replaces the pad's custom spoke list and switches the pad to its
         own relief with custom spokes. Each spoke is resolved from the
@@ -2435,6 +2447,12 @@ def register_pcb_tools(mcp):
             width: Spoke width in mils (also the offset limit's width).
             gap: Air gap in mils.
             dry_run: Only resolve where each spoke would go.
+            kind: "via" for a free via, named by x / y.
+            layer: For a via: the layer whose spoke list is replaced
+                ("top" by default, "mid" for every inner layer of a
+                top-middle-bottom via, "bottom", or a layer name); the
+                other layers keep theirs. Width and gap go to the via's
+                record (see pcb_pad_relief ``record_scope``).
 
         Returns:
             ``planned`` (per spoke: ``segment``, ``fraction`` and the
@@ -2446,7 +2464,7 @@ def register_pcb_tools(mcp):
         if not spokes:
             return {"ok": False, "reason": "spokes is required"}
         frame = frame.strip().lower()
-        params = _relief_target(designator, pad, x, y)
+        params = _relief_target(designator, pad, x, y, kind, layer)
         read = await get_bridge().send_command_async(
             "pcb.pad_relief", dict(params, action="read"))
         if not isinstance(read, dict):
