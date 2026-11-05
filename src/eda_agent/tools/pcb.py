@@ -2383,8 +2383,14 @@ def register_pcb_tools(mcp):
                 one record for every layer; on a top-middle-bottom via the
                 record reached is the MIDDLE one (every inner layer) --
                 ``record_scope`` in the reply says which.
-            layer: For a via: which layer's spoke list and outline to read
-                ("top" by default, "mid", "bottom" or a layer name).
+            layer: For a via or a thru-hole pad: which layer's spoke list
+                and outline to read ("top" by default, "mid", "bottom" or a
+                layer name). A thru-hole pad's record behaves like a via's
+                (``mode`` / ``record_scope`` in the reply). On a simple
+                stack ONE spoke list serves every layer (``spoke_scope``
+                "all layers"); a top-middle-bottom stack has one each for
+                top, inner and bottom, a full stack one per copper layer,
+                planes included ("per layer").
 
         Returns:
             The pad (``x`` / ``y``, ``layer``, ``side``, ``pad_rotation``,
@@ -2421,7 +2427,7 @@ def register_pcb_tools(mcp):
         width: Optional[float] = None, gap: Optional[float] = None,
         dry_run: bool = False, kind: str = "pad", layer: str = "",
     ) -> dict[str, Any]:
-        """Place ONE SMD pad's or free via's custom relief spokes, by direction.
+        """Place ONE pad's or free via's custom relief spokes, by direction.
 
         Replaces the pad's custom spoke list and switches the pad to its
         own relief with custom spokes. Each spoke is resolved from the
@@ -2448,7 +2454,7 @@ def register_pcb_tools(mcp):
             gap: Air gap in mils.
             dry_run: Only resolve where each spoke would go.
             kind: "via" for a free via, named by x / y.
-            layer: For a via: the layer whose spoke list is replaced
+            layer: For a via or a thru-hole pad: the layer whose spoke list is replaced
                 ("top" by default, "mid" for every inner layer of a
                 top-middle-bottom via, "bottom", or a layer name); the
                 other layers keep theirs. Width and gap go to the via's
@@ -2469,9 +2475,6 @@ def register_pcb_tools(mcp):
             "pcb.pad_relief", dict(params, action="read"))
         if not isinstance(read, dict):
             return read
-        if read.get("side") == "thru":
-            return {"ok": False, "reason": "thru-hole pad: custom spokes are not written",
-                    "pad": read}
         try:
             planned = pad_relief.resolve(read, list(spokes), frame, width)
         except pad_relief.SpokeError as exc:
