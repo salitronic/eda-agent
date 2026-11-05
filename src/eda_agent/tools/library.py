@@ -7327,7 +7327,9 @@ def register_library_tools(mcp):
         Returns:
             {name, library_path, height_mm, editor_origin_x_mm /
             editor_origin_y_mm (the editor's origin marker in this
-            footprint's frame), kinds, bodies (a count),
+            footprint's frame; null unless the footprint is the current
+            one, as only that one's marker can be read), current (whether
+            it is), kinds, bodies (a count),
             body_layers (the layer of each body), body_models [{layer,
             identifier, has_model, model_file (the file the model was
             embedded from), model_type (Altium's T3DModelType; 1 for a

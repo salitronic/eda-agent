@@ -13684,6 +13684,8 @@ Var
     ModelRot, BodyTop, BodyStandoff : Double;
     Kinds, SelStr, BodyBoxJson : String;
     OriginX, OriginY : Double;
+    IsCurrent : Boolean;
+    OriginJson : String;
 Begin
     BodyModelsJson := '';
     SelStr := 'null';
@@ -13760,6 +13762,19 @@ Begin
     OriginY := 0;
     Try OriginX := CoordToMM(PcbLib.Board.XOrigin - XOrg); Except End;
     Try OriginY := CoordToMM(PcbLib.Board.YOrigin - YOrg); Except End;
+    { Board.XOrigin is the marker of the library's backing board, which holds }
+    { the CURRENT footprint. Any other footprint reads X / Y = 0, so the      }
+    { difference would be the marker's absolute place (1270 mm on a fresh    }
+    { library), not an origin in its frame (issue #233). Reported only for    }
+    { the current footprint; null for the others, which a read never makes   }
+    { current.                                                              }
+    IsCurrent := False;
+    Try IsCurrent := PcbLib.CurrentComponent = Target; Except End;
+    If IsCurrent Then
+        OriginJson := ',"editor_origin_x_mm":' + FloatToJsonStr(OriginX) +
+            ',"editor_origin_y_mm":' + FloatToJsonStr(OriginY)
+    Else
+        OriginJson := ',"editor_origin_x_mm":null,"editor_origin_y_mm":null';
 
     TracksJson := '';
     ArcsJson := '';
@@ -14163,8 +14178,8 @@ Begin
         '{"name":"' + EscapeJsonString(FpName) + '"' +
         ',"library_path":"' + EscapeJsonString(LibPath) + '"' +
         ',"height_mm":' + FloatToJsonStr(HeightMM) +
-        ',"editor_origin_x_mm":' + FloatToJsonStr(OriginX) +
-        ',"editor_origin_y_mm":' + FloatToJsonStr(OriginY) +
+        OriginJson +
+        ',"current":' + BoolToJsonStr(IsCurrent) +
         ',"kinds":"' + EscapeJsonString(Kinds) + '"' +
         ',"bodies":' + IntToStr(NBodies) +
         ',"body_layers":[' + BodyLayersJson + ']' +

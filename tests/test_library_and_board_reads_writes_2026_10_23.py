@@ -178,6 +178,25 @@ def test_the_footprint_read_reports_via_mask_tenting_testpoints_and_stack():
     assert '"editor_origin_x_mm":' in body
 
 
+def test_the_editor_origin_is_reported_only_for_the_current_footprint():
+    # Board.XOrigin is the current footprint's marker; another footprint
+    # reads X = 0, so the difference would be the marker's absolute place.
+    body = _fn("Library.pas", "Lib_GetFootprintPrimitives")
+    assert "Try IsCurrent := PcbLib.CurrentComponent = Target; Except End;" in body
+    current = body.index("If IsCurrent Then")
+    other = body.index("Else", current)
+    assert "FloatToJsonStr(OriginX)" in body[current:other]
+    assert (
+        "OriginJson := ',\"editor_origin_x_mm\":null,\"editor_origin_y_mm\":null';"
+        in body[other:other + 120]
+    )
+    reply = body[body.index("RespJson :="):]
+    assert "OriginJson +" in reply
+    assert "',\"current\":' + BoolToJsonStr(IsCurrent)" in reply
+    # A read never makes the footprint current.
+    assert "CurrentComponent :=" not in body
+
+
 def test_each_kind_of_the_footprint_read_can_be_left_out():
     body = _fn("Library.pas", "Lib_GetFootprintPrimitives")
     for kind in ("track", "arc", "region", "fill", "text", "via", "body"):
