@@ -19592,6 +19592,9 @@ End;
 { PCB_DeleteInvalidObjects - remove degenerate primitives: zero-area regions  }
 { and zero-length tracks. Find-one-remove-restart so a live iterator is never  }
 { invalidated by a removal.                                                    }
+{ Free objects only: a primitive held by a component, a polygon pour or a      }
+{ dimension is its owner's (a zero-length track in a footprint is a round dot, }
+{ often a pin-1 mark), so it is never a candidate (issue #235).                }
 {..............................................................................}
 Function PCB_DeleteInvalidObjects(Params : String; RequestId : String) : String;
 Var
@@ -19601,7 +19604,7 @@ Var
     Trk : IPCB_Track;
     BR : TCoordRect;
     Removed, Guard : Integer;
-    FoundOne : Boolean;
+    FoundOne, Owned : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -19628,7 +19631,11 @@ Begin
                 Obj := Iter.FirstPCBObject;
                 While Obj <> Nil Do
                 Begin
-                    If Obj.ObjectId = eTrackObject Then
+                    { An owned primitive is skipped; one whose owner cannot }
+                    { be read is skipped too.                               }
+                    Owned := True;
+                    Try Owned := Obj.InComponent Or Obj.InPolygon Or Obj.InDimension; Except End;
+                    If (Not Owned) And (Obj.ObjectId = eTrackObject) Then
                     Begin
                         Trk := Obj;
                         If (Trk.x1 = Trk.x2) And (Trk.y1 = Trk.y2) Then
@@ -19637,7 +19644,7 @@ Begin
                             FoundOne := True;
                         End;
                     End
-                    Else If Obj.ObjectId = eRegionObject Then
+                    Else If (Not Owned) And (Obj.ObjectId = eRegionObject) Then
                     Begin
                         Try
                             BR := Obj.BoundingRectangle;

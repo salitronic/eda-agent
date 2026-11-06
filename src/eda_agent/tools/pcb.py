@@ -4077,6 +4077,10 @@ def register_pcb_tools(mcp):
 
         Deletes zero-length tracks and zero-area regions (board hygiene that
         accumulates from edits and imports). Returns the count removed.
+        Free objects only: primitives of a placed component, a polygon pour
+        or a dimension belong to their owner and are left alone (a
+        zero-length track in a footprint is a round dot, often a pin-1
+        mark).
 
         Returns:
             {"removed": N}.
