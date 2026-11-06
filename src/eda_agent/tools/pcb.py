@@ -1154,6 +1154,16 @@ async def _teardrops(action: str, scope: str,
     return result
 
 
+async def _rule_edit(tool: str, args: dict[str, Any], command: str,
+                     params: dict[str, Any]) -> Any:
+    """Run a command that edits design rules and log what it changed."""
+    from ..export.drc_rules import logged_rule_edit
+
+    bridge = get_bridge()
+    return await logged_rule_edit(
+        bridge, tool, args, lambda: bridge.send_command_async(command, params))
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -3457,6 +3467,66 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_drc_rules(action: str = "show", note: str = "") -> dict[str, Any]:
+        """The design rules a DRC checks against, and the approved set.
+
+        A DRC passes under whatever rules the board holds, so the rules
+        themselves are approved: the approved sheet is kept beside the
+        board (<board>.DrcRules.json), and every DRC compares against it
+        and names each rule added, removed, loosened, re-scoped or switched
+        off since. Rule edits made through the tools are logged beside it
+        (<board>.DrcRules.log.jsonl).
+
+        Args:
+            action: "show" (the rule sheet, its fingerprint and its
+                difference from the approved set), "changes" (only the
+                difference and the logged edits), or "approve" (keep the
+                current rules as the approved set). Approve only when the
+                user has read the sheet and said to approve it; never to
+                make a DRC pass.
+            note: Kept with an approval: who approved it and why.
+
+        Returns:
+            ``board_path``, ``fingerprint``, ``approved`` with
+            ``approved_at``, ``changes_since_approval`` (each with
+            ``loosened``: true lets more through, null needs review),
+            ``logged_changes``, and for show the ``sheet``.
+        """
+        from ..export import drc_rules
+
+        action = (action or "show").strip().lower()
+        if action not in ("show", "changes", "approve"):
+            return {"ok": False, "reason": "action is show, changes or approve"}
+        got = await get_bridge().send_command_async("pcb.get_design_rules", {})
+        if not isinstance(got, dict) or not isinstance(got.get("rules"), list):
+            return {"ok": False, "reason": "the board's rules could not be read", "reply": got}
+        rules, board = got["rules"], str(got.get("board_path") or "")
+        if not board:
+            return {"ok": False, "reason": "the board has no file path; save it first"}
+        if action == "approve":
+            done = drc_rules.write_baseline(board, rules, note=note)
+            return {"ok": True, "approved": True, "board_path": board, **done}
+        baseline = drc_rules.read_baseline(board)
+        out: dict[str, Any] = {
+            "ok": True, "board_path": board, "count": len(rules),
+            "fingerprint": drc_rules.fingerprint(rules),
+            "approved": baseline is not None,
+        }
+        if baseline:
+            out["approved_at"] = baseline.get("approved_at")
+            out["approved_note"] = baseline.get("note", "")
+            out["changes_since_approval"] = drc_rules.diff(baseline["rules"], rules)
+            out["logged_changes"] = drc_rules.read_log(
+                board, since=str(baseline.get("approved_at") or ""))
+        else:
+            out["logged_changes"] = drc_rules.read_log(board)
+            out["note"] = ("no approved rule set yet: show the sheet to the user, "
+                           "and approve it once they have")
+        if action == "show":
+            out["sheet"] = drc_rules.sheet(rules)
+        return out
+
+    @mcp.tool()
     async def pcb_set_rules_enabled(
         names: list[str],
         enabled: bool,
@@ -3499,15 +3569,13 @@ def register_pcb_tools(mcp):
                     f"rule names {bad} contain '|', which is the "
                     "wire-format separator; fragments could match other "
                     "rules, so the call is refused"}
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.set_rules_enabled",
-            {
-                "names": "|".join(str(n) for n in names),
-                "enabled": "true" if enabled else "false",
-                "match": match,
-            },
-        )
+        params = {
+            "names": "|".join(str(n) for n in names),
+            "enabled": "true" if enabled else "false",
+            "match": match,
+        }
+        return await _rule_edit("pcb_set_rules_enabled", params,
+                                "pcb.set_rules_enabled", params)
 
     @mcp.tool()
     async def pcb_get_clearance_violations(
@@ -3575,25 +3643,25 @@ def register_pcb_tools(mcp):
             not listed was not checked), ``report_rules_add_up`` and
             ``report_stopped_at_limit`` with ``report_violation_limit``
             (Altium stopped early, so the run is not complete).
+            ``rules``: what the check ran under, ``sheet`` (every rule's
+            values, scopes, priority, enabled and drc_enabled),
+            ``fingerprint``, ``not_checked`` with why, pours set to ignore
+            violations, and against the rules the user approved
+            (pcb_drc_rules) ``changes_since_approval`` and the logged rule
+            changes. ``verdict``: pass, pass_with_waivers,
+            pass_under_changed_rules, pass_unapproved_rules, fail,
+            incomplete, not_run; ``verdict_reason`` says why. Report the
+            verdict, never only the violation count.
         """
-        from ..export.drc_report import read_drc_report
+        from ..export.drc_rules import enrich_drc
 
         bridge = get_bridge()
         if allow_modal:
             return await bridge.send_command_async(
                 "pcb.run_drc", {"allow_modal": "true"})
         result = await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
-        if (isinstance(result, dict) and result.get("drc_confirmed") is True
-                and isinstance(result.get("report_path"), str)):
-            report = read_drc_report(result["report_path"])
-            if report:
-                result["report_counts"] = report["counts"]
-                if report["rules"] is not None:
-                    result["report_rules"] = report["rules"]
-                    result["report_rules_add_up"] = report["rules_add_up"]
-                result["report_stopped_at_limit"] = report["stopped_at_limit"]
-                if report["stopped_at_limit"]:
-                    result["report_violation_limit"] = report["violation_limit"]
+        if isinstance(result, dict):
+            await enrich_drc(bridge, result)
         return result
 
     @mcp.tool()
@@ -8894,7 +8962,8 @@ def register_pcb_tools(mcp):
             scope, net_scope, allowed, connect_style)
         if "name" not in params:
             return params
-        return await get_bridge().send_command_async("pcb.create_design_rule", params)
+        return await _rule_edit("pcb_create_design_rule", params,
+                                "pcb.create_design_rule", params)
 
     @mcp.tool()
     async def pcb_delete_design_rule(
@@ -8908,12 +8977,8 @@ def register_pcb_tools(mcp):
         Returns:
             Dictionary confirming deletion
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.delete_design_rule",
-            {"name": name},
-        )
-        return result
+        return await _rule_edit("pcb_delete_design_rule", {"name": name},
+                                "pcb.delete_design_rule", {"name": name})
 
     @mcp.tool()
     async def pcb_get_component_pads(
@@ -10175,7 +10240,7 @@ def register_pcb_tools(mcp):
         }
         if components:
             params["components"] = components
-        result = await bridge.send_command_async("pcb.create_room", params)
+        result = await _rule_edit("pcb_create_room", params, "pcb.create_room", params)
         return result
 
     @mcp.tool()
@@ -10881,10 +10946,8 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "give at least one rule property to change",
                     "properties_updated": 0}
 
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.set_rule_properties", params
-        )
+        return await _rule_edit("pcb_set_rule_properties", params,
+                                "pcb.set_rule_properties", params)
 
     @mcp.tool()
     async def pcb_place_embedded_board(

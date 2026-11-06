@@ -122,6 +122,17 @@ async def _apply_board_rules(apply: bool) -> dict[str, Any]:
     out: dict[str, Any] = {"ok": True, "applied": False, **plan}
     if not apply:
         return out
+    from ..export.drc_rules import logged_rule_edit
+
+    async def run() -> dict[str, Any]:
+        return await _apply_rule_plan(bridge, plan, targets, out)
+
+    return await logged_rule_edit(bridge, "pcb_apply_policy_rules", {"apply": True}, run)
+
+
+async def _apply_rule_plan(bridge, plan, targets, out) -> dict[str, Any]:
+    """Write the planned rule creations and updates."""
+    from .pcb import create_rule_params
     results, failed = [], []
     by_name = {r["name"].lower(): r for r in targets}
     for args in plan["create"]:

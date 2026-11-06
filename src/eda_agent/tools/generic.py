@@ -357,6 +357,17 @@ _PORT_FIELDS_DO_NOT_SAVE = (
     "not survive saving and reopening the sheet (AD 26.11). AutoSize does.")
 
 
+async def _send_rule_aware(tool: str, object_types: list[str],
+                           params: dict[str, Any], run) -> Any:
+    """Run a generic write (``run()``); one that touches design rules logs
+    what it changed, the same as the rule tools, so a DRC can list it."""
+    from ..export.drc_rules import is_rule_type, logged_rule_edit
+
+    if not any(is_rule_type(t) for t in object_types):
+        return await run()
+    return await logged_rule_edit(get_bridge(), tool, params, run)
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -691,16 +702,15 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.modify_objects",
-            {
-                "scope": scope_to_wire(scope),
-                "object_type": object_type,
-                "filter": filter,
-                "set": set,
-            },
-        )
+        wire = {
+            "scope": scope_to_wire(scope),
+            "object_type": object_type,
+            "filter": filter,
+            "set": set,
+        }
+        result = await _send_rule_aware(
+            "obj_modify", [object_type], wire,
+            lambda: get_bridge().send_command_async("generic.modify_objects", wire))
         hint = BulkHintTracker.record_and_hint("obj_modify")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -756,15 +766,14 @@ def register_generic_tools(mcp):
         if not object_type:
             return {"ok": False, "reason":
                     "obj_create needs object_type, or items"}
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.create_object",
-            {
-                "object_type": object_type,
-                "properties": properties,
-                "container": container,
-            },
-        )
+        wire = {
+            "object_type": object_type,
+            "properties": properties,
+            "container": container,
+        }
+        result = await _send_rule_aware(
+            "obj_create", [object_type], wire,
+            lambda: get_bridge().send_command_async("generic.create_object", wire))
         hint = BulkHintTracker.record_and_hint("obj_create")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -835,15 +844,14 @@ def register_generic_tools(mcp):
                 "or set confirm_delete_all=True to delete all.",
                 "matched": 0,
             }
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.delete_objects",
-            {
-                "scope": scope_to_wire(scope),
-                "object_type": object_type,
-                "filter": filter,
-            },
-        )
+        wire = {
+            "scope": scope_to_wire(scope),
+            "object_type": object_type,
+            "filter": filter,
+        }
+        result = await _send_rule_aware(
+            "obj_delete", [object_type], wire,
+            lambda: get_bridge().send_command_async("generic.delete_objects", wire))
         hint = BulkHintTracker.record_and_hint("obj_delete")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1452,12 +1460,10 @@ def register_generic_tools(mcp):
         if not op_strings:
             return {"error": "No valid operations provided", "operations_processed": 0}
 
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.batch_modify",
-            {"operations": "~~".join(op_strings)},
-        )
-        return result
+        wire = {"operations": "~~".join(op_strings)}
+        return await _send_rule_aware(
+            "obj_batch_modify", [str(op.get("object_type", "")) for op in operations], wire,
+            lambda: get_bridge().send_command_async("generic.batch_modify", wire))
 
     @mcp.tool()
     async def obj_run_process(
@@ -3873,11 +3879,10 @@ def register_generic_tools(mcp):
         if not op_strs:
             return {"error": "No valid operations", "created": 0}
 
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.batch_create",
-            {"operations": "~~".join(op_strs)},
-        )
+        wire = {"operations": "~~".join(op_strs)}
+        return await _send_rule_aware(
+            "obj_batch_create", [str(op.get("object_type", "")) for op in operations], wire,
+            lambda: get_bridge().send_command_async("generic.batch_create", wire))
 
     @mcp.tool()
     async def obj_batch_delete(
@@ -3967,11 +3972,10 @@ def register_generic_tools(mcp):
                 "unfiltered_operations": sweeping,
             }
 
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.batch_delete",
-            {"operations": "~~".join(op_strs)},
-        )
+        wire = {"operations": "~~".join(op_strs)}
+        return await _send_rule_aware(
+            "obj_batch_delete", [str(op.get("object_type", "")) for op in operations], wire,
+            lambda: get_bridge().send_command_async("generic.batch_delete", wire))
 
     @mcp.tool()
     async def sch_place_wires(

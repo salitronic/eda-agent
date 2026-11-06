@@ -38,7 +38,7 @@ SESSION = {
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
-    "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "CastErrorCount",
+    "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "DocOwners", "CastErrorCount",
     "LastCreatedLibComponent", "LastCreatedLibComponentName",
     "JsonIdxDoc0", "JsonIdxDoc1", "JsonIdxDoc2", "JsonIdxDoc3",
     "JsonIdx0", "JsonIdx1", "JsonIdx2", "JsonIdx3", "JsonIdxNext",

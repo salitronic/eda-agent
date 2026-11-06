@@ -536,7 +536,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch : Boolean;
+    First, FromSch, RuleChecked : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -616,6 +616,11 @@ Begin
         FromSch := False;
         Try FromSch := Rule.DefinedByLogicalDocument; Except FromSch := False; End;
         JsonItems := JsonItems + ',"from_schematic":' + BoolToJsonStr(FromSch);
+        { Whether a batch DRC checks it: a rule can be enabled and still  }
+        { left out of every check (pcb_set_rules_enabled flips this).      }
+        RuleChecked := True;
+        Try RuleChecked := Rule.DRCEnabled; Except RuleChecked := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(RuleChecked);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -628,7 +633,8 @@ Begin
     GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -2533,6 +2539,7 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{' + DrcViolationsJson(Board) + ','
             + '"mode":"batch",'
+            + '"board_path":"' + EscapeJsonString(Board.FileName) + '",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','

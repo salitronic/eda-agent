@@ -1332,6 +1332,67 @@ Begin
     Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
 End;
 
+{ Which session is editing which document (DocOwners in Main.pas), with how }
+{ long ago it last wrote and whether that owner still holds it.             }
+Function App_DocumentOwners(RequestId : String) : String;
+Var
+    Rest, Rec, Path, Items, Response : String;
+    P, Q, Age : Integer;
+Begin
+    Items := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Break;
+        Path := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Path);
+        If Rec <> '' Then
+        Begin
+            Age := OwnerAgeMs(Rec);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + JsonObj(JsonStr('document', Path) + ','
+                + JsonStr('session', OwnerField(Rec, 0)) + ','
+                + JsonStr('last_command', OwnerField(Rec, 2)) + ','
+                + JsonInt('seconds_since_write', Age Div 1000) + ','
+                + JsonBool('held', Age < OWNER_IDLE_MS) + ','
+                + JsonBool('yours', OwnerField(Rec, 0) = RequestTag(RequestId)));
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('documents', '[' + Items + ']') + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonInt('idle_release_seconds', OWNER_IDLE_MS Div 1000)));
+    Result := Response;
+End;
+
+{ Hand a document to the calling session, whoever held it. }
+Function App_ClaimDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Before, Response : String;
+Begin
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Result := Response;
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    Before := '';
+    If Rec <> '' Then Before := OwnerField(Rec, 0);
+    OwnerSet(Key, RequestTag(RequestId), 'claimed');
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Path) + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonStr('previous_owner', Before)));
+    Result := Response;
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1353,6 +1414,8 @@ Begin
         'stop_server':         Result := App_StopServer(RequestId);
         'autosave':            Result := App_Autosave(Params, RequestId);
         'format_value':        Result := App_FormatValue(Params, RequestId);
+        'document_owners':     Result := App_DocumentOwners(RequestId);
+        'claim_document':      Result := App_ClaimDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

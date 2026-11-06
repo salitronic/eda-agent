@@ -97,6 +97,8 @@ class _Altium:
         self.presses.append((hwnd, name))
         if name == "Save None" and self.retitles:
             self.dialogs[hwnd] = "Confirm Not Saving (2) Modified Documents"
+        if name == "Cancel":
+            del self.dialogs[hwnd]
         if name == "OK":
             del self.dialogs[hwnd]
             if self.second_prompt and hwnd == 5:
@@ -151,14 +153,26 @@ def test_the_measured_sequence_closes_the_project(altium):
     assert out["discarded"] == sorted([PROJECT, SHEET])
 
 
-def test_a_prompt_listing_another_project_is_not_answered(altium):
+@pytest.mark.parametrize("save", [False, True])
+def test_a_prompt_listing_another_project_is_cancelled(altium, save):
     """The reporter saw 49 documents listed when closing a 10-document
-    project. Answering that would discard work nobody named."""
+    project, and a library package's close listed only other projects'
+    documents (2026-11-05). Saving or discarding there acts on work nobody
+    named, and a prompt left open blocks the bridge: it is cancelled."""
     fake, close = altium(listed=(PROJECT, SHEET, FOREIGN))
-    out = _close(close, project_path=PROJECT, save=False)
-    assert fake.presses == []
+    out = _close(close, project_path=PROJECT, save=save)
+    assert [name for _, name in fake.presses] == ["Cancel"]
     assert out["success"] is False and out["closed"] is False
-    assert FOREIGN in out["reason"]
+    assert out["cancelled"] is True
+    assert out["foreign_documents"] == [FOREIGN]
+
+
+def test_a_cancel_that_does_not_take_says_the_prompt_is_open(altium, monkeypatch):
+    fake, close = altium(listed=(FOREIGN,))
+    monkeypatch.setattr(uia, "invoke", lambda hwnd, name: {"ok": False})
+    out = _close(close, project_path=PROJECT, save=True)
+    assert out["cancelled"] is False
+    assert "still open" in out["reason"]
 
 
 def test_ok_is_never_pressed_before_the_decisions_change(altium):

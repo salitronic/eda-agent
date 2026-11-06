@@ -1296,7 +1296,9 @@ def register_uiauto_tools(mcp):
 
         Args:
             force: restart even when Altium's title does not name the
-                script project, the usual sign of a halt.
+                script project and the loop answers a ping. Without it a
+                loop that does not answer, while no session's call is
+                running, is restarted.
 
         Returns:
             ``halted`` (whether a restart ran), ``screenshots``,
@@ -1309,18 +1311,31 @@ def register_uiauto_tools(mcp):
         if problem:
             return problem
 
+        bridge = get_bridge()
+        workspace = bridge.config.workspace_dir
+        # A loop that does not answer a ping while no session's call is
+        # running is dead whatever the title says; one serving another
+        # session's long call is not, and a restart would kill that call.
+        dead = False
+        if not force:
+            dead = (await asyncio.to_thread(bridge.ping_with_version) is None
+                    and not script_crash.another_call_running(workspace))
+
         def recover():
             report = dialog_report.report(pid)
             box = script_crash.script_error_dialog(report)
             return script_crash.recover(
-                get_bridge().config.workspace_dir, pid, "app_recover_script",
-                "manual00", box, lambda seconds: False, force=force)
+                workspace, pid, "app_recover_script",
+                "manual00", box, lambda seconds: False, force=force or dead)
 
         outcome = await asyncio.to_thread(recover)
+        if dead:
+            outcome["no_ping"] = True
         if not outcome.get("halted"):
             outcome["reason"] = (
                 "no halt was seen: Altium's title does not name the script "
-                "project. Check app_ping; pass force=True to restart anyway.")
+                "project and the loop answers a ping, or another session's "
+                "call is running. Pass force=True to restart anyway.")
         return outcome
 
     @mcp.tool()

@@ -36,6 +36,10 @@ class _Bridge:
         self.sent = []
 
     async def send_command_async(self, command, params, **kwargs):
+        # The rule tools read the rules before and after a write to log
+        # what changed; not the command under test.
+        if command in ("pcb.get_design_rules", "generic.query_objects"):
+            return {"rules": [], "objects": []}
         self.sent.append((command, params))
         return {"success": True}
 

@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.05.7';
+    SCRIPT_VERSION = '2026.11.05.10';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -37,6 +37,8 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+    { A document stays its writer's while it wrote within this. }
+    OWNER_IDLE_MS = 600000;
 
     { PickSession's slot length. Sessions now take turns per tool call, so  }
     { the scan passes either 0 (the session is inside a tool call: keep    }
@@ -124,6 +126,10 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
+    { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
+    { upper case with back slashes. See OwnerRefusal.                     }
+    DocOwners : String;
     { Full paths of the OutJobs proj_run_outjob opened, each
       wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
     RunOutJobsOpened : String;
@@ -579,6 +585,92 @@ Begin
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
 End;
+
+{ ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
+{ write landed on a board another session was working on with nothing to   }
+{ say so. Each write a session's tool call makes claims the document it    }
+{ acts on; another session's write to it is refused while the owner has   }
+{ written within OWNER_IDLE_MS. The person at the dashboard is never       }
+{ refused and claims nothing; application.claim_document hands a document  }
+{ over when the user says so.                                              }
+Function OwnerKey(Path : String) : String;
+Begin
+    Result := UpperCase(Trim(StringReplace(Path, '/', '\', -1)));
+End;
+
+{ The owner record of KEY without its delimiters, '' when none. }
+Function OwnerRecord(Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P + Length(Key) + 2, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Rest, 1, E - 1);
+End;
+
+{ Field I (0 tag, 1 tick, 2 command) of an owner record. }
+Function OwnerField(Rec : String; I : Integer) : String;
+Var
+    N, P : Integer;
+Begin
+    Result := '';
+    For N := 0 To I - 1 Do
+    Begin
+        P := Pos(Chr(2), Rec);
+        If P = 0 Then Exit;
+        Rec := Copy(Rec, P + 1, Length(Rec));
+    End;
+    P := Pos(Chr(2), Rec);
+    If P = 0 Then Result := Rec
+    Else Result := Copy(Rec, 1, P - 1);
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P > 0 Then
+    Begin
+        Rest := Copy(DocOwners, P, Length(DocOwners));
+        E := Pos(Chr(3), Rest);
+        If E > 0 Then
+            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+    End;
+    DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
+        + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
+End;
+
+{ The session tag a request id starts with. }
+Function RequestTag(RequestId : String) : String;
+Var
+    P : Integer;
+Begin
+    P := Pos('-', RequestId);
+    If P > 1 Then Result := LowerCase(Copy(RequestId, 1, P - 1))
+    Else Result := LowerCase(RequestId);
+End;
+
+{ Milliseconds since the owner of a record last wrote. }
+Function OwnerAgeMs(Rec : String) : Integer;
+Var
+    Tick : Integer;
+Begin
+    Tick := StrToIntDef(OwnerField(Rec, 1), 0);
+    If (Tick = 0) Or (GetTickCount < Tick) Then Result := 0
+    Else Result := GetTickCount - Tick;
+End;
+
+
+
 
 Function DocWasEdited(FilePath : String) : Boolean;
 Begin
@@ -3032,6 +3124,7 @@ Var
 Begin
     { A new loop starts with no tool call holding the turn. }
     HoldCall := '';
+    DocOwners := '';
     WriteSerial := 0;
     CompiledAtSerial := -1;
     HoldStartTick := 0;

@@ -389,6 +389,8 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_get_xsignals": "Altium xSignals",
     "pcb_delete_xsignals": "Altium xSignals",
     "pcb_create_room": "Altium rooms; KiCad uses rule areas (kicad_place_zones)",
+    "app_document_owners": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
+    "app_claim_document": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
     "pcb_get_room_rules": "Altium rooms",
     "pcb_get_impedance_profiles": "Altium impedance profiles",
     "pcb_impedance_profile": "Altium impedance profiles",
@@ -494,6 +496,7 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "pcb_drc_rules": "no tool keeps an approved copy of a KiCad board's rules or compares a DRC against it",
     "pcb_pad_relief": "a KiCad pad carries its own zone connection, spoke width, gap and spoke angle; no tool sets them yet",
     "app_screenshot": "no view capture in the API; would need OS window capture",
     "pcb_autoplace": "Autoplacer action needs a footprint selection and no dialog check yet",

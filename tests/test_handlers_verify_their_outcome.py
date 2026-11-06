@@ -311,6 +311,10 @@ def test_drc_runs_without_its_dialog_unless_asked():
 
     class _Bridge:
         async def send_command_async(self, command, params=None, timeout=None):
+            # The rule tools read the rules before and after a write to log
+            # what changed; not the command under test.
+            if command in ("pcb.get_design_rules", "generic.query_objects"):
+                return {"rules": [], "objects": []}
             sent.append((command, dict(params or {})))
             return {}
 

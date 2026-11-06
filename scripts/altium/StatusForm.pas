@@ -1929,7 +1929,51 @@ Begin
         Or (Cmd = 'project.close');
 End;
 
+{ A read, or a command that only brings a document forward or moves the }
+{ view: it neither claims a document nor is refused one (OwnerRefusal). }
+Function CommandOnlyLooks(Command : String) : Boolean;
+Var
+    Verb : String;
+Begin
+    Verb := CommandVerb(Command);
+    Result := CommandIsReadOnly(Command)
+        Or (Verb = 'focus_board')
+        Or (Verb = 'set_active_document')
+        Or (Verb = 'cockpit_state')
+        Or (Verb = 'zoom')
+        Or (Verb = 'switch_view')
+        Or (Verb = 'refresh_document')
+        Or (Verb = 'highlight_net')
+        Or (Verb = 'clear_highlights')
+        Or (Verb = 'layer_view')
+        Or (Verb = 'document_owners')
+        Or (Verb = 'claim_document');
+End;
+
 { END COMMAND RULES }
+
+{ The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
+Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
+Var
+    Rec, Owner : String;
+    Age : Integer;
+Begin
+    Result := '';
+    Rec := OwnerRecord(OwnerKey(Path));
+    If Rec = '' Then Exit;
+    Owner := OwnerField(Rec, 0);
+    If Owner = RequestTag(RequestId) Then Exit;
+    Age := OwnerAgeMs(Rec);
+    If Age >= OWNER_IDLE_MS Then Exit;
+    Result := BuildErrorResponse(RequestId, 'DOCUMENT_IN_USE',
+        Command + ' is refused: ' + Path + ' is being edited by another '
+        + 'Claude session (' + Owner + ', last ' + OwnerField(Rec, 2) + ' '
+        + IntToStr(Age Div 1000) + ' s ago). Nothing was changed. Work on '
+        + 'another document, or ask the user: application.claim_document '
+        + '(app_claim_document) hands it over when they say so. It is free '
+        + 'again once that session has left it alone for '
+        + IntToStr(OWNER_IDLE_MS Div 60000) + ' minutes.');
+End;
 
 Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
 Begin
@@ -2001,6 +2045,8 @@ Var
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
+    Actor, OwnTarget : String;
+    Writes, OwnRefused : Boolean;
     DashDetail, DashErrPayload, DashCode : String;
 Begin
     Result := False;
@@ -2095,6 +2141,14 @@ Begin
       below reports only what the handler itself moved. }
     SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
+    { What a write would act on: a path the command names, else the
+      document in front once the session's own is back. }
+    Actor := LowerCase(ExtractJsonValue(RequestContent, 'actor'));
+    Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
+    OwnTarget := ExtractJsonValue(Params, 'board_path');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'expect_file');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'file_path');
+    If OwnTarget = '' Then OwnTarget := FocusBefore;
     ResetNextStep(0);
 
     ExceptionMsg := '';
@@ -2111,8 +2165,21 @@ Begin
             { The Config tab's permissions: refused here, where every request
               passes, so a client running older Python is held to them too. }
             ResponseContent := SettingRefusal(Command, Params, RequestId);
+            { A write from a session's tool call, never the person at the
+              dashboard, may not land on a document another session is
+              editing (OwnerRefusal). }
+            OwnRefused := False;
+            If (ResponseContent = '') And Writes And (Actor <> 'user')
+                And Not CommandOnlyLooks(Command) Then
+            Begin
+                ResponseContent := OwnerRefusal(OwnTarget, RequestId, Command);
+                OwnRefused := ResponseContent <> '';
+            End;
             If ResponseContent = '' Then
                 ResponseContent := ProcessCommand(Command, Params, RequestId);
+            If Writes And (Actor <> 'user') And (Not OwnRefused)
+                And (OwnTarget <> '') And Not CommandOnlyLooks(Command) Then
+                OwnerSet(OwnerKey(OwnTarget), RequestTag(RequestId), Command);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);

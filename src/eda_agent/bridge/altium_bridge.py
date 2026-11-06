@@ -10,6 +10,7 @@ user tool calls.
 """
 
 import contextlib
+import functools
 import contextvars
 import itertools
 import json
@@ -142,11 +143,14 @@ _FOLLOW: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
 
 
 @contextlib.contextmanager
-def tool_call():
+def tool_call(name: str = ""):
     """One MCP tool call: its commands to Altium keep the turn between
     them while other sessions wait, and when it returns the turn passes
-    on at once (callend_<tag>-<call>.flag) instead of after a grace."""
-    call = {"id": uuid.uuid4().hex[:4], "sent": False}
+    on at once (callend_<tag>-<call>.flag) instead of after a grace.
+    ``name`` is the tool: a tool that writes marks its commands so, and
+    Altium keeps another session's writes off the document (OwnerRefusal
+    in StatusForm.pas)."""
+    call = {"id": uuid.uuid4().hex[:4], "sent": False, "tool": name}
     token = _TOOL_CALL.set(call)
     try:
         yield call
@@ -154,6 +158,14 @@ def tool_call():
         _TOOL_CALL.reset(token)
         if call["sent"]:
             _end_call(call["id"])
+
+
+def name_tool_call(name: str) -> None:
+    """The tool a proxy (tool_invoke, a family tool) is running inside the
+    current call, so its commands are marked by what it does."""
+    call = _TOOL_CALL.get()
+    if call is not None and name:
+        call["tool"] = name
 
 
 def _end_call(call_id: str) -> None:
@@ -320,12 +332,73 @@ def _close_dir_watcher(handle) -> None:
         pass
 
 
-#: This server's session tag. One eda-agent server runs per Claude session,
-#: so the tag tells Altium which session a request came from: it serves one
-#: session at a time in slots when several are waiting, and never slots a
-#: session that is alone (ScanForRequestFile in Main.pas).
-_SESSION_TAG = uuid.uuid4().hex[:8]
+def _claude_session_tag() -> str:
+    """Eight hex digits naming the Claude session this server runs under.
+
+    A Claude session starts more than one eda-agent server (the full and
+    the two-tool surface), and the reload proxy restarts its child, so a
+    random tag per process gave one session several. Altium then refused
+    a session's own write as another session's (measured 2026-11-05: a
+    repour through one server, the DRC after it through the other). The
+    tag is made from the nearest Claude process above this one, its pid
+    and start time, so every server of a session shares it. Random when
+    no Claude process is found (a script, a test).
+    """
+    try:
+        import hashlib
+        import psutil
+        for parent in psutil.Process().parents():
+            name = parent.name().lower()
+            if name in ("claude.exe", "claude") or (
+                    name.startswith("node") and any(
+                        "claude" in part.lower() for part in parent.cmdline()[:3])):
+                return hashlib.sha1(
+                    f"{parent.pid}:{parent.create_time()}".encode()).hexdigest()[:8]
+    except Exception:  # noqa: BLE001 - any failure falls back to a random tag
+        pass
+    return uuid.uuid4().hex[:8]
+
+
+#: This server's session tag, shared by every eda-agent server of one Claude
+#: session. It tells Altium which session a request came from: it serves one
+#: session at a time in slots when several are waiting, never slots a session
+#: that is alone (ScanForRequestFile in Main.pas), and gives documents to the
+#: session that writes them.
+_SESSION_TAG = _claude_session_tag()
 _SEQUENCE = itertools.count(1)
+
+
+def dialog_owner(workspace_dir: Path) -> Optional[dict[str, Any]]:
+    """Whose call raised the dialog Altium is showing, from what is on disk.
+
+    The handler that raised a modal is still running, so its progress
+    marker is there, named by its request id, which starts with the
+    session's tag; the shared trace holds that session's last command.
+    None when no marker says.
+    """
+    try:
+        markers = sorted(Path(workspace_dir).glob("progress_*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    if not markers:
+        return None
+    request_id = markers[0].name[len("progress_"):-len(".json")]
+    tag = request_id.split("-", 1)[0].lower()
+    command = ""
+    try:
+        trace = Path(workspace_dir) / "bridge_trace.log"
+        with open(trace, "rb") as f:
+            f.seek(max(0, trace.stat().st_size - 400_000))
+            tail = f.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            m = re.search(r" SEND cmd=(\S+) id=" + re.escape(tag[:8]) + r"\b", line)
+            if m and not m.group(1).startswith("application.ping"):
+                command = m.group(1)
+                break
+    except OSError:
+        pass
+    return {"session": tag, "yours": tag == _SESSION_TAG.lower(), "command": command}
 
 
 def _queue_is_alive(workspace_dir: Path) -> bool:
@@ -481,6 +554,11 @@ class CommandRequest:
     #: The document this session last had in front. Altium puts it back
     #: in front before running the command (SessionFocus in StatusForm.pas).
     session_doc: str = ""
+    #: Sent by a tool that writes: Altium refuses it on a document another
+    #: session is editing, and gives the document to this session after.
+    writes: bool = False
+    #: "user" for the person at the dashboard, never refused.
+    actor: str = ""
 
     def to_dict(self) -> dict:
         out: dict[str, Any] = {
@@ -492,6 +570,10 @@ class CommandRequest:
         # so the envelope key must come ahead of anything a caller passes.
         if self.session_doc:
             out["session_doc_path"] = self.session_doc
+        if self.actor:
+            out["actor"] = self.actor
+        if self.writes:
+            out["writes"] = "1"
         out["params"] = self.params
         return out
 
@@ -566,6 +648,28 @@ _UNPINNED = frozenset({
     # The dashboard's cockpit polls it to follow the person at Altium.
     "pcb.cockpit_state",
 })
+
+
+def _actor() -> str:
+    """'user' for the dashboard, which acts for the person at Altium."""
+    return "user" if (getattr(_CALL, "follow_front", False) or _FOLLOW.get()) else ""
+
+
+@functools.lru_cache(maxsize=None)
+def _tool_writes(name: str) -> bool:
+    if not name:
+        return False
+    try:
+        from ..tools.metadata import READONLY, interaction_of
+        return interaction_of(name) != READONLY
+    except Exception:  # noqa: BLE001  unknown: let it through unmarked
+        return False
+
+
+def _call_writes() -> bool:
+    """Whether the tool call these commands belong to can change a design."""
+    call = _TOOL_CALL.get()
+    return bool(call) and _tool_writes(str(call.get("tool") or ""))
 
 
 def _unpinned(command: str, params: Optional[dict]) -> bool:
@@ -1088,12 +1192,13 @@ class AltiumBridge:
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
+                    owner = dialog_owner(workspace_dir)
                     raise AltiumTimeoutError(
                         f"Altium is showing a modal dialog {waited:.0f}s into "
                         f"this call, so the handler cannot run and waiting for "
                         f"the timeout would tell you nothing more."
-                        + self._dialog_suffix(early),
-                        details={"dialogs": early,
+                        + self._dialog_suffix(early, owner),
+                        details={"dialogs": early, "raised_by": owner,
                                  "blocked_after_seconds": round(waited, 1)},
                     )
             # DO NOT OPEN AN EMPTY RESPONSE. SaveToFile creates the file
@@ -1274,7 +1379,7 @@ class AltiumBridge:
                 f"stuck in a long operation OR may since have died. Confirm "
                 f"with app_ping before choosing a recovery. "
                 + recovery_message(STUCK_HANDLER)
-                + self._dialog_suffix(probe),
+                + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
                 details={"recovery": recovery_guidance(STUCK_HANDLER),
                          "dialogs": probe},
             )
@@ -1287,7 +1392,7 @@ class AltiumBridge:
                "The Altium polling loop is probably not running. "
                if not probe else "")
             + recovery_message(DEAD_LOOP)
-            + self._dialog_suffix(probe),
+            + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
             details={"recovery": recovery_guidance(DEAD_LOOP),
                      "dialogs": probe},
         )
@@ -1425,16 +1530,28 @@ class AltiumBridge:
                                      details=outcome)
 
     @staticmethod
-    def _dialog_suffix(probe: Optional[dict]) -> str:
+    def _dialog_suffix(probe: Optional[dict], owner: Optional[dict] = None) -> str:
         """One sentence naming what is blocking, for the timeout text."""
         if not probe:
             return ""
-        return (
+        text = (
             f" A DIALOG IS ON SCREEN, so the loop is blocked rather than "
-            f"absent: {probe.get('summary', 'a modal is open')}. Answer it, "
-            f"or read it with app_list_open_dialogs and press a button with "
-            f"app_press_dialog_button; both work while the bridge does not."
-        )
+            f"absent: {probe.get('summary', 'a modal is open')}.")
+        if owner and not owner.get("yours"):
+            return text + (
+                f" ANOTHER CLAUDE SESSION'S CALL raised it (session "
+                f"{owner['session']}"
+                + (f", {owner['command']}" if owner.get("command") else "")
+                + "): leave it to that session, which is waiting on it too, "
+                  "and try again later; answer it only if the user says so.")
+        if owner and owner.get("yours"):
+            text += (" This session's own call raised it"
+                     + (f" ({owner['command']})" if owner.get("command") else "")
+                     + ".")
+        return text + (
+            " Answer it, or read it with app_list_open_dialogs and press a "
+            "button with app_press_dialog_button; both work while the bridge "
+            "does not.")
 
     def _withdraw_or_warn(self, request: CommandRequest,
                           exc: AltiumTimeoutError) -> None:
@@ -1531,7 +1648,8 @@ class AltiumBridge:
         """Execute a command synchronously (blocking)."""
         request = CommandRequest(
             command=command, params=params,
-            session_doc="" if _unpinned(command, params) else self._session_doc)
+            session_doc="" if _unpinned(command, params) else self._session_doc,
+            writes=_call_writes(), actor=_actor())
         workspace_dir = self.config.workspace_dir
 
         _CALL.command = command

@@ -364,6 +364,8 @@ def register_meta_tools(mcp):
         # Prevent self-recursion; tool_catalog is fine to invoke.
         if name == "tool_invoke":
             return {"error": "tool_invoke cannot invoke itself"}
+        from ..bridge.altium_bridge import name_tool_call
+        name_tool_call(name)
         try:
             result = await mcp.call_tool(name, arguments or {})
         except Exception as e:  # noqa: BLE001 - surface as data, not a crash
@@ -1241,6 +1243,39 @@ def register_application_tools(mcp):
             "application.create_document", params
         )
         return result
+
+    @mcp.tool()
+    async def app_document_owners() -> dict[str, Any]:
+        """Which Claude session is editing which open document.
+
+        Sessions share one Altium. A tool that writes claims the document
+        it acts on; another session's write to it is refused
+        (DOCUMENT_IN_USE) while the owner has written within the last
+        ``idle_release_seconds``. Reads are never refused, and neither is
+        the person at the dashboard.
+
+        Returns:
+            ``documents`` (each ``document``, ``session``, ``last_command``,
+            ``seconds_since_write``, ``held``, ``yours``) and ``session``,
+            this session's tag.
+        """
+        return await get_bridge().send_command_async("application.document_owners", {})
+
+    @mcp.tool()
+    async def app_claim_document(file_path: str) -> dict[str, Any]:
+        """Take a document over from the session editing it.
+
+        Only when the user says so: the other session's next write to it
+        is then refused instead of this one's.
+
+        Args:
+            file_path: The document's full path.
+
+        Returns:
+            ``document``, ``session`` (this one) and ``previous_owner``.
+        """
+        return await get_bridge().send_command_async(
+            "application.claim_document", {"file_path": file_path})
 
     @mcp.tool()
     async def app_list_documents() -> list[dict[str, Any]]:

@@ -1,4 +1,4 @@
-# Release verification: 2026.11.05.7
+# Release verification: 2026.11.05.10
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -113,8 +113,8 @@ works elsewhere cannot be an undeclared identifier:
 | 39, pin map | `MapAsString` on a footprint model | no, nowhere | low, written, read back and restored live |
 | 39, footprint choice | `IsCurrent` on a placed part's footprint model | yes, `Library.pas` | medium, not yet run on a part with several models |
 | 38, stack-up apply | `CopperThickness`, `DielectricHeight`, `DielectricConstant`, `DielectricType` on a board layer | yes, `PCB_ModifyLayer` | low, the same writes pcb_modify_layer makes, each read back |
-| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `Lib_Link3DModel` and `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
-| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | no, nowhere | low, signature measured live from the saved record; the rotations passed are the saved file's |
+| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
+| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | yes, `Lib_Link3DModel`, on a model before it is bound; its Dz is new | low, signature measured live from the saved record; the rotations passed are the saved file's |
 | 40, model reassigned | `Model` assigned back to a STEP body after SetState | yes, `Lib_Link3DModel`, on a body just created | low, it is what makes the Z offset save, measured live |
 | 40, body height | `OverallHeight` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
 | 40, body opacity | `BodyOpacity3D` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
@@ -421,7 +421,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.05.7`, `version_match` =
+Expect `altium_script_version` = `2026.11.05.10`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.

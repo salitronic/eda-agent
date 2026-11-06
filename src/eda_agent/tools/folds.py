@@ -270,6 +270,8 @@ def _make_dispatcher(fold_name: str, fold: Fold,
         except TypeError as e:
             return {"ok": False, "reason": f"{kind}: {e}",
                     "takes": _signature_line(kind, spec.fn)}
+        from ..bridge.altium_bridge import name_tool_call
+        name_tool_call(spec.name)
         return await _call_validated(spec.fn, args)
 
     # The advertised signature: the key, then the args dict.
@@ -337,6 +339,8 @@ class FoldingServer:
                 _make_dispatcher(fold_name, fold, members), fold_name))
 
     async def call_tool(self, name: str, arguments: Optional[dict] = None):
+        from ..bridge.altium_bridge import name_tool_call
+        name_tool_call(name)
         spec = self.hidden.get(name)
         if spec is None:
             return await self._server.call_tool(name, arguments or {})

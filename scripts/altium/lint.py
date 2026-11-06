@@ -194,7 +194,13 @@ RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     # Measured 2026-10-28 on AD 26.11: a local declared
                     # `Cu, Reference : IPCB_ElectricalLayer;` stopped the
                     # compile with "Unknown identifier: Reference".
-                    "Reference"}
+                    "Reference",
+                    # Measured 2026-11-05 on AD 26.11: a Boolean local
+                    # `First, FromSch, DrcOn : Boolean;` in PCB.pas made the
+                    # whole PCB unit fail to load (every pcb.* command
+                    # "Undeclared identifier: HandlePCBCommand"); renamed,
+                    # the same code loaded. Bisected by deploy.
+                    "DrcOn"}
 _RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",

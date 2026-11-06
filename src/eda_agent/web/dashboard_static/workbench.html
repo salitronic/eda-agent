@@ -732,14 +732,28 @@ function actionName(a) {
             drc: "Running Altium's DRC", "update footprints": "Updating footprints from the library",
             "update from libraries": "Updating from the libraries"}[a] || a);
 }
+function drcVerdictText(r) {
+  const n = r.violation_count || 0;
+  return {pass: T("DRC passed under the approved rules."),
+          pass_with_waivers: T("DRC passed under the approved rules, with waived violations."),
+          pass_under_changed_rules: T("DRC passed, but the rules differ from the approved ones. See Design rules."),
+          pass_unapproved_rules: T("DRC passed under rules nobody has approved yet. See Design rules."),
+          fail: T("DRC found {0} violations.", n),
+          incomplete: T("DRC stopped at Altium's violation limit; the check is not complete."),
+          not_run: T("DRC did not confirm it ran."),
+          rules_unknown: T("DRC ran, but its rules could not be read.")}[r.verdict] || r.verdict_reason || r.verdict;
+}
 let lastAction = null;
 function actionFinished(a) {
   if (!a || !a.action || a.state === "running") { lastAction = a && a.state === "running" ? a.started : lastAction; return; }
   if (lastAction !== a.started) return;
   lastAction = null;
   const failed = a.state === "failed";
+  const drc = (a.results || []).find(r => r.verdict);
   S.lastResult = failed ? {kind: "fail", text: T("{0} failed: {1}", actionName(a.action), (a.problems || []).join("; "))}
+    : drc ? {kind: drc.verdict === "pass" || drc.verdict === "pass_with_waivers" ? "ok" : "fail", text: drcVerdictText(drc)}
     : {kind: "ok", text: T("{0}: done in {1} s. Ctrl+Z in Altium undoes it.", actionName(a.action), num(a.seconds, 1))};
+  if (drc) S.rules = null;
   say(S.lastResult.text, failed); clearTools();
 }
 
@@ -874,7 +888,52 @@ function reviewBlock() {
     <div class="actions"><button class="go" data-do="next">${esc(T("Next problem"))} <kbd>N</kbd></button></div>
     <dl class="kv" style="margin-top:10px">${Object.entries(checks).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<dt>${esc(checkName(k))}</dt><dd>${v}</dd>`).join("")}</dl>
     <p class="hint">${esc(T("The board is checked again each time it changes in Altium. Hide a problem you have accepted; it stays hidden for this board."))}</p></section>
-    <section class="block"><h2>${esc(T("Altium"))}</h2><div class="actions"><button data-do="refresh">${esc(T("Read the board again"))}</button>${actionButtons([["drc", {}, 0, "Run Altium's DRC"]], () => !running && S.board)}</div>${resultLine()}</section>`;
+    <section class="block"><h2>${esc(T("Altium"))}</h2><div class="actions"><button data-do="refresh">${esc(T("Read the board again"))}</button>${actionButtons([["drc", {}, 0, "Run Altium's DRC"]], () => !running && S.board)}</div>${resultLine()}</section>` + rulesBlock();
+}
+
+/* The design rules a DRC checks against, and whether they are the ones
+   approved: a DRC that passes says nothing about rules loosened to pass. */
+function ruleChangeText(c) {
+  const what = {added: T("added"), removed: T("removed"), enabled: T("switched on or off"),
+                drc_enabled: T("taken in or out of DRC"), scope_1: T("scope changed"), scope_2: T("scope changed"),
+                priority: T("priority changed"), descriptor: T("values changed"), gap_mm: T("gap changed"),
+                from_schematic: T("source changed")}[c.change] || c.change;
+  const v = x => x === undefined || x === null ? "" : typeof x === "object" ? "" : String(x);
+  const move = v(c.before) || v(c.after) ? ` (${esc(v(c.before))} → ${esc(v(c.after))})` : "";
+  return `${esc(what)}${move}`;
+}
+function rulesBlock() {
+  const R = S.rules;
+  if (!R) return `<section class="block"><h2>${esc(T("Design rules"))}</h2>
+    <p class="hint">${esc(T("What Altium's DRC checks against. A DRC only passes under the rules the board holds, so read them and approve them."))}</p>
+    <div class="actions"><button data-do="rules-read">${esc(T("Read the rules"))}</button></div></section>`;
+  if (!R.ok) return `<section class="block"><h2>${esc(T("Design rules"))}</h2><div class="result fail">${esc(R.reason || "")}</div>
+    <div class="actions"><button data-do="rules-read">${esc(T("Read the rules"))}</button></div></section>`;
+  const loose = R.changes.filter(c => c.loosened === true).length, review = R.changes.filter(c => c.loosened === null).length;
+  const state = !R.approved ? `<b class="amber">${esc(T("Not approved yet"))}</b>`
+    : R.changes.length ? `<b class="bad">${esc(T("Changed since approval: {0} let more through, {1} to review", loose, review))}</b>`
+    : `<b class="good">${esc(T("As approved on {0}", (R.approved_at || "").replace("T", " ")))}</b>`;
+  const changes = R.changes.length ? `<dl class="kv">${R.changes.map(c => `<dt class="${c.loosened === true ? "bad" : c.loosened === null ? "amber" : ""}">${esc(c.rule)}</dt><dd>${ruleChangeText(c)}</dd>`).join("")}</dl>` : "";
+  const off = R.not_checked.length ? `<p class="hint">${esc(T("Not checked by DRC: {0}", R.not_checked.map(n => n.rule).join(", ")))}</p>` : "";
+  const sheet = `<details><summary>${esc(T("All {0} rules", R.count))}</summary><dl class="kv">${R.sheet.map(r =>
+    `<dt class="${r.enabled === false || r.drc_enabled === false ? "amber" : ""}">${esc(r.name)}</dt><dd>${esc(r.descriptor || "")}${r.enabled === false ? " · " + esc(T("disabled")) : ""}${r.drc_enabled === false ? " · " + esc(T("not in DRC")) : ""}</dd>`).join("")}</dl></details>`;
+  const logged = (R.logged || []).length ? `<p class="hint">${esc(T("{0} rule edits made through the tools since then", R.logged.length))}</p>` : "";
+  const approve = !R.approved || R.changes.length
+    ? `<button class="go" data-do="rules-approve">${esc(R.approved ? T("Approve the rules as they are now") : T("Approve these rules"))}</button>` : "";
+  return `<section class="block"><h2>${esc(T("Design rules"))}</h2><p>${state}</p>${changes}${off}${logged}${sheet}
+    <div class="actions">${approve}<button data-do="rules-read">${esc(T("Read the rules again"))}</button></div></section>`;
+}
+async function readRules() {
+  S.rules = {ok: true, count: 0, sheet: [], changes: [], not_checked: [], approved: false, reading: true};
+  const r = await get("/api/wb/rules");
+  S.rules = r || {ok: false, reason: T("The dashboard did not answer")};
+  clearTools(); paintTools();
+}
+async function approveRules() {
+  if (!S.rules || !S.rules.ok) return;
+  const r = await post("/api/wb/rules/approve", {fingerprint: S.rules.fingerprint});
+  if (!r || !r.ok) return say((r && r.reason) || T("The dashboard did not answer"), true);
+  S.rules = r; say(T("Rules approved. Every DRC now compares against them.")); clearTools(); paintTools();
 }
 
 /* ================================================================ library */
@@ -1526,6 +1585,8 @@ function sideClick(e) {
   if (d === "altium") showInAltium();
   else if (d === "zoomsel" && S.sel) zoomTo(S.sel.kind, S.sel.id);
   else if (d === "next") nextProblem(1);
+  else if (d === "rules-read") readRules();
+  else if (d === "rules-approve") approveRules();
   else if (d === "focus") bringToFront();
   else if (d === "refresh") post("/api/cockpit/refresh").then(() => say(T("Reading the board again.")));
   else if (d === "plannet" && S.sel) { setMode("route"); startEngine("route", [S.sel.id]); }

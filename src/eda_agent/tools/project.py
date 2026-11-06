@@ -355,8 +355,10 @@ def register_project_tools(mcp):
         stops and reports it as ``closed_instead``. Without saving, it
         clears each member's modified flag so no save prompt appears; if
         one appears anyway it answers "Save None" then "OK", but only
-        when every listed document belongs to this project, else it
-        presses nothing. A document shared with another
+        when every listed document belongs to this project. A prompt
+        that lists another project's documents is cancelled, in either
+        mode, and the close reported as not done with
+        ``foreign_documents``. A document shared with another
         open project loses its edits too. A prompt left open blocks the
         bridge: answer it with app_press_dialog_button.
 
@@ -379,13 +381,37 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         members = None
-        if not save and project_path:
+        if project_path:
             members = await _close_members(bridge, project_path)
         try:
             result = await bridge.send_command_async("project.close", params)
         except Exception as exc:                    # noqa: BLE001
             prompt = _close_prompt_in(exc)
-            if prompt is None or save:
+            if prompt is None:
+                raise
+            # MEASURED 2026-11-05: closing a library package raised "Confirm
+            # Save Locally" listing only OTHER projects' documents. Saving
+            # or discarding there acts on work nobody named, so it is
+            # cancelled and the close reported as not done.
+            loop = _asyncio.get_running_loop()
+            foreign = await loop.run_in_executor(
+                None, _cancel_foreign_prompt, bridge, members, prompt)
+            if foreign is not None:
+                return {"success": False, "closed": False,
+                        "project_path": project_path,
+                        "prompt": prompt["title"],
+                        "cancelled": foreign["cancelled"],
+                        "foreign_documents": foreign["paths"],
+                        "reason": (
+                            "Altium's save prompt for this close listed "
+                            "documents of other projects, so nothing in it "
+                            "was saved or discarded. "
+                            + ("It was cancelled and the project left open."
+                               if foreign["cancelled"] else
+                               "Cancel could not be pressed and the prompt is "
+                               "still open, blocking the bridge: answer it "
+                               "with app_press_dialog_button(\"Cancel\")."))}
+            if save:
                 raise
             left = {"success": False, "closed": False,
                     "project_path": project_path, "prompt": prompt["title"],
@@ -399,7 +425,6 @@ def register_project_tools(mcp):
                     "and the bridge is blocked until the prompt is answered")
                 return left
 
-            loop = _asyncio.get_running_loop()
             answered, discarded, refusal = await loop.run_in_executor(
                 None, _answer_close_prompts, bridge, members, prompt)
 
@@ -495,6 +520,38 @@ def register_project_tools(mcp):
             if title.startswith(_CLOSE_PROMPT_TITLES):
                 return {"title": title, "hwnd": dialog.get("hwnd")}
         return None
+
+    def _prompt_paths(hwnd):
+        """Absolute paths a save prompt lists, or None when it cannot be read."""
+        from ..ui import uia, windows
+        if not (windows.available() and uia.available()
+                and windows.automation_enabled()):
+            return None
+        read = uia.describe_window(hwnd, depth=6, limit=400)
+        return sorted({e.get("name", "") for e in read.get("elements", [])
+                       if _is_absolute(e.get("name", ""))})
+
+    def _cancel_foreign_prompt(bridge, members, prompt):
+        """Cancel a close prompt that lists another project's documents.
+
+        Returns {paths, cancelled} when it lists foreign paths, else None (the
+        prompt lists only members, or membership or the prompt cannot be
+        read, and the caller goes on as before).
+        """
+        from ..ui import uia, windows
+        hwnd = prompt.get("hwnd")
+        if members is None or not hwnd:
+            return None
+        listed = _prompt_paths(hwnd)
+        if not listed:
+            return None
+        foreign = [p for p in listed if p.upper() not in members]
+        if not foreign:
+            return None
+        cancelled = bool(uia.invoke(hwnd, "Cancel").get("ok"))
+        if cancelled:
+            cancelled = windows.wait_for_close(hwnd, timeout=10.0)
+        return {"paths": foreign, "cancelled": cancelled}
 
     def _answer_close_prompts(bridge, members, prompt, budget=30.0):
         """Answer the save prompt: Save None, then OK. Runs in a thread.

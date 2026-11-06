@@ -169,17 +169,24 @@ class AltiumBackend:
     async def run_drc(self) -> dict[str, Any]:
         bridge, AltiumError = await self._bridge()
         try:
-            raw = await bridge.send_command_async("pcb.run_drc", {})
+            raw = await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
+            raw = raw or {}
+            from ..export.drc_rules import enrich_drc
+            await enrich_drc(bridge, raw)
         except AltiumError as e:
             raise BackendUnavailableError(str(e)) from None
-        raw = raw or {}
         violations = raw.get("violations", []) or []
-        return {
+        out = {
             "ok": True,
             "source": "altium",
             "violation_count": raw.get("violation_count", len(violations)),
             "violations": violations[:200],
         }
+        for key in ("drc_confirmed", "report_counts", "report_rules",
+                    "report_stopped_at_limit", "rules", "verdict", "verdict_reason"):
+            if key in raw:
+                out[key] = raw[key]
+        return out
 
     async def run_erc(self) -> dict[str, Any]:
         bridge, AltiumError = await self._bridge()

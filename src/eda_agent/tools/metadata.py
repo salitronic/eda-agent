@@ -188,6 +188,13 @@ _DESIGN_BRIDGE = frozenset(
 # --- explicit interaction overrides (from the DelphiScript bridge audit) ----
 # Only tools that are NOT plain readonly/silent under the default rules.
 INTERACTION_OVERRIDES = {
+    # Who edits which document: reading it, or handing one over, writes
+    # nothing to a design.
+    "app_document_owners": READONLY,
+    "app_claim_document": READONLY,
+    # Reads the rules, or keeps an approved copy beside the board: nothing
+    # in the design changes.
+    "pcb_drc_rules": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog

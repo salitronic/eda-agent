@@ -107,6 +107,24 @@ def command_is_read_only(command: str) -> bool:
     return verb.startswith(READONLY_VERB_PREFIXES)
 
 
+#: Verbs that bring a document to the front or move the view, besides the
+#: reads: a session's write never claims a document through one, and one is
+#: never refused a document another session is editing (OwnerRefusal in
+#: StatusForm.pas). MEASURED: a session's pcb.focus_board claimed a board
+#: and the next session's focus on it was refused before it wrote anything.
+LOOK_VERBS_EXACT = (
+    "focus_board", "set_active_document", "cockpit_state", "zoom",
+    "switch_view", "refresh_document", "highlight_net", "clear_highlights",
+    "layer_view", "document_owners", "claim_document",
+)
+
+
+def command_only_looks(command: str) -> bool:
+    """Does this command only read, or only bring a document forward?"""
+    verb = (command or "").strip().lower().split(".", 1)[-1]
+    return command_is_read_only(command) or verb in LOOK_VERBS_EXACT
+
+
 def _flag(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in {
         "1", "true", "yes", "on",
@@ -149,7 +167,8 @@ PASCAL_RULES_END = "{ END COMMAND RULES }"
 
 
 def pascal_command_rules() -> str:
-    """CommandIsReadOnly, CommandDeletes and CommandCloses as DelphiScript.
+    """CommandIsReadOnly, CommandDeletes, CommandCloses and CommandOnlyLooks
+    as DelphiScript.
 
     The same rules as command_is_read_only, command_deletes and
     command_closes, from the same tables. Uses ActionHasPrefix and
@@ -168,6 +187,8 @@ def pascal_command_rules() -> str:
            f"And (Pos('{_DELETE_CLEAR_WORD}', Verb) > 0))"]
         + [f"(Op = '{a}')" for a in _DELETE_ACTIONS])
     closes = either([f"(Cmd = '{c}')" for c in _CLOSE_COMMANDS])
+    looks = either(["CommandIsReadOnly(Command)"]
+                   + [f"(Verb = '{v}')" for v in LOOK_VERBS_EXACT])
     return f"""{PASCAL_RULES_BEGIN}
 
 {{ The verb of a command: lower case, after the first dot. }}
@@ -203,6 +224,16 @@ Var
 Begin
     Cmd := LowerCase(Trim(Command));
     Result := {closes};
+End;
+
+{{ A read, or a command that only brings a document forward or moves the }}
+{{ view: it neither claims a document nor is refused one (OwnerRefusal). }}
+Function CommandOnlyLooks(Command : String) : Boolean;
+Var
+    Verb : String;
+Begin
+    Verb := CommandVerb(Command);
+    Result := {looks};
 End;
 
 {PASCAL_RULES_END}"""

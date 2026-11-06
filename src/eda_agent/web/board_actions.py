@@ -213,9 +213,20 @@ class Runner:
     def snapshot(self) -> dict[str, Any]:
         """The current or last action, its calls summarised for the page."""
         cur = dict(self.current)
-        cur["results"] = [{"tool": r["tool"], "problem": _failed(r["reply"])}
-                          for r in cur.get("results") or []]
+        cur["results"] = [_result_line(r) for r in cur.get("results") or []]
         return cur
+
+
+def _result_line(r: dict[str, Any]) -> dict[str, Any]:
+    """One call's outcome for the page; a DRC keeps its verdict, so the page
+    never shows a pass without the rules it was under."""
+    out = {"tool": r["tool"], "problem": _failed(r["reply"])}
+    reply = r.get("reply")
+    if isinstance(reply, dict) and reply.get("verdict"):
+        out["verdict"] = reply["verdict"]
+        out["verdict_reason"] = reply.get("verdict_reason", "")
+        out["violation_count"] = reply.get("violation_count")
+    return out
 
 
 _RUNNER: Optional[Runner] = None

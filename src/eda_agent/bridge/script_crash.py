@@ -194,6 +194,34 @@ def restart_loop() -> dict:
     return {"restarted": done.returncode == 0, "output": " ".join(lines[-4:])}
 
 
+#: Longest a handler is waited on (30 heartbeat windows of 10 s). A
+#: progress marker older than this is left behind by a halted handler.
+CALL_CEILING_S = 300.0
+QUEUE_FRESH_S = 5.0
+
+
+def another_call_running(workspace_dir) -> bool:
+    """Whether some session's call is being served or queued now.
+
+    Altium refreshes queue.json about once a second while sessions take
+    turns, and a handler's progress marker exists while it runs. A marker
+    older than the longest wait is a halted handler's, so it does not
+    count.
+    """
+    folder = Path(workspace_dir)
+    now = time.time()
+    try:
+        if now - (folder / "queue.json").stat().st_mtime < QUEUE_FRESH_S:
+            return True
+    except OSError:
+        pass
+    try:
+        return any(now - p.stat().st_mtime < CALL_CEILING_S
+                   for p in folder.glob("progress_*.json"))
+    except OSError:
+        return False
+
+
 def recover(workspace_dir, pid: int, command: str, request_id: str,
             dialog: Optional[dict], reply_came: Callable[[float], bool],
             force: bool = False,

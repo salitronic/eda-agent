@@ -391,7 +391,7 @@ class _CompactFastMCP(FastMCP):
         # Its commands to Altium take one turn together (Main.pas
         # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
-        with tool_call():
+        with tool_call(name):
             result = await super().call_tool(name, arguments)
         try:
             from . import updates

@@ -38,6 +38,25 @@ _SCHLIB_CHECKS = (
 )
 
 
+def _file_locked(path: str) -> Optional[bool]:
+    """Whether another process holds ``path`` against writing.
+
+    A handle probe only: the file is opened for update and closed with
+    nothing read or written. None when the file is missing.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        with open(p, "r+b"):
+            pass
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return False
+
+
 def _file_stamps(folder: Path) -> dict:
     """Each file directly in ``folder`` and its modified time."""
     stamps = {}
@@ -5879,12 +5898,25 @@ def register_library_tools(mcp):
             library_path: absolute path to the library file.
 
         Returns:
-            {"uninstalled": bool, "library_path": "..."}.
+            ``uninstalled`` (checked against the installed list),
+            ``still_installed``, ``closed_document`` (an .IntLib open as a
+            document was closed), ``library_path`` and ``file_locked``
+            (True: Altium still holds the file, so it cannot be deleted
+            or rebuilt in place until Altium restarts).
         """
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        reply = await bridge.send_command_async(
             "library.uninstall_library", {"library_path": library_path}
         )
+        locked = _file_locked(library_path)
+        if isinstance(reply, dict) and locked is not None:
+            reply["file_locked"] = locked
+            if locked:
+                reply["reason"] = (
+                    "the library is uninstalled but Altium still holds the "
+                    "file open; no script call releases it. Build to another "
+                    "file name, or restart Altium to free it.")
+        return reply
 
     @mcp.tool()
     async def lib_delete_component(
