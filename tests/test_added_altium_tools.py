@@ -418,6 +418,31 @@ def test_net_structure_reports_buses_and_reads_each_field_guarded():
         assert key in text, key
 
 
+def test_object_outline_sends_and_refuses(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                    "pcb_object_outline", expansion=10, layer="BottomLayer")
+    assert sent == [("pcb.object_outline",
+                     {"expansion": "10", "limit": "200", "layer": "BottomLayer"})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_object_outline")
+    assert sent == [("pcb.object_outline", {"expansion": "0", "limit": "200"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                         "pcb_object_outline", limit=0)
+    assert sent == [] and result["ok"] is False
+
+
+def test_object_outline_refuses_before_altium_and_reports_each_failure():
+    body = _body("PCB.pas", "PCB_ObjectOutline")
+    # An unknown layer and an empty selection are refused up front.
+    assert "'UNKNOWN_LAYER'" in body and "'NOTHING_SELECTED'" in body
+    # A through-hole object has no copper on MultiLayer itself.
+    assert "If Lyr = eMultiLayer Then Lyr := eTopLayer;" in body
+    # Altium refusing one object is that object's problem, not the call's.
+    assert re.search(r"Try Shape := Maker\.MakeContour\(Obj, Expansion, Lyr\); "
+                     r"Except Problem := ", body)
+    assert "If (Shape = Nil) And (Problem = '') Then" in body
+    assert "Inc(Failed)" in body and "'truncated'" in body
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]

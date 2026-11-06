@@ -499,6 +499,7 @@ GAPS: dict[str, str] = {
     "pcb_drc_rules": "no tool keeps an approved copy of a KiCad board's rules or compares a DRC against it",
     "pcb_pad_relief": "a KiCad pad carries its own zone connection, spoke width, gap and spoke angle; no tool sets them yet",
     "app_screenshot": "no view capture in the API; would need OS window capture",
+    "pcb_object_outline": "KiCad can give an item's outline grown by a clearance; no tool returns it yet",
     "pcb_autoplace": "Autoplacer action needs a footprint selection and no dialog check yet",
     "pcb_autoplace_apply": "as pcb_autoplace",
     "pcb_autoplace_silkscreen": "reference text placement not written",

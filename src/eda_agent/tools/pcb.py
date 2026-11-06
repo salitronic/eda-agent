@@ -7508,6 +7508,38 @@ def register_pcb_tools(mcp):
             "symbol_type": str(int(symbol_type)), "layer_pair": str(int(layer_pair))})
 
     @mcp.tool()
+    async def pcb_object_outline(expansion: float = 0, layer: str = "",
+                                 limit: int = 200) -> dict[str, Any]:
+        """The outline of each SELECTED board object, grown by a clearance.
+
+        Altium's own outline of the object's copper on one layer: a pad or
+        via by its shape there, a track or arc with its round ends, text by
+        its strokes, a region or pour by its edge. Grown by ``expansion``
+        it is the area a clearance of that size keeps free, ready to place
+        as a keepout or cutout region. Select the objects first with
+        obj_select. Arcs come back as short straight segments.
+
+        Args:
+            expansion: Mils to grow each outline by (negative shrinks).
+            layer: Layer to take the outline on. Empty: each object's own
+                layer, top copper for a through-hole pad or via.
+            limit: The most objects to return (default 200).
+
+        Returns:
+            ``expansion``, ``selected``, ``listed``, ``failed``,
+            ``truncated`` and ``objects``, each with ``kind``, ``layer``,
+            ``outlines`` and ``holes`` (point lists in mils),
+            ``area_sqmils`` and ``problem`` (empty when it worked).
+            NOTHING_SELECTED when no object is selected.
+        """
+        if limit < 1:
+            return {"ok": False, "reason": "limit is 1 or more"}
+        params = {"expansion": str(expansion), "limit": str(int(limit))}
+        if layer.strip():
+            params["layer"] = layer.strip()
+        return await get_bridge().send_command_async("pcb.object_outline", params)
+
+    @mcp.tool()
     async def pcb_component_parameters(designator: str, action: str = "list",
                                        name: str = "", value: str = "",
                                        group: str = "own") -> dict[str, Any]:

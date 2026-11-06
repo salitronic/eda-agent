@@ -12246,6 +12246,117 @@ Begin
     Result := '[' + Result + ']';
 End;
 
+{..............................................................................}
+{ PCB_ObjectOutline - the outline of each selected board object, grown by an  }
+{ expansion, as Altium works it out for clearance: pads and vias by their     }
+{ shape on the layer, tracks and arcs with their round ends, text by its      }
+{ strokes. Params: expansion (mils, default 0; negative shrinks), layer       }
+{ (optional; default the object's own layer, top copper for a multilayer      }
+{ object), limit (default 200).                                               }
+{..............................................................................}
+Function PCB_ObjectOutline(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Maker : IPCB_ContourMaker;
+    Obj : IPCB_Primitive;
+    Shape : IPCB_GeometricPolygon;
+    Contour : Pgpc_vertex_list;
+    LayerName, Rows, Outlines, HoleRows, Kind, Problem : String;
+    Expansion, I, J, Count, Limit, Listed, Failed : Integer;
+    Lyr : TLayer;
+    Area : Double;
+Begin
+    Expansion := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'expansion'), 0));
+    LayerName := Trim(ExtractJsonValue(Params, 'layer'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 200);
+    If Limit < 1 Then Limit := 200;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Lyr := eNoLayer;
+    If LayerName <> '' Then
+    Begin
+        Lyr := ResolveLayerId(Board, LayerName);
+        If Lyr = eNoLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER', 'No layer named ' + LayerName);
+            Exit;
+        End;
+    End;
+    Count := Board.SelectecObjectCount;
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOTHING_SELECTED',
+            'Select the objects first (obj_select)');
+        Exit;
+    End;
+    Maker := Nil;
+    Try Maker := PCBServer.PCBContourMaker; Except Maker := Nil; End;
+    If Maker = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_CONTOUR_MAKER', 'Altium did not give a contour maker');
+        Exit;
+    End;
+    Rows := '';
+    Listed := 0;
+    Failed := 0;
+    For I := 0 To Count - 1 Do
+    Begin
+        If Listed >= Limit Then Break;
+        Obj := Board.SelectecObject[I];
+        If Obj = Nil Then Continue;
+        Kind := '';
+        Try Kind := Obj.ObjectIDString; Except End;
+        If LayerName = '' Then
+        Begin
+            Lyr := Obj.Layer;
+            If Lyr = eMultiLayer Then Lyr := eTopLayer;
+        End;
+        Shape := Nil;
+        Problem := '';
+        Try Shape := Maker.MakeContour(Obj, Expansion, Lyr); Except Problem := 'Altium raised an error'; End;
+        If (Shape = Nil) And (Problem = '') Then Problem := 'no outline on this layer';
+        Outlines := '';
+        HoleRows := '';
+        Area := 0;
+        If Shape <> Nil Then
+            For J := 0 To Shape.Count - 1 Do
+            Begin
+                Contour := Shape.Contour(J);
+                If Shape.IsHole(J) Then
+                Begin
+                    Area := Area - Contour.Area / 100000000.0;
+                    HoleRows := HoleRows + ',' + PourContourJson(Contour);
+                End
+                Else
+                Begin
+                    Area := Area + Contour.Area / 100000000.0;
+                    Outlines := Outlines + ',' + PourContourJson(Contour);
+                End;
+            End;
+        If Problem <> '' Then Inc(Failed);
+        If Rows <> '' Then Rows := Rows + ',';
+        Rows := Rows + JsonObj(
+            JsonStr('kind', Kind) + ','
+            + JsonStr('layer', LayerDisplayName(Lyr)) + ','
+            + JsonRaw('outlines', '[' + Copy(Outlines, 2, Length(Outlines)) + ']') + ','
+            + JsonRaw('holes', '[' + Copy(HoleRows, 2, Length(HoleRows)) + ']') + ','
+            + JsonFloat('area_sqmils', Area) + ','
+            + JsonStr('problem', Problem));
+        Inc(Listed);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonFloat('expansion', CoordToMilsF(Expansion)) + ','
+        + JsonInt('selected', Count) + ','
+        + JsonInt('listed', Listed) + ','
+        + JsonInt('failed', Failed) + ','
+        + JsonBool('truncated', Listed < Count) + ','
+        + JsonRaw('objects', '[' + Rows + ']')));
+End;
+
 Function PCB_PourCopper(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -31221,6 +31332,7 @@ Begin
         'local_grid':              Result := PCB_LocalGrid(Params, RequestId);
         'plane_state':             Result := PCB_PlaneState(Params, RequestId);
         'hole_symbols':            Result := PCB_HoleSymbols(Params, RequestId);
+        'object_outline':          Result := PCB_ObjectOutline(Params, RequestId);
         'component_parameters':    Result := PCB_ComponentParameters(Params, RequestId);
         'place_simple_body':       Result := PCB_PlaceSimpleBody(Params, RequestId);
         'place_baseline_dimension': Result := PCB_PlaceBaselineDimension(Params, RequestId);
