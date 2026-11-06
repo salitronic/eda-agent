@@ -39,7 +39,7 @@ SESSION = {
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
     "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "DocOwners", "CastErrorCount",
-    "LastCreatedLibComponent", "LastCreatedLibComponentName",
+    "LastCreatedLibComponent", "LastCreatedLibComponentName", "LastCreatedLibDocAddr",
     "JsonIdxDoc0", "JsonIdxDoc1", "JsonIdxDoc2", "JsonIdxDoc3",
     "JsonIdx0", "JsonIdx1", "JsonIdx2", "JsonIdx3", "JsonIdxNext",
     "JsonNestedSeen",

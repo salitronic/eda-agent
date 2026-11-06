@@ -65,7 +65,7 @@ def test_bare_and_altium_ellipse_names_both_resolve():
 def test_the_schlib_toggle_prefers_the_symbol_on_screen():
     body = _gen("Gen_TogglePinVisibility")
     lib = body[body.index("If IsLib Then"):]
-    assert lib.index("CurrentSchComponent") < lib.index("LastCreatedLibComponent")
+    assert lib.index("CurrentSchComponent") < lib.index("RememberedLibComponent(SchDoc)")
 
 
 def test_a_schlib_component_query_uses_the_library_iterator():

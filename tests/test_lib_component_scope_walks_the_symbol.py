@@ -38,7 +38,7 @@ def test_each_scope_clears_the_symbol_the_last_one_named():
 
 def test_the_walk_is_the_named_symbol_fetched_through_the_library():
     body = _generic("ProcessSchDocObjects")
-    assert "If ObjRef = LibScopeName Then ScopeComp := LastCreatedLibComponent;" in body
+    assert "If ObjRef = LibScopeName Then ScopeComp := RememberedLibComponent(SchDoc);" in body
     # MEASURED 2026.10.30.6: with LookupLibComponent called from Generic the
     # whole unit read as undeclared in Altium (HandleGenericCommand), every
     # generic command halted the loop, and no compile error was shown.
