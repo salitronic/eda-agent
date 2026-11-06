@@ -8478,9 +8478,11 @@ def register_pcb_tools(mcp):
                 ]
 
         Returns:
-            Dictionary with "placed" and "failed" counts, "unknown_layers"
-            and "unknown_nets" naming what did not resolve, and, when any
-            track took "current", "current_layer" and "on_current_layer".
+            Dictionary with "placed" and "failed" counts, "zero_length"
+            (tracks not placed because both ends are the same point),
+            "unknown_layers" and "unknown_nets" naming what did not
+            resolve, and, when any track took "current", "current_layer"
+            and "on_current_layer".
         """
         parts = []
         for t in tracks:

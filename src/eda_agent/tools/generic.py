@@ -356,6 +356,12 @@ _PORT_FIELDS_DO_NOT_SAVE = (
     "OverrideDisplayString and HarnessColor read back on the port now, but do "
     "not survive saving and reopening the sheet (AD 26.11). AutoSize does.")
 
+#: Measured 2026-11-06 on a SchLib symbol and on a sheet.
+_PARAMETER_LOCK_DOES_NOT_SAVE = (
+    "GraphicallyLocked reads back on the parameter now, but does not survive "
+    "saving and reopening the document (AD 26.11). ShowName and Autoposition "
+    "do.")
+
 
 async def _send_rule_aware(tool: str, object_types: list[str],
                            params: dict[str, Any], run) -> Any:
@@ -650,9 +656,11 @@ def register_generic_tools(mcp):
                 take ReadOnlyState, ParamType, AllowLibrarySynchronize
                 and AllowDatabaseSynchronize, and report NameIsReadOnly,
                 ValueIsReadOnly, IsRule, IsSystemParameter and
-                IsConfigurable; ports take AutoSize,
-                OverrideDisplayString and HarnessColor (the last two do
-                not survive save and reopen; the reply notes it). Symbol pins
+                IsConfigurable, and with designators ShowName,
+                Autoposition and GraphicallyLocked (not saved); ports
+                take AutoSize,
+                OverrideDisplayString and HarnessColor (not saved).
+                Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),
@@ -683,10 +691,6 @@ def register_generic_tools(mcp):
         via, pad, fill, region, polygon; the net must exist, "" = no net):
             obj_modify(object_type="eRegionObject",
                        filter="Layer=TopLayer|Net=GND", set="Net=")
-        Example - a different value per pin, one call:
-            obj_modify(scope="lib_component:U_MCU", object_type="ePin",
-                       items=[{"filter": "Designator=1", "set": "Name=VDD"},
-                              {"filter": "Designator=2", "set": "Name=GND"}])
         """
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
@@ -717,6 +721,9 @@ def register_generic_tools(mcp):
         if (isinstance(result, dict) and object_type == "ePort"
                 and re.search(r"(^|\|)\s*(OverrideDisplayString|HarnessColor)\s*=", set)):
             result["note"] = _PORT_FIELDS_DO_NOT_SAVE
+        if (isinstance(result, dict) and object_type in ("eParameter", "eDesignator")
+                and re.search(r"(^|\|)\s*GraphicallyLocked\s*=", set)):
+            result["note"] = _PARAMETER_LOCK_DOES_NOT_SAVE
         return result
 
     @mcp.tool()

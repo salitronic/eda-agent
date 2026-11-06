@@ -9005,7 +9005,7 @@ Var
     Board : IPCB_Board;
     Track : IPCB_Track;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
+    PipePos, CommaPos, Placed, Failed, FieldIdx, ZeroLength : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
     LayerStr, NetStr, BadLayers, BadNets : String;
@@ -9038,6 +9038,7 @@ Begin
 
     Placed := 0;
     Failed := 0;
+    ZeroLength := 0;
     BadLayers := '';
     BadNets := '';
     Remaining := TracksStr;
@@ -9144,6 +9145,16 @@ Begin
                 End;
             End;
 
+            { A zero-length track is dropped by Altium as it is added (AD 26.11), }
+            { so it was counted as placed and was not there. Counted apart.     }
+            If (MilsToCoordF(TX1) = MilsToCoordF(TX2))
+                And (MilsToCoordF(TY1) = MilsToCoordF(TY2)) Then
+            Begin
+                Inc(Failed);
+                Inc(ZeroLength);
+                Continue;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -9181,6 +9192,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ','
         + '"failed":' + IntToStr(Failed) + ','
+        + '"zero_length":' + IntToStr(ZeroLength) + ','
         + CurrentLayerJson(CurLayer, OnCurrent)
         + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
         + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
