@@ -27,11 +27,11 @@ Professional and Company sponsors appear here with their logo, and Backer and Bi
 
 ## Dashboard
 
-<img src="assets/dashboard.png" alt="eda-agent dashboard inside Altium Designer" width="320">
+<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
 
 Two dashboards ship with eda-agent:
 
-- **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. The **Detach** button exits the polling loop cleanly; it saves nothing, so unsaved edits stay in the editor.
+- **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Slow only` isolates slow calls. The **Config** tab (right) sets what the AI may do: edit designs, delete, close documents, and drive menus and dialogs, plus view options. Changes apply live. The **Detach** button exits the polling loop cleanly; it saves nothing, so unsaved edits stay in the editor.
 - **Web dashboard** - a local browser dashboard at `http://127.0.0.1:8766`, focused on design review. A **Review** tab surfaces datasheet / MPN / manufacturer / footprint coverage gauges and an actionable issue queue (missing datasheet, missing MPN, orphan nets, ...); **Project**, **Components**, **Nets**, **Libraries** and **Plan** tabs give live structured views. Click any component or net to drill into a detail drawer; one click cross-probes it into Altium. Light / dark theme, server-sent-events live feed. It is auto-started by the MCP server - the **Open Dashboard** button on the in-Altium status window launches the browser.
 
 ## How it works
