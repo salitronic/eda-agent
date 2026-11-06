@@ -1932,6 +1932,61 @@ Begin
     SchEndModify(Impl);
 End;
 
+{ DISPLAY MODE NAMES (issue #254). A symbol's display modes are Normal and   }
+{ its alternates; Altium shows a mode's custom name where it would say       }
+{ "Alternate 1". GetState_ / SetState_CustomDisplayModeName(mode, name) on   }
+{ the component, mode counted from 0 (Normal). MEASURED on AD 25.8.1: both   }
+{ work, Normal takes a name too, the names survive save + reopen, and a      }
+{ written name shows in Altium's own UI. ';'-separated, one name per mode.   }
+Function ReadDisplayModeNames(Comp : ISch_Component) : String;
+Var
+    I, N : Integer;
+    Item : String;
+Begin
+    Result := '';
+    N := 0;
+    Try N := Comp.DisplayModeCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Item := '';
+        Try Item := Comp.GetState_CustomDisplayModeName(I); Except Item := ''; End;
+        If I > 0 Then Result := Result + ';';
+        Result := Result + Item;
+    End;
+End;
+
+{ Writes one name per existing mode and reads them back. A list whose count }
+{ differs from DisplayModeCount is refused: modes are added and removed by  }
+{ library.set_symbol_parts, not by naming them.                             }
+Function WriteDisplayModeNames(Comp : ISch_Component; Value : String) : Boolean;
+Var
+    I, N, P : Integer;
+    Rest, Item : String;
+Begin
+    Result := False;
+    N := 0;
+    Try N := Comp.DisplayModeCount; Except N := 0; End;
+    If N < 1 Then Exit;
+    If (Length(Value) - Length(StringReplace(Value, ';', '', MkSet(rfReplaceAll)))) <> N - 1 Then Exit;
+    Rest := Value;
+    For I := 0 To N - 1 Do
+    Begin
+        P := Pos(';', Rest);
+        If P = 0 Then
+        Begin
+            Item := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Item := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End;
+        Comp.SetState_CustomDisplayModeName(I, Item);
+    End;
+    Result := ReadDisplayModeNames(Comp) = Value;
+End;
+
 { The current footprint model's pin map, '' when the part has no PCB model. }
 Function ReadFootprintPinMap(Comp : ISch_Component) : String;
 Var
@@ -2126,6 +2181,7 @@ Begin
         { as Altium writes it, "(G:1),(D:2),(S:3)", and its Component Type  }
         { by name (ComponentKindName). Components only.                     }
         Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
+             Or (PropName = 'DisplayModeNames')
              Or (PropName = 'FootprintPinMap') Or (PropName = 'ComponentKind') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
@@ -2133,6 +2189,7 @@ Begin
                 Comp := Obj;
                 If PropName = 'DisplayMode' Then Result := IntToStr(Comp.DisplayMode)
                 Else If PropName = 'DisplayModeCount' Then Result := IntToStr(Comp.DisplayModeCount)
+                Else If PropName = 'DisplayModeNames' Then Result := ReadDisplayModeNames(Comp)
                 Else If PropName = 'ComponentKind' Then
                     Result := ComponentKindName(Comp.ComponentKind)
                 Else Result := ReadFootprintPinMap(Comp);
@@ -2703,10 +2760,15 @@ Begin
         { merges by schematic pin (WriteFootprintPinMap); its Component     }
         { Type by name (ComponentKindOf), read back. Components only.       }
         Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap')
-             Or (PropName = 'ComponentKind') Then
+             Or (PropName = 'ComponentKind') Or (PropName = 'DisplayModeNames') Then
         Begin
             If Obj.ObjectId <> eSchComponent Then
                 Matched := False
+            Else If PropName = 'DisplayModeNames' Then
+            Begin
+                Comp := Obj;
+                If Not WriteDisplayModeNames(Comp, Value) Then WroteOK := False;
+            End
             Else If PropName = 'ComponentKind' Then
             Begin
                 Comp := Obj;
