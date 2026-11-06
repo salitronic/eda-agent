@@ -7053,8 +7053,13 @@ Begin
         If Workspace <> Nil Then
         Begin
             WDoc := Workspace.DM_FocusedDocument;
+            { Only a FULL path may be opened. DM_FileName is the bare file  }
+            { name, and OpenObject on a bare name makes a NEW empty library }
+            { of that name; every write then goes into it. With no full     }
+            { path the focused library is already the current one: no open.}
             If WDoc <> Nil Then
-                LibPath := WDoc.DM_FileName;
+                LibPath := DocFullPath(WDoc);
+            If Not LooksAbsolutePath(LibPath) Then LibPath := '';
         End;
     End;
 
@@ -7264,8 +7269,13 @@ Begin
         If Workspace <> Nil Then
         Begin
             Doc := Workspace.DM_FocusedDocument;
+            { Only a FULL path may be opened. DM_FileName is the bare file  }
+            { name, and OpenObject on a bare name makes a NEW empty library }
+            { of that name; every write then goes into it. With no full     }
+            { path the focused library is already the current one: no open.}
             If Doc <> Nil Then
-                LibPath := Doc.DM_FileName;
+                LibPath := DocFullPath(Doc);
+            If Not LooksAbsolutePath(LibPath) Then LibPath := '';
         End;
     End;
 
