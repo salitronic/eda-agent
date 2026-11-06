@@ -7894,7 +7894,8 @@ End;
 { + reopen): mark the library modified BEFORE the copy with a "touch" --     }
 { read one symbol's description and write the same text straight back --    }
 { then copy. A touch AFTER the copy does not help; a save clears the flag,   }
-{ so the next copy needs a touch again. Cause not found.                     }
+{ so the next copy needs a touch again. Cause not found. This handler does   }
+{ the touch itself, on the destination's current symbol, before the copy.  }
 {..............................................................................}
 
 { Pins on every part of a library symbol, the count lib_get_component_details }
@@ -7927,9 +7928,9 @@ Var
     Workspace : IWorkspace;
     Doc : IDocument;
     SourceLib, DestLib : ISch_Lib;
-    SourceComp, NewComp, Existing, Verify, Shown, OnScreen : ISch_Component;
+    SourceComp, NewComp, Existing, Verify, Shown, OnScreen, TouchComp : ISch_Component;
     Overwrite, SameLib, Overwrote, SourceShown : Boolean;
-    OtherName, ShownNote : String;
+    OtherName, ShownNote, TouchText : String;
     SourcePins, CopyPins : Integer;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
@@ -8052,6 +8053,19 @@ Begin
                 'Failed to focus destination library at ' + DestLibPath);
             Exit;
         End;
+    End;
+
+    { THE TOUCH (issue #251): mark the destination modified BEFORE the copy, }
+    { or it reads saved while it holds the copy. See the header above.     }
+    TouchComp := Nil;
+    Try TouchComp := DestLib.CurrentSchComponent; Except TouchComp := Nil; End;
+    If TouchComp <> Nil Then
+    Begin
+        Try
+            TouchText := TouchComp.ComponentDescription;
+            TouchComp.ComponentDescription := TouchText;
+        Except NoteWriteFailed('touch before the copy'); End;
+        MarkLibDirty(DestLib);
     End;
 
     Overwrote := False;

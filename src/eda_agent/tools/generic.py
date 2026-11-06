@@ -413,12 +413,9 @@ def register_generic_tools(mcp):
                 (ConnectionX/Y is the ELECTRICAL end a wire must touch;
                 Location is the body-side root);
                 "Designator.Text,Comment.Text,LibReference" for
-                components, and "DisplayMode,DisplayModeCount" (the
-                alternate drawing, settable with obj_modify; to switch
-                the drawing a SchLib editor shows, run the process
-                "Sch:ToggleComponentDisplayMode" with "Action=Mode1"),
-                "DisplayModeNames" (each mode's name, ";"-separated from
-                Normal; obj_modify names them, one name per mode) and
+                components, "DisplayMode,DisplayModeCount" and
+                "DisplayModeNames" (the alternate drawing; names
+                ";"-separated from Normal; settable) and
                 "FootprintPinMap" (the current footprint model's pin map,
                 "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
                 merges by schematic pin, so a map cannot be cleared).
@@ -443,8 +440,7 @@ def register_generic_tools(mcp):
                 mils), "IslandAreaThreshold" (square mils),
                 "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
                 and the read-only "PourIndex,Poured"; nothing repours.
-                An unknown PCB property is refused with the valid
-                list. Lengths are decimal mils.
+                Lengths are decimal mils.
 
                 A board type returns EVERY primitive of that type;
                 filter "InComponent=false|InPolygon=false" for free

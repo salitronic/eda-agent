@@ -985,9 +985,12 @@ Begin
                 { inside one function, which would split it in two.          }
                 If (Wanted = '') Or (Pos('/', Wanted) > 0) Then Exit;
                 OldName := Pin.Name;
-                Pin.Name := Slashed + '/';
-                Pin.SetState_FunctionsFromName;
-                Pin.Name := OldName;
+                Try
+                    Pin.Name := Slashed + '/';
+                    Pin.SetState_FunctionsFromName;
+                Finally
+                    Pin.Name := OldName;
+                End;
             End;
         End
         Else If PropName = 'Name_PositionMode' Then Pin.Name_PositionMode := N
@@ -1982,7 +1985,7 @@ Begin
             Item := Copy(Rest, 1, P - 1);
             Rest := Copy(Rest, P + 1, Length(Rest));
         End;
-        Comp.SetState_CustomDisplayModeName(I, Item);
+        Try Comp.SetState_CustomDisplayModeName(I, Item); Except NoteWriteFailed('DisplayModeNames'); End;
     End;
     Result := ReadDisplayModeNames(Comp) = Value;
 End;
