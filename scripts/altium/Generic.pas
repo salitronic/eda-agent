@@ -7317,6 +7317,123 @@ Begin
         + JsonRaw('connectors', '[' + Rows + ']')));
 End;
 
+{..............................................................................}
+{ Gen_PlaceHarnessWires - harness wires and splices on a wiring diagram.     }
+{ A wire runs through its points; a splice sits where wires meet. Altium     }
+{ links a wire's ends to the pins and splices they touch when it loads the   }
+{ diagram, not when the wire is added, so the caller saves and reopens it.   }
+{ Params: path (optional), wires = 'points=x,y,x,y,...;name=W1;colour=#RRGGBB }
+{ ;colour_name=RD~~...', splices = 'x=..;y=..;name=SPL1~~...'.               }
+{..............................................................................}
+Function Gen_PlaceHarnessWires(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Obj : ISch_GraphicalObject;
+    Remaining, Op, Name, Why, Problem, Rows, Colour, ColourName : String;
+    Xs, Ys : TStringList;
+    I, Rgb, Placed, Failed, Total : Integer;
+Begin
+    SchDoc := HarnessDiagramFor(Trim(ExtractJsonValue(Params, 'path')), Why);
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_WIRING_DIAGRAM', Why);
+        Exit;
+    End;
+    Rows := '';
+    Placed := 0;
+    Failed := 0;
+    Total := 0;
+    SchBeginEdit(SchDoc, '');
+    Try
+        Remaining := ExtractJsonValue(Params, 'wires');
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(Total);
+            Name := GetBatchField(Op, 'name');
+            Colour := GetBatchField(Op, 'colour');
+            ColourName := GetBatchField(Op, 'colour_name');
+            Problem := '';
+            Obj := Nil;
+            Xs := TStringList.Create;
+            Ys := TStringList.Create;
+            If Not ParseVertexList(GetBatchField(Op, 'points'), Xs, Ys) Then Problem := 'points are x,y pairs'
+            Else If Xs.Count < 2 Then Problem := 'a wire needs two points or more';
+            Rgb := -1;
+            If (Problem = '') And (Colour <> '') Then
+            Begin
+                Rgb := HarnessColourFromHex(Colour);
+                If Rgb < 0 Then Problem := 'colour is #RRGGBB';
+            End;
+            If Problem = '' Then
+            Begin
+                Try Obj := SchServer.SchObjectFactory(eHarnessWire, eCreate_Default); Except Obj := Nil; End;
+                If Obj = Nil Then Problem := 'Altium did not create a harness wire';
+            End;
+            If Obj <> Nil Then
+            Begin
+                Try
+                    Obj.Location := Point(MilsToCoordF(StrToFloatDef(Xs[0], 0)), MilsToCoordF(StrToFloatDef(Ys[0], 0)));
+                    For I := 0 To Xs.Count - 1 Do
+                    Begin
+                        Obj.InsertVertex := I + 1;
+                        Obj.SetState_Vertex(I + 1, Point(MilsToCoordF(StrToFloatDef(Xs[I], 0)),
+                            MilsToCoordF(StrToFloatDef(Ys[I], 0))));
+                    End;
+                    If Rgb >= 0 Then Obj.Color := Rgb;
+                    If ColourName <> '' Then Obj.SetState_PrimaryColorName(ColourName);
+                    SchDoc.RegisterSchObjectInContainer(Obj);
+                    SchRegisterObject(SchDoc, Obj);
+                    If Name <> '' Then Obj.GetState_SchDesignator.Text := Name;
+                Except Problem := 'Altium refused the wire'; End;
+            End;
+            Xs.Free;
+            Ys.Free;
+            If Problem = '' Then Inc(Placed) Else Inc(Failed);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + JsonObj(JsonStr('kind', 'wire') + ',' + JsonStr('name', Name) + ','
+                + JsonBool('placed', Problem = '') + ',' + JsonStr('problem', Problem));
+        End;
+        Remaining := ExtractJsonValue(Params, 'splices');
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(Total);
+            Name := GetBatchField(Op, 'name');
+            Problem := '';
+            Obj := Nil;
+            Try Obj := SchServer.SchObjectFactory(eHarnessSplice, eCreate_Default); Except Obj := Nil; End;
+            If Obj = Nil Then Problem := 'Altium did not create a splice'
+            Else
+            Begin
+                Try
+                    Obj.Location := Point(MilsToCoordF(StrToFloatDef(GetBatchField(Op, 'x'), 0)),
+                        MilsToCoordF(StrToFloatDef(GetBatchField(Op, 'y'), 0)));
+                    SchDoc.RegisterSchObjectInContainer(Obj);
+                    SchRegisterObject(SchDoc, Obj);
+                    If Name <> '' Then Obj.GetState_SchDesignator.Text := Name;
+                Except Problem := 'Altium refused the splice'; End;
+            End;
+            If Problem = '' Then Inc(Placed) Else Inc(Failed);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + JsonObj(JsonStr('kind', 'splice') + ',' + JsonStr('name', Name) + ','
+                + JsonBool('placed', Problem = '') + ',' + JsonStr('problem', Problem));
+        End;
+    Finally
+        SchEndEdit(SchDoc, 'Edit');
+    End;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', SchDoc.DocumentName) + ','
+        + JsonInt('placed', Placed) + ','
+        + JsonInt('failed', Failed) + ','
+        + JsonInt('total', Total) + ','
+        + JsonRaw('items', '[' + Rows + ']')));
+End;
+
 Function Gen_PlaceBusEntry(Params : String; RequestId : String) : String;
 Var
     X1, Y1, X2, Y2 : Double;
@@ -17427,6 +17544,7 @@ Begin
         'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
         'get_harness':       Result := Gen_GetHarness(Params, RequestId);
         'place_harness_connectors': Result := Gen_PlaceHarnessConnectors(Params, RequestId);
+        'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);

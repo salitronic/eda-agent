@@ -515,6 +515,80 @@ def test_harness_colour_from_hex_is_the_inverse_of_to_hex():
     assert "(V Div 65536) + ((V Div 256) Mod 256) * 256 + (V Mod 256) * 65536" in body
 
 
+def test_harness_wires_send_and_refuse(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_place_harness_wires", document_path="C:/h/W.WirDoc",
+                    wires=[{"points": [[2000, 5000], [4500, 3500]], "name": "W1",
+                            "colour": "#FF0000", "colour_name": "RD"}],
+                    splices=[{"x": 4500, "y": 3500, "name": "SPL1"}], connect=False)
+    assert sent == [("generic.place_harness_wires", {
+        "path": "C:/h/W.WirDoc",
+        "wires": "points=2000,5000,4500,3500;name=W1;colour=#FF0000;colour_name=RD",
+        "splices": "x=4500;y=3500;name=SPL1"})]
+    for kwargs in ({"document_path": "C:/h/S.SchDoc", "splices": [{"x": 1, "y": 1}]},
+                   {"document_path": "C:/h/W.WirDoc"},
+                   {"document_path": "C:/h/W.WirDoc", "wires": [{"points": [[1, 2]]}]},
+                   {"document_path": "C:/h/W.WirDoc", "wires": [{"points": [[1, 2, 3]]}]},
+                   {"document_path": "C:/h/W.WirDoc",
+                    "wires": [{"points": [[1, 2], [3, 4]], "name": "W;1"}]}):
+        result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                             "sch_place_harness_wires", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_harness_wires_connect_by_reloading_the_diagram(monkeypatch, tmp_path):
+    diagram = tmp_path / "W.WirDoc"
+    diagram.write_bytes(b"")
+    replies = {
+        "generic.place_harness_wires": {"placed": 2, "failed": 0, "total": 2},
+        "application.save_document": {"saved": True},
+        "application.close_document": {"closed": True},
+        "generic.get_harness": {"wires": [{"name": "W1", "end1": "pin:J1-1",
+                                           "end2": "splice:SPL1"}]},
+    }
+
+    class _Replying(_Bridge):
+        async def send_command_async(self, command, params, **kwargs):
+            self.sent.append((command, params))
+            return replies.get(command, {"success": True})
+
+    bridge = _Replying()
+    monkeypatch.setattr(generic, "get_bridge", lambda: bridge)
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (lambda fn: fn)
+
+    generic.register_generic_tools(_Mcp())
+    out = asyncio.run(tools["sch_place_harness_wires"](
+        document_path=str(diagram), wires=[{"points": [[0, 0], [100, 0]], "name": "W1"}]))
+    commands = [c for c, _ in bridge.sent]
+    # Placed, then saved, closed and reopened before the read: the ends
+    # link only when the diagram loads.
+    assert commands.index("generic.place_harness_wires") < commands.index(
+        "application.save_document") < commands.index("application.close_document") < commands.index(
+        "generic.get_harness")
+    assert out["connections"] == [{"wire": "W1", "end1": "pin:J1-1", "end2": "splice:SPL1"}]
+
+
+def test_harness_wires_reject_a_non_wiring_document_in_pascal():
+    body = _body("Generic.pas", "Gen_PlaceHarnessWires")
+    assert "HarnessDiagramFor(" in body and "'NOT_A_WIRING_DIAGRAM'" in body
+    assert "SchObjectFactory(eHarnessWire, eCreate_Default)" in body
+    assert "SchObjectFactory(eHarnessSplice, eCreate_Default)" in body
+    assert "If Not ParseVertexList(" in body
+    assert "If Rgb < 0 Then Problem := 'colour is #RRGGBB';" in body
+    # TStringList has no usable Clear here: the point lists are made per wire.
+    assert ".Clear" not in body
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]

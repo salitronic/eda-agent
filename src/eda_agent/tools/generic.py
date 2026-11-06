@@ -1022,10 +1022,11 @@ def register_generic_tools(mcp):
 
         A recompile alone can keep what the sheet no longer holds: a
         deleted net label still naming its net, a changed sub-part still
-        compiled as the old one.
+        compiled as the old one. A harness wiring diagram links its wires
+        to pins and splices only when it loads, so it takes the same step.
 
         Args:
-            file_path: The open .SchDoc.
+            file_path: The open .SchDoc or .WirDoc.
             save: Write it first; ``saved`` is measured on disk. False
                 closes without writing, and a sheet Altium reads as
                 modified is refused untouched; an edit Altium did not flag
@@ -1037,12 +1038,15 @@ def register_generic_tools(mcp):
             and ``reason`` at the first step that did not take, the sheet
             left open when it fails before the close.
         """
+        return await _reload_sheet(file_path, save)
+
+    async def _reload_sheet(file_path: str, save: bool) -> dict[str, Any]:
         import os
         from ..bridge.exceptions import AltiumError
 
         path = file_path.strip()
-        if not path.lower().endswith(".schdoc"):
-            return {"ok": False, "reason": "file_path is a .SchDoc"}
+        if not path.lower().endswith((".schdoc", ".wirdoc")):
+            return {"ok": False, "reason": "file_path is a .SchDoc or .WirDoc"}
         bridge = get_bridge()
         out: dict[str, Any] = {"file_path": path, "saved": False}
         if save:
@@ -3128,6 +3132,79 @@ def register_generic_tools(mcp):
         if document_path.strip():
             params["path"] = document_path.strip()
         return await get_bridge().send_command_async("generic.place_harness_connectors", params)
+
+    @mcp.tool()
+    async def sch_place_harness_wires(
+        document_path: str,
+        wires: Optional[list[dict[str, Any]]] = None,
+        splices: Optional[list[dict[str, Any]]] = None,
+        connect: bool = True,
+    ) -> dict[str, Any]:
+        """Draw harness wires and splices on a harness wiring diagram.
+
+        A wire runs through its points; start and finish it on a pin end
+        (from sch_place_harness_connectors) or on a splice. Altium links a
+        wire's ends to what they touch only when the diagram loads, so with
+        ``connect`` the diagram is saved, closed and reopened afterwards
+        and each wire's ends are read back.
+
+        Args:
+            document_path: The open .WirDoc.
+            wires: [{points [[x, y], ...] (mils, two or more), name ("W1"),
+                colour ("#RRGGBB"), colour_name (the wire colour code,
+                e.g. "RD")}].
+            splices: [{x, y, name ("SPL1")}].
+            connect: Save and reopen the diagram, then read the ends back
+                (default True). False leaves the ends unlinked until the
+                diagram is next opened.
+
+        Returns:
+            ``placed``, ``failed``, ``total``, ``items`` [{kind, name,
+            placed, problem}] and, with ``connect``, ``reload`` and
+            ``connections`` [{wire, end1, end2}], an end reading
+            "pin:J1-1" or "splice:SPL1", empty when it touches nothing.
+        """
+        path = document_path.strip()
+        if not path.lower().endswith(".wirdoc"):
+            return {"ok": False, "reason": "document_path is a .WirDoc"}
+        wire_ops: list[str] = []
+        for w in wires or []:
+            points = w.get("points") or []
+            try:
+                flat = ",".join(f"{float(x):g},{float(y):g}" for x, y in points)
+            except (TypeError, ValueError):
+                return {"ok": False, "reason": "points are [x, y] pairs"}
+            if len(points) < 2:
+                return {"ok": False, "reason": "a wire needs two points or more"}
+            fields = [f"points={flat}"]
+            for key in ("name", "colour", "colour_name"):
+                value = str(w.get(key, "")).strip()
+                if ";" in value or "~~" in value:
+                    return {"ok": False, "reason": f"{key} cannot hold ';' or '~~'"}
+                if value:
+                    fields.append(f"{key}={value}")
+            wire_ops.append(";".join(fields))
+        splice_ops: list[str] = []
+        for s in splices or []:
+            name = str(s.get("name", "")).strip()
+            if ";" in name or "~~" in name:
+                return {"ok": False, "reason": "name cannot hold ';' or '~~'"}
+            splice_ops.append(f"x={float(s.get('x', 0)):g};y={float(s.get('y', 0)):g};name={name}")
+        if not wire_ops and not splice_ops:
+            return {"ok": False, "reason": "give wires or splices"}
+        bridge = get_bridge()
+        out = await bridge.send_command_async("generic.place_harness_wires", {
+            "path": path, "wires": "~~".join(wire_ops), "splices": "~~".join(splice_ops)})
+        if not connect or not isinstance(out, dict) or not out.get("placed"):
+            return out
+        out["reload"] = await _reload_sheet(path, True)
+        if not out["reload"].get("ok"):
+            return out
+        harness = await bridge.send_command_async("generic.get_harness", {"path": path})
+        out["connections"] = [{"wire": w.get("name", ""), "end1": w.get("end1", ""),
+                               "end2": w.get("end2", "")}
+                              for w in (harness or {}).get("wires", [])]
+        return out
 
     @mcp.tool()
     async def sch_get_harness(document_path: str = "", limit: int = 500) -> dict[str, Any]:
