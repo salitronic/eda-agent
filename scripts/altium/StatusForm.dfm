@@ -855,7 +855,7 @@ object StatusForm: TStatusForm
       Width = 234
       Height = 44
       AutoSize = False
-      Caption = 'Building it takes many hours of development and testing. Sponsoring helps add new features and maintain it.'
+      Caption = 'Building it takes many hours of development and testing. Sponsoring helps fund new features and ongoing maintenance.'
       Font.Charset = DEFAULT_CHARSET
       Font.Color = $00D0D0D0
       Font.Height = -11
