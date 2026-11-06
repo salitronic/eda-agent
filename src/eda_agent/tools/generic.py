@@ -414,7 +414,11 @@ def register_generic_tools(mcp):
                 Location is the body-side root);
                 "Designator.Text,Comment.Text,LibReference" for
                 components, and "DisplayMode,DisplayModeCount" (the
-                alternate drawing, settable with obj_modify) and
+                alternate drawing, settable with obj_modify; to switch
+                the drawing a SchLib editor shows, run the process
+                "Sch:ToggleComponentDisplayMode" with "Action=Mode1"),
+                "DisplayModeNames" (each mode's name, ";"-separated from
+                Normal; obj_modify names them, one name per mode) and
                 "FootprintPinMap" (the current footprint model's pin map,
                 "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
                 merges by schematic pin, so a map cannot be cleared).
