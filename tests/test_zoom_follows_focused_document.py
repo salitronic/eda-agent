@@ -31,5 +31,17 @@ def test_focused_kind_is_read_before_the_probe():
 
 def test_every_design_kind_maps_to_its_zoom_process():
     body = _gen_zoom_body()
-    assert "(FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then ZoomProcess := 'Sch:Zoom'" in body
+    assert "If IsSchEditorKind(FocusedKind) Then ZoomProcess := 'Sch:Zoom'" in body
     assert "(FocusedKind = 'PCB') Or (FocusedKind = 'PCBLIB') Then ZoomProcess := 'PCB:Zoom'" in body
+
+
+def test_a_wiring_diagram_zooms_in_the_schematic_editor():
+    src = GENERIC.read_text(encoding="utf-8")
+    start = src.index("Function IsSchEditorKind(")
+    kinds = src[start:src.index("\nFunction ", start + 1)]
+    for kind in ("'SCH'", "'SCHLIB'", "'HARNESSWIRINGDIAGRAM'"):
+        assert kind in kinds
+    # The point zoom asks the same question, so a wiring diagram never falls
+    # through to the board fallback and zooms some other open board.
+    start = src.index("Function Gen_ZoomToXY(")
+    assert "Else If IsSchEditorKind(FocusedKind) Then" in src[start:src.index("\nFunction ", start + 1)]

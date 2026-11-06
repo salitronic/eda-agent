@@ -4649,6 +4649,15 @@ End;
 { Zoom viewport: fit, selection, or region                                   }
 {..............................................................................}
 
+{ The document kinds the schematic editor draws, so Sch:Zoom serves them:  }
+{ sheets, symbol libraries and harness wiring diagrams. A wiring diagram   }
+{ left to the board fallback zoomed whichever board was open instead.      }
+Function IsSchEditorKind(Kind : String) : Boolean;
+Begin
+    Kind := UpperCase(Kind);
+    Result := (Kind = 'SCH') Or (Kind = 'SCHLIB') Or (Kind = 'HARNESSWIRINGDIAGRAM');
+End;
+
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
     Action, FocusedKind, ZoomProcess : String;
@@ -4676,7 +4685,7 @@ Begin
     End;
 
     ZoomProcess := '';
-    If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then ZoomProcess := 'Sch:Zoom'
+    If IsSchEditorKind(FocusedKind) Then ZoomProcess := 'Sch:Zoom'
     Else If (FocusedKind = 'PCB') Or (FocusedKind = 'PCBLIB') Then ZoomProcess := 'PCB:Zoom';
 
     If ZoomProcess <> '' Then
@@ -5482,7 +5491,7 @@ Begin
         PcbLib := PCBServer.GetCurrentPCBLibrary;
         If PcbLib <> Nil Then Board := PcbLib.Board;
     End
-    Else If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then
+    Else If IsSchEditorKind(FocusedKind) Then
         SchDoc := SchServer.GetCurrentSchDocument
     Else
     Begin
