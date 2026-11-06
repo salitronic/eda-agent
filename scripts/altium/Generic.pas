@@ -3193,6 +3193,8 @@ Var
     Param, FoundParam : ISch_GraphicalObject;
     Guard, ThisAddr, LastAddr, SameTries : Integer;
     Pending : Boolean;
+    StuckParam : ISch_Parameter;
+    StuckName : String;
 Begin
     If Comp = Nil Then Exit;
     Guard := 10000;
@@ -3234,7 +3236,18 @@ Begin
             Inc(SameTries);
             If (SameTries > 1) Or (Lib = Nil) Then
             Begin
-                NoteDeleteFault('a parameter stayed on the symbol after it was removed');
+                { Name the one that stayed. MEASURED on AD 25.8.1: a symbol's
+                  Comment is never removed (Altium keeps the symbol's own
+                  comment field); the reply only said a parameter stayed. }
+                StuckName := '';
+                StuckParam := FoundParam;
+                Try StuckName := StuckParam.Name; Except StuckName := ''; End;
+                If SameText(StuckName, 'Comment') Then
+                    NoteDeleteFault('the parameter "Comment" stayed on the symbol: Altium '
+                        + 'keeps a symbol''s own Comment; clear its text or hide it instead')
+                Else
+                    NoteDeleteFault('the parameter "' + StuckName
+                        + '" stayed on the symbol after it was removed');
                 Break;
             End;
             Try Lib.RemoveSchObject(FoundParam); Except { the next pass finds it again and reports the fault } End;
