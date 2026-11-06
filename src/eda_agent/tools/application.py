@@ -1378,9 +1378,12 @@ def register_application_tools(mcp):
             # bring the board forward because no editor had loaded it.
             if "not loaded" not in str(exc).lower() or not os.path.isfile(file_path):
                 raise
+            # file_path names the document the open acts on, so ownership
+            # judges that one and not whichever document is in front.
             await bridge.send_command_async("application.run_process", {
                 "process_name": "WorkspaceManager:OpenObject",
-                "parameters": f"ObjectKind=Document|FileName={file_path}"})
+                "parameters": f"ObjectKind=Document|FileName={file_path}",
+                "file_path": file_path})
             opened = True
             result = await bridge.send_command_async(
                 "application.set_active_document", {"file_path": file_path}

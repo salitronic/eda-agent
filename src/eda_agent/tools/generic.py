@@ -606,7 +606,7 @@ def register_generic_tools(mcp):
                 ClipAcuteCorners, MitreCorners, IgnoreViolations and
                 ArcPourMode on a pour; EnablePinSwapping and
                 EnablePartSwapping on a part (IsBGA reads); also on a
-                part LockStrings, PrimitiveLock (its own primitives),
+                part LockStrings, PrimitiveLock,
                 NameAutoPosition and CommentAutoPosition
                 (Altium's anchor numbers), FootprintDescription, DefaultPCB3DModel
                 (PackageSpecificHash reads), SourceDescription,
@@ -624,9 +624,8 @@ def register_generic_tools(mcp):
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
                 TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
-                ConvertedString (reads: the text as shown, special
-                strings resolved) and UnderlyingString (reads: the text
-                as typed, a special string kept as the link); on a 3D body OverrideColor (draw its
+                ConvertedString (reads: the text as shown) and
+                UnderlyingString (reads: the text as typed); on a 3D body OverrideColor (draw its
                 own colour, not the model's), Texture (an image file) and
                 TextureRotation; on a board pad DrillType (how the hole
                 is made: 0 drilled, 1 punched, 2 laser, 3 plasma) and
