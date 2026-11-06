@@ -16,9 +16,14 @@ Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around th
 
 ## Support the project
 
-Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, a donation helps keep the progress going.
+Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, sponsorship keeps it free and maintained. Questions and bug reports get an answer whether you sponsor or not.
 
-<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="45"></a>
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/salitronic)
+<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
+
+### Sponsors
+
+Professional and Company sponsors appear here with their logo, and Backer and Big thanks sponsors by name. Be the first: [github.com/sponsors/salitronic](https://github.com/sponsors/salitronic).
 
 ## Dashboard
 
