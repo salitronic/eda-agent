@@ -139,7 +139,7 @@ def test_a_schlib_query_walks_the_symbol_on_screen_first():
 def test_a_schlib_parameter_delete_prefers_the_symbol_on_screen():
     body = _decommented(_src("Generic.pas"))
     start = body.index("Procedure DeleteParametersAnyOwner(")
-    part = body[start:body.index("RemoveMatchingParamsFromComponent(Comp, ReducedFilter", start)]
+    part = body[start:body.index("RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter", start)]
     assert part.index("SchDoc.CurrentSchComponent") < part.index("LastCreatedLibComponent")
 
 
