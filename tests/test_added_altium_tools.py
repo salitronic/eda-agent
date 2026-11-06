@@ -443,6 +443,41 @@ def test_object_outline_refuses_before_altium_and_reports_each_failure():
     assert "Inc(Failed)" in body and "'truncated'" in body
 
 
+def test_harness_read_sends_and_refuses(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_get_harness", document_path="C:/h/W.WirDoc")
+    assert sent == [("generic.get_harness", {"limit": "500", "path": "C:/h/W.WirDoc"})]
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch, "sch_get_harness")
+    assert sent == [("generic.get_harness", {"limit": "500"})]
+    result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                         "sch_get_harness", limit=0)
+    assert sent == [] and result["ok"] is False
+
+
+def test_harness_names_come_from_descriptions():
+    body = _body("Generic.pas", "HarnessNameFromDescription")
+    # "Harness Pin P1-1 (1) Passive" is P1-1; "Harness Shield (x,y)(x,y)"
+    # gives no name, and the reader numbers it instead.
+    assert "If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;" in body
+    assert "(Copy(Desc, 1, 1) = '(')" in body
+    reader = _body("Generic.pas", "Gen_GetHarness")
+    assert "Name := Kind + IntToStr(Unnamed);" in reader
+    # Each end and grouping is resolved through the id map, and an id the
+    # map does not hold says so instead of passing for a name.
+    assert "HarnessRef(Names, Obj.GetState_EndVertex1ConnectedObjectUniqueId)" in reader
+    assert "HarnessRef(Names, Obj.GetState_EndVertex2ConnectedObjectUniqueId)" in reader
+    assert "'unknown:' + Uid" in _body("Generic.pas", "HarnessRef")
+    for kind in ("splice", "label", "shield", "twist", "cable"):
+        assert f"HarnessRefList(Names, Obj, '{kind}')" in reader
+
+
+def test_harness_colour_hex_swaps_altium_byte_order():
+    body = _body("Generic.pas", "HarnessColourHex")
+    # Altium keeps red in the low byte: 255 is #FF0000.
+    assert body.index("C Mod 256") < body.index("(C Div 256) Mod 256") < body.index(
+        "(C Div 65536) Mod 256")
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]

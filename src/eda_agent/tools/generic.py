@@ -3085,6 +3085,38 @@ def register_generic_tools(mcp):
         return await get_bridge().send_command_async("generic.place_compile_mask", args)
 
     @mcp.tool()
+    async def sch_get_harness(document_path: str = "", limit: int = 500) -> dict[str, Any]:
+        """Read a harness wiring diagram (.WirDoc): every wire and what it joins.
+
+        Lists the harness objects by kind and name (components, pins such
+        as "P1-1", splices, cables, twists, shields, wire labels,
+        no-connects) and each wire with its points, its colours, what its
+        two ends meet and the splices, labels, shields, twists and cables
+        it belongs to. Objects Altium names only by position (twists,
+        shields) get one running number in document order: "shield1",
+        "twist2".
+
+        Args:
+            document_path: The open .WirDoc. Empty reads the document in
+                front.
+            limit: The most wires to list (default 500).
+
+        Returns:
+            ``document``, ``wire_count``, ``wires_listed``, ``truncated``,
+            ``objects`` [{kind, name}] and ``wires`` [{name, points (mils),
+            colours (primary, secondary, tertiary, border names and the
+            same as #RRGGBB), end1, end2 ("pin:P1-1", "splice:SPL1",
+            "no_connect:Nc1", empty when unconnected), splices, labels,
+            shields, twists, cables}].
+        """
+        if limit < 1:
+            return {"ok": False, "reason": "limit is 1 or more"}
+        params = {"limit": str(int(limit))}
+        if document_path.strip():
+            params["path"] = document_path.strip()
+        return await get_bridge().send_command_async("generic.get_harness", params)
+
+    @mcp.tool()
     async def sch_get_blankets() -> dict[str, Any]:
         """List the blankets on the active schematic sheet.
 

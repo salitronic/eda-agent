@@ -6868,6 +6868,230 @@ End;
 { Params: x1,y1,x2,y2 in mils                                                 }
 {..............................................................................}
 
+{..............................................................................}
+{ Harness wiring diagrams. Each harness object names itself in its           }
+{ description ("Harness Wire W1", "Harness Pin P1-1 (1) Passive", "Harness   }
+{ Shield (x,y)(x,y)"); a wire names what its ends and groupings touch only   }
+{ by unique id, so the reader maps every id to a kind and a name first.      }
+{..............................................................................}
+Function HarnessKindName(Id : Integer) : String;
+Begin
+    Result := '';
+    If Id = eHarnessWire Then Result := 'wire'
+    Else If Id = eHarnessPin Then Result := 'pin'
+    Else If Id = eHarnessComponent Then Result := 'component'
+    Else If Id = eHarnessGenericComponent Then Result := 'generic_component'
+    Else If Id = eHarnessSplice Then Result := 'splice'
+    Else If Id = eHarnessCable Then Result := 'cable'
+    Else If Id = eHarnessTwist Then Result := 'twist'
+    Else If Id = eHarnessShield Then Result := 'shield'
+    Else If Id = eHarnessWireLabel Then Result := 'wire_label'
+    Else If Id = eHarnessNoConnect Then Result := 'no_connect'
+    Else If Id = eHarnessCavity Then Result := 'cavity'
+    Else If Id = eHarnessWireBreak Then Result := 'wire_break'
+    Else If Id = eHarnessCovering Then Result := 'covering'
+    Else If Id = eHarnessBundle Then Result := 'bundle';
+End;
+
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
+Function HarnessNameFromDescription(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
+{ An Altium colour (blue in the high byte) as #RRGGBB. }
+Function HarnessColourHex(C : Integer) : String;
+Begin
+    Result := '#' + IntToHex(C Mod 256, 2) + IntToHex((C Div 256) Mod 256, 2)
+        + IntToHex((C Div 65536) Mod 256, 2);
+End;
+
+{ "kind:name" for a unique id, from the map built over the document. }
+Function HarnessRef(Names : TStringList; Uid : String) : String;
+Begin
+    Result := '';
+    If Uid = '' Then Exit;
+    Result := Names.Values[Uid];
+    If Result = '' Then Result := 'unknown:' + Uid;
+End;
+
+{ The objects of one grouping kind a harness wire belongs to, as a JSON list. }
+Function HarnessRefList(Names : TStringList; Wire : ISch_GraphicalObject; Kind : String) : String;
+Var
+    I, Count : Integer;
+    Uid : String;
+Begin
+    Result := '';
+    Count := 0;
+    Try
+        If Kind = 'splice' Then Count := Wire.GetState_ConnectedInlineSplicesUniqueIdsCount
+        Else If Kind = 'label' Then Count := Wire.GetState_ConnectedWireLabelsUniqueIdsCount
+        Else If Kind = 'shield' Then Count := Wire.GetState_ConnectedShieldsUniqueIdsCount
+        Else If Kind = 'twist' Then Count := Wire.GetState_ConnectedTwistsUniqueIdsCount
+        Else If Kind = 'cable' Then Count := Wire.GetState_ConnectedCablesUniqueIdsCount;
+    Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Uid := '';
+        Try
+            If Kind = 'splice' Then Uid := Wire.GetState_ConnectedInlineSpliceUniqueId(I)
+            Else If Kind = 'label' Then Uid := Wire.GetState_ConnectedWireLabelUniqueId(I)
+            Else If Kind = 'shield' Then Uid := Wire.GetState_ConnectedShieldUniqueId(I)
+            Else If Kind = 'twist' Then Uid := Wire.GetState_ConnectedTwistUniqueId(I)
+            Else If Kind = 'cable' Then Uid := Wire.GetState_ConnectedCableUniqueId(I);
+        Except Uid := ''; End;
+        If Uid = '' Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(HarnessRef(Names, Uid)) + '"';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+{..............................................................................}
+{ Gen_GetHarness - the harness of a wiring diagram: its components, pins,    }
+{ splices, cables, twists, shields and no-connects by name, and each wire    }
+{ with its points, colours, what its two ends meet and the splices, labels,  }
+{ shields, twists and cables it belongs to. Params: path (optional; default  }
+{ the document in front), limit (wires, default 500).                         }
+{..............................................................................}
+Function Gen_GetHarness(Params : String; RequestId : String) : String;
+Var
+    Doc : ISch_Document;
+    It : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Path, Kind, Name, Uid, Desc, Groups, Wires, Pts, Colours, End1, End2 : String;
+    Names : TStringList;
+    I, N, Limit, Listed, WireCount, Unnamed : Integer;
+Begin
+    Path := Trim(ExtractJsonValue(Params, 'path'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    If Limit < 1 Then Limit := 500;
+    Doc := Nil;
+    If Path <> '' Then
+    Begin
+        Try Doc := SchServer.GetSchDocumentByPath(Path); Except Doc := Nil; End;
+    End
+    Else
+    Begin
+        Try Doc := SchServer.GetCurrentSchDocument; Except Doc := Nil; End;
+    End;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No open wiring diagram or schematic ' + Path);
+        Exit;
+    End;
+
+    { Pass 1: every harness object's unique id to kind:name, and the list. }
+    Names := TStringList.Create;
+    Groups := '';
+    Unnamed := 0;
+    WireCount := 0;
+    It := Doc.SchIterator_Create;
+    Try
+        Obj := It.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Kind := HarnessKindName(Obj.ObjectId);
+            If Kind <> '' Then
+            Begin
+                Desc := '';
+                Try Desc := Obj.GetState_DescriptionString; Except End;
+                Name := HarnessNameFromDescription(Desc);
+                If Name = '' Then
+                Begin
+                    Inc(Unnamed);
+                    Name := Kind + IntToStr(Unnamed);
+                End;
+                Uid := '';
+                Try Uid := Obj.UniqueId; Except End;
+                If Uid <> '' Then Names.Add(Uid + '=' + Kind + ':' + Name);
+                If Kind = 'wire' Then Inc(WireCount)
+                Else
+                Begin
+                    If Groups <> '' Then Groups := Groups + ',';
+                    Groups := Groups + JsonObj(JsonStr('kind', Kind) + ',' + JsonStr('name', Name));
+                End;
+            End;
+            Obj := It.NextSchObject;
+        End;
+    Finally
+        Doc.SchIterator_Destroy(It);
+    End;
+
+    { Pass 2: the wires. }
+    Wires := '';
+    Listed := 0;
+    It := Doc.SchIterator_Create;
+    Try
+        It.AddFilter_ObjectSet(MkSet(eHarnessWire));
+        Obj := It.FirstSchObject;
+        While (Obj <> Nil) And (Listed < Limit) Do
+        Begin
+            Desc := '';
+            Try Desc := Obj.GetState_DescriptionString; Except End;
+            Pts := '';
+            N := 0;
+            Try N := Obj.VerticesCount; Except N := 0; End;
+            For I := 1 To N Do
+            Begin
+                If Pts <> '' Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(I).X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(I).Y)) + ']';
+            End;
+            Colours := JsonStr('primary', '');
+            Try Colours := JsonStr('primary', Obj.GetState_PrimaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('secondary', Obj.GetState_SecondaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('tertiary', Obj.GetState_TertiaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('border', Obj.GetState_BorderColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('primary_rgb', HarnessColourHex(Obj.Color)); Except End;
+            Try Colours := Colours + ',' + JsonStr('secondary_rgb', HarnessColourHex(Obj.GetState_SecondaryColor)); Except End;
+            Try Colours := Colours + ',' + JsonStr('tertiary_rgb', HarnessColourHex(Obj.GetState_TertiaryColor)); Except End;
+            Try Colours := Colours + ',' + JsonStr('border_rgb', HarnessColourHex(Obj.GetState_BorderColor)); Except End;
+            End1 := '';
+            End2 := '';
+            Try End1 := HarnessRef(Names, Obj.GetState_EndVertex1ConnectedObjectUniqueId); Except End;
+            Try End2 := HarnessRef(Names, Obj.GetState_EndVertex2ConnectedObjectUniqueId); Except End;
+            If Wires <> '' Then Wires := Wires + ',';
+            Wires := Wires + JsonObj(
+                JsonStr('name', HarnessNameFromDescription(Desc)) + ','
+                + JsonRaw('points', '[' + Pts + ']') + ','
+                + JsonRaw('colours', JsonObj(Colours)) + ','
+                + JsonStr('end1', End1) + ','
+                + JsonStr('end2', End2) + ','
+                + JsonRaw('splices', HarnessRefList(Names, Obj, 'splice')) + ','
+                + JsonRaw('labels', HarnessRefList(Names, Obj, 'label')) + ','
+                + JsonRaw('shields', HarnessRefList(Names, Obj, 'shield')) + ','
+                + JsonRaw('twists', HarnessRefList(Names, Obj, 'twist')) + ','
+                + JsonRaw('cables', HarnessRefList(Names, Obj, 'cable')));
+            Inc(Listed);
+            Obj := It.NextSchObject;
+        End;
+    Finally
+        Doc.SchIterator_Destroy(It);
+    End;
+    Names.Free;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Doc.DocumentName) + ','
+        + JsonInt('wire_count', WireCount) + ','
+        + JsonInt('wires_listed', Listed) + ','
+        + JsonBool('truncated', Listed < WireCount) + ','
+        + JsonRaw('objects', '[' + Groups + ']') + ','
+        + JsonRaw('wires', '[' + Wires + ']')));
+End;
+
 Function Gen_PlaceBusEntry(Params : String; RequestId : String) : String;
 Var
     X1, Y1, X2, Y2 : Double;
@@ -16976,6 +17200,7 @@ Begin
         'place_sheet_symbol': Result := Gen_PlaceSheetSymbol(Params, RequestId);
         'place_sheet_entry': Result := Gen_PlaceSheetEntry(Params, RequestId);
         'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
+        'get_harness':       Result := Gen_GetHarness(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
