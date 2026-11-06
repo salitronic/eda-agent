@@ -55,7 +55,7 @@ object StatusForm: TStatusForm
     object lbl_Status: TLabel
       Left = 38
       Top = 5
-      Width = 250
+      Width = 226
       Height = 16
       AutoSize = False
       EllipsisPosition = epEndEllipsis
@@ -66,6 +66,27 @@ object StatusForm: TStatusForm
       Font.Name = 'Segoe UI Semibold'
       Font.Style = []
       ParentFont = False
+    end
+    object btn_Update: TPanel
+      Left = 266
+      Top = 4
+      Width = 22
+      Height = 18
+      BevelOuter = bvNone
+      Caption = #59542
+      Color = $00404040
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00589EE0
+      Font.Height = -12
+      Font.Name = 'Segoe MDL2 Assets'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 1
+      Visible = False
+      OnClick = btn_UpdateClick
+      OnMouseEnter = btn_UpdateEnter
+      OnMouseLeave = btn_UpdateLeave
     end
     object lbl_Version: TLabel
       Left = 288
@@ -689,7 +710,7 @@ object StatusForm: TStatusForm
     object lbl_LogHint: TLabel
       Left = 194
       Top = 6
-      Width = 142
+      Width = 118
       Height = 14
       Alignment = taRightJustify
       AutoSize = False
@@ -700,6 +721,26 @@ object StatusForm: TStatusForm
       Font.Name = 'Segoe UI'
       Font.Style = []
       ParentFont = False
+    end
+    object btn_SponsorHeart: TPanel
+      Left = 318
+      Top = 3
+      Width = 22
+      Height = 18
+      BevelOuter = bvNone
+      Caption = #57355
+      Color = $00404040
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00AA4AEA
+      Font.Height = -11
+      Font.Name = 'Segoe MDL2 Assets'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 4
+      OnClick = btn_SponsorClick
+      OnMouseEnter = btn_SponsorHeartEnter
+      OnMouseLeave = btn_SponsorHeartLeave
     end
     object btn_CopyLog: TPanel
       Left = 344
@@ -757,6 +798,113 @@ object StatusForm: TStatusForm
     ScrollBars = ssVertical
     TabOrder = 1
     Visible = False
+  end
+  object pnl_Sponsor: TPanel
+    Left = 0
+    Top = 508
+    Width = 380
+    Height = 68
+    Align = alBottom
+    BevelOuter = bvNone
+    Color = $00342834
+    TabOrder = 5
+    Visible = False
+    object pnl_SponsorEdge: TPanel
+      Left = 0
+      Top = 0
+      Width = 3
+      Height = 68
+      Align = alLeft
+      BevelOuter = bvNone
+      Color = $00AA4AEA
+      TabOrder = 0
+    end
+    object ico_Sponsor: TLabel
+      Left = 13
+      Top = 23
+      Width = 22
+      Height = 22
+      AutoSize = False
+      Caption = #57355
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00AA4AEA
+      Font.Height = -18
+      Font.Name = 'Segoe MDL2 Assets'
+      Font.Style = []
+      ParentFont = False
+      Transparent = True
+    end
+    object lbl_SponsorTitle: TLabel
+      Left = 42
+      Top = 6
+      Width = 234
+      Height = 16
+      AutoSize = False
+      Caption = 'Find eda-agent useful?'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00E5E5E5
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+      Transparent = True
+    end
+    object lbl_Sponsor: TLabel
+      Left = 42
+      Top = 22
+      Width = 234
+      Height = 44
+      AutoSize = False
+      Caption = 'Building it takes many hours of development and testing. Sponsoring helps add new features and maintain it.'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00D0D0D0
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      Transparent = True
+      WordWrap = True
+    end
+    object btn_Sponsor: TPanel
+      Left = 282
+      Top = 23
+      Width = 66
+      Height = 22
+      BevelOuter = bvNone
+      Caption = 'Sponsor'
+      Color = $006E3A8A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00FFFFFF
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+      TabOrder = 1
+      OnClick = btn_SponsorClick
+      OnMouseEnter = btn_SponsorEnter
+      OnMouseLeave = btn_SponsorLeave
+    end
+    object btn_SponsorClose: TPanel
+      Left = 356
+      Top = 3
+      Width = 20
+      Height = 18
+      BevelOuter = bvNone
+      Caption = #59153
+      Color = $00342834
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00808080
+      Font.Height = -8
+      Font.Name = 'Segoe MDL2 Assets'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 2
+      OnClick = btn_SponsorCloseClick
+      OnMouseEnter = btn_SponsorCloseEnter
+      OnMouseLeave = btn_SponsorCloseLeave
+    end
   end
   object pnl_Config: TPanel
     Left = 0

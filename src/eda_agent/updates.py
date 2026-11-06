@@ -140,7 +140,26 @@ def check(force: bool = False, root: Optional[Path] = None) -> dict[str, Any]:
     with _lock:
         info = _check_package(force) if root is None else _check_clone(force, root)
         _failure = info.get("error") if info.get("update_available") is None else None
-        return info
+    _sync_flag()
+    return info
+
+
+UPDATE_FLAG = "update_available.flag"
+
+
+def _sync_flag() -> None:
+    """Leave update_available.flag in the workspace while an update is
+    out and remove it once this copy is current. The status window in
+    Altium shows its update icon while the file exists."""
+    try:
+        path = _cache_path().with_name(UPDATE_FLAG)
+        news = notice()
+        if news:
+            path.write_text(news.get("next_step", ""), encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    except Exception:  # noqa: BLE001  the flag never disturbs the server
+        pass
 
 
 def _check_clone(force: bool, root: Path) -> dict[str, Any]:
@@ -498,6 +517,7 @@ def apply(relaunch: bool = True, root: Optional[Path] = None) -> dict[str, Any]:
                                    "--restart"], root, _STEP_TIMEOUT_S)})
     _write_cache({**info, "head": new, "behind": 0, "update_available": False,
                   "new_commits": [], "checked_at": time.time()})
+    _sync_flag()
     failed = [s["step"] for s in steps if not s["ok"]]
     out: dict[str, Any] = {
         "updated": True, "from": old[:7], "to": new[:7],
