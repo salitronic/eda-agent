@@ -840,7 +840,7 @@ object StatusForm: TStatusForm
       Width = 234
       Height = 16
       AutoSize = False
-      Caption = 'Find eda-agent useful?'
+      Caption = 'Finding eda-agent useful?'
       Font.Charset = DEFAULT_CHARSET
       Font.Color = $00E5E5E5
       Font.Height = -11
