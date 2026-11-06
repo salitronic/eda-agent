@@ -40,6 +40,8 @@ _NO_HINT_NEEDED = {
     "WRONG_RULE_KIND": "the rule was found on the right board; the message names "
                        "its kind and the kind the setting is for",
     "NO_DOCUMENT": "nothing is open at all, so there is no sibling",
+    "NOT_A_WIRING_DIAGRAM": "the message names the document found and says a "
+                            ".WirDoc is needed; no other open document is one",
     "NO_LIBRARY": "the message already says to supply library_path",
     "NO_SCH_SERVER": "an infrastructure failure, not a document mix-up",
     "USE_DEDICATED_TOOL": "the message already names the tool to call",

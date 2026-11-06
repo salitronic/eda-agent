@@ -97,6 +97,11 @@ Begin
     Else If N = 'note'            Then Result := eNote
     Else If N = 'probe'           Then Result := eProbe
     Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    { The objects of a harness wiring diagram. }
+    Else If N = 'harnesscomponent' Then Result := eHarnessComponent
+    Else If N = 'harnesspin'      Then Result := eHarnessPin
+    Else If N = 'harnesswire'     Then Result := eHarnessWire
+    Else If N = 'harnesssplice'   Then Result := eHarnessSplice
     Else If N = 'crosssheetconnector' Then Result := eCrossSheetConnector
     Else If N = 'compilemask'     Then Result := eCompileMask
     { A blanket is a polygon that carries its directive to every net it
@@ -129,7 +134,8 @@ Begin
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
-            + 'eDesignator, eRoundRectangle';
+            + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
+            + 'eHarnessWire, eHarnessSplice';
 End;
 
 { True for the objects that carry a vertex array (GetState_VerticesCount,   }
@@ -7193,7 +7199,7 @@ Begin
         If Op = '' Then Break;
         Inc(Total);
         LibRef := GetBatchField(Op, 'lib_reference');
-        LibPath := GetBatchField(Op, 'library_path');
+        LibPath := SafeSchLibPath(GetBatchField(Op, 'library_path'));
         Desig := GetBatchField(Op, 'designator');
         X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
         Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
@@ -7201,8 +7207,11 @@ Begin
         Problem := '';
         Pins := '';
         Src := Nil;
-        Try Src := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except Src := Nil; End;
-        If Src = Nil Then
+        If LibPath <> '' Then
+        Begin
+            Try Src := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except Src := Nil; End;
+        End;
+        If (Src = Nil) And (LibPath <> '') Then
         Begin
             { A library on disk but not open answers Nil; open it and retry, }
             { then put the diagram back in front.                            }
@@ -7216,7 +7225,8 @@ Begin
             Except End;
         End;
         Comp := Nil;
-        If Src = Nil Then Problem := 'no part ' + LibRef + ' in ' + LibPath
+        If LibPath = '' Then Problem := 'library_path is not a .SchLib'
+        Else If Src = Nil Then Problem := 'no part ' + LibRef + ' in ' + LibPath
         Else
         Begin
             Try Comp := SchServer.SchObjectFactory(eHarnessComponent, eCreate_Default); Except Comp := Nil; End;
@@ -7224,14 +7234,14 @@ Begin
         End;
         If Comp <> Nil Then
         Begin
-            Try Comp.Location := Src.Location; Except End;
-            Try Comp.LibReference := Src.LibReference; Except End;
-            Try Comp.SourceLibraryName := Src.SourceLibraryName; Except End;
-            Try Comp.ComponentDescription := Src.ComponentDescription; Except End;
-            Try Comp.Designator.Text := Desig; Except End;
-            Try Comp.Designator.Location := Src.Designator.Location; Except End;
-            Try Comp.Comment.Text := Src.Comment.Text; Except End;
-            Try Comp.Comment.Location := Src.Comment.Location; Except End;
+            Try Comp.Location := Src.Location; Except NoteWriteFailed('HarnessComponent.Location'); End;
+            Try Comp.LibReference := Src.LibReference; Except NoteWriteFailed('HarnessComponent.LibReference'); End;
+            Try Comp.SourceLibraryName := Src.SourceLibraryName; Except NoteWriteFailed('HarnessComponent.SourceLibraryName'); End;
+            Try Comp.ComponentDescription := Src.ComponentDescription; Except NoteWriteFailed('HarnessComponent.ComponentDescription'); End;
+            Try Comp.Designator.Text := Desig; Except NoteWriteFailed('HarnessComponent.Designator'); End;
+            Try Comp.Designator.Location := Src.Designator.Location; Except NoteWriteFailed('HarnessComponent.Designator.Location'); End;
+            Try Comp.Comment.Text := Src.Comment.Text; Except NoteWriteFailed('HarnessComponent.Comment'); End;
+            Try Comp.Comment.Location := Src.Comment.Location; Except NoteWriteFailed('HarnessComponent.Comment.Location'); End;
             NPins := 0;
             It := Src.SchIterator_Create;
             Try
@@ -7264,7 +7274,7 @@ Begin
                         Try Dup := Child.Replicate; Except Dup := Nil; End;
                         If Dup <> Nil Then
                         Begin
-                            Try Comp.AddSchObject(Dup); Except End;
+                            Try Comp.AddSchObject(Dup); Except NoteWriteFailed('HarnessComponent graphic'); End;
                         End;
                     End;
                     Child := It.NextSchObject;
@@ -7291,8 +7301,8 @@ Begin
                     If Pins <> '' Then Pins := Pins + ',';
                     Pins := Pins + JsonObj(JsonStr('pin', Child.Designator) + ','
                         + JsonStr('name', Child.Name) + ','
-                        + JsonInt('x', PinEndX(CoordToMils(Child.Location.X), Child.Orientation, CoordToMils(Child.PinLength))) + ','
-                        + JsonInt('y', PinEndY(CoordToMils(Child.Location.Y), Child.Orientation, CoordToMils(Child.PinLength))));
+                        + JsonFloat('x', CoordToMilsF(PinEndX(Child.Location.X, Child.Orientation, Child.PinLength))) + ','
+                        + JsonFloat('y', CoordToMilsF(PinEndY(Child.Location.Y, Child.Orientation, Child.PinLength))));
                     Child := It.NextSchObject;
                 End;
             Finally
@@ -7309,7 +7319,7 @@ Begin
             + JsonRaw('pin_ends', '[' + Pins + ']'));
     End;
     Try SchDoc.GraphicallyInvalidate; Except End;
-    MarkDocDirtyByPath(SchDoc.DocumentName);
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonInt('placed', Placed) + ','
         + JsonInt('failed', Failed) + ','
@@ -7425,7 +7435,7 @@ Begin
         SchEndEdit(SchDoc, 'Edit');
     End;
     Try SchDoc.GraphicallyInvalidate; Except End;
-    MarkDocDirtyByPath(SchDoc.DocumentName);
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('document', SchDoc.DocumentName) + ','
         + JsonInt('placed', Placed) + ','
