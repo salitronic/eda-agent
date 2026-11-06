@@ -1200,7 +1200,8 @@ def register_application_tools(mcp):
 
         Args:
             kind: Document kind, 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
-                'OUTPUTJOB', or any other kind Altium's server module
+                'OUTPUTJOB', 'HarnessWiringDiagram' (a .WirDoc in a
+                .PrjHar), or any other kind Altium's server module
                 registers under.
             file_path: Absolute path where the new document should live.
                 Use Windows backslashes.

@@ -281,12 +281,16 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new Altium project.
 
+        The file's extension decides what Altium opens it as: .PrjPcb for a
+        PCB project, .PrjHar for a harness project (then add a wiring
+        diagram with app_create_document kind "HarnessWiringDiagram" and a
+        .WirDoc path).
+
         Args:
-            project_path: Full path for the new project file (.PrjPcb, .PrjLib, etc.)
-            project_type: Type of project to create:
-                - "PCB": PCB project (.PrjPcb)
-                - "IntegratedLibrary": Integrated library project
-                - "ScriptProject": Script project
+            project_path: Full path for the new project file (.PrjPcb
+                or .PrjHar)
+            project_type: "PCB" writes a PCB project's default settings;
+                any other value writes a bare project file.
 
         Returns:
             Dictionary with created project information
