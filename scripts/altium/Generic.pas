@@ -3286,7 +3286,7 @@ Begin
         If ReducedFilter = '' Then Exit;
         Comp := Nil;
         Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
-        If Comp = Nil Then Comp := LastCreatedLibComponent;
+        If Comp = Nil Then Comp := RememberedLibComponent(SchDoc);
         RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter, TotalMatched);
         Exit;
     End;
@@ -3621,9 +3621,15 @@ Begin
     ScopeComp := Nil;
     If IsLibDoc And (LibScopeName <> '') Then
     Begin
+        { A remembered symbol of a closed library is freed: reading its   }
+        { LibReference raises an error box no Try catches. Only the one   }
+        { remembered for THIS document is read.                           }
         ObjRef := '';
-        Try ObjRef := LastCreatedLibComponent.LibReference; Except End;
-        If ObjRef = LibScopeName Then ScopeComp := LastCreatedLibComponent;
+        If RememberedLibComponent(SchDoc) <> Nil Then
+        Begin
+            Try ObjRef := LastCreatedLibComponent.LibReference; Except End;
+        End;
+        If ObjRef = LibScopeName Then ScopeComp := RememberedLibComponent(SchDoc);
     End;
     ParamsOfSymbol := False;
     LibComp := Nil;
@@ -3637,7 +3643,7 @@ Begin
             Begin
                 Try LibComp := SchDoc.CurrentSchComponent; Except End;
             End;
-            If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+            If LibComp = Nil Then LibComp := RememberedLibComponent(SchDoc);
             If LibComp = Nil Then ParamsOfSymbol := False;
         End;
     End;
@@ -16234,7 +16240,7 @@ Begin
           created earlier that is no longer the one on screen. }
         LibComp := Nil;
         Try LibComp := SchDoc.CurrentSchComponent; Except LibComp := Nil; End;
-        If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+        If LibComp = Nil Then LibComp := RememberedLibComponent(SchDoc);
         If LibComp = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',

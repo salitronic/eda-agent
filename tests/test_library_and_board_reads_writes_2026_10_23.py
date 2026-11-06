@@ -130,7 +130,7 @@ def test_a_schlib_query_walks_the_symbol_on_screen_first():
     body = _fn("Generic.pas", "ProcessSchDocObjects")
     pick = body.index("ParamsOfSymbol := False;")
     current = body.index("LibComp := SchDoc.CurrentSchComponent", pick)
-    fallback = body.index("LibComp := LastCreatedLibComponent", pick)
+    fallback = body.index("LibComp := RememberedLibComponent(SchDoc)", pick)
     assert current < fallback
     assert "(ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator)" in body
     assert '"_symbol":"' in body
@@ -140,7 +140,7 @@ def test_a_schlib_parameter_delete_prefers_the_symbol_on_screen():
     body = _decommented(_src("Generic.pas"))
     start = body.index("Procedure DeleteParametersAnyOwner(")
     part = body[start:body.index("RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter", start)]
-    assert part.index("SchDoc.CurrentSchComponent") < part.index("LastCreatedLibComponent")
+    assert part.index("SchDoc.CurrentSchComponent") < part.index("RememberedLibComponent(SchDoc)")
 
 
 # -- #108: vias in one call -----------------------------------------------------

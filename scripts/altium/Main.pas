@@ -278,6 +278,14 @@ Var
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
 
+    { The LIBRARY DOCUMENT that reference belongs to, by its object address,
+      read off the live document when the symbol is remembered. The symbol
+      is used again only while the current library is that same document
+      object. A library closed by the user or by another command (and maybe
+      reopened from the same path) is a new object, and its old symbols are
+      freed. Comparing this number never touches the remembered symbol. }
+    LastCreatedLibDocAddr : Integer;
+
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
 { dispatcher startup before LoadMCPConfig so a missing/corrupt config file    }
@@ -541,6 +549,42 @@ Procedure SchEndModify(Obj : ISch_BasicContainer);
 Begin
     If (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+End;
+
+{ REMEMBERED LIBRARY SYMBOL. LastCreatedLibComponent is held across commands }
+{ (it is how a symbol made this session is found again before the library    }
+{ can see it), but nothing cleared it when its library was closed outside   }
+{ RefreshSchLibFromDisk. MEASURED on AD 25.8.1: after lib_component scopes   }
+{ on a library that was then closed and reopened, add_symbol_rectangle      }
+{ answered shown=false and the rectangle landed in no part of the symbol on  }
+{ screen, in memory or after save + reopen: it went into a freed component.  }
+{ So the symbol is remembered with its document, and handed out only while  }
+{ that document is the current one.                                          }
+Function LibDocAddress(Doc : ISch_Document) : Integer;
+Begin
+    Result := 0;
+    If Doc = Nil Then Exit;
+    Try Result := Doc.I_ObjectAddress; Except Result := 0; End;
+End;
+
+Procedure RememberLibComponent(Doc : ISch_Document; Comp : ISch_Component; Name : String);
+Begin
+    LastCreatedLibComponent := Comp;
+    LastCreatedLibComponentName := Name;
+    LastCreatedLibDocAddr := LibDocAddress(Doc);
+End;
+
+{ The remembered symbol when Doc is the library it came from, else Nil. }
+Function RememberedLibComponent(Doc : ISch_Document) : ISch_Component;
+Var
+    Addr : Integer;
+Begin
+    Result := Nil;
+    If LastCreatedLibComponent = Nil Then Exit;
+    If LastCreatedLibDocAddr = 0 Then Exit;
+    Addr := LibDocAddress(Doc);
+    If (Addr = 0) Or (Addr <> LastCreatedLibDocAddr) Then Exit;
+    Result := LastCreatedLibComponent;
 End;
 
 Procedure SchRegisterObject(Container, Obj : ISch_BasicContainer);
