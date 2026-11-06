@@ -3783,6 +3783,11 @@ End;
 { small Y tolerance so a grid of pads numbers row-by-row rather than           }
 { interleaving slightly-misaligned pads.                                       }
 {                                                                              }
+{ A pad is placed by its COPPER centre, not its origin: a custom pad's copper  }
+{ need not be centred on its origin (issue #236). The centre of the            }
+{ bounding rectangle is the copper's, the mask in it being the same on every   }
+{ side (as library.get_pad_geometry's copper_x_mm / copper_y_mm).              }
+{                                                                              }
 { Params:                                                                       }
 {   order     -- lr_tb (default: rows top-to-bottom, left-to-right in a row),  }
 {                tb_lr (columns left-to-right, top-to-bottom in a column).     }
@@ -3803,7 +3808,8 @@ Var
     StartIdx, Increment, N, I, J, P, BestPos, Num, K : Integer;
     Ai, Aj, Bj : Integer;
     Xs, Ys, Order, NewNames : TStringList;   { parallel string lists, no fixed arrays }
-    Tol, Xa, Ya, Xb, Yb : TCoord;
+    Tol, Xa, Ya, Xb, Yb, CuX, CuY : TCoord;
+    PadBR : TCoordRect;
     Better : Boolean;
     First : Boolean;
     Tmp : String;
@@ -3835,15 +3841,26 @@ Begin
     Order := TStringList.Create;
     NewNames := TStringList.Create;
     Try
-        { Pass 1: collect pad coordinates (stringified) in iteration order. }
+        { Pass 1: collect each pad's copper centre (stringified) in       }
+        { iteration order; the origin when the rectangle is empty.        }
         GrpIter := Footprint.GroupIterator_Create;
         Try
             GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
             Pad := GrpIter.FirstPCBObject;
             While Pad <> Nil Do
             Begin
-                Xs.Add(IntToStr(Pad.X));
-                Ys.Add(IntToStr(Pad.Y));
+                CuX := Pad.X;
+                CuY := Pad.Y;
+                Try
+                    PadBR := Pad.BoundingRectangle;
+                    If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
+                    Begin
+                        CuX := (PadBR.Left + PadBR.Right) Div 2;
+                        CuY := (PadBR.Bottom + PadBR.Top) Div 2;
+                    End;
+                Except End;
+                Xs.Add(IntToStr(CuX));
+                Ys.Add(IntToStr(CuY));
                 Pad := GrpIter.NextPCBObject;
             End;
         Finally

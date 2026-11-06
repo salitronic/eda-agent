@@ -5312,6 +5312,8 @@ def register_pcb_tools(mcp):
 
         Pads are sorted by position and numbered in sequence; rows and
         columns are banded by a small tolerance so a grid numbers cleanly.
+        A pad's position is its copper centre, not its origin, so a custom
+        pad numbers where it is drawn.
         Acts on the active PCB library's current footprint.
 
         Args:
