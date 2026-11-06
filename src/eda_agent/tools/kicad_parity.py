@@ -439,6 +439,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_body": "Altium 3D bodies; KiCad footprints link model files",
     "pcb_hole_symbols": "Altium drill symbols",
     "sch_get_harness": "Altium harness wiring diagrams; KiCad has no harness documents",
+    "sch_place_harness_connectors": "Altium harness wiring diagrams; KiCad has no harness documents",
     "pcb_net_figures": "Altium net figures",
     "pcb_copy_designators_to_mech": _MECH,
     "pcb_apply_dnp_paste_exclusion": "KiCad's DNP flag already leaves paste out of fab outputs",

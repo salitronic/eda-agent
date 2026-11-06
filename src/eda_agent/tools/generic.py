@@ -3085,6 +3085,51 @@ def register_generic_tools(mcp):
         return await get_bridge().send_command_async("generic.place_compile_mask", args)
 
     @mcp.tool()
+    async def sch_place_harness_connectors(
+        connectors: list[dict[str, Any]], document_path: str = "",
+    ) -> dict[str, Any]:
+        """Put library parts on a harness wiring diagram as harness connectors.
+
+        A part placed with sch_place_components lands on a .WirDoc as a
+        plain component that harness wires cannot attach to. This copies
+        the part into a harness connector instead: its graphics and models
+        as drawn in the library, each pin as a harness pin, its designator
+        and comment where the library puts them. The reply gives each
+        pin's end, the point a harness wire must start or finish on.
+
+        Args:
+            connectors: [{lib_reference, library_path (.SchLib), designator,
+                x, y (mils), rotation (0, 90, 180 or 270)}].
+            document_path: The open .WirDoc. Empty uses the document in
+                front. Anything other than a wiring diagram is refused.
+
+        Returns:
+            ``placed``, ``failed``, ``total`` and ``connectors`` [{designator,
+            lib_reference, placed, problem, pin_ends [{pin, name, x, y}]}].
+        """
+        ops: list[str] = []
+        for c in connectors:
+            ref = str(c.get("lib_reference", "")).strip()
+            lib = str(c.get("library_path", "")).strip()
+            rotation = int(c.get("rotation", 0) or 0)
+            if not ref or not lib:
+                return {"ok": False, "reason": "each connector needs lib_reference and library_path"}
+            if rotation not in (0, 90, 180, 270):
+                return {"ok": False, "reason": "rotation is 0, 90, 180 or 270"}
+            if any(";" in v or "~~" in v for v in (ref, lib, str(c.get("designator", "")))):
+                return {"ok": False, "reason": "names and paths cannot hold ';' or '~~'"}
+            ops.append(f"lib_reference={ref};library_path={lib};"
+                       f"designator={str(c.get('designator', '')).strip()};"
+                       f"x={float(c.get('x', 0)):g};y={float(c.get('y', 0)):g};"
+                       f"rotation={rotation}")
+        if not ops:
+            return {"ok": False, "reason": "connectors is empty"}
+        params = {"connectors": "~~".join(ops)}
+        if document_path.strip():
+            params["path"] = document_path.strip()
+        return await get_bridge().send_command_async("generic.place_harness_connectors", params)
+
+    @mcp.tool()
     async def sch_get_harness(document_path: str = "", limit: int = 500) -> dict[str, Any]:
         """Read a harness wiring diagram (.WirDoc): every wire and what it joins.
 

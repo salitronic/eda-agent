@@ -478,6 +478,43 @@ def test_harness_colour_hex_swaps_altium_byte_order():
         "(C Div 65536) Mod 256")
 
 
+def test_harness_connectors_send_and_refuse(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_place_harness_connectors", document_path="C:/h/W.WirDoc",
+                    connectors=[{"lib_reference": "CONN5", "library_path": "C:/l/A.SchLib",
+                                 "designator": "J1", "x": 2000, "y": 5000, "rotation": 180}])
+    assert sent == [("generic.place_harness_connectors", {
+        "connectors": "lib_reference=CONN5;library_path=C:/l/A.SchLib;designator=J1;"
+                      "x=2000;y=5000;rotation=180",
+        "path": "C:/h/W.WirDoc"})]
+    for bad in ([], [{"lib_reference": "CONN5"}],
+                [{"lib_reference": "CONN5", "library_path": "C:/l/A.SchLib", "rotation": 45}],
+                [{"lib_reference": "A;B", "library_path": "C:/l/A.SchLib"}]):
+        result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                             "sch_place_harness_connectors", connectors=bad)
+        assert sent == [] and result["ok"] is False
+
+
+def test_harness_connectors_are_real_harness_parts_on_a_wiring_diagram():
+    where = _body("Generic.pas", "HarnessDiagramFor")
+    assert "UpperCase(SrvDoc.Kind) <> 'HARNESSWIRINGDIAGRAM'" in where
+    body = _body("Generic.pas", "Gen_PlaceHarnessConnectors")
+    assert "SchObjectFactory(eHarnessComponent, eCreate_Default)" in body
+    assert "SchObjectFactory(eHarnessPin, eCreate_Default)" in body
+    # Every pin keeps what makes it the library's pin.
+    for field in ("Location", "Orientation", "PinLength", "Designator", "Name",
+                  "Electrical", "OwnerPartId"):
+        assert f"Pin.{field} := Child.{field};" in body, field
+    # The pin ends are read after the move and the turn, not before.
+    assert body.index("Comp.MoveToXY") < body.index("MkSet(eHarnessPin)")
+    assert "If NPins = 0 Then Problem := 'the part has no pins';" in body
+
+
+def test_harness_colour_from_hex_is_the_inverse_of_to_hex():
+    body = _body("Generic.pas", "HarnessColourFromHex")
+    assert "(V Div 65536) + ((V Div 256) Mod 256) * 256 + (V Mod 256) * 65536" in body
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]
