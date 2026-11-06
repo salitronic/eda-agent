@@ -3165,7 +3165,7 @@ Begin
                 NoteDeleteFault('a parameter stayed on the symbol after it was removed');
                 Break;
             End;
-            Try Lib.RemoveSchObject(FoundParam); Except End;
+            Try Lib.RemoveSchObject(FoundParam); Except { the next pass finds it again and reports the fault } End;
             Dec(Guard);
             Continue;
         End;
