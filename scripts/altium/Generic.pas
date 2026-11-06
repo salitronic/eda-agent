@@ -524,6 +524,23 @@ Begin
     End;
 End;
 
+{ IsSolid belongs to the filled shapes. Asked of a line it raised             }
+{ "Undeclared identifier: IsSolid" on AD 25.8.1, a modal Try/Except cannot  }
+{ contain, and the polling loop stopped (issue #253). An ALLOWLIST of the    }
+{ types this unit already reads or writes IsSolid on (the symbol dump:       }
+{ rectangle, round rectangle, polygon, ellipse; the text frame writer), plus }
+{ the polyline (read live) and the types built on them (a note is a text     }
+{ frame, a blanket a polygon). Anything else answers unreadable.             }
+Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle)
+        Or (Obj.ObjectId = ePolygon) Or (Obj.ObjectId = ePolyline)
+        Or (Obj.ObjectId = eEllipse) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2316,7 +2333,13 @@ Begin
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
-        Else If PropName = 'IsSolid'     Then Result := BoolToJsonStr(Obj.IsSolid)
+        Else If PropName = 'IsSolid' Then
+        Begin
+            If SchObjectHasIsSolid(Obj) Then
+                Result := BoolToJsonStr(Obj.IsSolid)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { Blanket members (ISch_Blanket on ISch_CollapsiblePolygon on
           ISch_Polygon). Each is asked only of the types that carry it:
           an absent member halts the script. }
@@ -2728,7 +2751,13 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'IsSolid'     Then Obj.IsSolid := StrToBool(Value)
+        Else If PropName = 'IsSolid' Then
+        Begin
+            If SchObjectHasIsSolid(Obj) Then
+                Obj.IsSolid := StrToBool(Value)
+            Else
+                Matched := False;
+        End
         Else If PropName = 'Collapsed' Then
         Begin
             If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eCompileMask) Then
