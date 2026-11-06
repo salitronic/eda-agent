@@ -213,6 +213,10 @@ End;
 { SaveAllDirty flushes the .SchLib to disk at a logical checkpoint. The     }
 { workspace's free-document save sweep already covers standalone libs, so   }
 { no save_all changes are needed.                                            }
+{                                                                            }
+{ The mark does not always hold: after a copy_component into a saved SchLib  }
+{ SetModified(True) here leaves the library reading unmodified until the     }
+{ next save. See the note above Lib_CopyComponent (issue #251).              }
 Procedure MarkLibDirty(SchLib : ISch_Lib);
 Var
     FullPath : String;
@@ -7878,6 +7882,19 @@ End;
 { AddSchComponent there. Destination ends focused with the new component     }
 { selected. Save is deferred (MarkLibDirty only) per the project's perf-      }
 { deferred-save pattern.                                                       }
+{                                                                              }
+{ SAVE STATE AFTER A COPY (issue #251). MEASURED on AD 25.8.1: once a copy    }
+{ has gone into a SchLib that was saved, NO later write marks the library    }
+{ modified until the next save -- not this handler's own MarkLibDirty, not   }
+{ a generic modify, not a parameter write. ServerDoc.SetModified(True) is    }
+{ called on the right document without an error and does not hold, so the   }
+{ library reads "saved" while it holds the copy and every edit after it, and }
+{ Altium can close it without asking. A copy does NOT clear a flag that is   }
+{ already set. WORKAROUND, verified (a fresh save, then 17 checks incl. save }
+{ + reopen): mark the library modified BEFORE the copy with a "touch" --     }
+{ read one symbol's description and write the same text straight back --    }
+{ then copy. A touch AFTER the copy does not help; a save clears the flag,   }
+{ so the next copy needs a touch again. Cause not found.                     }
 {..............................................................................}
 
 { Pins on every part of a library symbol, the count lib_get_component_details }
