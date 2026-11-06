@@ -5433,8 +5433,15 @@ Function NetStructureJson(Net : INet) : String;
 Var
     SubWires, Lines, AllItems, Removed, Scope, BusWidth, Outputs, BiDirs, Powers, OpenColl, Misses : Integer;
     SignalType, Calculated, Hidden : String;
+    BusElement, BusSection, ByValue : Boolean;
+    BusKind, RangeValue1, RangeValue2, NonPin : Integer;
+    Range1, Range2, NetNumber, Harness, Parent : String;
+    ParentNet : INet;
 Begin
     SubWires := -1; Lines := -1; AllItems := -1; Removed := -1; Scope := -1; BusWidth := 0;
+    BusElement := False; BusSection := False; ByValue := False;
+    BusKind := -1; RangeValue1 := 0; RangeValue2 := 0; NonPin := -1;
+    Range1 := ''; Range2 := ''; NetNumber := ''; Harness := ''; Parent := '';
     Outputs := 0; BiDirs := 0; Powers := 0; OpenColl := 0; Misses := 0;
     SignalType := ''; Calculated := ''; Hidden := '';
     Try SubWires := Net.DM_SubWireCount; Except Inc(Misses); End;
@@ -5450,6 +5457,23 @@ Begin
     Try BiDirs := Net.DM_CountOfElectricalType(eElectricIO); Except Inc(Misses); End;
     Try Powers := Net.DM_CountOfElectricalType(eElectricPower); Except Inc(Misses); End;
     Try OpenColl := Net.DM_CountOfElectricalType(eElectricOpenCollector); Except Inc(Misses); End;
+    Try BusElement := Net.DM_IsBusElement; Except Inc(Misses); End;
+    Try BusSection := Net.DM_IsBusSection; Except Inc(Misses); End;
+    Try BusKind := Net.DM_BusKind; Except Inc(Misses); End;
+    Try Range1 := Net.DM_BusRange1; Except Inc(Misses); End;
+    Try Range2 := Net.DM_BusRange2; Except Inc(Misses); End;
+    Try RangeValue1 := Net.DM_BusRangeValue1; Except Inc(Misses); End;
+    Try RangeValue2 := Net.DM_BusRangeValue2; Except Inc(Misses); End;
+    Try ByValue := Net.DM_RangeDefinedByValue; Except Inc(Misses); End;
+    Try NonPin := Net.DM_CountOfNonPinItems; Except Inc(Misses); End;
+    Try NetNumber := Net.DM_NetNumber; Except Inc(Misses); End;
+    Try Harness := Net.DM_HarnessType; Except Inc(Misses); End;
+    ParentNet := Nil;
+    Try ParentNet := Net.DM_BusSectionParent; Except ParentNet := Nil; End;
+    If ParentNet <> Nil Then
+    Begin
+        Try Parent := ParentNet.DM_NetName; Except End;
+    End;
     Result := JsonRaw('structure', JsonObj(
         JsonInt('sub_wires', SubWires) + ','
         + JsonInt('lines', Lines) + ','
@@ -5464,6 +5488,18 @@ Begin
         + JsonInt('io_pins', BiDirs) + ','
         + JsonInt('power_pins', Powers) + ','
         + JsonInt('open_collector_pins', OpenColl) + ','
+        + JsonInt('non_pin_items', NonPin) + ','
+        + JsonStr('net_number', NetNumber) + ','
+        + JsonBool('bus_element', BusElement) + ','
+        + JsonBool('bus_section', BusSection) + ','
+        + JsonInt('bus_kind', BusKind) + ','
+        + JsonStr('bus_range_from', Range1) + ','
+        + JsonStr('bus_range_to', Range2) + ','
+        + JsonInt('bus_range_value_from', RangeValue1) + ','
+        + JsonInt('bus_range_value_to', RangeValue2) + ','
+        + JsonBool('bus_range_by_value', ByValue) + ','
+        + JsonStr('bus_section_parent', Parent) + ','
+        + JsonStr('harness_type', Harness) + ','
         + JsonInt('read_errors', Misses)));
 End;
 

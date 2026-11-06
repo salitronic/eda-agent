@@ -388,6 +388,36 @@ def test_net_items_are_in_mils_and_name_power_ports():
     assert "nets_examined" in listing and "truncated" in listing
 
 
+def test_net_structure_reports_buses_and_reads_each_field_guarded():
+    body = _body("Project.pas", "NetStructureJson")
+    for member, key in (("DM_IsBusElement", "bus_element"),
+                        ("DM_IsBusSection", "bus_section"),
+                        ("DM_BusKind", "bus_kind"),
+                        ("DM_BusRange1", "bus_range_from"),
+                        ("DM_BusRange2", "bus_range_to"),
+                        ("DM_BusRangeValue1", "bus_range_value_from"),
+                        ("DM_BusRangeValue2", "bus_range_value_to"),
+                        ("DM_RangeDefinedByValue", "bus_range_by_value"),
+                        ("DM_CountOfNonPinItems", "non_pin_items"),
+                        ("DM_NetNumber", "net_number"),
+                        ("DM_HarnessType", "harness_type")):
+        # Each read sits in its own Try, so one member Altium refuses
+        # counts as a read error instead of losing the whole net.
+        assert re.search(r"Try \w+ := Net\." + member + r"; Except Inc\(Misses\); End;",
+                         body), member
+        assert f"'{key}'" in body, key
+    # The parent is named, and a net with no parent leaves it empty.
+    assert "ParentNet := Net.DM_BusSectionParent" in body
+    assert "If ParentNet <> Nil Then" in body
+    assert "'bus_section_parent'" in body
+    source = (Path(project.__file__)).read_text(encoding="utf-8")
+    start = source.index("async def proj_get_net_items(")
+    text = source[start:source.index("return await", start)]
+    for key in ("bus_section", "bus_element", "bus_kind", "bus_range_from",
+                "bus_section_parent", "non_pin_items", "net_number", "harness_type"):
+        assert key in text, key
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]

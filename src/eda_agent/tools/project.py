@@ -2960,10 +2960,17 @@ def register_project_tools(mcp):
             structure: Add how each net is built, from the compiled
                 model: ``sub_wires``, ``lines``, ``all_items``,
                 ``removed_items``, ``scope``, ``signal_type``,
-                ``calculated_name``, ``hidden_name``, ``bus_width`` and
-                the count of ``output_pins``, ``io_pins``, ``power_pins``
-                and ``open_collector_pins`` it joins (two outputs on one
-                net drive against each other).
+                ``calculated_name``, ``hidden_name``, ``bus_width``,
+                ``net_number``, ``non_pin_items`` (labels, ports and other
+                objects on it), ``harness_type`` and the count of
+                ``output_pins``, ``io_pins``, ``power_pins`` and
+                ``open_collector_pins`` it joins (two outputs on one net
+                drive against each other). For buses: ``bus_section``
+                (the bus itself, e.g. D[0..7]) with ``bus_kind``,
+                ``bus_range_from`` / ``bus_range_to`` as written,
+                ``bus_range_value_from`` / ``bus_range_value_to`` and
+                ``bus_range_by_value``; ``bus_element`` (one member) with
+                ``bus_section_parent`` naming its bus.
 
         Returns:
             ``nets_examined``, ``nets_listed``, ``truncated`` and
