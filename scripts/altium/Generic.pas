@@ -466,6 +466,58 @@ Begin
     End;
 End;
 
+{ A parameter's or designator's display settings: ShowName (name shown    }
+{ beside the value), Autoposition and GraphicallyLocked (the Locked tick:  }
+{ the label cannot be dragged). Only these two types carry them, so the   }
+{ callers check SchHasParamDisplay first; asked of another object the     }
+{ names are undeclared and halt the loop. ShowName on a pin stays with    }
+{ the pin settings above.                                                 }
+Function IsSchParamDisplayProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Autoposition') Or (PropName = 'GraphicallyLocked');
+End;
+
+Function SchHasParamDisplay(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator);
+End;
+
+Function ReadSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    P : ISch_Parameter;
+Begin
+    Result := '';
+    P := Obj;
+    Try
+        If PropName = 'ShowName' Then Result := BoolToJsonStr(P.ShowName)
+        Else If PropName = 'Autoposition' Then Result := BoolToJsonStr(P.Autoposition)
+        Else If PropName = 'GraphicallyLocked' Then Result := BoolToJsonStr(P.GraphicallyLocked);
+    Except
+        Result := '';
+    End;
+End;
+
+Function WriteSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    P : ISch_Parameter;
+    Flag : Boolean;
+Begin
+    Result := True;
+    P := Obj;
+    Flag := (LowerCase(Value) = 'true') Or (Value = '1');
+    Try
+        SchBeginModify(P);
+        If PropName = 'ShowName' Then P.ShowName := Flag
+        Else If PropName = 'Autoposition' Then P.Autoposition := Flag
+        Else If PropName = 'GraphicallyLocked' Then P.GraphicallyLocked := Flag;
+        SchEndModify(P);
+    Except
+        Result := False;
+    End;
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2234,6 +2286,13 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            Result := ReadSchParamDisplayProp(Obj, PropName)
+        Else If IsSchParamDisplayProp(PropName) Then
+            NotePropertyDiag('unreadable', PropName)
+
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
         Begin
@@ -2638,6 +2697,13 @@ Begin
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
+
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            WroteOK := WriteSchParamDisplayProp(Obj, PropName, Value)
+        Else If IsSchParamDisplayProp(PropName) Then
+            Matched := False
 
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
