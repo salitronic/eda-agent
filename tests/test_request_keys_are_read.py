@@ -60,7 +60,12 @@ PY_DIR = REPO / "src" / "eda_agent"
 
 #: Keys the handler deliberately does not read, with the reason. An
 #: entry here is a decision, not an exemption to be added casually.
-INTENTIONALLY_UNREAD: dict[tuple[str, str], str] = {}
+INTENTIONALLY_UNREAD: dict[tuple[str, str], str] = {
+    # Read before the handler, by the document-ownership check in
+    # StatusForm.ProcessSingleRequest (OwnTarget), not by App_RunProcess.
+    ("application.run_process", "file_path"):
+        "names the document an open acts on, for the ownership check",
+}
 
 _CASE_FN = re.compile(r"'([a-z_0-9]+)'\s*:\s*Result\s*:=\s*(\w+)\(")
 _ROUTE = re.compile(r"'(\w+)':\s*Result\s*:=\s*(Handle\w+Command)")
