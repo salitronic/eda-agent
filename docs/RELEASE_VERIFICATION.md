@@ -1,4 +1,4 @@
-# Release verification: 2026.11.07.8
+# Release verification: 2026.11.08.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.07.8`, `version_match` =
+Expect `altium_script_version` = `2026.11.08.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3916,6 +3916,28 @@ PCB.pas wrapper, loads.
 Measured 2026-11-05 on AD 26.11.1.5 with this build: with a scratch sheet in
 front, a track with `board_path` naming a scratch board went onto that
 board; a path naming no open board was refused and placed nothing.
+
+## 76. Altium 21: custom pad shapes and filtered label visibility
+
+On AD 21.4 `eCustomShape` is an undeclared identifier, and a pad read that
+reached it stopped the loop (issue #260). Custom pad shapes arrived in
+22.8 (release notes, August 2022), so every pad reader now asks
+`ShapeIsCustom` (Utils.pas), which reads the version first and answers
+false before 22.8. The separate top and bottom mask (AD 15) and the mask
+from the hole edge (AD 15.1) predate 21 and are not gated.
+
+`pcb_set_text_visibility` with designators skipped a component with
+`Continue` from inside a Try; on AD 21 a filtered call left Altium
+unresponsive (issue #262). It now advances once at the end of the loop.
+
+On AD 25 or 26, with a scratch board and library:
+
+1. `lib_get_pad_geometry` and `pcb_get_pad_properties` on a part with a
+   custom pad: the shape reads `custom`.
+2. `pcb_set_text_visibility` with two designators: only those two change.
+
+On AD 21, the same pad reads answer without stopping the loop, and the
+filtered visibility call returns.
 
 ## Still open, and not blocking
 

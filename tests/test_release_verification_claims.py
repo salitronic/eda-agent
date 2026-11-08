@@ -212,8 +212,12 @@ def test_every_step_that_writes_a_property_is_ranked():
 # Step 66 (failed writes reported) adds fields to the reply and step 67
 # (no whole-reply parse after sending) changes the status window's read;
 # neither writes an Altium property.
+#
+# Step 76 (Altium 21) gates a pad shape READ on the version and changes the
+# control flow of a loop whose NameOn / CommentOn writes are unchanged.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
-                             "30", "58", "59", "61", "66", "67", "71", "72", "73", "74", "75"}
+                             "30", "58", "59", "61", "66", "67", "71", "72", "73", "74", "75",
+                             "76"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

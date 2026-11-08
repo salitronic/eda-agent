@@ -35,6 +35,42 @@ Begin
     Result := Coord * 25.4 / 10000000;
 End;
 
+{ Altium's version as major * 100 + minor (22.8 is 2208), 0 when it cannot  }
+{ be read.                                                                  }
+Function AltiumVersionCode(Dummy : Integer) : Integer;
+Var
+    Ver, Rest : String;
+    Major, Minor : Integer;
+Begin
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Result := 0;
+    If Pos('.', Ver) < 2 Then Exit;
+    Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    Rest := Copy(Ver, Pos('.', Ver) + 1, Length(Ver));
+    If Pos('.', Rest) > 0 Then Rest := Copy(Rest, 1, Pos('.', Rest) - 1);
+    Minor := StrToIntDef(Rest, 0);
+    Result := Major * 100 + Minor;
+End;
+
+{ Custom pad shapes arrived in Altium Designer 22.8 (release notes, August  }
+{ 2022). Before that eCustomShape is an undeclared identifier: on AD 21.4   }
+{ a pad read that reached it stopped the polling loop with an error box no  }
+{ Try catches. So the version is read first, in an If of its own.           }
+Function PadCustomShapeSupported(Dummy : Integer) : Boolean;
+Begin
+    Result := AltiumVersionCode(0) >= 2208;
+End;
+
+{ True when a pad shape is a custom shape. Every pad reader asks this, not  }
+{ eCustomShape itself: where custom shapes are missing no pad has one.      }
+Function ShapeIsCustom(S : Integer) : Boolean;
+Begin
+    Result := False;
+    If Not PadCustomShapeSupported(0) Then Exit;
+    Result := S = eCustomShape;
+End;
+
 { Lengths in the caller's unit: 'mil' (also empty, the default) or 'mm'.    }
 { Authoring took whole mils only, so 1.625 mm arrived as 64 mil and read    }
 { back as 1.6256 mm, off a metric grid on every pad. The mil path is        }

@@ -4730,7 +4730,7 @@ Var
     Obj : IPCB_Primitive;
     DesStr, ComStr, FilterStr : String;
     SetNames, SetComments, NamesOn, CommentsOn : Boolean;
-    HasFilter : Boolean;
+    HasFilter, IsMatch : Boolean;
     Matched, UpdatedNames, UpdatedComments : Integer;
     CompName : String;
     NameMark : String;
@@ -4779,25 +4779,28 @@ Begin
                     Comp := Obj;
                     CompName := '';
                     Try CompName := Comp.Name.Text; Except End;
+                    { One advance at the end of the loop for every component: }
+                    { skipping a component with Continue from inside this Try }
+                    { left AD21 unresponsive.                                 }
+                    IsMatch := True;
                     If HasFilter Then
                     Begin
                         NameMark := '|' + CompName + '|';
-                        If Pos(NameMark, '|' + FilterStr + '|') = 0 Then
+                        IsMatch := Pos(NameMark, '|' + FilterStr + '|') > 0;
+                    End;
+                    If IsMatch Then
+                    Begin
+                        Inc(Matched);
+                        If SetNames And (Comp.NameOn <> NamesOn) Then
                         Begin
-                            Obj := Iter.NextPCBObject;
-                            Continue;
+                            Comp.NameOn := NamesOn;
+                            Inc(UpdatedNames);
                         End;
-                    End;
-                    Inc(Matched);
-                    If SetNames And (Comp.NameOn <> NamesOn) Then
-                    Begin
-                        Comp.NameOn := NamesOn;
-                        Inc(UpdatedNames);
-                    End;
-                    If SetComments And (Comp.CommentOn <> CommentsOn) Then
-                    Begin
-                        Comp.CommentOn := CommentsOn;
-                        Inc(UpdatedComments);
+                        If SetComments And (Comp.CommentOn <> CommentsOn) Then
+                        Begin
+                            Comp.CommentOn := CommentsOn;
+                            Inc(UpdatedComments);
+                        End;
                     End;
                 Except NoteWriteFailed('NameOn/CommentOn'); End;
                 Obj := Iter.NextPCBObject;
@@ -11792,7 +11795,7 @@ Begin
             Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
             Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
             Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
-            Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom'
+            Else If ShapeIsCustom(Pad.TopShape) Then ShapeStr := 'Custom'
             Else ShapeStr := 'Other';
         Except ShapeStr := 'Unknown'; End;
 
@@ -25520,7 +25523,7 @@ Begin
     If S = eRectangular Then Name := 'rect';
     If S = eOctagonal Then Name := 'octagon';
     If S = eRoundedRectangular Then Name := 'roundrect';
-    If S = eCustomShape Then Name := 'custom';
+    If ShapeIsCustom(S) Then Name := 'custom';
     Result := Name;
 End;
 

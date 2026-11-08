@@ -1307,7 +1307,7 @@ Begin
                 If Pad.TopShape = eRectangular Then Result := 'rectangular'
                 Else If Pad.TopShape = eOctagonal Then Result := 'octagonal'
                 Else If Pad.TopShape = eRoundedRectangular Then Result := 'roundrectangle'
-                Else If Pad.TopShape = eCustomShape Then Result := 'custom'
+                Else If ShapeIsCustom(Pad.TopShape) Then Result := 'custom'
                 Else Result := 'round';
             End;
         End

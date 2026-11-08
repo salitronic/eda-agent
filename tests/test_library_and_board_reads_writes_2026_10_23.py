@@ -84,7 +84,8 @@ def test_every_pad_shape_reader_knows_a_custom_pad():
         text = _decommented(_src(unit))
         for m in re.finditer(r"= eRoundedRectangular Then (?:ShapeStr|Result|Str|Name) :=", text):
             window = text[m.start():m.start() + 260]
-            assert "eCustomShape" in window, f"{unit}: a shape mapper falls through for a custom pad"
+            # ShapeIsCustom asks eCustomShape only where it exists (22.8 on).
+            assert "ShapeIsCustom(" in window, f"{unit}: a shape mapper falls through for a custom pad"
             readers += 1
     assert readers >= 8
 
