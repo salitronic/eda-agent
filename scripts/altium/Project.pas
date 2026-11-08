@@ -2729,22 +2729,124 @@ Begin
 End;
 
 {..............................................................................}
+{ HierItemKey - where a compiled port or sheet entry sits: its sheet file,   }
+{ kind and location in internal units. The same item on a sheet's logical   }
+{ document and on each of its physical documents (one per channel) shares   }
+{ the key.                                                                    }
+{..............................................................................}
+Function HierItemKey(FileName : String; Kind : String; Item : INetItem) : String;
+Var
+    X, Y : Integer;
+Begin
+    X := 0; Y := 0;
+    Try X := Item.DM_LocationX; Except End;
+    Try Y := Item.DM_LocationY; Except End;
+    Result := LowerCase(FileName) + '|' + Kind + '|' + IntToStr(X) + '|' + IntToStr(Y);
+End;
+
+{..............................................................................}
+{ HierPhysicalNets - each port's and sheet entry's net on every physical     }
+{ document. MEASURED on AD 25.8.1: DM_FlattenedNetName read through a        }
+{ sheet's LOGICAL document only repeats the net's name on that sheet; read  }
+{ through the PHYSICAL documents (one per sheet, one per channel of a       }
+{ repeated sheet) it is the name the net takes across the project, the     }
+{ one Altium's Properties panel calls the physical net (see Main.pas,       }
+{ GetCompiledDocs). Keys get HierItemKey; Vals the JSON of each copy        }
+{ (instance, net), joined by ','.                                           }
+{..............................................................................}
+Procedure HierPhysicalNets(Project : IProject; Keys : TStringList; Vals : TStringList;
+    Var Misses : Integer);
+Var
+    Physical : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    Count, I, J, K, At : Integer;
+    FileName, Instance, Net, Key, OneCopy : String;
+Begin
+    Count := 0;
+    Try Count := Project.DM_PhysicalDocumentCount; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Physical := Nil;
+        Try Physical := Project.DM_PhysicalDocuments(I); Except Physical := Nil; End;
+        If Physical = Nil Then Continue;
+        FileName := ''; Instance := '';
+        Try FileName := Physical.DM_FileName; Except Inc(Misses); End;
+        Try Instance := Physical.DM_PhysicalInstanceName; Except Inc(Misses); End;
+        For J := 0 To Physical.DM_PortCount + Physical.DM_SheetSymbolCount - 1 Do
+        Begin
+            For K := 0 To 1023 Do
+            Begin
+                Item := Nil;
+                If J < Physical.DM_PortCount Then
+                Begin
+                    If K > 0 Then Break;
+                    Try Item := Physical.DM_Ports(J); Except Item := Nil; End;
+                    Key := 'port';
+                End
+                Else
+                Begin
+                    Sym := Nil;
+                    Try Sym := Physical.DM_SheetSymbols(J - Physical.DM_PortCount); Except Sym := Nil; End;
+                    If Sym = Nil Then Break;
+                    If K >= Sym.DM_SheetEntryCount Then Break;
+                    Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                    Key := 'entry';
+                End;
+                If Item = Nil Then Continue;
+                Net := '';
+                Try Net := Item.DM_FlattenedNetName; Except Inc(Misses); End;
+                Key := HierItemKey(FileName, Key, Item);
+                OneCopy := JsonObj(JsonStr('instance', Instance) + ',' + JsonStr('net', Net));
+                At := Keys.IndexOf(Key);
+                If At < 0 Then
+                Begin
+                    Keys.Add(Key);
+                    Vals.Add(OneCopy);
+                End
+                Else
+                    Vals.Strings[At] := Vals.Strings[At] + ',' + OneCopy;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
 { HierItemJson - a compiled port or sheet entry: its name and direction.     }
 { The name is DM_PortName, else DM_NetName; both are read, since which one  }
-{ an entry carries is the compiler's choice.                                 }
+{ an entry carries is the compiler's choice. port_name is the raw           }
+{ DM_PortName (empty on a sheet entry). Its two net names: net, the net's   }
+{ name on the item's own sheet (DM_NetName), and physical, the name the net }
+{ takes across the project on each physical copy of the sheet (instance,    }
+{ net) from HierPhysicalNets. They differ when a name from another sheet    }
+{ wins: with "Higher Level Names Take Priority" on, a label above the sheet }
+{ symbol renames the net below. x / y in mils tell apart several items of   }
+{ one name on a sheet.                                                       }
 {..............................................................................}
-Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Function HierItemJson(Item : INetItem; FileName : String; Kind : String;
+    Keys : TStringList; Vals : TStringList; Var Misses : Integer) : String;
 Var
-    Name, NetName, Electric : String;
+    Name, PortName, NetName, Electric, Copies : String;
+    X, Y, At : Integer;
 Begin
-    Name := ''; NetName := ''; Electric := '';
-    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Name := ''; PortName := ''; NetName := ''; Electric := ''; Copies := '';
+    X := 0; Y := 0;
+    Try PortName := Item.DM_PortName; Except Inc(Misses); End;
     Try NetName := Item.DM_NetName; Except Inc(Misses); End;
     Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    Try X := Item.DM_LocationX; Except Inc(Misses); End;
+    Try Y := Item.DM_LocationY; Except Inc(Misses); End;
+    At := Keys.IndexOf(HierItemKey(FileName, Kind, Item));
+    If At >= 0 Then Copies := Vals.Strings[At];
+    Name := PortName;
     If Name = '' Then Name := NetName;
     Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('port_name', PortName) + ','
         + JsonStr('net', NetName) + ','
-        + JsonStr('io', Electric));
+        + JsonRaw('physical', '[' + Copies + ']') + ','
+        + JsonStr('io', Electric) + ','
+        + JsonFloat('x', X / 10000) + ','
+        + JsonFloat('y', Y / 10000));
 End;
 
 {..............................................................................}
@@ -2763,6 +2865,7 @@ Var
     ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
     SymFile, SymName, PName : String;
     I, J, K, Misses, Children, Sheets : Integer;
+    Keys, Vals : TStringList;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Workspace := GetWorkspace;
@@ -2772,6 +2875,10 @@ Begin
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
     SmartCompile(Project);
     Misses := 0;
+    Keys := TStringList.Create;
+    Vals := TStringList.Create;
+    Try
+    HierPhysicalNets(Project, Keys, Vals, Misses);
     TopName := '';
     TopDoc := Nil;
     Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
@@ -2814,7 +2921,7 @@ Begin
                 Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
                 If Item = Nil Then Continue;
                 If Ports <> '' Then Ports := Ports + ',';
-                Ports := Ports + HierItemJson(Item, Misses);
+                Ports := Ports + HierItemJson(Item, FileName, 'port', Keys, Vals, Misses);
             End;
         Except Inc(Misses); End;
 
@@ -2837,7 +2944,7 @@ Begin
                         Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
                         If Item = Nil Then Continue;
                         If Entries <> '' Then Entries := Entries + ',';
-                        Entries := Entries + HierItemJson(Item, Misses);
+                        Entries := Entries + HierItemJson(Item, FileName, 'entry', Keys, Vals, Misses);
                     End;
                 Except Inc(Misses); End;
                 If Syms <> '' Then Syms := Syms + ',';
@@ -2859,6 +2966,10 @@ Begin
         + JsonInt('sheet_count', Sheets) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('sheets', '[' + Items + ']')));
+    Finally
+        Keys.Free;
+        Vals.Free;
+    End;
 End;
 
 {..............................................................................}

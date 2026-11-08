@@ -3048,6 +3048,12 @@ def register_project_tools(mcp):
         ``problems``: a missing child, an entry without a port or a port
         without an entry, opposite directions, an orphan sheet.
 
+        Each port and entry gives ``net``, the net's name on its own sheet,
+        and ``physical``: per copy of the sheet (one per channel), the
+        ``instance`` and the ``net`` it joins across the project. They
+        differ when a name from another sheet wins. ``x`` / ``y`` (mils)
+        tell apart items of one name.
+
         Args:
             project_path: The .PrjPcb. Default: the focused project.
         """
