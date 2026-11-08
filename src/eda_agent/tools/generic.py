@@ -708,15 +708,7 @@ def register_generic_tools(mcp):
                 Autoposition and GraphicallyLocked (not saved); ports
                 take AutoSize,
                 OverrideDisplayString and HarnessColor (not saved).
-                Notes and text frames take TextColor, WordWrap,
-                ClipToRect and TextMargin (mils); text frames also
-                ShowBorder (a note always draws its border), notes Author.
-                A note keeps neither LineWidth nor IsSolid on save.
-                Transparent: rectangles, ellipses, polygons, blankets;
-                LineStyle: lines, rectangles, blankets (Altium's
-                numbers). Elsewhere Altium reads them back and drops
-                them on save, so they are refused. FontId takes a font
-                id from obj_get_font_id; 0 or text is refused.
+                Note, frame and shape styles: tool_guide.
                 Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
