@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-# Copyright (c) 2026 Vincent Himpe
+# Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """Symbols made in one batch call each get their own pins (#263).
 
 The symbol writers (add_pins, add_symbol_rectangle, ...) take no symbol
