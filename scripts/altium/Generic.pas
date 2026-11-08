@@ -572,6 +572,19 @@ Begin
         Or (Obj.ObjectId = eRectangle);
 End;
 
+{ XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query    }
+{ of a schematic image asking for XSize raised "Undeclared identifier:     }
+{ XSize" in an error box no Try catches, and the polling loop stopped. Only }
+{ the types this unit already sizes that way carry them: the sheet symbol  }
+{ and the harness connector (their placers set XSize / YSize). Anything    }
+{ else answers unreadable / not written.                                    }
+Function SchObjectHasSize(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSheetSymbol) Or (Obj.ObjectId = eHarnessConnector);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2551,8 +2564,15 @@ Begin
             PCoord := PinEndY(PCoord, POrient, PLen);
             Result := FloatToJsonStr(CoordToMilsF(PCoord));
         End
-        Else If PropName = 'XSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
-        Else If PropName = 'YSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.YSize))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                NotePropertyDiag('unreadable', PropName)
+            Else If PropName = 'XSize' Then
+                Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
+            Else
+                Result := FloatToJsonStr(CoordToMilsF(Obj.YSize));
+        End
 
         // BoundingRectangle on ISch_Component returns a TCoordRect.
         // Audit code reads X1/Y1/X2/Y2 to detect overlapping component
@@ -3022,8 +3042,15 @@ Begin
         // Coord properties (expected in mils)
         Else If PropName = 'Width'       Then Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                Matched := False
+            Else If PropName = 'XSize' Then
+                Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
+            Else
+                Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0));
+        End
 
         // Parameter / designator display settings
         Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
