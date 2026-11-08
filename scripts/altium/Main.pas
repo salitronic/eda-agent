@@ -962,25 +962,100 @@ Begin
 End;
 
 {..............................................................................}
+{ ProjectBoardPaths - every PcbDoc of one project, joined with '|'.           }
+{ '' when the project is Nil or holds no board.                               }
+{..............................................................................}
+
+Function ProjectBoardPaths(Project : IProject) : String;
+Var
+    Doc : IDocument;
+    Path : String;
+    I : Integer;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except End;
+        If Path = '' Then Continue;
+        If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
+           (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+{ CountBoardPaths - how many paths a ProjectBoardPaths list holds. }
+Function CountBoardPaths(Paths : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    If Paths = '' Then Exit;
+    Result := 1;
+    For I := 1 To Length(Paths) Do
+        If Copy(Paths, I, 1) = '|' Then Inc(Result);
+End;
+
+{ ProjectOwningPath - the open project that lists FilePath among its   }
+{ documents, or Nil. A document can sit in several projects; the first }
+{ wins, which is the one the Projects panel shows it under.             }
+Function ProjectOwningPath(Workspace : IWorkspace; FilePath : String) : IProject;
+Var
+    Project : IProject;
+    Doc : IDocument;
+    Path : String;
+    I, P : Integer;
+Begin
+    Result := Nil;
+    If (Workspace = Nil) Or (FilePath = '') Then Exit;
+    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Workspace.DM_Projects(P);
+        If Project = Nil Then Continue;
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(I);
+            If Doc = Nil Then Continue;
+            Path := '';
+            Try Path := Doc.DM_FullPath; Except End;
+            If UpperCase(Path) = UpperCase(FilePath) Then
+            Begin
+                Result := Project;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
 {                                                                              }
-{ When no board is focused it answers from the first PcbDoc of the open        }
-{ projects, and the reply then names that board (BoardFallbackNote), so a     }
-{ caller can tell it from the one it meant. With a PcbLib in front the caller  }
-{ is working on a library, not a board: it answers only when exactly one board }
-{ is open, and with several gives Nil with the reason in BoardMissWhy, rather  }
-{ than reading or writing whichever board the walk reached first.             }
+{ With a board in front it answers from that board. Otherwise it picks a board }
+{ only when the choice is unambiguous, and the reply then names that board     }
+{ (BoardFallbackNote):                                                         }
+{   1. the project that owns the document in front holds exactly one board:    }
+{      that board (a schematic's own PCB, whatever else is open);              }
+{   2. that project holds none (or the document is in no project, or is the    }
+{      script project), and exactly one board is open across all projects.     }
+{ Any other case gives Nil with the reason and the candidates in BoardMissWhy, }
+{ rather than reading or writing whichever board a walk reached first: with    }
+{ several projects open, the first board was routinely from an unrelated      }
+{ design and the reply looked exactly like the one the caller meant.           }
 {..............................................................................}
 
 Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
 Var
     Workspace : IWorkspace;
-    Project : IProject;
+    Project, Owner : IProject;
     Doc : IDocument;
     ServerDoc : IServerDocument;
     PrevView : IServerDocumentView;
-    Path, FocusKind, Candidates : String;
-    I, P, Found : Integer;
+    Path, FocusKind, FocusPath, Candidates, AllBoards, Picked, Scope : String;
+    P, Found : Integer;
 Begin
     Result := Nil;
 
@@ -997,90 +1072,89 @@ Begin
     { polling loop. So only touch PCBServer when a PCB is actually focused.  }
     Doc := Workspace.DM_FocusedDocument;
     FocusKind := '';
+    FocusPath := '';
     If Doc <> Nil Then
+    Begin
         Try FocusKind := UpperCase(Doc.DM_DocumentKind); Except End;
+        Try FocusPath := Doc.DM_FullPath; Except End;
+    End;
     If FocusKind = 'PCB' Then
     Begin
         Result := PCBServer.GetCurrentPCBBoard;
         If Result <> Nil Then Exit;
     End;
 
-    { A library in front: a board is meant only when there is just one. }
-    If FocusKind = 'PCBLIB' Then
+    { Pick the board. The owning project first: a schematic or a library   }
+    { of a design means that design's board. A library package or the     }
+    { script project owns no board, and falls through to the open-wide    }
+    { rule.                                                                }
+    Picked := '';
+    Scope := '';
+    Owner := ProjectOwningPath(Workspace, FocusPath);
+    Candidates := ProjectBoardPaths(Owner);
+    Found := CountBoardPaths(Candidates);
+    If Found = 1 Then
+        Picked := Candidates
+    Else If Found > 1 Then
+        Scope := 'its project ' + ExtractFileName(Owner.DM_ProjectFullPath)
+            + ' holds ' + IntToStr(Found) + ' boards'
+    Else
     Begin
-        Found := 0;
-        Candidates := '';
+        AllBoards := '';
         For P := 0 To Workspace.DM_ProjectCount - 1 Do
         Begin
             Project := Workspace.DM_Projects(P);
-            If Project = Nil Then Continue;
-            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-            Begin
-                Doc := Project.DM_LogicalDocuments(I);
-                If Doc = Nil Then Continue;
-                Path := '';
-                Try Path := Doc.DM_FullPath; Except End;
-                If Path = '' Then Continue;
-                If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
-                   (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
-                Found := Found + 1;
-                If Candidates <> '' Then Candidates := Candidates + ', ';
-                Candidates := Candidates + Path;
-            End;
+            Candidates := ProjectBoardPaths(Project);
+            If Candidates = '' Then Continue;
+            If AllBoards <> '' Then AllBoards := AllBoards + '|';
+            AllBoards := AllBoards + Candidates;
         End;
-        If Found > 1 Then
-        Begin
-            BoardMissWhy := 'A PCB library is in front and ' + IntToStr(Found)
-                + ' boards are open (' + Candidates + '), so no board was '
-                + 'picked. For the library use the lib_ tools; for a board, '
-                + 'focus it first.';
-            Exit;
-        End;
+        Candidates := AllBoards;
+        Found := CountBoardPaths(Candidates);
+        If Found = 1 Then
+            Picked := Candidates
+        Else If Found > 1 Then
+            Scope := IntToStr(Found) + ' boards are open across the projects';
     End;
 
-    { Fallback: no PCB tab is focused (the user is on a schematic, a library }
-    { or the script project). Walk EVERY project open in the workspace - not }
-    { just the focused one, which is often the script project with no PcbDoc }
-    { - find the first PcbDoc, and open it. Opening the document loads the   }
-    { PCB server and moves focus to it; a non-nil ServerDoc from            }
-    { OpenDocument('PCB', ...) proves the server is now registered, so the   }
-    { GetCurrentPCBBoard read below is safe. The IPCB_Board pointer stays    }
-    { valid after we restore the user's previous view.                       }
+    If Picked = '' Then
+    Begin
+        If Found > 1 Then
+        Begin
+            If FocusKind = '' Then FocusKind := 'no document';
+            BoardMissWhy := 'No board is in front (' + FocusKind + ') and '
+                + Scope + ' ('
+                + StringReplace(Candidates, '|', ', ', MkSet(rfReplaceAll))
+                + '), so no board was picked. Focus the board first'
+                + ' (pcb_focus_board), or pass its path where the tool takes one.';
+            If FocusKind = 'PCBLIB' Then
+                BoardMissWhy := BoardMissWhy + ' For the library use the lib_ tools.';
+        End;
+        Exit;
+    End;
+
+    { Open the picked board. Opening loads the PCB server and moves focus   }
+    { to it; a non-nil ServerDoc from OpenDocument('PCB', ...) proves the   }
+    { server is now registered, so the GetCurrentPCBBoard read below is     }
+    { safe. The IPCB_Board pointer stays valid after we restore the user's  }
+    { previous view.                                                        }
     PrevView := Nil;
     Try
         If (Client <> Nil) Then PrevView := Client.GetCurrentView;
     Except End;
 
-    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Path := Picked;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
+    If ServerDoc <> Nil Then
     Begin
-        Project := Workspace.DM_Projects(P);
-        If Project = Nil Then Continue;
-
-        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Try Client.ShowDocument(ServerDoc); Except End;
+        Try Result := PCBServer.GetCurrentPCBBoard; Except End;
+        If Result <> Nil Then
         Begin
-            Doc := Project.DM_LogicalDocuments(I);
-            If Doc = Nil Then Continue;
-            Path := '';
-            Try Path := Doc.DM_FullPath; Except End;
-            If Path = '' Then Continue;
-            If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
-               (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
-
-            ServerDoc := Nil;
-            Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
-            If ServerDoc = Nil Then Continue;
-
-            Try Client.ShowDocument(ServerDoc); Except End;
-            Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-            If Result <> Nil Then
-            Begin
-                BoardFallbackPath := Path;
-                BoardFallbackFrom := FocusKind;
-                Break;
-            End;
+            BoardFallbackPath := Path;
+            BoardFallbackFrom := FocusKind;
         End;
-
-        If Result <> Nil Then Break;
     End;
 
     { Restore the user's prior view so the focus blink is invisible. }
@@ -1168,8 +1242,8 @@ End;
 { GetPCBBoardForMutation - the board an EDIT is allowed to touch.              }
 {                                                                              }
 { GetPCBBoardAnywhere WANDERS, and that is correct for a read. When no PcbDoc  }
-{ is focused it walks every open project, opens the first board it finds,      }
-{ reads it, and restores the previous view so the focus change is invisible.   }
+{ is focused it opens the board of the front document's project, or the only  }
+{ open board, and restores the previous view so the focus change is invisible. }
 { For a query that is a convenience. For a DELETE it is a misfire: with a      }
 { library focused and two boards open, obj_delete would remove primitives from }
 { whichever board the walk reached first, and hide the fact that it had        }
