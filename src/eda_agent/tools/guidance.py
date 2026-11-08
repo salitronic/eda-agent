@@ -1483,6 +1483,54 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "back but are lost on save and reopen (AD 26.11)."),
     },
     {
+        "task": "Style a schematic note, text frame or drawn shape",
+        "keywords": ("border", "fill", "transparent", "color", "font",
+                     "wrap", "margin", "style", "dashed"),
+        "when": (("note", "color"), ("note", "border"), ("frame", "border"),
+                 ("frame", "color"), ("frame", "fill"), ("word", "wrap"),
+                 ("transparent",), ("line", "style"), ("label", "font"),
+                 ("sheet", "symbol", "font")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify", "obj_get_font_id"],
+        "avoid": [],
+        "note": ("obj_modify, each written, saved and reopened on AD 25.8.1. "
+                 "eNote and eTextFrame: FontId, Color (border), AreaColor "
+                 "(fill), TextColor, WordWrap, ClipToRect, TextMargin (mils), "
+                 "Alignment; eTextFrame also ShowBorder, LineWidth, IsSolid "
+                 "(fill on / off); eNote Author and Collapsed (a note always "
+                 "draws its border and drops LineWidth / IsSolid on save). "
+                 "Shapes: Color, AreaColor, LineWidth, IsSolid; Transparent "
+                 "on eRectangle and eEllipse only, LineStyle on eLine and "
+                 "eRectangle only (elsewhere Altium drops them on save, so "
+                 "they are refused). Label fonts: SheetName.FontId, "
+                 "SheetFileName.FontId on a sheet symbol, Designator.FontId, "
+                 "Comment.FontId on a part. FontId is an id from "
+                 "obj_get_font_id; 0 or text is refused."),
+    },
+    {
+        "task": "Show or hide a power port's or port's net name, set an off-sheet connector's side or a port's height",
+        "keywords": ("power", "port", "off-sheet", "offsheet", "cross-sheet",
+                     "connector", "net", "name", "show", "hide", "height",
+                     "side"),
+        "when": (("net", "name", "power"), ("show", "net", "name"),
+                 ("off-sheet", "side"), ("cross-sheet", "side"),
+                 ("port", "height")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify, each written, saved and reopened on AD 25.8.1. "
+                 "ShowNetName on ePowerObject, eCrossSheetConnector and "
+                 "ePort; CrossSheetStyle on eCrossSheetConnector (0 left, "
+                 "1 right; sch_place_cross_sheet_connector side sets it); "
+                 "Height on ePort (mils). Also Text, FontId, Color, "
+                 "Orientation on net labels, power ports and connectors; "
+                 "Style on power ports; Name, AreaColor, TextColor, IOType, "
+                 "Alignment, Width on ports. A port's Style reads back but "
+                 "Altium resets it on reopen."),
+    },
+    {
         "task": "Show a pour's removed copper or let Altium name pours",
         "keywords": ("pour", "polygon", "dead", "copper", "necks", "islands",
                      "name", "removed"),
