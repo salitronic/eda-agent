@@ -350,6 +350,9 @@ class AltiumSimulator:
         #: What the bulk library handlers accepted, so a test can assert
         #: on the PARSED payload rather than only on a success count.
         self.lib_pins: list[dict] = []
+        # The symbol add_pins writes into: the one created last, as
+        # Lib_AddPins's GetTargetLibComponent picks it (#263).
+        self.lib_target: str = ""
         self.lib_symbol_texts: list[dict] = []
         self.lib_pads: list[dict] = []
         self.lib_tracks: list[dict] = []
@@ -1173,9 +1176,22 @@ class AltiumSimulator:
                 return _build_error_response(rid, "NO_SCHLIB",
                                              "No schematic library is active")
             self.lib_components.append(MockLibComponent(name))
+            self.lib_target = name
             return _build_success_response(
                 rid, '{"success":true,"name":"' + _escape_json_string(name) + '"}'
             )
+
+        elif action == "get_pin_list":
+            # Mirrors Lib_GetPinList: the named symbol's pins, every part.
+            name = params.get("component_name", "")
+            pins = [p for p in self.lib_pins if p.get("component") == name]
+            body = ",".join(
+                '{"designator":"%s","name":"%s"}' % (
+                    _escape_json_string(p["designator"]),
+                    _escape_json_string(p["name"])) for p in pins)
+            return _build_success_response(
+                rid, '{"component":"%s","count":%d,"pins":[%s]}' % (
+                    _escape_json_string(name), len(pins), body))
 
         elif action == "add_pin":
             designator = params.get("designator", "")
@@ -1202,6 +1218,7 @@ class AltiumSimulator:
                 if _get_batch_field(op, "designator").strip():
                     added += 1
                     self.lib_pins.append({
+                        "component": self.lib_target,
                         "designator": _get_batch_field(op, "designator"),
                         "name": _get_batch_field(op, "name"),
                         "electrical_type": _get_batch_field(

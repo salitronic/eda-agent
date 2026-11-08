@@ -1364,8 +1364,10 @@ async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
             res["marks"] = await bridge.send_command_async(
                 "library.add_symbol_text", {"texts": "~~".join(ops)})
         steps.append(res)
+    check = await _pin_check(
+        bridge, name, [p for part in amp.parts for p in part["pins"]])
     return {"symbol": name, "body": "amplifier", "parts": amp.part_count,
-            "pins": total_pins, "create": created, "steps": steps}
+            "pins": total_pins, "create": created, "steps": steps, **check}
 
 
 #: Line-size code for symbol glyph lines: Altium's TSize, 0 smallest,
@@ -1579,6 +1581,35 @@ async def _create_symbol(bridge: Any, params: dict[str, Any]) -> Any:
         "library.create_symbol", {**params, "library_path": path})
     await _focus_document(bridge, path)
     return created
+
+
+async def _pin_check(bridge: Any, name: str,
+                     pins: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read the named symbol's pins back and compare their designators
+    with the ones sent, so a reply says the pins are on THIS symbol, not
+    only that the symbol exists (#263)."""
+    want = sorted(str(p.get("designator", "")) for p in pins if p)
+    try:
+        reply = await bridge.send_command_async(
+            "library.get_pin_list", {"component_name": name})
+    except Exception as exc:  # the check reports, it never fails the tool
+        return {"pins_verified": None, "pins_check": f"not read: {exc}"}
+    listed = reply.get("pins") if isinstance(reply, dict) else None
+    if not isinstance(listed, list):
+        return {"pins_verified": None, "pins_check": "no pin list came back"}
+    got = sorted(str(p.get("designator", "")) for p in listed
+                 if isinstance(p, dict))
+    out: dict[str, Any] = {"pins_expected": len(want), "pins_found": len(got),
+                           "pins_verified": got == want}
+    if got != want:
+        missing, extra = list(want), []
+        for d in got:
+            if d in missing:
+                missing.remove(d)
+            else:
+                extra.append(d)
+        out.update(ok=False, missing_pins=missing, extra_pins=extra)
+    return out
 
 
 async def _show_new_symbol(bridge: Any) -> str:
@@ -1838,9 +1869,11 @@ def register_library_tools(mcp):
         pins_payload, _ = _pins_payload(geom.pins)
         pins_res = await bridge.send_command_async(
             "library.add_pins", {"pins": pins_payload})
+        check = await _pin_check(bridge, name, geom.pins)
 
         shown = await _show_new_symbol(bridge)
         return {
+            **check,
             "symbol": name,
             "shown": shown,
             "pins": len(geom.pins),
@@ -1973,7 +2006,9 @@ def register_library_tools(mcp):
         pins_reply = await bridge.send_command_async(
             "library.add_pins", {"pins": _pins_payload(placed)[0]})
         done = isinstance(pins_reply, dict) and pins_reply.get("added") == len(placed)
-        result = {"ok": done, "symbol": name, "part_count": len(parts),
+        check = await _pin_check(bridge, name, placed)
+        done = done and check.get("pins_verified") is not False
+        result = {**check, "ok": done, "symbol": name, "part_count": len(parts),
                   "parts": [{"part": number, "pins": len(pins), "body": geom.body,
                              "width_mils": geom.width_mils, "height_mils": geom.height_mils}
                             for number, (geom, pins) in enumerate(zip(geoms, geom_pins), 1)],
@@ -2098,8 +2133,10 @@ def register_library_tools(mcp):
                  "radius": arc["radius"], "start_angle": arc["start"],
                  "end_angle": arc["end"], "width": 1})
 
+        check = await _pin_check(bridge, name, geom.pins)
         shown = await _show_new_symbol(bridge)
         return {
+            **check,
             "symbol": name, "kind": kind, "designator_prefix": prefix,
             "shown": shown,
             "pins": len(geom.pins), "create": created,
@@ -2465,8 +2502,12 @@ def register_library_tools(mcp):
              "layer": "TopLayer"}
             for pad in geom.pads
         ])
+        # Named, not "the current footprint": in a batch every item's
+        # create ran before any item's pads, which then all went to the
+        # last footprint made (#263).
         pads_res = await bridge.send_command_async(
-            "library.add_footprint_pads", {"pads": pads_payload})
+            "library.add_footprint_pads",
+            {"pads": pads_payload, "footprint_name": name})
 
         tracks = geom.all_tracks()
         tracks_res: dict[str, Any] = {}
@@ -2483,7 +2524,8 @@ def register_library_tools(mcp):
                 for t in tracks
             ]
             tracks_res = await bridge.send_command_async(
-                "library.add_footprint_tracks", {"tracks": "~~".join(track_ops)})
+                "library.add_footprint_tracks",
+                {"tracks": "~~".join(track_ops), "footprint_name": name})
 
         return {
             "footprint": name,
