@@ -1735,6 +1735,10 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new schematic symbol in the open symbol library.
 
+        It becomes the symbol lib_add_pins and lib_add_symbol_* write into,
+        so add its pins before creating the next one. ``verified`` in the
+        reply means the symbol exists, not that it has pins.
+
         Args:
             name: Component name
             designator_prefix: Default designator prefix (e.g., "U", "R", "C")
@@ -2176,6 +2180,11 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add MANY pins to the current symbol in ONE call (there is no
         single-pin variant).
+
+        The current symbol is the one created LAST: make a symbol and add
+        its pins before making the next. A batch of lib_create_symbol
+        followed by lib_add_pins puts every pin on the last symbol (#263);
+        lib_create_ic_symbol makes the symbol and its pins together.
 
         Args:
             pins: List of pin dicts, each with:
