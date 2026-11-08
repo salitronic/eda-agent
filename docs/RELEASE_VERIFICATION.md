@@ -233,6 +233,9 @@ works elsewhere cannot be an undeclared identifier:
 | 60, generated documents | `DM_AddGeneratedDocument` on a project | no, nowhere | low, lists a file under Generated; ran live on a scratch project, unsaved |
 | 62, label rotation | `RotateBy90` by 90 and back on a part or sheet symbol, to reposition its labels | no, nowhere | low, the object returns to its rotation; ran live, size and entries unchanged, saved and reopened |
 | 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
+| 62, label font | `FontId` on a sheet symbol's name and file name, a part's designator and comment (issue #229) | yes, `Library.pas` (a symbol's labels), `TidyLoadedComponent` (a placed part's designator) | low, a font id below 1 or not a number is refused before the write; ran live on a scratch sheet, saved and reopened |
+| 62, note and text frame text | `TextColor`, `WordWrap`, `ClipToRect`, `TextMargin` on a note or text frame, `ShowBorder` on a text frame, `Author` on a note | yes, `Gen_PlaceTextFrame` (WordWrap, ClipToRect, ShowBorder) | low, one object; ran live on a scratch sheet, saved and reopened |
+| 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | no, nowhere | low, one object; ran live, saved and reopened; types that drop them on save are refused |
 | 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
@@ -3531,6 +3534,21 @@ documents:
   right-side entry as they were; 'modify' and 'move' changed nothing.
   `obj_query` / `obj_modify` read and write `SheetName.Location.X/Y`,
   `SheetFileName.Location.X/Y`, `.Autoposition` and `SheetName.Text`.
+* `obj_modify eSheetSymbol set=SheetName.FontId=26|SheetFileName.FontId=27`
+  (issue #229), measured 2026-11-07 on AD 25.8.1 on a scratch copy: both
+  fonts read back, kept after a save and reopen; `Designator.FontId` and
+  `Comment.FontId` on a part the same. `FontId=0`, `abc` and `-3` are
+  refused (listed under `properties.failed`) and the font is unchanged.
+* Same day, notes, text frames and shapes, written one property at a time,
+  saved and reopened: a note's and a frame's `TextColor`, `WordWrap`,
+  `ClipToRect`, `TextMargin` and a note's `Author` kept; a frame's
+  `ShowBorder`, `LineWidth`, `IsSolid` kept; `Transparent` kept on a
+  rectangle and an ellipse, `LineStyle` on a line and a rectangle. Read back
+  and LOST on save, so refused: `Transparent` on a round rectangle, text
+  frame or note, `LineStyle` on a text frame or note; a note's `ShowBorder`
+  written false read back true. A note's `LineWidth` and `IsSolid` (already
+  writable) are lost on save too. `FontId=0` / `abc` on a free text are
+  refused; before, they were written as font 0 and font 1.
 * A part placed by `sch_place_components` or `sch_draw_template`, rotated:
   its designator and comment sit where Altium puts them for that rotation.
   Not yet measured live.

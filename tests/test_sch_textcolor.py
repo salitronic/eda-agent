@@ -19,7 +19,7 @@ def _assert_textcolor_access(code):
     assert "Result := False" in capability
     assert "If Obj = Nil Then Exit" in capability
     assert set(re.findall(r"Obj\.ObjectId = (e\w+)", capability)) == {
-        "ePort", "eSheetEntry", "eHarnessEntry"}
+        "ePort", "eSheetEntry", "eHarnessEntry", "eTextFrame", "eNote"}
     # A typed local must be declared and assigned AFTER the capability check.
     for routine in ("GetSchProperty", "SetSchProperty"):
         body = _routine(code, routine)
@@ -29,7 +29,8 @@ def _assert_textcolor_access(code):
         assert not re.search(r"\bObj\.TextColor\b", branch)
         for local, interface in (("PortObj", "ISch_Port"),
                                  ("EntryObj", "ISch_SheetEntry"),
-                                 ("HarnessEntryObj", "ISch_HarnessEntry")):
+                                 ("HarnessEntryObj", "ISch_HarnessEntry"),
+                                 ("FrameObj", "ISch_TextFrame")):
             assert f"{local} : {interface}" in body
             assert guard < branch.index(f"{local} := Obj") < branch.index(f"{local}.TextColor")
         if routine == "GetSchProperty":
@@ -46,8 +47,8 @@ def test_textcolor_uses_only_documented_typed_interfaces():
 def test_textcolor_guard_detects_the_original_defect(mutation):
     code = _source()
     if mutation == "allow_power":
-        code = code.replace("(Obj.ObjectId = eHarnessEntry);",
-                            "(Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = ePowerObject);", 1)
+        code = code.replace("(Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = eTextFrame)",
+                            "(Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = ePowerObject)", 1)
     elif mutation == "raw_read":
         code = code.replace("IntToStr(PortObj.TextColor)", "IntToStr(Obj.TextColor)", 1)
     else:
