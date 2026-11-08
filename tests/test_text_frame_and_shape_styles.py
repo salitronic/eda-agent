@@ -76,10 +76,11 @@ def test_frame_extras_are_read_and_written_through_typed_interfaces():
     assert "FloatToJsonStr(CoordToMilsF(TF.TextMargin))" in getter
     setter = _routine(code, "SchSetExtra")
     assert "TF.TextMargin := MilsToCoordF(Mils)" in setter
-    check = setter.index("If PropName = 'TextMargin' Then")
+    check = setter.index("If SchExtraIsMils(PropName) Then")
     # Refused before anything is written: not a number, or below 0.
     assert check < setter.index("If Not IsFloatStr(Value) Then Exit;") < setter.index("If Mils < 0 Then Exit;") < setter.index("TF := Obj")
     assert "Result := SchGetExtra(Obj, PropName) = FloatToJsonStr(Mils)" in setter
+    assert "TextMargin" in _routine(code, "SchExtraIsMils")
 
 
 def test_transparent_and_line_style_are_asked_only_of_the_allowed_types():

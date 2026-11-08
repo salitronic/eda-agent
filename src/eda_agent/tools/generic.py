@@ -708,7 +708,8 @@ def register_generic_tools(mcp):
                 Autoposition and GraphicallyLocked (not saved); ports
                 take AutoSize,
                 OverrideDisplayString and HarnessColor (not saved).
-                Note, frame and shape styles: tool_guide.
+                Styles of notes, frames, shapes, ports, power
+                ports and off-sheet connectors: tool_guide.
                 Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.

@@ -235,6 +235,9 @@ works elsewhere cannot be an undeclared identifier:
 | 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
 | 62, label font | `FontId` on a sheet symbol's name and file name, a part's designator and comment (issue #229) | yes, `Library.pas` (a symbol's labels), `TidyLoadedComponent` (a placed part's designator) | low, a font id below 1 or not a number is refused before the write; ran live on a scratch sheet, saved and reopened |
 | 62, note and text frame text | `TextColor`, `WordWrap`, `ClipToRect`, `TextMargin` on a note or text frame, `ShowBorder` on a text frame, `Author` on a note | yes, `Gen_PlaceTextFrame` (WordWrap, ClipToRect, ShowBorder) | low, one object; ran live on a scratch sheet, saved and reopened |
+| 62, net name display | `ShowNetName` on a power port, off-sheet connector or port | yes, `Gen_PlacePowerPort` (power ports) | low, one object; ran live, saved and reopened |
+| 62, off-sheet connector side | `CrossSheetStyle` on an off-sheet connector, through obj_modify; the placer's side option wrote a sheet entry's member and stopped the loop, and now writes this | yes, `Gen_PlaceCrossSheetConnector` | low, one object; ran live, saved and reopened |
+| 62, port height | `Height` on a port, in mils | yes, `Library.pas` (a footprint's height, not a port) | low, one object; ran live, saved and reopened |
 | 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | no, nowhere | low, one object; ran live, saved and reopened; types that drop them on save are refused |
 | 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
@@ -3549,6 +3552,16 @@ documents:
   written false read back true. A note's `LineWidth` and `IsSolid` (already
   writable) are lost on save too. `FontId=0` / `abc` on a free text are
   refused; before, they were written as font 0 and font 1.
+* Same day, net labels, power ports, ports and off-sheet connectors placed
+  on a scratch copy, written, saved and reopened: `ShowNetName` (power
+  port, off-sheet connector, port), `CrossSheetStyle` (connector, also
+  from the placer's side), a port's `Height` (150.5 mils) and a text
+  frame's `TextMargin` (12.5 mils) kept. A port's `Style` read back and
+  came back 0 after reopen, AutoSize on or off; `IsCustomStyle`, listed
+  on ISch_Port, stopped the loop when written, so it is not offered. A net
+  label turned 90 degrees reads a different font id after reopen: the same
+  font with rotation 90. `Text` asked of a round rectangle answers
+  unreadable (it stopped the loop before).
 * A part placed by `sch_place_components` or `sch_draw_template`, rotated:
   its designator and comment sit where Altium puts them for that rotation.
   Not yet measured live.

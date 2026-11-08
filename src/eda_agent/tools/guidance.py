@@ -1611,6 +1611,28 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "obj_get_font_id; 0 or text is refused."),
     },
     {
+        "task": "Show or hide a power port's or port's net name, set an off-sheet connector's side or a port's height",
+        "keywords": ("power", "port", "off-sheet", "offsheet", "cross-sheet",
+                     "connector", "net", "name", "show", "hide", "height",
+                     "side"),
+        "when": (("net", "name", "power"), ("show", "net", "name"),
+                 ("off-sheet", "side"), ("cross-sheet", "side"),
+                 ("port", "height")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify, each written, saved and reopened on AD 25.8.1. "
+                 "ShowNetName on ePowerObject, eCrossSheetConnector and "
+                 "ePort; CrossSheetStyle on eCrossSheetConnector (0 left, "
+                 "1 right; sch_place_cross_sheet_connector side sets it); "
+                 "Height on ePort (mils). Also Text, FontId, Color, "
+                 "Orientation on net labels, power ports and connectors; "
+                 "Style on power ports; Name, AreaColor, TextColor, IOType, "
+                 "Alignment, Width on ports. A port's Style reads back but "
+                 "Altium resets it on reopen."),
+    },
+    {
         "task": "Show a pour's removed copper or let Altium name pours",
         "keywords": ("pour", "polygon", "dead", "copper", "necks", "islands",
                      "name", "removed"),

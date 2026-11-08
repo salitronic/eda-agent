@@ -316,7 +316,10 @@ Begin
     If Obj = Nil Then Exit;
     { None of these has Text in Altium's interface: ports and sheet entries
       (named by Name), parameter-set directives (measured on AD 21 and
-      AD 26), pins, the containers, and wiring and graphics. }
+      AD 26), pins, the containers, and wiring and graphics. The round
+      rectangle, ellipse, polyline, polygon, arcs and bezier were missing:
+      Text asked of a round rectangle raised "Undeclared identifier: Text"
+      on AD 25.8.1 and the polling loop stopped. }
     If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
         Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
         Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
@@ -324,7 +327,11 @@ Begin
         Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
         Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
         Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
-        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage) Then
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage)
+        Or (Obj.ObjectId = eRoundRectangle) Or (Obj.ObjectId = eEllipse)
+        Or (Obj.ObjectId = ePolyline) Or (Obj.ObjectId = ePolygon)
+        Or (Obj.ObjectId = eArc) Or (Obj.ObjectId = eEllipticalArc)
+        Or (Obj.ObjectId = eBezier) Then
         Result := False;
 End;
 
@@ -750,7 +757,10 @@ Begin
     Else If (PropName = 'WordWrap') Or (PropName = 'ClipToRect') Or
        (PropName = 'TextMargin') Then Result := 5
     Else If PropName = 'Author' Then Result := 6
-    Else If PropName = 'ShowBorder' Then Result := 7;
+    Else If PropName = 'ShowBorder' Then Result := 7
+    Else If PropName = 'ShowNetName' Then Result := 8
+    Else If PropName = 'CrossSheetStyle' Then Result := 9
+    Else If PropName = 'Height' Then Result := 10;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -767,7 +777,11 @@ Begin
         Or ((Owner = 6) And (Obj.ObjectId = eNote))
         { A note is always drawn with its border: ShowBorder written false  }
         { read back true (AD 25.8.1), so only a text frame takes it.         }
-        Or ((Owner = 7) And (Obj.ObjectId = eTextFrame));
+        Or ((Owner = 7) And (Obj.ObjectId = eTextFrame))
+        Or ((Owner = 8) And ((Obj.ObjectId = ePowerObject)
+            Or (Obj.ObjectId = eCrossSheetConnector) Or (Obj.ObjectId = ePort)))
+        Or ((Owner = 9) And (Obj.ObjectId = eCrossSheetConnector))
+        Or ((Owner = 10) And (Obj.ObjectId = ePort));
 End;
 
 { A whole-number extra (0 or more), a true / false one, or neither (text). }
@@ -785,7 +799,13 @@ Begin
         (PropName = 'Designator_CustomPosition_RotationRelative') Or
         (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
         (PropName = 'HarnessColor') Or (PropName = 'FormalType') Or
-        (PropName = 'ConnectedEnd');
+        (PropName = 'ConnectedEnd') Or (PropName = 'CrossSheetStyle');
+End;
+
+{ A length in mils, decimals kept, not below 0. }
+Function SchExtraIsMils(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'TextMargin') Or (PropName = 'Height');
 End;
 
 Function SchExtraIsBool(PropName : String) : Boolean;
@@ -795,7 +815,7 @@ Begin
         Or (PropName = 'AllowLibrarySynchronize') Or
         (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize') Or
         ((SchExtraOwner(PropName) = 5) And (PropName <> 'TextMargin')) Or
-        (PropName = 'ShowBorder');
+        (PropName = 'ShowBorder') Or (PropName = 'ShowNetName');
 End;
 
 { PIN FUNCTIONS ON ALTIUM 25. GetDefinedFunctionsCount, GetDefinedFunction, }
@@ -889,6 +909,8 @@ Var
     Port : ISch_Port;
     TF : ISch_TextFrame;
     NoteObj : ISch_Note;
+    PowerObj : ISch_PowerObject;
+    CSC : ISch_CrossSheetConnector;
 Begin
     Result := '';
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -932,7 +954,22 @@ Begin
         If PropName = 'AutoSize' Then Result := BoolToJsonStr(Port.AutoSize)
         Else If PropName = 'OverrideDisplayString' Then Result := Port.OverrideDisplayString
         Else If PropName = 'HarnessColor' Then Result := IntToStr(Port.HarnessColor)
-        Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd);
+        Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd)
+        Else If PropName = 'ShowNetName' Then Result := BoolToJsonStr(Port.ShowNetName)
+        Else If PropName = 'Height' Then Result := FloatToJsonStr(CoordToMilsF(Port.Height));
+    End
+    { Power ports and off-sheet connectors: whether the net name is drawn, }
+    { and the connector's left / right (Altium's number).                  }
+    Else If Obj.ObjectId = ePowerObject Then
+    Begin
+        PowerObj := Obj;
+        If PropName = 'ShowNetName' Then Result := BoolToJsonStr(PowerObj.ShowNetName);
+    End
+    Else If Obj.ObjectId = eCrossSheetConnector Then
+    Begin
+        CSC := Obj;
+        If PropName = 'ShowNetName' Then Result := BoolToJsonStr(CSC.ShowNetName)
+        Else If PropName = 'CrossSheetStyle' Then Result := IntToStr(CSC.CrossSheetStyle);
     End
     { A note is a text frame: the border switch, word wrap, clip and margin  }
     { are ISch_TextFrame members (issue: notes and frames had no route to   }
@@ -976,6 +1013,8 @@ Var
     Port : ISch_Port;
     TF : ISch_TextFrame;
     NoteObj : ISch_Note;
+    PowerObj : ISch_PowerObject;
+    CSC : ISch_CrossSheetConnector;
     Rest, Item, Wanted, Slashed, OldName : String;
     SemiPos, N : Integer;
     B, IsBool, IsInt, Native : Boolean;
@@ -1004,9 +1043,11 @@ Begin
         If LowerCase(Value) = 'true' Then B := True
         Else If LowerCase(Value) <> 'false' Then Exit;
     End;
-    { A frame's text margin: mils, decimals kept, not below 0. }
+    { A frame's text margin, a port's height: mils, decimals kept, not   }
+    { below 0. CrossSheetStyle is left (0) or right (1).                  }
+    If (PropName = 'CrossSheetStyle') And (N > 1) Then Exit;
     Mils := 0;
-    If PropName = 'TextMargin' Then
+    If SchExtraIsMils(PropName) Then
     Begin
         If Not IsFloatStr(Value) Then Exit;
         Mils := StrToFloatDef(Value, -1);
@@ -1082,7 +1123,20 @@ Begin
         Port := Obj;
         If PropName = 'AutoSize' Then Port.AutoSize := B
         Else If PropName = 'OverrideDisplayString' Then Port.OverrideDisplayString := Value
-        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N;
+        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N
+        Else If PropName = 'ShowNetName' Then Port.ShowNetName := B
+        Else If PropName = 'Height' Then Port.Height := MilsToCoordF(Mils);
+    End
+    Else If Obj.ObjectId = ePowerObject Then
+    Begin
+        PowerObj := Obj;
+        If PropName = 'ShowNetName' Then PowerObj.ShowNetName := B;
+    End
+    Else If Obj.ObjectId = eCrossSheetConnector Then
+    Begin
+        CSC := Obj;
+        If PropName = 'ShowNetName' Then CSC.ShowNetName := B
+        Else If PropName = 'CrossSheetStyle' Then CSC.CrossSheetStyle := N;
     End
     Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
     Begin
@@ -1113,7 +1167,7 @@ Begin
     If IsInt Then Result := SchGetExtra(Obj, PropName) = IntToStr(N)
     Else If IsBool Then Result := SchGetExtra(Obj, PropName) = BoolToJsonStr(B)
     Else If PropName = 'DefinedFunctions' Then Result := SchGetExtra(Obj, PropName) = Wanted
-    Else If PropName = 'TextMargin' Then Result := SchGetExtra(Obj, PropName) = FloatToJsonStr(Mils)
+    Else If SchExtraIsMils(PropName) Then Result := SchGetExtra(Obj, PropName) = FloatToJsonStr(Mils)
     Else Result := SchGetExtra(Obj, PropName) = Value;
 End;
 
@@ -11771,6 +11825,7 @@ Var
     NetName, SideStr : String;
     SchDoc : ISch_Document;
     Conn : ISch_GraphicalObject;
+    CSC : ISch_CrossSheetConnector;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
@@ -11797,13 +11852,17 @@ Begin
     Begin
         Try Conn.Text := NetName; Except NoteWriteFailed('CrossSheetConnector.Text'); End;
     End;
+    { The connector's left / right is CrossSheetStyle. It has no Side (a  }
+    { sheet entry's member): writing Side raised "Undeclared identifier:   }
+    { Side" on AD 25.8.1 and stopped the polling loop.                     }
+    CSC := Conn;
     If SideStr = 'left' Then
     Begin
-        Try Conn.Side := 0; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+        Try CSC.CrossSheetStyle := eCrossSheetLeft; Except NoteWriteFailed('CrossSheetConnector.CrossSheetStyle'); End;
     End
     Else If SideStr = 'right' Then
     Begin
-        Try Conn.Side := 1; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+        Try CSC.CrossSheetStyle := eCrossSheetRight; Except NoteWriteFailed('CrossSheetConnector.CrossSheetStyle'); End;
     End;
 
     SchDoc.RegisterSchObjectInContainer(Conn);
