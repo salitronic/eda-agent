@@ -1629,7 +1629,7 @@ Begin
     Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
         + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
         + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
-        + ', the first board of the open projects."';
+        + ', the one board of the open projects it could mean."';
     If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
