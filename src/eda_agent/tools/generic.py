@@ -659,7 +659,11 @@ def register_generic_tools(mcp):
                 IsConfigurable, and with designators ShowName,
                 Autoposition and GraphicallyLocked (not saved); ports
                 take AutoSize,
-                OverrideDisplayString and HarnessColor (not saved).
+                OverrideDisplayString and HarnessColor (not saved),
+                ShowNetName and Height (mils); a port's Style is reset
+                by Altium on reopen. Power ports and off-sheet
+                connectors take ShowNetName, off-sheet connectors
+                CrossSheetStyle (0 left, 1 right).
                 Notes and text frames take TextColor, WordWrap,
                 ClipToRect and TextMargin (mils); text frames also
                 ShowBorder (a note always draws its border), notes Author.
