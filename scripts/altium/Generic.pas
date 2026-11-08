@@ -539,7 +539,7 @@ End;
 { the polyline (read live) and the types built on them (a note is a text     }
 { frame, a blanket a polygon). Anything else answers unreadable. A sheet    }
 { symbol too: the file saves IsSolid on it, and it is the Fill Color tick   }
-{ box of its Properties panel.                                              }
+{ box of its Properties panel (issue #273).                                 }
 Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
@@ -2629,7 +2629,7 @@ Begin
           panel's Source (Local / Device / Managed); TextStyle is Bus Text
           Style, kept on every entry; ArrowKind is the entry's Kind and
           HarnessType its Harness Type. Names, not ordinals, as the file
-          stores them. }
+          stores them (issue #273). }
         Else If PropName = 'SymbolType' Then
         Begin
             If Obj.ObjectId = eSheetSymbol Then
@@ -3158,7 +3158,7 @@ Begin
         End
         { A sheet entry's place on its symbol. Written, then the entry is put
           on the edge from both, as the placer does: Altium leaves its
-          Location alone until the sheet is reloaded. }
+          Location alone until the sheet is reloaded (issue #273). }
         Else If (PropName = 'Side') Or (PropName = 'DistanceFromTop') Then
         Begin
             If PropName = 'Side' Then EnumVal := SheetEntrySideOrdinal(Value)
