@@ -2192,6 +2192,7 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -2241,6 +2242,22 @@ Begin
                 Else
                     Result := FloatToJsonStr(CoordToMilsF(Crn.Y));
             End;
+        End
+        { A round rectangle's corner radii live on ISch_RoundRectangle only,
+          so the same narrowing as Corner: never Obj.CornerXRadius on the
+          base interface, which halts the script on any other type. }
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerXRadius))
+                Else
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerYRadius));
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // String properties (late-bound across all types, primitives only)
@@ -2670,7 +2687,12 @@ Begin
         Else If PropName = 'IsMirrored'  Then Result := BoolToJsonStr(Obj.IsMirrored)
         { Readable so obj_select can confirm what it selected. The same
           member Gen_ClearHighlights reads on this interface. }
-        Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection);
+        Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection)
+        { A name no branch above reads came back as a silent blank, the
+          same answer as an empty value: a misspelt or unsupported name
+          looked like a property that is there and empty. Say so. }
+        Else
+            NotePropertyDiag('unknown', PropName);
     Except
         Result := '';
     End;
@@ -2698,6 +2720,7 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -2786,6 +2809,21 @@ Begin
                     Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
                 L.Corner := Crn;
             End;
+        End
+        // A round rectangle's corner radii, decimal mils, on that type only
+        // (typed local, as Corner above). Read back by the caller's query.
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    RR.CornerXRadius := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    RR.CornerYRadius := MilsToCoordF(StrToFloatDef(Value, 0));
+            End
+            Else
+                Matched := False;
         End
 
         // String properties (late-bound across all types, primitives only)
