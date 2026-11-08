@@ -146,7 +146,7 @@ works elsewhere cannot be an undeclared identifier:
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 | 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
 | 44, net display | `ShowNetConnects`, `HideNetConnects`, `LoopRemoval` on a net | no, nowhere | low, ran live, read back and restored |
-| 44, one footprint | `SaveComponentWithLibrary` on a library | no, nowhere | low, writes a file only; ran live |
+| 44, one footprint | `CreateNewComponent`, `CopyTo`, `RegisterComponent` on a fresh library | yes, library copy helpers | low, saves a new destination only; AD21 handler acceptance recorded below |
 | 44, project library | `CreateLibraryFromProject` on a sheet | no, nowhere | low, writes a new library only; ran live |
 | 44, scope and output | `DM_SetHierarchyMode`, `DM_SetOutputPath` on a project | no, nowhere | medium, ran live, read back and restored |
 | 44, pin functions | `AddDefinedFunction`, `ClearDefinedFunctions` on a pin | no, nowhere | low, ran live and read back |
@@ -4120,3 +4120,33 @@ Repeatable live acceptance on disposable documents:
    close the disposable documents at the end.
 
 Live results for this candidate are recorded below once performed.
+
+## Fresh-destination footprint export on Altium 21
+
+Validated on Altium 21.4.1.30 on 2026-11-08 using neutral disposable libraries.
+The candidate export handler was temporarily substituted into an installed
+AD21-compatible bridge; a compiled unit stamp confirmed the loaded revision.
+The Python tools came from the isolated current-upstream worktree. This is
+handler acceptance on that host, not deployment of the entire upstream bridge
+or verification on AD25/26.
+
+- Explicit-source and focused-source exports to the source path were refused.
+- Existing closed and already-open destinations were refused. Invalid extension,
+  missing directory and missing footprint requests also returned errors.
+- With another library in front, an explicit source path selected the intended
+  library. A successful new export closed normally without discarding changes.
+- Reopening the output showed exactly one requested footprint. All three pad
+  records (SMD, drilled and slotted) and the STEP body metadata matched the source.
+- The source, existing destination and other open library kept their file hashes.
+  Scratch documents were closed without saving; the original installed script
+  was restored afterward. Production design files were not used as fixtures.
+
+The handler rejects recorded copy/alignment write failures before saving and
+keeps any partially created destination marked dirty. That rejection is covered
+by offline source guards; an Altium alignment fault was not deliberately induced.
+A failed destination can remain open for inspection. The error promises that
+this export call did not save it, not that a later save-all cannot do so.
+
+These checks compare native readback, not rendered 3D output or byte-for-byte
+STEP payload identity. Other Altium versions and unsaved source libraries need
+separate native coverage. Existing destinations are intentionally never replaced.
