@@ -59,7 +59,6 @@ def test_the_base_interface_is_never_asked_for_a_position(source: str):
     ("ePadObject", "Pad."),
     ("eViaObject", "Via."),
     ("eComponentObject", "Comp."),
-    ("eComponentBodyObject", "Body."),
     ("eTextObject", "Txt."),
     ("eArcObject", "Arc."),
     ("eFillObject", "Fill."),
@@ -145,3 +144,9 @@ def test_the_resolver_cannot_raise_out_of_its_own_try(resolver: str):
     assert "Except" in resolver
     tail = resolver.split("Except", 1)[1]
     assert "Found := False" in tail
+
+
+def test_step_body_position_is_unavailable_instead_of_reading_missing_members(resolver):
+    body = resolver.split("Oid = eComponentBodyObject Then", 1)[1].split("End", 1)[0]
+    assert "Found := False" in body
+    assert "Body.x" not in body and "Body.y" not in body

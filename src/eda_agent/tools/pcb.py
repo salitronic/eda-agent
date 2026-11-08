@@ -10136,17 +10136,21 @@ def register_pcb_tools(mcp):
 
         Args:
             model_path: absolute path to the .step / .stp file.
-            x: X of the model's own origin in mils; where the body lands
-                depends on how the STEP was authored, so check it against
-                a known feature.
-            y: Y of the model's origin in mils.
+            x: X translation from the STEP's authored coordinates, in mils.
+                Nonzero internal model coordinates are preserved.
+            y: Y translation from the STEP's authored coordinates, in mils.
             layer: board layer to attach it to.
-            standoff_height: underside height above the board, mils.
+            standoff_height: additional model Z translation, in mils. Authored
+                Z coordinates are preserved; this is not underside clearance.
 
         Returns:
             ``{"success", "model_path", "x", "y", "layer",
             "standoff_height", "standoff_applied", "rotation_applied",
-            "note"}``; x and y are read back from the placed body.
+            "note"}``; x and y are verified by the change in primitive
+            bounds. ``position_verified`` reports that check; ``bounds``
+            contains the placed outline bounds. No body X/Y member is used.
+            This verifies XY only. ``standoff_applied`` reports a model Z write,
+            not an independent Z readback; inspect the 3D view before use.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
