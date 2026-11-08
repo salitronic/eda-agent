@@ -572,12 +572,12 @@ Begin
         Or (Obj.ObjectId = eRectangle);
 End;
 
-{ XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query    }
-{ of a schematic image asking for XSize raised "Undeclared identifier:     }
-{ XSize" in an error box no Try catches, and the polling loop stopped. Only }
-{ the types this unit already sizes that way carry them: the sheet symbol  }
-{ and the harness connector (their placers set XSize / YSize). Anything    }
-{ else answers unreadable / not written.                                    }
+{ XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query     }
+{ of a schematic image asking for XSize raised "Undeclared identifier:      }
+{ XSize" in an error box no Try catches, and the polling loop stopped       }
+{ (issue #267). Only the types this unit already sizes that way carry them: }
+{ the sheet symbol and the harness connector (their placers set XSize /     }
+{ YSize). Anything else answers unreadable / not written.                   }
 Function SchObjectHasSize(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
