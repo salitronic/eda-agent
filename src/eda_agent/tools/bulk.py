@@ -52,6 +52,15 @@ LIST_NATIVE = frozenset({
 #: takes one request at a time and gathers nothing.
 SEQUENTIAL_PREFIXES = ("easyeda_", "kicad_")
 
+#: Tools that create a symbol and then add its body and pins to "the symbol
+#: just created": the symbol writers take no symbol name. Gathered, every
+#: item's create ran before any item's pins, so all the pins landed on the
+#: last symbol (#263). Their items run one after another.
+SEQUENTIAL_TOOLS = frozenset({
+    "lib_create_ic_symbol", "lib_create_symbol_in_parts",
+    "lib_create_passive_symbol",
+})
+
 ITEMS_DESCRIPTION = (
     "Several at once: a list of this tool's arguments, one dict per item. "
     "Altium runs them as one edit and one undo step. Other arguments given "
@@ -165,7 +174,7 @@ async def run_bulk(fn: Callable, name: str, items: list, shared: dict,
             continue
         calls.append(functools.partial(_call_item, fn, {**common, **item}))
 
-    if name.startswith(SEQUENTIAL_PREFIXES):
+    if name.startswith(SEQUENTIAL_PREFIXES) or name in SEQUENTIAL_TOOLS:
         results = []
         for call in calls:
             try:
