@@ -22,12 +22,14 @@ from eda_agent.design.landpattern.drafting import (
     assembly_outline,
     box_gap,
     clip_segment,
+    copper_boxes,
     corner_ratio_for,
     courtyard_polygon,
     courtyard_rect,
     enforce_pad_gaps,
     pick_pin1_dot,
     ref_height,
+    silk_clear_of_lands,
     silk_outline,
 )
 from eda_agent.design.landpattern.model import (
@@ -80,6 +82,8 @@ class Builder:
         self.chamfer = True
         self.assembly_shape: Optional[Polygon] = None
         self.extra_assembly: list[Any] = []
+        #: Copper and solder-mask outlines of lands that are not rectangles.
+        self.land_outlines: list[Polygon] = []
         self.offset = (0.0, 0.0)
         self.pin1_name = "1"
         self.extra_ipc: dict[str, Any] = {}
@@ -203,11 +207,26 @@ class Builder:
         if path is None and self.body is not None:
             x0, y0, x1, y1 = self.body
             path = [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
+        copper = copper_boxes(self.land_outlines)
         if path:
-            silk.extend(silk_outline(path, self.pads, r, closed=self.silk_closed))
+            outline = silk_outline(path, self.pads, r, closed=self.silk_closed,
+                                   copper=copper)
+            if (not outline and self.silk_path is None and self.body is not None
+                    and s.family in ("custom", "bga", "lga")):
+                # Lands at the body edge all round cut the whole body outline
+                # away: draw it just clear of the lands instead. A chip's
+                # lands cover its ends and it carries no outline, by design.
+                outline = silk_outline(
+                    silk_clear_of_lands(self.body, self.pads, r, copper),
+                    self.pads, r, copper=copper)
+                self.notes.append("silkscreen drawn outside the lands: they "
+                                  "reach the body edge all round")
+            silk.extend(outline)
         for pts, closed in self.extra_silk_paths:
-            silk.extend(silk_outline(pts, self.pads, r, closed=closed))
-        ipc_court, _ = courtyard_rect(self.pads, self.body, self.excess, r)
+            silk.extend(silk_outline(pts, self.pads, r, closed=closed,
+                                     copper=copper))
+        ipc_court, _ = courtyard_rect(self.pads, self.body, self.excess, r,
+                                     copper=copper)
         dot = None
         if self.marker and self.pin1_candidates:
             dot = pick_pin1_dot(self.pin1_candidates, self.pads, r, inside=ipc_court)
@@ -239,7 +258,7 @@ class Builder:
                 rr = g.r + g.width / 2
                 extra_boxes.append((g.x - rr, g.y - rr, g.x + rr, g.y + rr))
         court_box, court_info = courtyard_rect(self.pads, self.body, self.excess,
-                                               r, extra=extra_boxes)
+                                               r, extra=extra_boxes, copper=copper)
         courtyard = courtyard_polygon(court_box, r)
 
         # assembly
@@ -272,7 +291,8 @@ class Builder:
         desc = self._description()
         model = FootprintModel(
             name=name, description=desc, family=s.family, density=self.d,
-            pads=self.pads, graphics=silk + assembly, courtyard=courtyard,
+            pads=self.pads, graphics=silk + assembly + self.land_outlines,
+            courtyard=courtyard,
             ref=ref, body=body3d, pin1=pin1,
             source=s.source.to_dict() if s.source else {},
             ipc=self._ipc_record(court_info), warnings=self.warnings)

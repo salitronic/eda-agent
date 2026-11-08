@@ -146,7 +146,109 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "or instrumentation amplifier as a triangle automatically: "
             "inputs left with + and -, output at the apex, supplies top and "
             "bottom, one triangle per part for a dual or quad. A rectangle "
-            "is right only for an IC with no conventional symbol."),
+            "is right only for an IC with no conventional symbol: yellow "
+            "body, pins left and right only, grouped by function with empty "
+            "rows between groups, every pin drawn (never stacked), and many "
+            "power pins on a power-only part (lib_create_symbol_in_parts)."),
+    },
+    {
+        "task": "Build a library part from its datasheet: symbol, footprint and 3D model",
+        "keywords": ("datasheet", "footprint", "3d", "freecad", "land",
+                     "pattern", "ipc", "package"),
+        "when": (("land", "pattern"), ("footprint", "datasheet"),
+                 ("symbol", "footprint", "model"), ("freecad",), ("ipc", "7351"),
+                 ("datasheet", "3d")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_create_footprint_from_package", "footprint_check_package",
+                "lib_create_ic_symbol", "lib_create_symbol_in_parts",
+                "lib_create_passive_symbol", "lib_create_3d_model",
+                "obj_switch_view", "lib_link_footprint", "lib_check_pcblib",
+                "lib_get_pad_geometry", "datasheet_find_pages",
+                "datasheet_view_page", "footprint_compare_drawing", "app_save_all"],
+        "avoid": [
+            ("lib_add_footprint_pads", "pads one by one skip the readback "
+                                       "and the drawing check; give the "
+                                       "package to lib_create_footprint_from_package"),
+            ("lib_add_footprint_bodies", "an extruded box is not a model of "
+                                         "the part; build the STEP with "
+                                         "lib_create_3d_model"),
+        ],
+        "note": (
+            "One part at a time: read its pin table and package drawing, then "
+            "symbol, footprint, model, link, before the next datasheet. The "
+            "symbol and footprint tools bring their library forward and show "
+            "the new part themselves; do not focus a library by hand "
+            "(app_set_active_document) between parts: it shows the last part "
+            "until the next one is drawn. Read "
+            "a PDF one page or one range per call (a list of pages is refused). "
+            "LAND PATTERN: the manufacturer's recommended land pattern when the "
+            "datasheet gives one (a separate drawing from the package's own "
+            "pads in its bottom view, and the two differ); it is often far from the outline, so "
+            "datasheet_find_pages lists where before deciding it gives none; "
+            "give the PDF as source.path and the footprint tool refuses a "
+            "source page that is not one of them "
+            "(family custom with custom_pads, each pad's "
+            "number, x, y, width, height in mm); where it gives none, the IPC-7351 "
+            "calculation from the package drawing (the package family with "
+            "min/nom/max dimensions), never a terminal plus a guessed extension. "
+            "A BGA land size from the datasheet goes in vendor land_diameter; "
+            "ball lands are round (custom pads shape circle). Measure every gap "
+            "on the drawing: rows or columns can step by more than the pitch; "
+            "custom pads go with drawing_numbers, every number printed on the "
+            "land drawing as read, and drawing_dims placing each one (copied, "
+            "never worked out): pitches, gaps, spans, a land's length and width, "
+            "an edge to a centre line; pads that disagree are refused. Work out "
+            "what each number spans from its extension lines: a drawing can "
+            "print a different land length per side. A pin "
+            "with several lands (a FET's drain bars, a microphone's ring) "
+            "repeats its number in custom_pads, so the silkscreen and "
+            "courtyard clear every land; lands added afterwards do not; in "
+            "drawing_dims D#1, D#2 name the first and second land numbered D. "
+            "A land that is not a rectangle (a stepped corner land, a cut "
+            "corner) keeps its real shape: overlapping rectangles of one "
+            "number, or the pad plus outline [[x, y], ...]. READ DRAWINGS "
+            "ZOOMED: datasheet_view_page renders a region of a page at 400 "
+            "dpi; a whole page is too small for a 0.75 among 0.5s or a step "
+            "in a land. Before drawing custom pads, footprint_compare_drawing "
+            "sets the figure (source.page, region) beside the lands built, "
+            "mirrored for a bottom view: compare every land, gap, size and "
+            "shape, correct the package, and pass the compared id it returns; "
+            "the footprint tool refuses custom pads without it. Every "
+            "footprint is built by lib_create_footprint_from_package: pads "
+            "placed one by one into a new footprint are refused without that "
+            "id too, and when the comparison cannot run, stop and report it "
+            "rather than build the lands another way. Lands named like balls "
+            "(A1, H8) also need names_page and names_region, the ball map, "
+            "when the land figure prints no names. "
+            "PACKAGE AXES: two-row parts have their rows LEFT and RIGHT, so "
+            "lead_span_x is the tip-to-tip span across them (JEDEC E) and "
+            "body_y the body along them (D); lead_length is the terminal along "
+            "the span (L), lead_width across it (b); exposed pad ep_x/ep_y. "
+            "Check it with footprint_check_package, then compare the pads read "
+            "back (lib_get_pad_geometry) with the drawing and the top-view pin "
+            "figure, pad by pad. A bottom-view pinout is "
+            "mirrored for the top-view footprint; a BGA's letters and A1 corner "
+            "follow the ball map (options letters and a1); empty ball "
+            "positions go in depopulated. "
+            "SYMBOL: an IC or module is a rectangle in Altium's standard yellow "
+            "with pins on the LEFT and RIGHT only, grouped by function with an "
+            "empty row (null) between groups, not in pin-number order; every pin "
+            "drawn, never stacked; many power and ground pins (more than 8, or "
+            "over a quarter of the pins) go on a power-only "
+            "part (lib_create_symbol_in_parts). A discrete part (MOSFET, diode, "
+            "passive) gets its standard symbol from lib_create_passive_symbol, "
+            "drain and source up and down. "
+            "3D MODEL: the vendor's STEP when it can be downloaded, else "
+            "lib_create_3d_model from the drawing: body, leads, pin-1 mark, "
+            "any lens, window or shield, each solid with its role (the role "
+            "sets the colour), and terminals to put a pad or ball on every "
+            "land of the footprint. EDA_AGENT_STEP_WRITER=freecad builds "
+            "it with FreeCAD (CadQuery is the default); either writes the "
+            "colours. Then show it: obj_switch_view mode 2d with footprint_name "
+            "and fit true (the pads), then mode 3d with footprint_name, fit true "
+            "and views \"iso,bottom,front\" to turn it, ending on camera iso. "
+            "Finish with lib_check_pcblib across the library."),
     },
     {
         "task": "Read or change one part of a multi-part symbol",

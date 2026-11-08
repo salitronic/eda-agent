@@ -464,7 +464,8 @@ def test_shared_pins_go_on_part_zero_at_one_place_on_every_part(monkeypatch):
         shared_pins={"left_pins": [{"designator": "8", "name": "V+"}],
                      "right_pins": [{"designator": "4", "name": "V-"}]}))
     assert made["ok"] and made["shared"] == ["8", "4"]
-    sent = bridge.sent[-1][1]["pins"].replace(" ", "")
+    # the pins call, not the last one: the view is refreshed after it
+    sent = next(p for c, p in bridge.sent if c == "library.add_pins")["pins"].replace(" ", "")
     rows = [dict(f.split("=", 1) for f in row.split(";") if "=" in f)
             for row in sent.split("~~") if row]
     owner = {r["designator"]: r["owner_part_id"] for r in rows}

@@ -81,6 +81,8 @@ class FakeAltium:
                                    for n in self.existing]}
         if command == "library.create_footprint":
             return {"success": True, "name": params["name"]}
+        if command == "library.delete_footprint":
+            return {"success": True, "deleted": params["footprint_name"]}
         if command == "library.add_footprint_pads":
             ops = _ops(params["pads"])
             for op in ops:
@@ -113,6 +115,10 @@ class FakeAltium:
         if command == "library.add_footprint_bodies":
             n = len(_ops(params["bodies"]))
             return {"added": n, "failed": 0, "total": n, "bodies": []}
+        if command == "application.get_active_document":
+            return {"file_path": "scratch.PcbLib"}
+        if command in ("application.set_active_document", "generic.switch_view"):
+            return {"success": True}
         raise AssertionError(f"unexpected command {command}")
 
     def _read(self, p: dict, i: int) -> dict:
@@ -164,26 +170,31 @@ def test_soic8_is_created_written_in_mm_and_read_back(altium):
     bridge = box["bridge"]
     assert out["ok"], out.get("reason") or out["readback"]
     assert bridge.commands() == [
+        "application.get_active_document",
         "library.get_mech_layers", "library.get_footprints",
-        "library.create_footprint", "library.add_footprint_pads",
+        "library.create_footprint",
+        "application.get_active_document", "generic.switch_view", "library.add_footprint_pads",
         "library.add_footprint_tracks", "library.add_footprint_arc",
         "library.add_footprint_text", "library.set_footprint_height",
-        "library.get_pad_geometry", _BODY_COMMAND[out["model_3d"]["kind"]]]
+        "library.get_pad_geometry", "generic.switch_view",
+        _BODY_COMMAND[out["model_3d"]["kind"]]]
     name = out["footprint"]
     assert name == "SOIC-8 (D)"
-    for command, params in bridge.calls[3:-2]:
+    writes = [(c, p) for c, p in bridge.calls[4:-3]
+              if not c.startswith(("application.", "generic."))]
+    for command, params in writes:
         target = params.get("footprint_name") or params.get("component_name")
         assert target == name, f"{command} did not name the footprint"
         if command != "library.set_footprint_height":
             assert params.get("units") == "mm", command
     # The reads are aimed at the library the writes went to.
-    assert bridge.calls[1][1]["library_path"] == "scratch.PcbLib"
-    assert bridge.calls[-2][1]["library_path"] == "scratch.PcbLib"
+    assert bridge.calls[2][1]["library_path"] == "scratch.PcbLib"
+    assert bridge.calls[-3][1]["library_path"] == "scratch.PcbLib"
     assert out["layers"]["assembly"]["layer"] == "Mechanical13"
     assert out["layers"]["courtyard"]["layer"] == "Mechanical15"
-    text = bridge.calls[6][1]
+    text = bridge.calls[9][1]
     assert text["text"] == ".Designator" and text["layer"] == "Mechanical13"
-    assert bridge.calls[7][1]["height_mm"] == "1.75"
+    assert bridge.calls[10][1]["height_mm"] == "1.75"
     assert out["readback"]["pads_read"] == 8
     # Unrounded: the land is 1.95 mm, not 77 mil.
     assert {p["x_size"] for p in bridge.pads} == {"1.95"}
@@ -229,7 +240,8 @@ def test_no_role_layers_refuses_before_writing(altium):
                                        "Mechanical 1", "kind": "Not Set"}]),
               package=cases.soic8().to_dict())
     assert not out["ok"] and "assembly_layer" in out["reason"]
-    assert box["bridge"].commands() == ["library.get_mech_layers"]
+    assert box["bridge"].commands() == ["application.get_active_document",
+                                        "library.get_mech_layers"]
 
 
 def test_named_layers_work_without_the_layer_read(altium):
@@ -271,15 +283,26 @@ def test_a_refused_pad_property_stops_the_run(altium):
     assert "library.add_footprint_tracks" not in box["bridge"].commands()
 
 
+def _compared(package: dict) -> dict:
+    """The package with the id footprint_compare_drawing gives its lands."""
+    from eda_agent.design.landpattern.compare_figure import compared_id, land_outlines
+    from eda_agent.design.landpattern.drawing_dims import pop_drawing
+    from eda_agent.design.landpattern.emit import model_from_package
+    model = model_from_package(pop_drawing(dict(package))[0])
+    return {**package, "compared": compared_id(model.pads, "top", land_outlines(model))}
+
+
 def test_slots_and_unplated_holes_reach_the_payload(altium):
     run, box = altium
-    out = run(package={
+    out = run(package=_compared({
         "family": "custom", "name": "SLOT_TEST", "body_x": 6, "body_y": 4,
         "custom_pads": [
             {"number": "1", "x": -1.5, "y": 0, "width": 2.4, "height": 1.4,
              "shape": "oval", "hole": 0.8, "hole_length": 1.6},
             {"number": "MH", "x": 1.5, "y": 0, "width": 1.0, "height": 1.0,
-             "shape": "circle", "hole": 1.0, "plated": False}]})
+             "shape": "circle", "hole": 1.0, "plated": False}],
+        "drawing_numbers": [3.0],
+        "drawing_dims": [{"from": "1", "to": "MH", "mm": 3.0, "axis": "x"}]}))
     assert out["ok"], out.get("reason") or out["readback"]
     slot, mh = box["bridge"].pads
     assert slot["hole_length"] == "1.6" and slot["plated"] == ""
@@ -547,4 +570,241 @@ def test_no_3d_body_when_asked_for_none(altium):
     run, box = altium
     out = run(package=cases.soic8().to_dict(), model_3d="none")
     assert out["model_3d"]["kind"] == "none"
-    assert box["bridge"].commands()[-1] == "library.get_pad_geometry"
+    assert box["bridge"].commands()[-2:] == ["library.get_pad_geometry",
+                                            "generic.switch_view"]
+
+
+class _SchLibInFront(FakeAltium):
+    """The symbol library has focus; one footprint library is open."""
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        params = dict(params or {})
+        if command == "library.get_mech_layers" and not params.get("library_path"):
+            self.calls.append((command, params))
+            from eda_agent.bridge.exceptions import AltiumCommandError
+            raise AltiumCommandError("No PCB library is active", code="NO_PCBLIB")
+        if command == "application.get_active_document":
+            self.calls.append((command, params))
+            return {"file_path": r"C:\lib\Parts.SchLib"}
+        if command == "application.get_open_documents":
+            self.calls.append((command, params))
+            return [{"file_path": r"C:\lib\Parts.SchLib"},
+                    {"file_path": r"C:\lib\Parts.PcbLib"}]
+        return await super().send_command_async(command, params, timeout)
+
+
+def test_the_only_open_pcblib_is_used_when_the_schlib_has_focus(altium):
+    run, box = altium
+    out = run(bridge=_SchLibInFront(), package=cases.soic8().to_dict())
+    assert out["ok"], out.get("reason")
+    reads = [p for c, p in box["bridge"].calls if c == "library.get_mech_layers"]
+    assert reads[-1] == {"library_path": r"C:\lib\Parts.PcbLib"}
+
+
+def test_the_new_footprint_is_brought_forward_in_2d_before_its_pads(altium):
+    """A footprint library focused before its new footprint exists shows the
+    previous one (in 3D, from its tour). With the library behind, the tool
+    makes the footprint there by path first, then brings the library
+    forward on it, in 2D."""
+    run, box = altium
+    out = run(bridge=_SchLibInFront(), package=cases.soic8().to_dict())
+    assert out["ok"], out.get("reason")
+    calls = box["bridge"].calls
+    names = [c for c, _ in calls]
+    focus = names.index("application.set_active_document")
+    assert calls[focus][1] == {"file_path": out["library_path"]}
+    view = names.index("generic.switch_view")
+    assert calls[view][1]["mode"] == "2d"
+    assert calls[view][1]["footprint_name"] == out["footprint"]
+    create = names.index("library.create_footprint")
+    # Made by path while the library is still behind, before any read
+    # brings it forward.
+    assert calls[create][1]["library_path"] == r"C:\lib\Parts.PcbLib"
+    assert create < names.index("library.get_mech_layers") < focus
+    assert focus < view < names.index("library.add_footprint_pads")
+
+
+class _AbsoluteLibrary(FakeAltium):
+    """The library reports an absolute path, as Altium does."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        reply = await super().send_command_async(command, params, timeout)
+        if command == "library.get_mech_layers":
+            reply = dict(reply, library_path=self.path)
+        if command == "application.get_active_document":
+            reply = {"file_path": self.path}
+        return reply
+
+
+def test_the_package_model_is_written_beside_the_library(altium, monkeypatch, tmp_path):
+    """The ST25DV04KC model went to the workspace models folder while every
+    other model of the library sat in its 3D folder."""
+    from eda_agent.design import models3d
+    seen = {}
+
+    def fake_write(plan, path, name=""):
+        seen["path"] = path
+        return {"ok": True, "path": str(path), "writer": "test"}
+
+    monkeypatch.setattr(models3d, "write_step", fake_write)
+    run, box = altium
+    lib = tmp_path / "Parts.PcbLib"
+    out = run(bridge=_AbsoluteLibrary(str(lib)), package=cases.soic8().to_dict())
+    assert out["model_3d"]["kind"] == "step", out["model_3d"]
+    assert seen["path"].parent == tmp_path / "3D"
+
+
+def test_a_large_array_reply_summarises_its_pads(altium):
+    """The LTM8060's 165-ball reply listed every pad and was too large for
+    the caller to read; counts, sizes and extents carry the check."""
+    from eda_agent.design.landpattern.spec import PackageSpec
+    spec = PackageSpec(family="bga", rows=11, cols=15, pitch=1.0,
+                       ball_diameter=0.6, body_x=16.0, body_y=11.9,
+                       height=3.32, source={"document": "test", "page": "1"})
+    run, box = altium
+    out = run(package=spec.to_dict(), model_3d="none")
+    assert out["ok"], out.get("reason")
+    pads = out["pads"]
+    assert isinstance(pads, dict) and pads["count"] == 165
+    assert pads["x_range"] == [-7.0, 7.0] and pads["y_range"] == [-5.0, 5.0]
+    assert sum(s["count"] for s in pads["sizes"]) == 165
+    assert out["steps"]["readback"] == {"pads": 165, "listed_by": "lib_get_pad_geometry"}
+
+
+def test_a_small_footprint_still_lists_every_pad(altium):
+    run, box = altium
+    out = run(package=cases.soic8().to_dict(), model_3d="none")
+    assert isinstance(out["pads"], list) and len(out["pads"]) == 8
+
+
+def test_the_drawn_footprint_is_framed_in_2d(altium):
+    """Shown before its pads existed, the footprint stayed small on screen
+    while the 3D model was built; once drawn it is framed in 2D."""
+    run, box = altium
+    out = run(package=cases.soic8().to_dict())
+    assert out["ok"]
+    calls = box["bridge"].calls
+    names = [c for c, _ in calls]
+    last_view = len(names) - 1 - names[::-1].index("generic.switch_view")
+    assert calls[last_view][1] == {"mode": "2d", "footprint_name": out["footprint"],
+                                   "fit": "true"}
+    assert last_view > names.index("library.add_footprint_pads")
+    assert out["steps"]["fitted"] == {"ok": True}
+
+
+class _SchLibInFrontNoLayers(_SchLibInFront):
+    def __init__(self):
+        super().__init__(mech=[{"layer": "Mechanical1", "name": "Mechanical 1",
+                                "kind": "Not Set"}])
+
+
+def test_a_footprint_made_early_is_removed_when_the_layers_refuse(altium):
+    run, box = altium
+    out = run(bridge=_SchLibInFrontNoLayers(), package=cases.soic8().to_dict())
+    assert not out["ok"] and out["created"] is False
+    names = box["bridge"].commands()
+    assert names.index("library.create_footprint") < names.index(
+        "library.delete_footprint")
+    assert "library.add_footprint_pads" not in names
+
+
+_ROWS = {"family": "custom", "name": "ROW_GAP", "body_x": 3, "body_y": 3,
+         "custom_pads": [{"number": n, "x": 0, "y": y, "width": 0.25,
+                          "height": 0.25, "shape": "circle"}
+                         for n, y in (("1", -0.875), ("2", -0.375),
+                                      ("3", 0.375), ("4", 0.875))]}
+
+
+def test_custom_pads_need_the_drawing_dimensions(altium):
+    run, box = altium
+    out = run(package=dict(_ROWS))
+    assert not out["ok"] and out["created"] is False
+    assert "drawing_dims" in out["reason"]
+    assert "library.create_footprint" not in box["bridge"].commands()
+
+
+def test_a_printed_number_no_dimension_measures_is_refused(altium):
+    """ADXL372: 0.925 (the side land length) was read and left out, and
+    every land was built 0.80 long."""
+    run, box = altium
+    out = run(package={**_ROWS, "drawing_numbers": [0.75, 0.925],
+                       "drawing_dims": [{"from": "2", "to": "3", "mm": 0.75,
+                                         "axis": "y"}]})
+    assert not out["ok"] and out["created"] is False
+    assert "measures 0.925" in out["reason"]
+    assert "library.create_footprint" not in box["bridge"].commands()
+
+
+def test_a_row_gap_the_drawing_prints_differently_is_refused(altium):
+    """The BGT60LTR11AIP was built twice on an even 0.5 mm row grid where
+    the drawing prints 0.75 mm between two rows."""
+    run, box = altium
+    out = run(package={**_ROWS, "drawing_numbers": [0.5], "drawing_dims": [
+        {"from": "1", "to": "2", "mm": 0.5, "axis": "y"},
+        {"from": "2", "to": "3", "mm": 0.5, "axis": "y"}]})
+    assert not out["ok"] and out["created"] is False
+    assert "2 to 3: the centres are" in out["reason"] and "along y" in out["reason"] and "0.75" in out["reason"]
+    assert "library.create_footprint" not in box["bridge"].commands()
+
+
+def test_the_printed_dimensions_are_reported_when_they_match(altium):
+    run, box = altium
+    out = run(package=_compared({**_ROWS, "drawing_numbers": [0.75, 1.75], "drawing_dims": [
+        {"from": "2", "to": "3", "mm": 0.75, "axis": "y", "cite": "Fig. 4"},
+        {"from": "1", "to": "4", "mm": 1.75}]}))
+    assert out["ok"], out.get("reason")
+    assert [r["ok"] for r in out["drawing_dims"]] == [True, True]
+
+
+def test_a_page_without_the_land_pattern_is_refused_before_drawing(altium, tmp_path):
+    pytest.importorskip("pypdf")
+    from tests.test_datasheet_find_pages import _pdf
+    pdf = tmp_path / "ds.pdf"
+    pdf.write_bytes(_pdf(["Package outline", "Recommended land pattern"]))
+    run, box = altium
+    out = run(package={**_ROWS, "source": {"document": "ds", "page": "1",
+                                           "path": str(pdf)},
+                       "drawing_numbers": [0.75],
+                       "drawing_dims": [{"from": "2", "to": "3", "mm": 0.75}]})
+    assert not out["ok"] and out["created"] is False
+    assert out["land_pattern_pages"] == [2]
+    assert "library.create_footprint" not in box["bridge"].commands()
+
+
+def test_custom_lands_need_the_comparison_with_the_figure(altium):
+    """The three defects of take 25 were all read from the figure wrongly and
+    then checked against that reading; lands are now drawn only after the
+    figure has been set beside them."""
+    run, box = altium
+    pkg = {**_ROWS, "drawing_numbers": [0.75], "drawing_dims": [
+        {"from": "2", "to": "3", "mm": 0.75, "axis": "y"}]}
+    out = run(package=pkg)
+    assert not out["ok"] and "footprint_compare_drawing" in out["reason"]
+    stale = _compared(pkg)
+    moved = {**pkg, "compared": stale["compared"],
+             "custom_pads": [dict(p, x=p["x"] + 0.01) for p in pkg["custom_pads"]],
+             "drawing_dims": [{"from": "2", "to": "3", "mm": 0.75, "axis": "y"}]}
+    out = run(package=moved)
+    assert not out["ok"] and "differ from the ones compared" in out["reason"]
+    assert "library.create_footprint" not in box["bridge"].commands()
+    assert run(package=stale)["ok"]
+
+
+def test_a_land_outline_becomes_copper_and_mask_regions():
+    from eda_agent.design.landpattern.emit import altium_plan, model_from_package
+    from eda_agent.design.landpattern.compare_figure import land_outlines
+    pkg = {"family": "custom", "name": "CUT", "body_x": 4, "body_y": 4,
+           "custom_pads": [{"number": "1", "x": 0.2, "y": -0.2, "width": 1.0,
+                            "height": 1.0, "outline": [[1, 1], [1, -1], [-1, -1],
+                                                       [-1, 0.2], [-0.2, 1]]}]}
+    model = model_from_package(pkg)
+    assert land_outlines(model) == [[(1, 1), (1, -1), (-1, -1), (-1, 0.2), (-0.2, 1)]]
+    layers = {r: {"layer": l} for r, l in (("silk", "TopOverlay"), ("paste", "TopPaste"),
+              ("copper", "TopLayer"), ("mask", "TopSolder"),
+              ("assembly", "Mechanical13"), ("courtyard", "Mechanical15"))}
+    regions = altium_plan(model, layers)["regions"]
+    assert {r["layer"] for r in regions} >= {"TopLayer", "TopSolder"}

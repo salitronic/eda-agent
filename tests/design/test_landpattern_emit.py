@@ -216,9 +216,23 @@ def test_the_designator_note_gives_the_printed_height_and_the_rule():
     editor; an agent once regenerated a correct footprint over it."""
     plan = altium_plan(_model("soic8"), LAYERS)
     ref = next(t for t in plan["texts"] if t["text"] == ".Designator")
-    note = next(n for n in plan["notes"] if "literal '.Designator'" in n)
+    note = next(n for n in plan["notes"] if "'.Designator' placeholder" in n)
     assert f"{ref['size']:g} mm" in note
     assert "ref_height_max" in note
+
+
+def test_the_designator_is_centred_on_the_body_and_fits_it():
+    """Anchored at its lower left at the body centre, the eleven-character
+    placeholder ran far off a 6.4 mm sensor in the 2D view of the demo."""
+    from eda_agent.design.landpattern.emit import _STROKE_ADVANCE
+    m = _model("soic8")
+    plan = altium_plan(m, LAYERS)
+    ref = next(t for t in plan["texts"] if t["text"] == ".Designator")
+    width = _STROKE_ADVANCE * ref["size"] * len(".Designator")
+    cx = (m.body.x0 + m.body.x1) / 2
+    assert abs(ref["x"] + width / 2 - cx) < 1e-6
+    assert abs(ref["y"] + ref["size"] / 2 - m.ref.y) < 1e-6
+    assert width <= 0.9 * (m.body.x1 - m.body.x0) + 1e-6 or ref["size"] == 0.3
 
 
 def test_a_shape_altium_cannot_draw_is_refused():

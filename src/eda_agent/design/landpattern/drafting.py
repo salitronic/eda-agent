@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 from eda_agent.design.landpattern.ipc7351 import (
     COURTYARD_ROUND,
@@ -186,14 +186,44 @@ def pad_keepouts(pads: Sequence[Pad], margin: float) -> list[Box]:
 # --- silkscreen -----------------------------------------------------------
 
 
+def copper_boxes(polygons: Sequence[Any]) -> list[Box]:
+    """The bounding box of each copper polygon (a land drawn as an outline)."""
+    out = []
+    for g in polygons:
+        pts = list(getattr(g, "points", None) or [])
+        if getattr(g, "layer", "copper") == "copper" and pts:
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            out.append((min(xs), min(ys), max(xs), max(ys)))
+    return out
+
+
+def silk_clear_of_lands(body: Box, pads: Sequence[Pad], rules: DraftingRules,
+                        copper: Sequence[Box] = ()) -> list[tuple[float, float]]:
+    """A rectangle around the body, each side moved out only as far as it
+    must go to clear every land: the outline when lands sit at the body
+    edge all round and the body outline itself would be cut away."""
+    # A hair past the keepout, which counts its own edge as inside.
+    margin = rules.silk_clearance + rules.silk_width / 2.0 + 0.005
+    boxes = [_grow(b, margin) for b in pad_keepouts(pads, 0.0)]
+    boxes += [_grow(b, margin) for b in copper]
+    x0, y0, x1, y1 = body
+    for bx0, by0, bx1, by1 in boxes:
+        x0, y0 = min(x0, bx0), min(y0, by0)
+        x1, y1 = max(x1, bx1), max(y1, by1)
+    return [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
+
+
 def silk_outline(outline: Sequence[tuple[float, float]], pads: Sequence[Pad],
-                 rules: DraftingRules, *, closed: bool = True) -> list[Line]:
+                 rules: DraftingRules, *, closed: bool = True,
+                 copper: Sequence[Box] = ()) -> list[Line]:
     """Silk lines along ``outline`` with everything near copper cut away.
 
     The keepout around each land is the clearance plus half the line
     width, so the line EDGE stays ``silk_clearance`` off the copper.
+    ``copper`` adds the boxes of lands drawn as outlines.
     """
-    keep = pad_keepouts(pads, rules.silk_clearance + rules.silk_width / 2.0)
+    margin = rules.silk_clearance + rules.silk_width / 2.0
+    keep = pad_keepouts(pads, margin) + [_grow(b, margin) for b in copper]
     pts = list(outline)
     if closed:
         pts = pts + [pts[0]]
@@ -306,13 +336,14 @@ def ref_height(box: Box, rules: DraftingRules) -> float:
 
 
 def courtyard_rect(pads: Sequence[Pad], body: Optional[Box], excess: float,
-                   rules: DraftingRules, extra: Sequence[Box] = ()
-                   ) -> tuple[Box, dict]:
+                   rules: DraftingRules, extra: Sequence[Box] = (),
+                   copper: Sequence[Box] = ()) -> tuple[Box, dict]:
     """IPC courtyard: the larger of land pattern and body, plus the excess,
     each edge rounded outward. Silk that would fall outside it (``extra``)
     pushes it out, because "all silkscreen outline data [must] be located
-    inside the placement courtyard" (Hausherr CADlib p. 18)."""
-    boxes = [p.bbox() for p in pads]
+    inside the placement courtyard" (Hausherr CADlib p. 18). ``copper``
+    adds the boxes of lands drawn as outlines."""
+    boxes = [p.bbox() for p in pads] + list(copper)
     if body is not None:
         boxes.append(body)
     base = _grow(_union(boxes), excess)

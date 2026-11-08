@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import shutil
 import subprocess
@@ -44,6 +45,8 @@ __all__ = [
     "MODELLED_FAMILIES",
     "plan_model",
     "plan_from_solids",
+    "terminal_solids",
+    "strip_terminals",
     "available_writers",
     "write_step",
 ]
@@ -505,6 +508,72 @@ def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPla
     return plan, []
 
 
+#: Roles a part's terminals are drawn in.
+TERMINAL_ROLES = ("gold", "metal", "ball")
+
+
+def _land_box(land: dict) -> tuple[float, float, float, float]:
+    x, y = float(land["x"]), float(land["y"])
+    w, h = float(land["w"]), float(land["h"])
+    if round(float(land.get("rotation") or 0)) % 180 == 90:
+        w, h = h, w
+    return x - w / 2, y - h / 2, x + w / 2, y + h / 2
+
+
+def terminal_solids(lands: list[dict], kind: str, height: float,
+                    diameter: float = 0.0) -> tuple[list[Solid], list[str]]:
+    """One terminal for every land of the footprint, where the land is.
+
+    ``lands`` are ``{name, x, y, w, h, shape, rotation}`` in mm.
+    ``kind`` "plate": a gold plate the land's shape and size, ``height``
+    thick (an LGA or LCC terminal); "ball": a solder ball of ``diameter``
+    whose top is ``height`` above the board (a BGA ball as seated).
+    Returns ``(solids, problems)``.
+    """
+    if kind not in ("plate", "ball"):
+        return [], [f"terminals kind {kind!r} is plate or ball"]
+    if not height or height <= 0:
+        return [], ["terminals need height, mm above the board"]
+    if kind == "ball" and (not diameter or diameter <= 0):
+        return [], ["ball terminals need diameter, the ball's from the drawing"]
+    if not lands:
+        return [], ["the footprint has no lands to put terminals on"]
+    out: list[Solid] = []
+    for land in lands:
+        x0, y0, x1, y1 = _land_box(land)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if kind == "ball":
+            r = diameter / 2
+            out.append(Solid("sphere", "ball", cx=cx, cy=cy, cz=height - r, r=r))
+        elif str(land.get("shape", "")).lower() in ("circle", "round")                 and abs((x1 - x0) - (y1 - y0)) < 1e-6:
+            out.append(Solid("cylinder", "gold", cx=cx, cy=cy, z0=0.0, z1=height,
+                             r=(x1 - x0) / 2))
+        else:
+            out.append(Solid("box", "gold", x0=x0, y0=y0, z0=0.0,
+                             x1=x1, y1=y1, z1=height))
+    return out, []
+
+
+def strip_terminals(solids: list[Solid], lands: list[dict]) -> list[str]:
+    """Flat terminal-coloured solids at the board that cover lands of two
+    names or more: a row of terminals drawn as one strip, which no part
+    has. Terminals come from the footprint (``terminal_solids``)."""
+    problems = []
+    for i, s in enumerate(solids):
+        if s.role not in TERMINAL_ROLES or s.kind != "box":
+            continue
+        if s.z0 > 0.05 or s.z1 - s.z0 > 0.3:
+            continue  # a can or a lead above the board, not a terminal
+        names = sorted({str(l["name"]) for l in lands
+                        if s.x0 < float(l["x"]) < s.x1 and s.y0 < float(l["y"]) < s.y1})
+        if len(names) > 1:
+            problems.append(
+                f"solid {i} ({s.role} box) covers lands {', '.join(names[:6])}"
+                f"{', ...' if len(names) > 6 else ''}: each terminal is its own "
+                "solid; give terminals to place one on every land")
+    return problems
+
+
 def plan_model(spec: Any, model: Any) -> Optional[ModelPlan]:
     """The solids for ``spec`` with its land pattern ``model``, or None
     when the family is not modelled or the description lacks a dimension
@@ -581,13 +650,23 @@ def _has_cadquery() -> bool:
         return False
 
 
+#: Names the STEP writer to try first ("freecad" or "cadquery"); the other
+#: stays as the fallback.
+STEP_WRITER_ENV = "EDA_AGENT_STEP_WRITER"
+
+
 def available_writers() -> list[str]:
-    """The STEP writers this machine has, in the order they are tried."""
+    """The STEP writers this machine has, in the order they are tried:
+    CadQuery first, unless ``EDA_AGENT_STEP_WRITER`` names FreeCAD."""
     out = []
     if _has_cadquery():
         out.append("cadquery")
     if _freecadcmd():
         out.append("freecad")
+    first = os.environ.get(STEP_WRITER_ENV, "").strip().lower()
+    if first in out:
+        out.remove(first)
+        out.insert(0, first)
     return out
 
 
@@ -727,6 +806,54 @@ def _write_freecad(plan: ModelPlan, path: Path) -> None:
         if not path.is_file():
             raise RuntimeError("freecadcmd wrote no STEP: "
                                + (proc.stderr or proc.stdout)[-400:])
+    _colour_step(path, [_COLOURS.get(s.role, _COLOURS["metal"]) for s in plan.solids])
+
+
+_STEP_ENTITY = re.compile(r"^#(\d+)\s*=\s*([A-Z_0-9]+)\s*\(", re.M)
+
+
+def _colour_step(path: Path, colours: list[tuple[float, float, float]]) -> bool:
+    """Give each solid of a STEP file its colour, as STEP presentation styles.
+
+    FreeCAD without its GUI writes geometry only, so a model came out all
+    grey. Each solid is a MANIFOLD_SOLID_BREP, written in the order the
+    solids were given; each gets a STYLED_ITEM with its RGB, gathered in one
+    MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION, the AP214 way
+    CAD tools (Altium included) read colours. Left unchanged, and False,
+    when the solid count does not match.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    found = [(m.group(1), m.group(2)) for m in _STEP_ENTITY.finditer(text)]
+    breps = [n for n, kind in found if kind == "MANIFOLD_SOLID_BREP"]
+    if not breps or len(breps) != len(colours):
+        return False
+    ctx = next((n for n, kind in found if kind == "GEOMETRIC_REPRESENTATION_CONTEXT"), "")
+    if not ctx:
+        m = re.search(r"^#(\d+)\s*=\s*\(\s*GEOMETRIC_REPRESENTATION_CONTEXT", text, re.M)
+        ctx = m.group(1) if m else ""
+    if not ctx:
+        return False
+    nid = max(int(n) for n, _ in found) + 1
+    lines, styled = [], []
+    for brep, (r, g, b) in zip(breps, colours):
+        a = nid
+        lines += [f"#{a}=COLOUR_RGB('',{r:.4f},{g:.4f},{b:.4f});",
+                  f"#{a + 1}=FILL_AREA_STYLE_COLOUR('',#{a});",
+                  f"#{a + 2}=FILL_AREA_STYLE('',(#{a + 1}));",
+                  f"#{a + 3}=SURFACE_STYLE_FILL_AREA(#{a + 2});",
+                  f"#{a + 4}=SURFACE_SIDE_STYLE('',(#{a + 3}));",
+                  f"#{a + 5}=SURFACE_STYLE_USAGE(.BOTH.,#{a + 4});",
+                  f"#{a + 6}=PRESENTATION_STYLE_ASSIGNMENT((#{a + 5}));",
+                  f"#{a + 7}=STYLED_ITEM('color',(#{a + 6}),#{brep});"]
+        styled.append(f"#{a + 7}")
+        nid += 8
+    lines.append(f"#{nid}=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION("
+                 f"'',({','.join(styled)}),#{ctx});")
+    end = text.rfind("ENDSEC;", 0, text.rfind("END-ISO-10303-21"))
+    if end < 0:
+        return False
+    path.write_text(text[:end] + "\n".join(lines) + "\n" + text[end:], encoding="utf-8")
+    return True
 
 
 def write_step(plan: ModelPlan, path: str | Path, *, name: str = "part",

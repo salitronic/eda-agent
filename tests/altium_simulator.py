@@ -1368,6 +1368,28 @@ class AltiumSimulator:
                 '{"success":true,"footprint":"' + _escape_json_string(fp_name) + '"}'
             )
 
+        elif action == "get_pad_geometry":
+            # Mirrors Lib_GetPadGeometry's reply: every land in millimetres.
+            # The simulator keeps one footprint's pads, sent in mils.
+            def _mm(v):
+                try:
+                    return float(v or 0) * 0.0254
+                except ValueError:
+                    return 0.0
+            rows = []
+            for p in self.lib_pads:
+                rows.append(
+                    '{"name":"' + _escape_json_string(p.get("designator", "")) + '",'
+                    '"x_mm":%.6f,"y_mm":%.6f,"w_mm":%.6f,"h_mm":%.6f,' % (
+                        _mm(p.get("x")), _mm(p.get("y")),
+                        _mm(p.get("x_size")), _mm(p.get("y_size")))
+                    + '"shape":"' + _escape_json_string(p.get("shape", "")) + '",'
+                    + '"rotation":%.3f}' % float(p.get("rotation") or 0))
+            fp = params.get("footprint_name", "")
+            return _build_success_response(
+                rid, '{"name":"' + _escape_json_string(fp) + '","pad_count":'
+                + str(len(rows)) + ',"pads":[' + ",".join(rows) + ']}')
+
         elif action == "link_3d_model":
             model_name = params.get("model_name", "")
             if not model_name:

@@ -1766,7 +1766,36 @@ class AltiumBridge:
         collector = bulk.current()
         if collector is not None and refuse_command(command, params) is None:
             return await collector.submit(command, params or {}, timeout)
+        try:
+            return await self.send_command_direct(command, params, timeout)
+        except AltiumError as exc:
+            path = await self._library_to_focus(command, exc)
+            if not path:
+                raise
+        # A library command with the other kind of library in front: with
+        # exactly one library of the kind it needs open, that is the one it
+        # meant. The agent otherwise focused libraries by hand, and a
+        # library focused early shows its last part until the next exists.
+        await self.send_command_direct(
+            "application.set_active_document", {"file_path": path})
         return await self.send_command_direct(command, params, timeout)
+
+    async def _library_to_focus(self, command: str, exc: Exception) -> str:
+        """The only open library of the kind a refused ``library.*``
+        command needs, else empty."""
+        ext = {"NO_PCBLIB": ".pcblib", "NO_SCHLIB": ".schlib"}.get(
+            str(getattr(exc, "code", "") or ""))
+        if not ext or not command.startswith("library."):
+            return ""
+        try:
+            docs = await self.send_command_direct("application.get_open_documents", {})
+        except AltiumError:
+            return ""
+        docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+        paths = sorted({str(d.get("file_path") or "") for d in docs
+                        if isinstance(d, dict)
+                        and str(d.get("file_path") or "").lower().endswith(ext)})
+        return paths[0] if len(paths) == 1 else ""
 
     async def send_bulk_async(
         self,

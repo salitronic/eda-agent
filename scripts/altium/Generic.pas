@@ -5722,37 +5722,227 @@ Begin
 End;
 
 {..............................................................................}
-{ Switch between 2D and 3D view for PCB documents                           }
+{ Switch between 2D and 3D view for a board or a footprint library          }
 {..............................................................................}
+
+{ Lets Altium finish a view change before the next one: run back to back, }
+{ a camera turn right after the switch to 3D was dropped.                 }
+Procedure SettleView(Dummy : Integer);
+Var
+    I : Integer;
+Begin
+    For I := 1 To 8 Do
+    Begin
+        Try Application.ProcessMessages; Except End;
+        Sleep(60);
+    End;
+End;
+
+{..............................................................................}
+
+{ A focused PcbLib is switched too: PCB:SwitchTo3D serves the footprint     }
+{ editor (View > 3D Layout Mode there). camera turns the 3D view to one of  }
+{ Altium's camera presets (PCB:ResetCamera To=Top, RotateOrtho or Bottom),  }
+{ and fit zooms the view to everything afterwards. footprint_name puts that }
+{ footprint of the focused PcbLib on screen first: the editor otherwise     }
+{ keeps showing whichever footprint was current, often the empty default.  }
+{ Altium's 3D camera presets (PCB:ResetCamera To=...), by the names the   }
+{ tool takes; '' for a name that is not one of them.                       }
+Function CameraPreset(Name : String) : String;
+Begin
+    Result := '';
+    Name := LowerCase(Trim(Name));
+    If Name = 'top' Then Result := 'Top'
+    Else If Name = 'iso' Then Result := 'RotateOrtho'
+    Else If Name = 'bottom' Then Result := 'Bottom'
+    Else If Name = 'front' Then Result := 'Front'
+    Else If Name = 'back' Then Result := 'Back'
+    Else If Name = 'left' Then Result := 'Left'
+    Else If Name = 'right' Then Result := 'Right';
+End;
+
+Procedure TurnCamera(CameraTo : String);
+Begin
+    ResetParameters;
+    AddStringParameter('To', CameraTo);
+    RunProcess('PCB:ResetCamera');
+    SettleView(0);
+End;
 
 Function Gen_SwitchView(Params : String; RequestId : String) : String;
 Var
-    Mode : String;
+    Mode, Camera, CameraTo, FocusedKind, FpName, Views, One, Bad : String;
+    Hold : Integer;
+    Fit : Boolean;
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint : IPCB_LibComponent;
 Begin
-    Mode := ExtractJsonValue(Params, 'mode');
+    Mode := LowerCase(ExtractJsonValue(Params, 'mode'));
+    FpName := ExtractJsonValue(Params, 'footprint_name');
     If Mode = '' Then Mode := '3d';
-
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
+    Camera := LowerCase(ExtractJsonValue(Params, 'camera'));
+    Fit := LowerCase(ExtractJsonValue(Params, 'fit')) = 'true';
+    If (Mode <> '3d') And (Mode <> '2d') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No active PCB document');
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'mode is 3d or 2d, not "' + Mode + '"');
+        Exit;
+    End;
+    CameraTo := CameraPreset(Camera);
+    If (Camera <> '') And (CameraTo = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'camera is top, iso, bottom, front, back, left or right, not "' + Camera + '"');
+        Exit;
+    End;
+    { views: cameras to turn through, each held a moment, so the model is }
+    { seen from several sides. Checked whole before anything moves.      }
+    Views := LowerCase(ExtractJsonValue(Params, 'views'));
+    Bad := '';
+    One := Views;
+    While One <> '' Do
+    Begin
+        If Pos(',', One) > 0 Then
+        Begin
+            If CameraPreset(Copy(One, 1, Pos(',', One) - 1)) = '' Then Bad := Copy(One, 1, Pos(',', One) - 1);
+            One := Copy(One, Pos(',', One) + 1, Length(One));
+        End
+        Else
+        Begin
+            If CameraPreset(One) = '' Then Bad := One;
+            One := '';
+        End;
+    End;
+    If Bad <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'views lists cameras from top, iso, bottom, front, back, left, right; not "' + Bad + '"');
         Exit;
     End;
 
-    If (Mode = '3d') Or (Mode = '3D') Then
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
     Begin
-        ResetParameters;
-        RunProcess('PCB:SwitchTo3D');
-    End
-    Else
-    Begin
-        ResetParameters;
-        RunProcess('PCB:SwitchTo2D');
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
     End;
 
+    If (FpName <> '') And (FocusedKind <> 'PCBLIB') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'footprint_name needs a focused .PcbLib; the focused document is ' + FocusedKind);
+        Exit;
+    End;
+    If FpName <> '' Then
+    Begin
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
+        Footprint := Nil;
+        If PcbLib <> Nil Then
+        Begin
+            Iter := PcbLib.LibraryIterator_Create;
+            Try
+                Footprint := Iter.FirstPCBObject;
+                While Footprint <> Nil Do
+                Begin
+                    If Footprint.Name = FpName Then Break;
+                    Footprint := Iter.NextPCBObject;
+                End;
+            Finally
+                PcbLib.LibraryIterator_Destroy(Iter);
+            End;
+        End;
+        If Footprint = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'FOOTPRINT_NOT_FOUND',
+                'Footprint not found in the focused library: ' + FpName);
+            Exit;
+        End;
+        Try PcbLib.SetState_CurrentComponent(Footprint); Except NoteWriteFailed('make footprint current'); End;
+        ResetParameters;
+        AddStringParameter('Action', 'Redraw');
+        RunProcess('PCB:Zoom');
+    End;
+
+    If FocusedKind <> 'PCBLIB' Then
+    Begin
+        Board := GetPCBBoardAnywhere(0);
+        If Board = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'No board or footprint library has focus');
+            Exit;
+        End;
+    End;
+
+    ResetParameters;
+    If Mode = '3d' Then RunProcess('PCB:SwitchTo3D')
+    Else RunProcess('PCB:SwitchTo2D');
+    SettleView(0);
+
+    If Fit Then
+    Begin
+        { In 3D the fit is taken from straight above, then one step out:  }
+        { fitted at an angle, or without the step, the part fills the     }
+        { view and runs off its edges. The camera turn and both zooms go  }
+        { through with no redraw between them: each redraw showed a step  }
+        { on screen, and a large module (LTM8060) gave seconds of black   }
+        { from Zoom All, which in 3D lands inside the body until the step }
+        { out. The 3D view is drawn once after the switch, before the     }
+        { fit: fitted before it exists, the zoom used the last part's     }
+        { close camera and the module filled the screen.                  }
+        If Mode = '3d' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('To', 'Top');
+            RunProcess('PCB:ResetCamera');
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'All');
+        RunProcess('PCB:Zoom');
+        If Mode = '3d' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'Out');
+            RunProcess('PCB:Zoom');
+        End;
+        SettleView(0);
+    End;
+    If (Mode = '3d') And (Views <> '') Then
+    Begin
+        One := Views;
+        While One <> '' Do
+        Begin
+            If Pos(',', One) > 0 Then
+            Begin
+                TurnCamera(CameraPreset(Copy(One, 1, Pos(',', One) - 1)));
+                One := Copy(One, Pos(',', One) + 1, Length(One));
+            End
+            Else
+            Begin
+                TurnCamera(CameraPreset(One));
+                One := '';
+            End;
+            For Hold := 1 To 12 Do
+            Begin
+                Try Application.ProcessMessages; Except End;
+                Sleep(100);
+            End;
+        End;
+    End;
+    If (Mode = '3d') And (CameraTo <> '') Then TurnCamera(CameraTo);
+
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"mode":"' + EscapeJsonString(Mode) + '"}');
+        '{"success":true,"mode":"' + EscapeJsonString(Mode) + '","document_kind":"'
+        + EscapeJsonString(FocusedKind) + '","footprint_name":"' + EscapeJsonString(FpName)
+        + '","camera":"' + EscapeJsonString(Camera) + '","views":"' + EscapeJsonString(Views)
+        + '","fit":' + BoolToJsonStr(Fit) + '}');
 End;
 
 {..............................................................................}

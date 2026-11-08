@@ -55,6 +55,7 @@ class Citation:
     ref: str = ""        # figure, table or drawing number
     url: str = ""
     revision: str = ""
+    path: str = ""       # the datasheet PDF on disk, for the land-pattern check
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v}
@@ -204,6 +205,10 @@ class CustomPad:
     hole_length: float = 0.0
     plated: bool = True
     role: str = "signal"
+    #: A land that is not a rectangle (a cut corner, a step): its copper
+    #: outline, [x, y] points in mm. The pad (width x height) stays the
+    #: part of the land that carries the number and paste.
+    outline: tuple = ()
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -214,9 +219,25 @@ class CustomPad:
             return value
         if isinstance(value, dict):
             d = dict(value)
-            if "number" not in d and "name" in d:
-                d["number"] = d.pop("name")
+            for alias, key in (("designator", "number"), ("name", "number"),
+                               ("w", "width"), ("h", "height"),
+                               ("x_size", "width"), ("y_size", "height")):
+                if key not in d and alias in d:
+                    d[key] = d.pop(alias)
+            missing = [k for k in ("number", "x", "y", "width", "height") if k not in d]
+            if missing:
+                raise SpecError(
+                    f"a custom pad needs number, x, y, width and height (mm); "
+                    f"{', '.join(missing)} missing in {value!r}")
             d["number"] = str(d["number"])
+            if d.get("outline"):
+                try:
+                    d["outline"] = tuple((float(x), float(y)) for x, y in d["outline"])
+                except (TypeError, ValueError):
+                    raise SpecError(f"a pad outline is a list of [x, y] points "
+                                    f"in mm; got {d['outline']!r}") from None
+                if len(d["outline"]) < 3:
+                    raise SpecError("a pad outline needs at least 3 points")
             known = {f.name for f in fields(cls)}
             return cls(**{k: v for k, v in d.items() if k in known})
         raise SpecError(f"cannot read a pad from {value!r}")
@@ -268,10 +289,18 @@ class VendorLandPattern:
         if not isinstance(value, dict):
             raise SpecError(f"cannot read a vendor land pattern from {value!r}")
         d = dict(value)
+        for alias in ("land", "land_d", "diameter", "pad_diameter"):
+            if alias in d and "land_diameter" not in d:
+                d["land_diameter"] = d.pop(alias)
         d["cite"] = Citation.from_any(d.get("cite"))
         d["pads"] = tuple(CustomPad.from_any(p) for p in d.get("pads") or ())
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})
+        unknown = sorted(k for k in d if k not in known)
+        if unknown:
+            raise SpecError(
+                f"the vendor land pattern has no field {', '.join(unknown)}; "
+                f"it takes {', '.join(sorted(known))}")
+        return cls(**d)
 
 
 #: Families and what each needs. The values are the fields a builder

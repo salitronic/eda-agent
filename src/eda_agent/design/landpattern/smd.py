@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 from eda_agent.design.landpattern import ipc7351 as ipc
 from eda_agent.design.landpattern.builder import Builder
+from eda_agent.design.landpattern.model import Polygon
 from eda_agent.design.landpattern.spec import Dim, SpecError, dim
 
 __all__ = ["FAMILY_BUILDERS", "bga_row_label"]
@@ -494,27 +495,47 @@ def bga_row_label(i: int) -> str:
     return _BGA_LETTERS[i // n - 1] + _BGA_LETTERS[i % n]
 
 
+#: Where ball A1 sits, seen from the top: (left?, top?).
+_A1_CORNERS = {"top_left": (True, True), "top_right": (False, True),
+               "bottom_left": (True, False), "bottom_right": (False, False)}
+
+
 def _grid(b: Builder, land_w: float, land_h: float, shape: str) -> None:
-    """Lands on a rows x cols grid, A1 top left. ``depopulated`` drops
-    positions by JEDEC name. ``options['names']`` renames the positions in
-    row-major order (A1, A2, ..., B1, ...), '' dropping one: an LGA whose
+    """Lands on a rows x cols grid (rows along Y, cols along X). By default
+    the letters run down the rows and A1 is top left; datasheets differ, so
+    ``options['letters']`` puts the letters along "y" (default) or "x", and
+    ``options['a1']`` puts A1 at top_left (default), top_right, bottom_left
+    or bottom_right, both as the top view shows them. ``depopulated`` drops
+    positions by name. ``options['names']`` renames the positions in
+    letter-major order (A1, A2, ..., B1, ...), '' dropping one: an LGA whose
     pins are numbered 1..n rather than by grid position."""
     s = b.spec
     px = s.pitch.nom
     py = (s.pitch_y or s.pitch).nom
-    grid_names = [bga_row_label(r) + str(c + 1)
-                  for r in range(s.rows) for c in range(s.cols)]
+    opts = s.options or {}
+    letters = str(opts.get("letters", "y")).lower()
+    corner = str(opts.get("a1", "top_left")).lower()
+    if letters not in ("x", "y"):
+        raise SpecError("options['letters'] is 'y' (letters down the rows) or 'x' "
+                        "(letters along the columns)")
+    if corner not in _A1_CORNERS:
+        raise SpecError("options['a1'] is one of " + ", ".join(_A1_CORNERS))
+    left, top = _A1_CORNERS[corner]
+    n_letters = s.rows if letters == "y" else s.cols
+    n_numbers = s.cols if letters == "y" else s.rows
+    grid_names = [bga_row_label(li) + str(ni + 1)
+                  for li in range(n_letters) for ni in range(n_numbers)]
     unknown = [d for d in s.depopulated if d not in grid_names]
     if unknown:
         raise SpecError(f"depopulated positions not in the grid: {', '.join(unknown)}")
-    rename = (s.options or {}).get("names")
+    rename = opts.get("names")
     if rename is not None and len(rename) != len(grid_names):
         raise SpecError(f"options['names'] needs {len(grid_names)} entries "
-                        f"(rows x cols, row-major), got {len(rename)}")
+                        f"(rows x cols, letter-major), got {len(rename)}")
     first_name = None
-    for r in range(s.rows):
-        for c in range(s.cols):
-            k = r * s.cols + c
+    for li in range(n_letters):
+        for ni in range(n_numbers):
+            k = li * n_numbers + ni
             name = grid_names[k]
             if name in s.depopulated:
                 continue
@@ -522,8 +543,13 @@ def _grid(b: Builder, land_w: float, land_h: float, shape: str) -> None:
                 name = str(rename[k])
                 if not name:
                     continue
-            x = -(s.cols - 1) * px / 2.0 + c * px
-            y = (s.rows - 1) * py / 2.0 - r * py
+            xi, yi = (ni, li) if letters == "y" else (li, ni)
+            if not left:
+                xi = s.cols - 1 - xi
+            if not top:
+                yi = s.rows - 1 - yi
+            x = -(s.cols - 1) * px / 2.0 + xi * px
+            y = (s.rows - 1) * py / 2.0 - yi * py
             b.pad(name, x, y, land_w, land_h, shape=shape, group="grid")
             if first_name is None:
                 first_name = name
@@ -555,8 +581,15 @@ def _bga(b: Builder) -> None:
     info = ipc.bga_land(s.ball_diameter.nom, collapsing=collapsing,
                         use_mmc=use_mmc)
     land = info["land"]
+    vendor_land = s.vendor.land_diameter if s.vendor else None
+    if vendor_land:
+        # The manufacturer's land pattern comes first; IPC only fills in
+        # where the datasheet gives none.
+        info = dict(info, land=vendor_land, ipc_land=land, in_table=True)
+        land = vendor_land
     b.record("ball_land", info)
     b.calcs["ball_land"]["source"] = (
+        "the manufacturer's recommended land diameter" if vendor_land else
         "IPC-7351B land approximation for "
         + ("collapsible" if collapsing else "non-collapsible")
         + " solder balls (Hausherr CADlib pp. 34-35)")
@@ -598,12 +631,22 @@ def _custom(b: Builder) -> None:
               role=cp.role, group="custom", kind=kind, hole=cp.hole,
               hole_length=cp.hole_length, plated=cp.plated,
               rotation=cp.rotation)
+        if cp.outline:
+            pts = [tuple(p) for p in cp.outline]
+            b.land_outlines += [Polygon("copper", pts, 0.0, filled=True, kind=f"land {cp.number}"),
+                                Polygon("mask", pts, 0.0, filled=True, kind=f"land {cp.number}")]
     b.excess = float((s.options or {}).get(
         "courtyard_excess", ipc.goal_table("gullwing").at(b.d).courtyard))
     if s.body_x is not None and s.body_y is not None:
         b.set_body(s.body_x.max, s.body_y.max)
     b.marker = bool(s.polarized)
-    p1 = next((p for p in b.pads if p.number == "1"), b.pads[0])
+    # Pin 1 is the pad the spec names, else "1", else "A1"; the first pad
+    # listed is only a last resort (a ball map listed from row 9 put the
+    # marker at A9).
+    names = [str(s.pin1)] if s.pin1 and s.pin1 != "default" else []
+    p1 = next((p for n in names + ["1", "A1"] for p in b.pads if p.number == n),
+              b.pads[0])
+    b.pin1_name = p1.number
     b.pin1_candidates = b.cands_row_end_then_toe(p1, "left")
 
 

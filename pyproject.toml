@@ -46,6 +46,14 @@ dependencies = [
     # The board layout engine (layout/): distance transforms, sparse
     # solves and graph searches for the placer, router and pours.
     "scipy>=1.10,<2",
+    # Text search in datasheet PDFs (design/datasheet_search.py): finds the
+    # page a manufacturer's land pattern is on. Pure Python, BSD.
+    "pypdf>=4,<7",
+    # Renders a region of a datasheet page as an image, with the printed
+    # numbers and where they sit (design/datasheet_render.py): the
+    # land-pattern figure is read zoomed and set beside the lands built
+    # from it. PDFium bindings, Apache-2.0 / BSD.
+    "pypdfium2>=4,<6",
     # Pure-Python OLE/CFB reader for the headless Altium file parsers
     # (fileio/): read .SchDoc/.PcbDoc without a running Altium. Tiny, no
     # native deps; stable API across its 0.4x line.

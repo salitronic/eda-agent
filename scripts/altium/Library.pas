@@ -529,7 +529,7 @@ End;
 
 Function Lib_CreateSymbol(Params : String; RequestId : String) : String;
 Var
-    Name, DesignatorPrefix, Description : String;
+    Name, DesignatorPrefix, Description, LibPath : String;
     SchLib : ISch_Lib;
     Component, Verify : ISch_Component;
     PartCount, ActualParts : Integer;
@@ -549,7 +549,18 @@ Begin
         Exit;
     End;
 
-    SchLib := SchServer.GetCurrentSchDocument;
+    { library_path: the open SchLib by path, left unfocused. The symbol is  }
+    { made current there, so focusing the library afterwards shows the new }
+    { symbol, not the one it showed last.                                  }
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        LibPath := CanonicalPathValue('path', LibPath);
+        SchLib := Nil;
+        Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
+    End
+    Else
+        SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
@@ -1393,6 +1404,28 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create line');
 End;
 
+{ The open PcbLib at Path, opened as a document when it is not open yet.     }
+{ Path arrives with backslashes (CanonicalPathValue): a library open as     }
+{ C:\x\y.PcbLib was not found as C:/x/y.PcbLib, and LoadPCBLibraryByPath     }
+{ then loaded a second, hidden copy. A copy into it answered success and    }
+{ never reached the open library or the file. A library that is not open    }
+{ is opened through the client, so the edit is in a document that saves.    }
+{ The hidden load is the last resort and says so in Hidden.                 }
+Function PcbLibAtPath(Var Path : String; Var Hidden : Boolean) : IPCB_Library;
+Begin
+    Result := Nil;
+    Hidden := False;
+    Path := CanonicalPathValue('path', Path);
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    If Not FileExists(Path) Then Exit;
+    Try Client.OpenDocument('PCBLIB', Path); Except End;
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    Try Result := PCBServer.LoadPCBLibraryByPath(Path); Except Result := Nil; End;
+    Hidden := (Result <> Nil);
+End;
+
 { A name the library already has is refused, as rename and copy refuse it   }
 { (NAME_EXISTS): Altium registers the second footprint without complaint,   }
 { and every later lookup by name then reaches the FIRST, so writes meant for }
@@ -1400,11 +1433,11 @@ End;
 { own lookups are.                                                           }
 Function Lib_CreateFootprint(Params : String; RequestId : String) : String;
 Var
-    Name, Description, CurName : String;
+    Name, Description, CurName, LibPath : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Iter : IPCB_LibraryIterator;
-    Clash : Boolean;
+    Clash, Hidden : Boolean;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     Description := ExtractJsonValue(Params, 'description');
@@ -1414,7 +1447,21 @@ Begin
         Exit;
     End;
 
-    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    { library_path: the open PcbLib by path, left unfocused. The footprint  }
+    { is made current there, so focusing the library afterwards shows the  }
+    { new footprint, not the one it showed last.                           }
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        PcbLib := PcbLibAtPath(LibPath, Hidden);
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No open PCB library at ' + LibPath);
+            Exit;
+        End;
+    End
+    Else
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
@@ -12127,28 +12174,6 @@ Begin
         + ',"skipped":' + IntToStr(Skipped)
         + ',"failed":' + IntToStr(Failed) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
-End;
-
-{ The open PcbLib at Path, opened as a document when it is not open yet.     }
-{ Path arrives with backslashes (CanonicalPathValue): a library open as     }
-{ C:\x\y.PcbLib was not found as C:/x/y.PcbLib, and LoadPCBLibraryByPath     }
-{ then loaded a second, hidden copy. A copy into it answered success and    }
-{ never reached the open library or the file. A library that is not open    }
-{ is opened through the client, so the edit is in a document that saves.    }
-{ The hidden load is the last resort and says so in Hidden.                 }
-Function PcbLibAtPath(Var Path : String; Var Hidden : Boolean) : IPCB_Library;
-Begin
-    Result := Nil;
-    Hidden := False;
-    Path := CanonicalPathValue('path', Path);
-    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
-    If Result <> Nil Then Exit;
-    If Not FileExists(Path) Then Exit;
-    Try Client.OpenDocument('PCBLIB', Path); Except End;
-    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
-    If Result <> Nil Then Exit;
-    Try Result := PCBServer.LoadPCBLibraryByPath(Path); Except Result := Nil; End;
-    Hidden := (Result <> Nil);
 End;
 
 { AlignCopiedFootprint - after Footprint.CopyTo, put every primitive of the    }

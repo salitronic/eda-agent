@@ -7,6 +7,7 @@ All intelligence lives in the Python/MCP side, the DelphiScript is just
 a pass-through layer for object iteration, property access, and process execution.
 """
 
+import asyncio
 import difflib
 import re
 from typing import Any, Optional
@@ -372,6 +373,53 @@ async def _send_rule_aware(tool: str, object_types: list[str],
     if not any(is_rule_type(t) for t in object_types):
         return await run()
     return await logged_rule_edit(get_bridge(), tool, params, run)
+
+
+def _cursor_to_view_centre() -> bool:
+    """Put Altium's 3D cursor on the middle of its view, where the 2D fit
+    put the footprint. True when the view was found and told.
+
+    In 3D, Zoom All frames the footprint together with Altium's 3D cursor,
+    which follows the mouse: with the mouse elsewhere the fit took in empty
+    space and a footprint came out a few pixels wide. A mouse move is
+    posted to the view itself, so the user's pointer, the window order and
+    the foreground are left alone; nothing is sent with UI automation off.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    from ..ui import menu, windows
+    from .uiauto import _altium_pid
+
+    pid, problem = _altium_pid()
+    if problem is not None or not windows.automation_enabled():
+        return False
+    frame = menu.frame(pid)
+    if frame is None:
+        return False
+    user32 = ctypes.windll.user32
+    found: list[tuple[int, int]] = []
+    callback = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _):
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if name.value == "View_Graphical" and user32.IsWindowVisible(hwnd):
+            rect = wintypes.RECT()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            found.append((rect.right * rect.bottom, hwnd))
+        return True
+
+    user32.EnumChildWindows(frame.hwnd, callback(visit), 0)
+    if not found:
+        return False
+    view = max(found)[1]
+    rect = wintypes.RECT()
+    user32.GetClientRect(view, ctypes.byref(rect))
+    x, y = rect.right // 2, rect.bottom // 2
+    for dx in (0, 1):  # a move, as Altium sees one
+        user32.PostMessageW(view, 0x0200, 0, ((y & 0xFFFF) << 16) | ((x + dx) & 0xFFFF))
+    return True
 
 
 def register_generic_tools(mcp):
@@ -1013,6 +1061,15 @@ def register_generic_tools(mcp):
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )
+        # Fit All Objects in a symbol library leaves no margin: the top pin
+        # row sits under the editor's floating toolbar. One Zoom Out step
+        # (AdvSch.rcs PLSch:ZoomOut) clears it.
+        if (action == "fit" and isinstance(result, dict)
+                and str(result.get("document_kind") or "").upper() == "SCHLIB"):
+            await bridge.send_command_async(
+                "generic.run_process",
+                {"process": "Sch:Zoom", "params": "Action=ZoomOut"})
+            result = {**result, "margin": "zoomed out one step"}
         return result
 
     @mcp.tool()
@@ -1787,20 +1844,69 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def obj_switch_view(
         mode: str = "3d",
+        camera: str = "",
+        fit: bool = False,
+        footprint_name: str = "",
+        views: str = "",
     ) -> dict[str, Any]:
-        """Toggle between 2D and 3D view for PCB documents.
+        """Switch the focused board or footprint library (.PcbLib)
+        between 2D and 3D view.
 
         Args:
-            mode: Target view mode, "3d" or "2d" (default "3d")
+            mode: "3d" or "2d" (default "3d").
+            camera: 3D only, where the view ends: "top", "iso"
+                (tilted), "bottom", "front", "back", "left" or "right";
+                empty keeps the current camera.
+            fit: frame everything (in 3D from above, one step out).
+            views: 3D only, cameras to turn through first, each held a
+                moment, e.g. "iso,bottom,front" to show a model from
+                several sides.
+            footprint_name: in a .PcbLib, the footprint to show; without
+                it the editor shows whichever footprint is current. With
+                another document in front, the only open .PcbLib is
+                brought forward first.
 
         Returns:
             Dictionary confirming the view switch
         """
+        params: dict[str, Any] = {"mode": mode}
+        if camera:
+            params["camera"] = camera
+        if fit:
+            params["fit"] = "true"
+        if footprint_name:
+            params["footprint_name"] = footprint_name
+        if views:
+            params["views"] = views
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.switch_view",
-            {"mode": mode},
-        )
+        if footprint_name:
+            # The footprint lives in a PcbLib: with the symbol library in
+            # front the call was refused, so a part drawn footprint-first
+            # could not be shown after its symbol.
+            from .library import _focus_document, _only_open_pcblib
+            await _focus_document(bridge, await _only_open_pcblib(bridge))
+        if not (fit and mode.lower() == "3d"):
+            return await bridge.send_command_async("generic.switch_view", params)
+        # 3D fit in three steps: into 3D from above, the fit with the 3D
+        # cursor on the part, then the turns.
+        first = {k: v for k, v in params.items() if k not in ("fit", "views")}
+        first["camera"] = "top"
+        result = await bridge.send_command_async("generic.switch_view", first)
+        await asyncio.sleep(0.3)
+        if _cursor_to_view_centre():
+            await asyncio.sleep(0.4)
+        # Zoom All, then one step out so the turns stay in the view; no
+        # camera move between the cursor and the fit, which would carry
+        # the cursor off the part again.
+        for action in ("All", "Out"):
+            await bridge.send_command_async(
+                "generic.run_process", {"process": "PCB:Zoom", "params": f"Action={action}"})
+            await asyncio.sleep(0.3)
+        last = {k: v for k, v in params.items() if k in ("mode", "camera", "views")}
+        if len(last) > 1:
+            result = await bridge.send_command_async("generic.switch_view", last)
+        if isinstance(result, dict):
+            result = {**result, "fit": True, "camera": camera, "views": views}
         return result
 
     @mcp.tool()

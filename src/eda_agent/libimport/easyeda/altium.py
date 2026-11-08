@@ -439,8 +439,15 @@ def build_altium_plan(
                 f"Add them by hand, or the board will not be drilled for "
                 f"them.")
         if pads:
+            # Lands read from a vendor library, not drawn by hand: they
+            # carry their own id so a new footprint takes them.
+            from ...design.landpattern.compare_figure import ISSUED
+            import hashlib
+            imported = "imported-" + hashlib.sha1(
+                repr((fp_name, pads)).encode()).hexdigest()[:12]
+            ISSUED[imported] = len(pads)
             steps.append({"tool": "lib_add_footprint_pads",
-                          "args": {"pads": pads}})
+                          "args": {"pads": pads, "compared": imported}})
         else:
             warnings.append("footprint has no pads")
 
