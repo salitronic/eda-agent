@@ -2245,7 +2245,8 @@ Begin
         End
         { A round rectangle's corner radii live on ISch_RoundRectangle only,
           so the same narrowing as Corner: never Obj.CornerXRadius on the
-          base interface, which halts the script on any other type. }
+          base interface, which halts the script on any other type
+          (issue #268). }
         Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
         Begin
             If Obj.ObjectId = eRoundRectangle Then
@@ -2690,7 +2691,8 @@ Begin
         Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection)
         { A name no branch above reads came back as a silent blank, the
           same answer as an empty value: a misspelt or unsupported name
-          looked like a property that is there and empty. Say so. }
+          looked like a property that is there and empty. Say so
+          (issue #268). }
         Else
             NotePropertyDiag('unknown', PropName);
     Except
