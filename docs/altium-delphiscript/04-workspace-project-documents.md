@@ -170,6 +170,40 @@ The sheet ports (the off-sheet connectors).
 **`DM_SheetSymbolCount : Integer`** / **`DM_SheetSymbols(I)`**: the sheet symbols
 (hierarchy children), each exposing **`DM_SheetEntryCount` / `DM_SheetEntries(I)`**.
 
+**A port's or sheet entry's two net names** (both `INetItem`; read only, the
+compiler sets them; measured on AD 25.8.1):
+- **`DM_NetName`**: the net's name on the item's OWN sheet: the label, power
+  port or port that names the wire it sits on there.
+- **`DM_FlattenedNetName`, read on the item of a PHYSICAL document**
+  (`IProject.DM_PhysicalDocuments(I)`, after a compile): the name of the net
+  it ends up in across the whole project, which Altium's Properties panel
+  calls the physical net. A repeated (multi-channel) sheet has one physical
+  document per channel, told apart by `DM_PhysicalInstanceName`, so each copy
+  of a port has its own physical net.
+
+The same member read on the item of a sheet's LOGICAL document
+(`DM_LogicalDocuments`) only repeats `DM_NetName`; `DM_OwnerNetLogical` gives
+that name too and `DM_OwnerNetPhysical` gives nothing. In the flattened
+document (`DM_DocumentFlattened`) the nets keep their labels and pins (each
+label's `DM_FlattenedNetName` is the project-wide name there) but list no
+ports or sheet entries.
+
+They differ when a name from another sheet wins. Example: a label
+`PARENT_NET` on the wire to a sheet entry, and a label `CHILD_NET`
+on the wire to the matching port in the child sheet. The entry's `DM_NetName`
+is `PARENT_NET` and the port's is `CHILD_NET`, whatever the
+project options say. Which name the whole net takes depends on the project
+option "Higher Level Names Take Priority" (Project Options, Options tab): off,
+the child's label won (`CHILD_NET`); on, the parent's label wins
+(`PARENT_NET`), so names drive down the hierarchy. The compiler reports
+every such net as the warning "Nets with multiple names", listing each label,
+port and entry that names it (`run_erc` / `get_erc_violations`).
+`proj_get_hierarchy` returns them per port and entry as `net` and `physical`
+(one `{instance, net}` per physical copy, matched by sheet, kind and
+location), with `x` / `y`; **`DM_LocationX` / `DM_LocationY`** are in internal
+units (10000 per mil). A sheet entry's `DM_PortName` is empty: the compiler
+gives an entry no name of its own, only its net's.
+
 **`DM_ConstraintGroupCount : Integer`** / **`DM_ConstraintGroups(I)`**
 The constraint groups on the document; a group exposes
 **`DM_ConstraintCount` / `DM_Constraints(I)`**.
