@@ -204,6 +204,22 @@ custom field).
 **`DM_Name` / `DM_Value : String`**: the document-model view of the same
 parameter (compiled side).
 
+**`NameIsReadOnly` / `ValueIsReadOnly : Boolean`** and **`ReadOnlyState`** (0
+none, 1 name, 2 value, 3 both): what Altium keeps for itself. The Properties
+panel will not edit a name or value marked read-only, and neither does the
+generic layer: `obj_modify` lists a `Name` or `Text` write on such a parameter
+under `failed` and leaves it alone. The display (font, colour, justification,
+`IsHidden`, `Autoposition`, `Location`) stays writable.
+
+**A port's `CrossRef`.** Every port carries one child parameter named
+`CrossRef`, read-only in both name and value: the sheet numbers the port's net
+reaches, written by the compiler when cross references are on. A query of
+`eParameter` returns it like any other parameter (`Name=CrossRef` in the
+filter), with its font, colour, justification, `IsHidden` and `Autoposition`.
+Nothing on it names its port: with `Autoposition` on it sits 20 mil past the
+port's free end (the end with no wire, or the left / bottom end when neither
+or both ends are wired), which is how to pair the two.
+
 ---
 
 ## 2.5 `ISch_Iterator`
@@ -290,6 +306,40 @@ A power port / ground symbol.
 `ePowerGndSignal`, `ePowerGndEarth`). **`Location : TLocation`** /
 **`GetState_Location : TLocation`**: its position. **`Orientation : TRotationBy90`**.
 **`ShowNetName : Boolean`**: whether the net name is drawn.
+
+### `ISch_Port`
+A port: the net leaves the sheet here, up to the sheet symbol that uses the
+sheet (or across to another sheet in a flat design). Measured on AD 25.8.1.
+
+**`Name : String`**: the port's name (a port has no `Text`).
+**`Location : TLocation`**: always the LEFT end of a horizontal port and the
+BOTTOM end of a vertical one, with the other coordinate on the port's centre
+line, whichever way it was turned.
+**`Style`**: only the axis, **0 horizontal, 4 vertical**. A port has no
+`Orientation`; a turn of 180 degrees is not stored (the port reads the same,
+only `Alignment` swaps 1 and 2). The arrow shapes on screen are not in `Style`:
+Altium draws them from `IOType` and `ConnectedEnd`. Values 1-3 and 5-7 read
+back but come back as 0 / 4 after a save and reopen, so the generic layer
+refuses them. Writing 4 turns a horizontal port a quarter turn
+counterclockwise about `Location`; 0 turns it back.
+**`IOType`**: 0 unspecified, 1 output, 2 input, 3 bidirectional.
+**`Width`**, **`Height`** (mils). With **`AutoSize`** on, Altium widens a port
+to its name (text width + 197.75 mil at height 100, Times New Roman 10) but
+never narrows it; the wired end stays put and the port grows away from it.
+**`Alignment`**: where the name sits in a port wider than it, in sheet terms:
+horizontal 0 centre, 1 left, 2 right; vertical 1 top, 2 bottom.
+**`ConnectedEnd`** (read only, worked out by Altium from the wiring): 0 none,
+1 the `Location` end, 2 the far end, 3 both.
+**`ShowNetName`**, **`Color`** (border), **`AreaColor`** (fill),
+**`TextColor`**, **`FontId`**: written and kept after a save and reopen.
+**`OverrideDisplayString`** and **`HarnessColor`** read back after a write but
+were gone after a reopen on a port with no harness.
+Its child parameter **`CrossRef`** is described under 2.4.
+
+The port's two net names are on the compiled side (`IPort`, an `INetItem`,
+[page 4](04-workspace-project-documents.md)): **`DM_NetName`** is the net's
+name on the port's own sheet, **`DM_FlattenedNetName`** the name of the net
+it ends up in across the whole project.
 
 ### `ISch_Label`
 A free text label.

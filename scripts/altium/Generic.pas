@@ -2656,6 +2656,39 @@ Begin
     End;
 End;
 
+{ A parameter whose name or value Altium keeps for itself. A port's CrossRef  }
+{ (the sheets the port reaches, written by the compiler) reads               }
+{ NameIsReadOnly and ValueIsReadOnly true. MEASURED on AD 25.8.1: a Text     }
+{ write landed on it anyway, and a Name write did nothing while reporting    }
+{ success. Altium's own Properties panel refuses both, so the generic layer  }
+{ does too. True when Altium keeps the value (ForValue) or the name.        }
+Function SchParamKeptByAltium(Obj : ISch_GraphicalObject; ForValue : Boolean) : Boolean;
+Var
+    Par : ISch_Parameter;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eParameter Then Exit;
+    Par := Obj;
+    Try
+        If ForValue Then Result := Par.ValueIsReadOnly
+        Else Result := Par.NameIsReadOnly;
+    Except
+        Result := False;
+    End;
+End;
+
+{ A port's Style is only its axis: 0 horizontal, 4 vertical. MEASURED on     }
+{ AD 25.8.1: 1-3 and 5-7 are taken and read back, then come back as 0 / 4    }
+{ after a save and reopen; Altium draws a port's arrows from its IOType and  }
+{ the end that is wired (ConnectedEnd), not from Style. Writing 4 turns a    }
+{ horizontal port a quarter turn counterclockwise about its Location (the   }
+{ left end becomes the bottom end); 0 turns it back.                         }
+Function PortStyleKept(Value : String) : Boolean;
+Begin
+    Result := (Value = '0') Or (Value = '4');
+End;
+
 {..............................................................................}
 { Generic Property Setter                                                     }
 { Sets a named property on a schematic object from a string value.           }
@@ -2772,14 +2805,24 @@ Begin
         Else If PropName = 'Text'        Then
         Begin
             If SchObjectHasText(Obj) Then
-                Obj.Text := Value
+            Begin
+                If SchParamKeptByAltium(Obj, True) Then
+                    WroteOK := False
+                Else
+                    Obj.Text := Value;
+            End
             Else
                 Matched := False;
         End
         Else If PropName = 'Name'        Then
         Begin
             If SchObjectHasName(Obj) Then
-                Obj.Name := Value
+            Begin
+                If SchParamKeptByAltium(Obj, False) Then
+                    WroteOK := False
+                Else
+                    Obj.Name := Value;
+            End
             Else
                 Matched := False;
         End
@@ -2974,7 +3017,13 @@ Begin
                 NotePropertyDiag('unknown', PropName);
         End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
-        Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
+        Else If PropName = 'Style'       Then
+        Begin
+            If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
+                WroteOK := False
+            Else
+                Obj.Style := StrToIntDef(Value, 0);
+        End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
         Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
