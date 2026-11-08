@@ -7031,12 +7031,13 @@ def register_library_tools(mcp):
 
         Args:
             footprint_name: The footprint.
-            out_path: Full path of the new .PcbLib.
+            out_path: Full path of a new .PcbLib. Existing or open outputs
+                are refused; the source is never overwritten.
             library_path: The source library. Defaults to the focused one.
 
         Returns:
             ``written`` (a new file is at out_path) and ``reported``
-            (what Altium said).
+            (whether the new destination was saved).
         """
         import os
         if not footprint_name.strip():
