@@ -600,7 +600,6 @@ Var
     Txt   : IPCB_Text;
     Arc   : IPCB_Arc;
     Fill  : IPCB_Fill;
-    Body  : IPCB_ComponentBody;
 Begin
     Result := 0;
     Found := False;
@@ -626,9 +625,10 @@ Begin
         End
         Else If Oid = eComponentBodyObject Then
         Begin
-            Body := Obj;
-            If WantY Then Result := Body.y Else Result := Body.x;
-            Found := True;
+            { No portable x/y member on IPCB_ComponentBody (AD21 halts
+              even inside Try). Use Bounds* for the extent; do not invent
+              an origin from an outline vertex or bounding-box centre. }
+            Found := False;
         End
         Else If Oid = eTextObject Then
         Begin
