@@ -541,6 +541,30 @@ Begin
         Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
 End;
 
+{ Transparent and LineStyle, ALLOWLISTS (an absent member halts the       }
+{ script), and only where Altium SAVES the value. MEASURED on AD 25.8.1 on }
+{ a scratch sheet, written, saved and reopened: Transparent kept on the    }
+{ rectangle and ellipse (and the blanket and polygon, read here before);   }
+{ the round rectangle, text frame and note take it, read it back and lose  }
+{ it on save. LineStyle kept on the line and rectangle (and the blanket);  }
+{ the text frame and note lose it, a round rectangle does not save it, an  }
+{ ellipse and a polygon have none.                                         }
+Function SchObjectHasTransparent(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon)
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eEllipse);
+End;
+
+Function SchObjectHasLineStyle(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eLine)
+        Or (Obj.ObjectId = eRectangle);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -564,7 +588,8 @@ Begin
     Result := False;
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
-        Or (Obj.ObjectId = eHarnessEntry);
+        Or (Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote);
 End;
 
 { FontId belongs to ISch_Label and the types built on it (net labels,
@@ -721,7 +746,11 @@ Begin
        (PropName = 'ValueIsReadOnly') Or (PropName = 'IsRule') Or
        (PropName = 'IsSystemParameter') Or (PropName = 'IsConfigurable') Then Result := 3
     Else If (PropName = 'AutoSize') Or (PropName = 'OverrideDisplayString') Or
-       (PropName = 'HarnessColor') Or (PropName = 'ConnectedEnd') Then Result := 4;
+       (PropName = 'HarnessColor') Or (PropName = 'ConnectedEnd') Then Result := 4
+    Else If (PropName = 'WordWrap') Or (PropName = 'ClipToRect') Or
+       (PropName = 'TextMargin') Then Result := 5
+    Else If PropName = 'Author' Then Result := 6
+    Else If PropName = 'ShowBorder' Then Result := 7;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -733,7 +762,12 @@ Begin
     Result := ((Owner = 1) And (Obj.ObjectId = ePin))
         Or ((Owner = 2) And (Obj.ObjectId = eSchComponent))
         Or ((Owner = 3) And (Obj.ObjectId = eParameter))
-        Or ((Owner = 4) And (Obj.ObjectId = ePort));
+        Or ((Owner = 4) And (Obj.ObjectId = ePort))
+        Or ((Owner = 5) And ((Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote)))
+        Or ((Owner = 6) And (Obj.ObjectId = eNote))
+        { A note is always drawn with its border: ShowBorder written false  }
+        { read back true (AD 25.8.1), so only a text frame takes it.         }
+        Or ((Owner = 7) And (Obj.ObjectId = eTextFrame));
 End;
 
 { A whole-number extra (0 or more), a true / false one, or neither (text). }
@@ -759,7 +793,9 @@ Begin
     Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor')
             And (PropName <> 'LibraryPath') And (PropName <> 'AliasAsText'))
         Or (PropName = 'AllowLibrarySynchronize') Or
-        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize');
+        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize') Or
+        ((SchExtraOwner(PropName) = 5) And (PropName <> 'TextMargin')) Or
+        (PropName = 'ShowBorder');
 End;
 
 { PIN FUNCTIONS ON ALTIUM 25. GetDefinedFunctionsCount, GetDefinedFunction, }
@@ -851,6 +887,8 @@ Var
     Comp : ISch_Component;
     Par : ISch_Parameter;
     Port : ISch_Port;
+    TF : ISch_TextFrame;
+    NoteObj : ISch_Note;
 Begin
     Result := '';
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -896,6 +934,22 @@ Begin
         Else If PropName = 'HarnessColor' Then Result := IntToStr(Port.HarnessColor)
         Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd);
     End
+    { A note is a text frame: the border switch, word wrap, clip and margin  }
+    { are ISch_TextFrame members (issue: notes and frames had no route to   }
+    { them). TextMargin in mils, decimals kept.                              }
+    Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+    Begin
+        TF := Obj;
+        If PropName = 'ShowBorder' Then Result := BoolToJsonStr(TF.ShowBorder)
+        Else If PropName = 'WordWrap' Then Result := BoolToJsonStr(TF.WordWrap)
+        Else If PropName = 'ClipToRect' Then Result := BoolToJsonStr(TF.ClipToRect)
+        Else If PropName = 'TextMargin' Then Result := FloatToJsonStr(CoordToMilsF(TF.TextMargin))
+        Else If PropName = 'Author' Then
+        Begin
+            NoteObj := Obj;
+            Result := NoteObj.Author;
+        End;
+    End
     Else
     Begin
         Comp := Obj;
@@ -920,9 +974,12 @@ Var
     Comp : ISch_Component;
     Par : ISch_Parameter;
     Port : ISch_Port;
+    TF : ISch_TextFrame;
+    NoteObj : ISch_Note;
     Rest, Item, Wanted, Slashed, OldName : String;
     SemiPos, N : Integer;
     B, IsBool, IsInt, Native : Boolean;
+    Mils : Double;
 Begin
     Result := False;
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -946,6 +1003,14 @@ Begin
     Begin
         If LowerCase(Value) = 'true' Then B := True
         Else If LowerCase(Value) <> 'false' Then Exit;
+    End;
+    { A frame's text margin: mils, decimals kept, not below 0. }
+    Mils := 0;
+    If PropName = 'TextMargin' Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        Mils := StrToFloatDef(Value, -1);
+        If Mils < 0 Then Exit;
     End;
     If Obj.ObjectId = ePin Then
     Begin
@@ -1019,6 +1084,19 @@ Begin
         Else If PropName = 'OverrideDisplayString' Then Port.OverrideDisplayString := Value
         Else If PropName = 'HarnessColor' Then Port.HarnessColor := N;
     End
+    Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+    Begin
+        TF := Obj;
+        If PropName = 'ShowBorder' Then TF.ShowBorder := B
+        Else If PropName = 'WordWrap' Then TF.WordWrap := B
+        Else If PropName = 'ClipToRect' Then TF.ClipToRect := B
+        Else If PropName = 'TextMargin' Then TF.TextMargin := MilsToCoordF(Mils)
+        Else If PropName = 'Author' Then
+        Begin
+            NoteObj := Obj;
+            NoteObj.Author := Value;
+        End;
+    End
     Else
     Begin
         Comp := Obj;
@@ -1035,6 +1113,7 @@ Begin
     If IsInt Then Result := SchGetExtra(Obj, PropName) = IntToStr(N)
     Else If IsBool Then Result := SchGetExtra(Obj, PropName) = BoolToJsonStr(B)
     Else If PropName = 'DefinedFunctions' Then Result := SchGetExtra(Obj, PropName) = Wanted
+    Else If PropName = 'TextMargin' Then Result := SchGetExtra(Obj, PropName) = FloatToJsonStr(Mils)
     Else Result := SchGetExtra(Obj, PropName) = Value;
 End;
 
@@ -1173,7 +1252,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1184,9 +1263,10 @@ Begin
     Result := Copy(PropName, Pos('.', PropName) + 1, 99);
 End;
 
-{ IsHidden, position and Autoposition of a label (see SchLabelOf). Field is }
-{ 'IsHidden', 'Location.X', 'Location.Y' or 'Autoposition'; positions are  }
-{ in mils. Returns '' when the object carries no such label.              }
+{ IsHidden, position, Autoposition and font of a label (see SchLabelOf).    }
+{ Field is 'IsHidden', 'Location.X', 'Location.Y', 'Autoposition' or       }
+{ 'FontId' (issue #229: a sheet symbol's name and file name had no font    }
+{ route); positions are in mils. '' when the object carries no such label. }
 Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
 Var
     Lbl : ISch_GraphicalObject;
@@ -1199,6 +1279,7 @@ Begin
         If Field = 'Location.X' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.X));
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
+        If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1219,10 +1300,14 @@ Begin
     Try
         Lbl := SchLabelOf(Obj, Which);
         If Lbl = Nil Then Exit;
+        { A font id is a positive whole number from the font manager; anything }
+        { else is refused, never written as font 1.                            }
+        If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;
         Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
+        If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
@@ -2038,6 +2123,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     Crn : TLocation;
     Have : Boolean;
@@ -2337,6 +2423,11 @@ Begin
                     EntryObj := Obj;
                     Result := IntToStr(EntryObj.TextColor);
                 End
+                Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+                Begin
+                    FrameObj := Obj;
+                    Result := IntToStr(FrameObj.TextColor);
+                End
                 Else
                 Begin
                     HarnessEntryObj := Obj;
@@ -2490,14 +2581,14 @@ Begin
         End
         Else If PropName = 'LineStyle' Then
         Begin
-            If Obj.ObjectId = eBlanket Then
+            If SchObjectHasLineStyle(Obj) Then
                 Result := IntToStr(Obj.LineStyle)
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
         Else If PropName = 'Transparent' Then
         Begin
-            If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon) Then
+            If SchObjectHasTransparent(Obj) Then
                 Result := BoolToJsonStr(Obj.Transparent)
             Else
                 NotePropertyDiag('unreadable', PropName);
@@ -2531,6 +2622,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
@@ -2803,10 +2895,14 @@ Begin
         End
         Else If PropName = 'FontId' Then
         Begin
-            If SchObjectHasFontId(Obj) Then
-                Obj.FontId := StrToIntDef(Value, 1)
+            { A font id is a positive whole number from the font manager. '0' }
+            { was written as font 0 and 'abc' as font 1; both are refused now. }
+            If Not SchObjectHasFontId(Obj) Then
+                NotePropertyDiag('unknown', PropName)
+            Else If StrToIntDef(Value, 0) < 1 Then
+                WroteOK := False
             Else
-                NotePropertyDiag('unknown', PropName);
+                Obj.FontId := StrToIntDef(Value, 0);
         End
         Else If PropName = 'TextFontId' Then
         Begin
@@ -2852,6 +2948,11 @@ Begin
                 Begin
                     EntryObj := Obj;
                     EntryObj.TextColor := StrToIntDef(Value, 0);
+                End
+                Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+                Begin
+                    FrameObj := Obj;
+                    FrameObj.TextColor := StrToIntDef(Value, 0);
                 End
                 Else
                 Begin
@@ -2910,14 +3011,14 @@ Begin
         End
         Else If PropName = 'LineStyle' Then
         Begin
-            If (Obj.ObjectId = eBlanket) And IsIntStr(Value) Then
+            If SchObjectHasLineStyle(Obj) And IsIntStr(Value) Then
                 Obj.LineStyle := StrToIntDef(Value, 0)
             Else
                 Matched := False;
         End
         Else If PropName = 'Transparent' Then
         Begin
-            If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon) Then
+            If SchObjectHasTransparent(Obj) Then
                 Obj.Transparent := StrToBool(Value)
             Else
                 Matched := False;

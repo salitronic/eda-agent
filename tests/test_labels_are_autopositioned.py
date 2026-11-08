@@ -77,6 +77,11 @@ def test_the_label_property_names_parse(tmp_path):
         ("SheetFileName.Autoposition", "Filename", "Autoposition"),
         ("Filename.IsHidden", "Filename", "IsHidden"),
         ("Comment.Location.X", "Comment", "Location.X"),
+        ("SheetName.FontId", "Designator", "FontId"),
+        ("SheetFileName.FontId", "Filename", "FontId"),
+        ("Designator.FontId", "Designator", "FontId"),
+        ("Comment.FontId", "Comment", "FontId"),
+        ("SheetName.Color", "", None),
         ("Designator.Text", "", None),
         ("Location.X", "", None),
         ("Orientation", "", None),
@@ -96,6 +101,16 @@ def test_the_label_property_names_parse(tmp_path):
     exe = tmp_path / ("labels.exe" if os.name == "nt" else "labels")
     ran = subprocess.run([str(exe)], capture_output=True, text=True)
     assert ran.returncode == 0, f"case {ran.returncode} failed: {cases[ran.returncode - 1]}"
+
+
+def test_a_label_font_reads_and_writes_and_refuses_a_bad_id():
+    get = _routine("GetSchComponentLabelProp")
+    assert "If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);" in get
+    put = _routine("SetSchComponentLabelProp")
+    refuse = put.index("If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;")
+    write = put.index("If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);")
+    # Refused before the modify bracket opens, written inside it.
+    assert refuse < put.index("SchBeginModify(Lbl)") < write < put.index("SchEndModify(Lbl)")
 
 
 def test_the_tool_sends_the_names_and_refuses_what_the_wire_cannot_carry(monkeypatch):
