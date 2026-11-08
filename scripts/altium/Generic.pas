@@ -537,7 +537,9 @@ End;
 { types this unit already reads or writes IsSolid on (the symbol dump:       }
 { rectangle, round rectangle, polygon, ellipse; the text frame writer), plus }
 { the polyline (read live) and the types built on them (a note is a text     }
-{ frame, a blanket a polygon). Anything else answers unreadable.             }
+{ frame, a blanket a polygon). Anything else answers unreadable. A sheet    }
+{ symbol too: the file saves IsSolid on it, and it is the Fill Color tick   }
+{ box of its Properties panel.                                              }
 Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
@@ -545,7 +547,114 @@ Begin
     Result := (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle)
         Or (Obj.ObjectId = ePolygon) Or (Obj.ObjectId = ePolyline)
         Or (Obj.ObjectId = eEllipse) Or (Obj.ObjectId = eTextFrame)
-        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
+        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket)
+        Or (Obj.ObjectId = eSheetSymbol);
+End;
+
+{ Sheet symbol and sheet entry enums as the file spells them, both ways. A  }
+{ name that is none of them answers -1, so the setter can refuse it rather  }
+{ than write a default.                                                      }
+Function SheetSymbolTypeToStr(T : Integer) : String;
+Begin
+    If T = eSheetSymbolType_Normal Then Result := 'Normal'
+    Else If T = eSheetSymbolType_DeviceSheet Then Result := 'DeviceSheet'
+    Else If T = eSheetSymbolType_DesignItem Then Result := 'DesignItem'
+    Else Result := IntToStr(T);
+End;
+
+{ Normal and DeviceSheet only: a DesignItem (Managed) sheet symbol points   }
+{ at a server item, which a type change alone does not supply.              }
+Function SheetSymbolTypeOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If (N = 'normal') Or (N = 'local') Then Result := eSheetSymbolType_Normal
+    Else If (N = 'devicesheet') Or (N = 'device') Then Result := eSheetSymbolType_DeviceSheet
+    Else Result := -1;
+End;
+
+Function BusTextStyleToStr(T : Integer) : String;
+Begin
+    If T = eBusTextStyle_Full Then Result := 'Full'
+    Else If T = eBusTextStyle_Prefix Then Result := 'Prefix'
+    Else Result := IntToStr(T);
+End;
+
+Function BusTextStyleOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'full' Then Result := eBusTextStyle_Full
+    Else If N = 'prefix' Then Result := eBusTextStyle_Prefix
+    Else Result := -1;
+End;
+
+Function ArrowKindToStr(T : Integer) : String;
+Begin
+    If T = eArrowKind_RectAndTri Then Result := 'Block & Triangle'
+    Else If T = eArrowKind_Triangle Then Result := 'Triangle'
+    Else If T = eArrowKind_Arrow Then Result := 'Arrow'
+    Else If T = eArrowKind_ArrowTail Then Result := 'Arrow Tail'
+    Else Result := IntToStr(T);
+End;
+
+Function ArrowKindOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := StringReplace(LowerCase(Trim(S)), ' ', '', -1);
+    If (N = 'block&triangle') Or (N = 'blockandtriangle') Or (N = 'rectandtri') Then
+        Result := eArrowKind_RectAndTri
+    Else If N = 'triangle' Then Result := eArrowKind_Triangle
+    Else If N = 'arrow' Then Result := eArrowKind_Arrow
+    Else If N = 'arrowtail' Then Result := eArrowKind_ArrowTail
+    Else Result := -1;
+End;
+
+{ A sheet entry's Side by name or by the ordinal the reader gives. }
+Function SheetEntrySideOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'left' Then Result := eLeftSide
+    Else If N = 'right' Then Result := eRightSide
+    Else If N = 'top' Then Result := eTopSide
+    Else If N = 'bottom' Then Result := eBottomSide
+    Else If (N = IntToStr(eLeftSide)) Or (N = IntToStr(eRightSide))
+         Or (N = IntToStr(eTopSide)) Or (N = IntToStr(eBottomSide)) Then
+        Result := StrToInt(N)
+    Else Result := -1;
+End;
+
+{ Put a sheet entry on its symbol's edge from its Side and DistanceFromTop, }
+{ as the placer does. Setting the two alone leaves the entry's Location    }
+{ where it was until the sheet is reloaded, so a wire drawn meanwhile goes  }
+{ to the old point. The symbol's Location is its top-left corner.           }
+Procedure PositionSheetEntry(Sym : ISch_SheetSymbol; Entry : ISch_SheetEntry);
+Var
+    EdgeX, EdgeY, Dist : Double;
+    Side : Integer;
+Begin
+    Side := Entry.Side;
+    Dist := CoordToMilsF(Entry.DistanceFromTop);
+    EdgeX := CoordToMilsF(Sym.Location.X);
+    EdgeY := CoordToMilsF(Sym.Location.Y);
+    If Side = eLeftSide Then EdgeY := EdgeY - Dist;
+    If Side = eRightSide Then
+    Begin
+        EdgeX := EdgeX + CoordToMilsF(Sym.XSize);
+        EdgeY := EdgeY - Dist;
+    End;
+    If Side = eTopSide Then EdgeX := EdgeX + Dist;
+    If Side = eBottomSide Then
+    Begin
+        EdgeX := EdgeX + Dist;
+        EdgeY := EdgeY - CoordToMilsF(Sym.YSize);
+    End;
+    Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY));
 End;
 
 { Transparent and LineStyle, ALLOWLISTS (an absent member halts the       }
@@ -1306,7 +1415,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') And (Field <> 'Color') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1334,6 +1443,9 @@ Begin
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
         If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);
+        { The label's own colour (the file saves Color on the name and file- }
+        { name records); a colour, like a font, the panel sets per label.     }
+        If Field = 'Color' Then Result := IntToStr(Lbl.Color);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1357,11 +1469,16 @@ Begin
         { A font id is a positive whole number from the font manager; anything }
         { else is refused, never written as font 1.                            }
         If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;
+        { A colour is a whole number 0 .. $FFFFFF (BGR); anything else is   }
+        { refused, never written as black.                                  }
+        If (Field = 'Color') And ((StrToIntDef(Value, -1) < 0)
+            Or (StrToIntDef(Value, -1) > 16777215)) Then Exit;
         Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
         If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);
+        If Field = 'Color' Then Lbl.Color := StrToIntDef(Value, 0);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
@@ -2179,6 +2296,7 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -2506,6 +2624,38 @@ Begin
             If Obj.ObjectId = eSheetEntry Then
                 Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop));
         End
+        { The rest of a sheet symbol's and a sheet entry's Properties panel,
+          each read through its own typed interface. SymbolType is the
+          panel's Source (Local / Device / Managed); TextStyle is Bus Text
+          Style, kept on every entry; ArrowKind is the entry's Kind and
+          HarnessType its Harness Type. Names, not ordinals, as the file
+          stores them. }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            If Obj.ObjectId = eSheetSymbol Then
+            Begin
+                SymObj := Obj;
+                Result := SheetSymbolTypeToStr(SymObj.SymbolType);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then
+                    Result := BusTextStyleToStr(EntryObj.TextStyle)
+                Else If PropName = 'ArrowKind' Then
+                    Result := ArrowKindToStr(EntryObj.ArrowKind)
+                Else
+                    Result := EntryObj.HarnessType;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
 
         // Coord properties (returned in mils)
         Else If PropName = 'Width'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
@@ -2678,6 +2828,8 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    SymObj : ISch_SheetSymbol;
+    EnumVal : Integer;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -2972,6 +3124,55 @@ Begin
             End
             Else
                 NotePropertyDiag('unknown', PropName);
+        End
+        { A sheet symbol's Source and a sheet entry's Bus Text Style, Kind and
+          Harness Type, by the names the reader gives (see GetSchProperty).
+          A name that is none of them is refused, never written as a
+          default. }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            EnumVal := SheetSymbolTypeOrdinal(Value);
+            If (Obj.ObjectId = eSheetSymbol) And (EnumVal >= 0) Then
+            Begin
+                SymObj := Obj;
+                SymObj.SymbolType := EnumVal;
+            End
+            Else
+                Matched := False;
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If PropName = 'TextStyle' Then EnumVal := BusTextStyleOrdinal(Value)
+            Else If PropName = 'ArrowKind' Then EnumVal := ArrowKindOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then EntryObj.TextStyle := EnumVal
+                Else If PropName = 'ArrowKind' Then EntryObj.ArrowKind := EnumVal
+                Else EntryObj.HarnessType := Value;
+            End
+            Else
+                Matched := False;
+        End
+        { A sheet entry's place on its symbol. Written, then the entry is put
+          on the edge from both, as the placer does: Altium leaves its
+          Location alone until the sheet is reloaded. }
+        Else If (PropName = 'Side') Or (PropName = 'DistanceFromTop') Then
+        Begin
+            If PropName = 'Side' Then EnumVal := SheetEntrySideOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'Side' Then EntryObj.Side := EnumVal
+                Else EntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
+                SymObj := EntryObj.OwnerSheetSymbol;
+                If SymObj <> Nil Then PositionSheetEntry(SymObj, EntryObj);
+            End
+            Else
+                Matched := False;
         End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
