@@ -15,7 +15,7 @@ normalises every input to the structured wire form so the Pascal side
 sees one consistent shape.
 """
 
-from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -39,21 +39,55 @@ class Scope(BaseModel):
 ScopeInput = Union[Scope, dict, str, None]
 
 
+# A bare path is taken as the document or project it names, by extension.
+_PROJECT_SUFFIXES = (".prjpcb", ".prjhar", ".prjmbd", ".prjscr", ".libpkg")
+
+ACCEPTED = ('"active_doc", "project", "doc:PATH", "project:PATH", '
+            '"lib_component:NAME", or the path of a document or project')
+
+
+class ScopeError(ValueError):
+    """A scope string that names no scope. Nothing is sent for it."""
+
+
+def to_compact(scope: Optional[str]) -> str:
+    """The compact string form ("doc:PATH", "active_doc", ...).
+
+    A bare path becomes "doc:PATH", or "project:PATH" for a project
+    file. Anything else that is not a scope raises ScopeError, so it
+    can never be read as the document in front.
+    """
+    text = (scope or "").strip()
+    if not text:
+        return "active_doc"
+    if text in ("active_doc", "project", "doc"):
+        return text
+    if text.startswith(("doc:", "project:", "lib_component:")):
+        return text
+    suffix = PureWindowsPath(text).suffix.lower()
+    if suffix and ("\\" in text or "/" in text or _looks_like_drive(text)):
+        kind = "project" if suffix in _PROJECT_SUFFIXES else "doc"
+        return f"{kind}:{text}"
+    raise ScopeError(f"Not a scope: {scope!r}. Use {ACCEPTED}.")
+
+
+def _looks_like_drive(text: str) -> bool:
+    """A drive-letter path, such as C:/Designs/Board.SchDoc."""
+    return (len(text) > 2 and text[0].isalpha() and text[1] == ":"
+            and text[2] in "/\\")
+
+
+def refusal(exc: ScopeError, **extra) -> dict:
+    """The reply for a scope that names nothing; nothing was sent."""
+    return {"ok": False, "success": False, "error": "INVALID_SCOPE",
+            "reason": str(exc), **extra}
+
+
 def to_wire(scope: ScopeInput) -> dict:
     """Normalise any caller-supplied scope to the wire form.
 
-    Accepts:
-      - None                  → {"type": "active_doc"}
-      - Scope model           → its dict
-      - dict                  → validated through Scope
-      - str  (legacy compact) → parsed:
-          "active_doc" | "project"           → {"type": ...}
-          "doc:C:/path"                       → {"type": "doc",     "file_path": "..."}
-          "project:C:/path"                   → {"type": "project", "file_path": "..."}
-
-    File paths are validated only for shape (non-empty when present); the
-    Pascal side will surface NOT_LOADED / DOCUMENT_NOT_FOUND if the path
-    doesn't resolve.
+    Accepts None, a Scope, a dict, or a string as ``to_compact`` reads
+    it. A string that is no scope raises ScopeError.
     """
     if scope is None:
         return Scope().model_dump(exclude_none=True)
@@ -65,22 +99,12 @@ def to_wire(scope: ScopeInput) -> dict:
         return Scope(**scope).model_dump(exclude_none=True)
 
     if isinstance(scope, str):
-        if scope.startswith("doc:"):
-            path = scope[4:]
-            return Scope(type="doc", file_path=path).model_dump(exclude_none=True)
-        if scope.startswith("project:"):
-            path = scope[8:]
-            return Scope(type="project", file_path=path).model_dump(exclude_none=True)
-        if scope.startswith("lib_component:"):
-            # Target a named symbol inside the active SchLib; the name
-            # rides in file_path (see Scope docstring).
-            name = scope[len("lib_component:"):]
-            return Scope(type="lib_component",
-                         file_path=name).model_dump(exclude_none=True)
-        if scope in ("active_doc", "project", "doc"):
-            return Scope(type=scope).model_dump(exclude_none=True)
-        # Unknown bare string, surface as-is so Pascal returns a clear
-        # INVALID_PARAMETER rather than silently treating it as active_doc.
-        return Scope(type="active_doc", file_path=None).model_dump(exclude_none=True)
+        text = to_compact(scope)
+        for prefix, kind in (("doc:", "doc"), ("project:", "project"),
+                             ("lib_component:", "lib_component")):
+            if text.startswith(prefix):
+                return Scope(type=kind, file_path=text[len(prefix):]
+                             ).model_dump(exclude_none=True)
+        return Scope(type=text).model_dump(exclude_none=True)
 
     raise TypeError(f"Unsupported scope value: {scope!r}")

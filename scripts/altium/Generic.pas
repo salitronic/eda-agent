@@ -4729,6 +4729,24 @@ Begin
 End;
 
 {..............................................................................}
+{ A scope ParseScope does not know is refused, never read as the active      }
+{ document: a sheet's path given bare used to be answered from whichever     }
+{ sheet was in front, and obj_modify and obj_delete take the same scope.     }
+{ Returns '' when the scope is one of the accepted kinds.                    }
+{..............................................................................}
+
+Function UnknownScopeError(RequestId, Scope, ScopeType : String) : String;
+Begin
+    Result := '';
+    If (ScopeType = 'active_doc') Or (ScopeType = 'project')
+        Or (ScopeType = 'doc') Or (ScopeType = 'lib_component') Then Exit;
+    Result := BuildErrorResponse(RequestId, 'INVALID_SCOPE',
+        'Not a scope: "' + Scope + '". Use active_doc, project, '
+        + 'doc:PATH, project:PATH or lib_component:NAME. Nothing was read or '
+        + 'changed.');
+End;
+
+{..............................................................................}
 { If ScopeType is 'lib_component', switch the active SchLib to the named      }
 { symbol (ScopePath holds the lib-ref) and rewrite ScopeType to 'active_doc'  }
 { so the normal active-doc path then iterates that symbol's primitives. This  }
@@ -4807,6 +4825,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
 
     { A PCB OBJECT TYPE CANNOT HONOUR A SCOPE, so say so before doing         }
     { anything. PCB primitives live on a board and the PCB path below resolves }
@@ -4906,6 +4926,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5051,6 +5073,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5623,10 +5647,12 @@ Begin
         If Note = '' Then
         Begin
             ParseScope(Scope, ScopeType, ScopePath);
+            If UnknownScopeError(RequestId, Scope, ScopeType) <> '' Then
+                Note := 'unknown_scope'
             { A board type edits the active board and nothing else, and the }
             { lib_component step would move a SchLib's current symbol for   }
             { an operation that never reads it.                             }
-            If IsPcb Then
+            Else If IsPcb Then
             Begin
                 If ScopeType <> 'active_doc' Then Note := 'scope_not_supported';
             End
@@ -10667,6 +10693,8 @@ Begin
     FilterStr := ExtractJsonValue(Params, 'filter');
     Scope := ExtractJsonValue(Params, 'scope');
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
 
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
     If ObjTypeInt = -1 Then
@@ -14568,6 +14596,8 @@ Begin
         If ObjTypeInt = -1 Then Note := 'unknown_object_type';
 
         ParseScope(Scope, ScopeType, ScopePath);
+        If (Note = '') And (UnknownScopeError(RequestId, Scope, ScopeType) <> '') Then
+            Note := 'unknown_scope';
         If (Note = '') And IsPcb And (ScopeType <> 'active_doc') Then
             Note := 'scope_not_supported';
         { EACH OP'S lib_component SCOPE SELECTS ITS OWN SYMBOL. Without this a  }

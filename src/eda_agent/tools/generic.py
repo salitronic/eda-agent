@@ -16,6 +16,7 @@ from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
 from .library import _mils
 from .pin_hints import pin_location_hint
+from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
@@ -493,16 +494,12 @@ def register_generic_tools(mcp):
                 A board type returns EVERY primitive of that type;
                 filter "InComponent=false|InPolygon=false" for free
                 copper. Mechanical-layer tracks have no net.
-            scope: Document scope:
-                "active_doc", current sheet only (default)
-                "project", all SCH sheets in focused project
-                "doc:C:\\path\\to\\Sheet.SchDoc", specific sheet by path (no focus change)
-                "project:C:\\path\\to\\Project.PrjPcb", specific project by path
-                "lib_component:NAME", a named symbol in the active SchLib
-                "lib_component:NAME@3", part 3 of a MULTI-PART symbol:
-                    without the suffix only part 1 is seen, so query each
-                    part. OwnerPartId tells which part a primitive is on
-                    (0 = shared).
+            scope: "active_doc" (default); "project" (every sheet of the
+                focused project); "doc:PATH" or the bare path (that sheet,
+                no focus change); "project:PATH"; "lib_component:NAME" (a
+                symbol in the active SchLib), "lib_component:NAME@3" for
+                part 3 of a multi-part one (else only part 1 is seen;
+                OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
                 "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
                 length matches as a number in mils ('.' or ',' decimal).
@@ -523,9 +520,13 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, objects=[], count=0)
         bridge = get_bridge()
         params = {
-            "scope": scope,
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
             "properties": properties,
@@ -756,8 +757,12 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, matched=0)
         wire = {
-            "scope": scope_to_wire(scope),
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
             "set": set,
@@ -901,8 +906,12 @@ def register_generic_tools(mcp):
                 "or set confirm_delete_all=True to delete all.",
                 "matched": 0,
             }
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, matched=0)
         wire = {
-            "scope": scope_to_wire(scope),
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
         }
@@ -1499,7 +1508,10 @@ def register_generic_tools(mcp):
         # cannot, and nothing can hold '~~'; same refusal as obj_batch_delete.
         op_strings = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, operations_processed=0)
             obj_type = op.get("object_type", "")
             filt = op.get("filter", "")
             set_str = op.get("set", "")
@@ -2769,10 +2781,14 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, count=0)
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, count=0)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.get_object_count",
-            {"object_type": object_type, "scope": scope_to_wire(scope), "filter": filter},
+            {"object_type": object_type, "scope": wire_scope, "filter": filter},
         )
         # The PCB active-doc path runs the query handler, which ships a list of
         # (empty, since no properties were requested) objects alongside the
@@ -4161,8 +4177,8 @@ def register_generic_tools(mcp):
 
         Args:
             operations: List of create dicts, each with:
-                - scope: "active_doc" (default), only active_doc is
-                  currently honored for creates.
+                - scope: "active_doc" (default), the only scope a
+                  create takes; any other is refused.
                 - object_type: Altium type name (e.g. "eNetLabel",
                   "eJunction", "eNoERC").
                 - properties: pipe-separated ``Name=Value`` list, same
@@ -4191,7 +4207,16 @@ def register_generic_tools(mcp):
         """
         op_strs: list[str] = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, created=0)
+            if scope != "active_doc":
+                return {"ok": False, "error": "SCOPE_NOT_SUPPORTED",
+                        "reason": f"operations[{i}].scope is {scope!r}; a "
+                        "create goes on the document in front, so bring "
+                        "that sheet forward first. Nothing was sent.",
+                        "created": 0}
             obj_type = op.get("object_type", "")
             props = op.get("properties", "")
             container = op.get("container", "")
@@ -4254,7 +4279,10 @@ def register_generic_tools(mcp):
         op_strs: list[str] = []
         sweeping: list[str] = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, operations_processed=0)
             obj_type = op.get("object_type", "")
             filt = op.get("filter", "")
             # ';' separates fields within an op and '~~' separates ops,
