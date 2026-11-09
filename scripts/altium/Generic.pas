@@ -8225,6 +8225,242 @@ End;
 
 
 {..............................................................................}
+{ Gen_SheetTemplate - the sheet template (.SchDot) of the active sheet: read  }
+{ it, set it, update it from its file, or remove it, with no dialog.          }
+{                                                                              }
+{ Params: action = get (default) / set / update / remove; template_file (set: }
+{ the .SchDot to apply; update: optional, else the sheet's own file); vault   }
+{ ('true': also read the vault link the sheet carries).                       }
+{                                                                              }
+{ SET and UPDATE run Altium's own Sch:ChangeCurrentTemplate with              }
+{ TemplateSource=Local, FileName and Silent=True. MEASURED (AD 25.8.1): that  }
+{ form applies the template with no dialog (sheet size, title block off, the  }
+{ template graphics, parameters kept). Its menu forms, Sch:UpdateCurrentTemplate }
+{ and Sch:RemoveTemplate, always ask for a scope and then report in a modal,  }
+{ which blocks the loop. A process reports nothing, so every action is read   }
+{ back: the template file name and the template objects on the sheet.         }
+{                                                                              }
+{ REMOVE does what Sch:RemoveTemplate does without its dialogs: the template  }
+{ object (eTemplate, the container of the border / title block graphics, as   }
+{ ExtractTemplate.pas finds it) leaves the sheet and the file name is         }
+{ cleared. Sheet size and the standard title block flag stay as they are.     }
+{..............................................................................}
+
+Function SheetTemplateObject(SchDoc : ISch_Document) : ISch_GraphicalObject;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Result := Nil;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Result := Obj;
+                Break;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function SheetTemplateCount(SchDoc : ISch_Document; Var Children : Integer) : Integer;
+Var
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+Begin
+    Result := 0;
+    Children := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Inc(Result);
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        Inc(Children);
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function SheetTemplateFile(SchDoc : ISch_Document) : String;
+Begin
+    Result := '';
+    Try Result := SchDoc.GetState_TemplateFileName; Except End;
+End;
+
+{ The vault link a sheet set from the server carries. Read only when asked: }
+{ these names are in the script engine's table but not yet proven on        }
+{ ISch_Document, and an unknown one stops the script.                        }
+Function SheetTemplateVaultJson(SchDoc : ISch_Document) : String;
+Var
+    VaultGuid, ItemGuid, RevGuid, VaultHrid, RevHrid : String;
+Begin
+    VaultGuid := '';
+    ItemGuid := '';
+    RevGuid := '';
+    VaultHrid := '';
+    RevHrid := '';
+    Try VaultGuid := SchDoc.TemplateVaultGUID; Except End;
+    Try ItemGuid := SchDoc.TemplateItemGUID; Except End;
+    Try RevGuid := SchDoc.TemplateRevisionGUID; Except End;
+    Try VaultHrid := SchDoc.TemplateVaultHRID; Except End;
+    Try RevHrid := SchDoc.TemplateRevisionHRID; Except End;
+    Result := JsonObj(JsonStr('vault_guid', VaultGuid) + ','
+        + JsonStr('item_guid', ItemGuid) + ','
+        + JsonStr('revision_guid', RevGuid) + ','
+        + JsonStr('vault_hrid', VaultHrid) + ','
+        + JsonStr('revision_hrid', RevHrid));
+End;
+
+Function SheetTemplateJson(SchDoc : ISch_Document; Vault : Boolean) : String;
+Var
+    Count, Children : Integer;
+    TitleBlock, Border : Boolean;
+    Style : Integer;
+Begin
+    Count := SheetTemplateCount(SchDoc, Children);
+    TitleBlock := False;
+    Border := False;
+    Style := -1;
+    Try TitleBlock := SchDoc.TitleBlockOn; Except End;
+    Try Border := SchDoc.BorderOn; Except End;
+    Try Style := SchDoc.SheetStyle; Except End;
+    Result := JsonStr('template_file', SheetTemplateFile(SchDoc)) + ','
+        + JsonInt('template_objects', Count) + ','
+        + JsonInt('template_graphics', Children) + ','
+        + JsonInt('sheet_style', Style) + ','
+        + JsonBool('title_block_on', TitleBlock) + ','
+        + JsonBool('border_on', Border);
+    If Vault Then
+        Result := Result + ',' + JsonRaw('vault', SheetTemplateVaultJson(SchDoc));
+End;
+
+Function Gen_SheetTemplate(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    What, TplFile, Before, After, Data : String;
+    Vault, Ok : Boolean;
+    Tpl : ISch_GraphicalObject;
+    Guard, Removed, Count, Children : Integer;
+    LastAddr, ThisAddr : Integer;
+Begin
+    What := LowerCase(ExtractJsonValue(Params, 'action'));
+    If What = '' Then What := 'get';
+    TplFile := ExtractJsonValue(Params, 'template_file');
+    Vault := LowerCase(ExtractJsonValue(Params, 'vault')) = 'true';
+    If (What <> 'get') And (What <> 'set') And (What <> 'update') And (What <> 'remove') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
+            'action is get, set, update or remove');
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
+        Exit;
+    End;
+    Before := SheetTemplateFile(SchDoc);
+    Ok := True;
+    Removed := 0;
+
+    If (What = 'set') Or (What = 'update') Then
+    Begin
+        If (What = 'update') And (TplFile = '') Then TplFile := Before;
+        If TplFile = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_TEMPLATE',
+                'The sheet has no template to update; give template_file');
+            Exit;
+        End;
+        If LowerCase(ExtractFileExt(TplFile)) <> '.schdot' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_A_TEMPLATE',
+                'template_file must be a .SchDot: ' + TplFile);
+            Exit;
+        End;
+        If Not FileExists(TplFile) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND',
+                'No such file: ' + TplFile);
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('TemplateSource', 'Local');
+        AddStringParameter('FileName', TplFile);
+        AddStringParameter('Silent', 'True');
+        RunProcess('Sch:ChangeCurrentTemplate');
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+        After := SheetTemplateFile(SchDoc);
+        Count := SheetTemplateCount(SchDoc, Children);
+        Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
+    End
+    Else If What = 'remove' Then
+    Begin
+        SchBeginEdit(SchDoc, '');
+        Try
+            Guard := 50;
+            LastAddr := 0;
+            While Guard > 0 Do
+            Begin
+                Tpl := SheetTemplateObject(SchDoc);
+                If Tpl = Nil Then Break;
+                ThisAddr := 0;
+                Try ThisAddr := Tpl.I_ObjectAddress; Except End;
+                { The same template found again: the remove did nothing. }
+                If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then Break;
+                LastAddr := ThisAddr;
+                SchDoc.RemoveSchObject(Tpl);
+                Inc(Removed);
+                Dec(Guard);
+            End;
+            SchDoc.TemplateFileName := '';
+        Finally
+            SchEndEdit(SchDoc, 'Edit');
+        End;
+        SchDoc.UpdateDocumentProperties;
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+        Count := SheetTemplateCount(SchDoc, Children);
+        After := SheetTemplateFile(SchDoc);
+        Ok := (Count = 0) And (After = '');
+    End;
+
+    Data := JsonStr('sheet', SchDoc.DocumentName)
+        + ',' + JsonStr('action', What)
+        + ',' + JsonBool('applied', Ok)
+        + ',' + JsonStr('template_before', Before);
+    If What = 'remove' Then Data := Data + ',' + JsonInt('removed', Removed);
+    Data := Data + ',' + SheetTemplateJson(SchDoc, Vault);
+    Result := BuildSuccessResponse(RequestId, JsonObj(Data));
+End;
+
+
+{..............................................................................}
 { Place a schematic component instance from a library onto the active sheet.  }
 { Uses ISch_Document.PlaceSchComponent, the verified direct-placement API.   }
 { Params: library_path (.SchLib full path), lib_reference (component name),   }
@@ -18098,6 +18334,7 @@ Begin
         'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
+        'sheet_template':    Result := Gen_SheetTemplate(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'set_sch_component_parameters': Result := Gen_SetSchComponentParameters(Params, RequestId);
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
