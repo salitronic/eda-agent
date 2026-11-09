@@ -2348,16 +2348,17 @@ def register_generic_tools(mcp):
         action: str = "get",
         template_file: str = "",
         vault: bool = False,
+        file_path: str = "",
     ) -> dict[str, Any]:
-        """Read, set, update or remove the sheet template (.SchDot) of the
-        active schematic sheet, with no dialog.
+        """Read, set, update or remove the sheet template (.SchDot) of a
+        schematic sheet, with no dialog.
 
         A template carries the sheet size, the border and the company
         title block. Setting one switches the standard title block off
         and keeps the sheet's parameters (Title and the rest), which the
         title block then shows. Altium's own update and remove commands
-        ask for a scope in a dialog; these do not, and act on the active
-        sheet only. Every action is read back.
+        ask for a scope in a dialog; these do not, and act on one sheet.
+        Every action is read back.
 
         Args:
             action: "get" (default), "set", "update" or "remove".
@@ -2366,6 +2367,9 @@ def register_generic_tools(mcp):
                 read again (it must still exist on this machine).
             vault: Also read the vault link (vault, item and revision
                 GUIDs and names) a sheet set from the server carries.
+            file_path: The sheet (.SchDoc). Empty uses the sheet in front.
+                Set and update bring a named sheet forward for Altium's
+                template command and then restore the view you had.
 
         Returns:
             ``applied`` (the sheet reads back as asked), ``template_file``,
@@ -2391,6 +2395,8 @@ def register_generic_tools(mcp):
             return {"ok": False, "reason": "set needs template_file"}
         if vault:
             params["vault"] = "true"
+        if file_path:
+            params["file_path"] = file_path
         reply = await get_bridge().send_command_async(
             "generic.sheet_template", params)
         if isinstance(reply, dict) and reply.get("applied") is False:

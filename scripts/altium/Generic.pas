@@ -8695,9 +8695,11 @@ End;
 
 Function Gen_SheetTemplate(Params : String; RequestId : String) : String;
 Var
-    SchDoc : ISch_Document;
-    What, TplFile, Before, After, Data : String;
-    Vault, Ok : Boolean;
+    SchDoc, Front : ISch_Document;
+    What, TplFile, Before, After, Data, SheetPath : String;
+    Vault, Ok, Shown : Boolean;
+    PrevView : IServerDocumentView;
+    SheetDoc : IServerDocument;
     Tpl : ISch_GraphicalObject;
     Guard, Removed, Count, Children : Integer;
     LastAddr, ThisAddr : Integer;
@@ -8712,13 +8714,28 @@ Begin
             'action is get, set, update or remove');
         Exit;
     End;
-    SchDoc := SchServer.GetCurrentSchDocument;
+    { The named sheet, else the one in front. }
+    SheetPath := ExtractJsonValue(Params, 'file_path');
+    If SheetPath <> '' Then
+    Begin
+        SchDoc := SchDocByPathLoading(SheetPath);
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_FOUND',
+                'No schematic sheet at ' + SheetPath);
+            Exit;
+        End;
+    End
+    Else
+        SchDoc := SchServer.GetCurrentSchDocument;
     If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
         Exit;
     End;
     Before := SheetTemplateFile(SchDoc);
+    Shown := False;
+    PrevView := Nil;
     Ok := True;
     Removed := 0;
 
@@ -8743,11 +8760,40 @@ Begin
                 'No such file: ' + TplFile);
             Exit;
         End;
+        { Sch:ChangeCurrentTemplate acts on the sheet in front: a named    }
+        { sheet behind another is brought forward for it, and the view the }
+        { user had is put back afterwards.                                 }
+        Front := SchServer.GetCurrentSchDocument;
+        If (Front = Nil) Or (UpperCase(Front.DocumentName) <> UpperCase(SchDoc.DocumentName)) Then
+        Begin
+            Try PrevView := Client.GetCurrentView; Except PrevView := Nil; End;
+            SheetDoc := Nil;
+            Try SheetDoc := Client.GetDocumentByPath(SchDoc.DocumentName); Except End;
+            If SheetDoc <> Nil Then
+            Begin
+                Try Client.ShowDocument(SheetDoc); Shown := True; Except End;
+            End;
+            Front := SchServer.GetCurrentSchDocument;
+            If (Front = Nil) Or (UpperCase(Front.DocumentName) <> UpperCase(SchDoc.DocumentName)) Then
+            Begin
+                If (PrevView <> Nil) Then
+                Begin
+                    Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+                End;
+                Result := BuildErrorResponse(RequestId, 'SHEET_NOT_SHOWN',
+                    'Could not bring ' + SchDoc.DocumentName + ' forward to apply the template');
+                Exit;
+            End;
+        End;
         ResetParameters;
         AddStringParameter('TemplateSource', 'Local');
         AddStringParameter('FileName', TplFile);
         AddStringParameter('Silent', 'True');
         RunProcess('Sch:ChangeCurrentTemplate');
+        If Shown And (PrevView <> Nil) Then
+        Begin
+            Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+        End;
         SchDoc.GraphicallyInvalidate;
         MarkDocDirtyByPath(SchDoc.DocumentName);
         After := SheetTemplateFile(SchDoc);

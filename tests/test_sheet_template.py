@@ -155,3 +155,46 @@ def test_a_sheet_that_does_not_read_back_is_not_ok(monkeypatch):
     assert out["ok"] is False and "read back" in out["reason"]
     out, _ = _call(monkeypatch, reply={"applied": True}, action="remove")
     assert "ok" not in out
+
+
+def test_a_named_sheet_is_the_one_acted_on_and_the_view_comes_back():
+    body = _body()
+    named = body.index("SchDoc := SchDocByPathLoading(SheetPath);")
+    assert body.index("SheetPath := ExtractJsonValue(Params, 'file_path');") < named
+    assert "'SHEET_NOT_FOUND'" in body
+    # The template command acts on the sheet in front: the named one is
+    # brought forward before it runs and the user's view put back after.
+    run = body.index("RunProcess('Sch:ChangeCurrentTemplate');")
+    show = body.index("Client.ShowDocument(SheetDoc)")
+    restore = body.index("Client.ShowDocument(PrevView.OwnerDocument)", run)
+    assert named < show < run < restore
+    assert "'SHEET_NOT_SHOWN'" in body
+
+
+def test_the_tool_passes_the_sheet_it_names(monkeypatch):
+    import asyncio
+    from eda_agent.tools import generic
+
+    sent = []
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, params))
+            return {"applied": True}
+
+    monkeypatch.setattr(generic, "get_bridge", lambda: Bridge())
+    tools = {}
+
+    class Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, n):
+            return lambda *a, **k: (lambda fn: fn)
+
+    generic.register_generic_tools(Mcp())
+    asyncio.run(tools["sch_sheet_template"](action="get", file_path=r"C:\p\A.SchDoc"))
+    assert sent[-1][1]["file_path"] == r"C:\p\A.SchDoc"
