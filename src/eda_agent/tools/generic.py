@@ -473,7 +473,8 @@ def register_generic_tools(mcp):
                 name: standard, mechanical, graphical, net_tie_bom,
                 net_tie_no_bom, standard_no_bom or jumper; with scope
                 "lib_component:NAME" it sets a library symbol's.
-                "TextFontId" is a sheet or harness entry's label font. A
+                "TextFontId" is a sheet or harness entry's label font;
+                "OwnerSheetSymbol" an entry's symbol. A
                 managed component also reads
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
                 and the other Vault/Symbol GUIDs.

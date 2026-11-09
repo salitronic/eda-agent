@@ -164,3 +164,21 @@ def test_compile_mask_sends_its_box(monkeypatch):
     assert sent == [("generic.place_compile_mask",
                      {"x1": "500", "y1": "400", "x2": "100", "y2": "900",
                       "collapsed": "true"})]
+
+
+def test_harness_members_match_their_harness_port():
+    """The compiled entries of a signal harness come one per member; the
+    child sheet offers the harness port. Neither side is missing."""
+    from eda_agent.tools.project import hierarchy_problems
+    sheets = [
+        {"file": "Top.SchDoc", "parents": [], "ports": [], "sheet_symbols": [
+            {"sheet_name": "U_Hub", "file": "Hub.SchDoc", "child_sheets": 1,
+             "entries": [{"name": "EXT_USB.USB+"}, {"name": "EXT_USB.USB-"},
+                         {"name": "I2C"}, {"name": "LOST.SCL"}]}]},
+        {"file": "Hub.SchDoc", "parents": ["Top.SchDoc"],
+         "ports": [{"name": "EXT_USB"}, {"name": "I2C.SDA"}, {"name": "SPARE"}],
+         "sheet_symbols": []},
+    ]
+    found = {(p["kind"], p.get("name")) for p in hierarchy_problems(sheets, "Top.SchDoc")}
+    assert found == {("entry_without_port", "LOST.SCL"),
+                     ("port_without_entry", "SPARE")}

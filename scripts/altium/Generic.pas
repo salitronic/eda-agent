@@ -2655,6 +2655,26 @@ Begin
             If Obj.ObjectId = eSheetEntry Then
                 Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop));
         End
+        { The sheet symbol an entry is on, by its designator (Sheet Name). It }
+        { had no case, so it read empty and the owner had to be guessed from }
+        { document order.                                                    }
+        Else If PropName = 'OwnerSheetSymbol' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                SymObj := Nil;
+                Try SymObj := EntryObj.OwnerSheetSymbol; Except SymObj := Nil; End;
+                If SymObj <> Nil Then
+                Begin
+                    Try Result := SymObj.SheetName.Text; Except NotePropertyDiag('unreadable', PropName); End;
+                End
+                Else
+                    NotePropertyDiag('unreadable', PropName);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { The rest of a sheet symbol's and a sheet entry's Properties panel,
           each read through its own typed interface. SymbolType is the
           panel's Source (Local / Device / Managed); TextStyle is Bus Text

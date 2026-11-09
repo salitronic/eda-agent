@@ -101,6 +101,18 @@ def _channel_copy(sym: dict, siblings: list) -> bool:
                for s in siblings)
 
 
+def _harness_member_of(sig: str, other: dict) -> bool:
+    """A harness member and its harness on the other side match.
+
+    The compiled entries of a signal harness come one per member,
+    HARNESS.MEMBER, while the child sheet may offer the harness port
+    alone, and the other way round.
+    """
+    if "." in sig and sig.split(".", 1)[0] in other:
+        return True
+    return any(k.startswith(sig + ".") for k in other)
+
+
 def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
     """What does not join up in a compiled hierarchy: dangling symbols,
     entries and ports without a partner, opposite directions, orphans."""
@@ -123,8 +135,12 @@ def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
             ports = {_signal(p.get("name", "")): p for p in child.get("ports") or []}
             entries = {_signal(e.get("name", "")): e for e in sym.get("entries") or []}
             for sig in sorted(set(entries) - set(ports)):
+                if _harness_member_of(sig, ports):
+                    continue
                 problems.append({"kind": "entry_without_port", "name": sig, **where})
             for sig in sorted(set(ports) - set(entries)):
+                if _harness_member_of(sig, entries):
+                    continue
                 problems.append({"kind": "port_without_entry", "name": sig, **where})
             for sig in sorted(set(entries) & set(ports)):
                 a = _direction(entries[sig].get("io", ""))
