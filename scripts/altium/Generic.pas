@@ -537,7 +537,9 @@ End;
 { types this unit already reads or writes IsSolid on (the symbol dump:       }
 { rectangle, round rectangle, polygon, ellipse; the text frame writer), plus }
 { the polyline (read live) and the types built on them (a note is a text     }
-{ frame, a blanket a polygon). Anything else answers unreadable.             }
+{ frame, a blanket a polygon). Anything else answers unreadable. A sheet    }
+{ symbol too: the file saves IsSolid on it, and it is the Fill Color tick   }
+{ box of its Properties panel (issue #273).                                 }
 Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
@@ -545,7 +547,114 @@ Begin
     Result := (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle)
         Or (Obj.ObjectId = ePolygon) Or (Obj.ObjectId = ePolyline)
         Or (Obj.ObjectId = eEllipse) Or (Obj.ObjectId = eTextFrame)
-        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
+        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket)
+        Or (Obj.ObjectId = eSheetSymbol);
+End;
+
+{ Sheet symbol and sheet entry enums as the file spells them, both ways. A  }
+{ name that is none of them answers -1, so the setter can refuse it rather  }
+{ than write a default.                                                      }
+Function SheetSymbolTypeToStr(T : Integer) : String;
+Begin
+    If T = eSheetSymbolType_Normal Then Result := 'Normal'
+    Else If T = eSheetSymbolType_DeviceSheet Then Result := 'DeviceSheet'
+    Else If T = eSheetSymbolType_DesignItem Then Result := 'DesignItem'
+    Else Result := IntToStr(T);
+End;
+
+{ Normal and DeviceSheet only: a DesignItem (Managed) sheet symbol points   }
+{ at a server item, which a type change alone does not supply.              }
+Function SheetSymbolTypeOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If (N = 'normal') Or (N = 'local') Then Result := eSheetSymbolType_Normal
+    Else If (N = 'devicesheet') Or (N = 'device') Then Result := eSheetSymbolType_DeviceSheet
+    Else Result := -1;
+End;
+
+Function BusTextStyleToStr(T : Integer) : String;
+Begin
+    If T = eBusTextStyle_Full Then Result := 'Full'
+    Else If T = eBusTextStyle_Prefix Then Result := 'Prefix'
+    Else Result := IntToStr(T);
+End;
+
+Function BusTextStyleOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'full' Then Result := eBusTextStyle_Full
+    Else If N = 'prefix' Then Result := eBusTextStyle_Prefix
+    Else Result := -1;
+End;
+
+Function ArrowKindToStr(T : Integer) : String;
+Begin
+    If T = eArrowKind_RectAndTri Then Result := 'Block & Triangle'
+    Else If T = eArrowKind_Triangle Then Result := 'Triangle'
+    Else If T = eArrowKind_Arrow Then Result := 'Arrow'
+    Else If T = eArrowKind_ArrowTail Then Result := 'Arrow Tail'
+    Else Result := IntToStr(T);
+End;
+
+Function ArrowKindOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := StringReplace(LowerCase(Trim(S)), ' ', '', -1);
+    If (N = 'block&triangle') Or (N = 'blockandtriangle') Or (N = 'rectandtri') Then
+        Result := eArrowKind_RectAndTri
+    Else If N = 'triangle' Then Result := eArrowKind_Triangle
+    Else If N = 'arrow' Then Result := eArrowKind_Arrow
+    Else If N = 'arrowtail' Then Result := eArrowKind_ArrowTail
+    Else Result := -1;
+End;
+
+{ A sheet entry's Side by name or by the ordinal the reader gives. }
+Function SheetEntrySideOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'left' Then Result := eLeftSide
+    Else If N = 'right' Then Result := eRightSide
+    Else If N = 'top' Then Result := eTopSide
+    Else If N = 'bottom' Then Result := eBottomSide
+    Else If (N = IntToStr(eLeftSide)) Or (N = IntToStr(eRightSide))
+         Or (N = IntToStr(eTopSide)) Or (N = IntToStr(eBottomSide)) Then
+        Result := StrToInt(N)
+    Else Result := -1;
+End;
+
+{ Put a sheet entry on its symbol's edge from its Side and DistanceFromTop, }
+{ as the placer does. Setting the two alone leaves the entry's Location    }
+{ where it was until the sheet is reloaded, so a wire drawn meanwhile goes  }
+{ to the old point. The symbol's Location is its top-left corner.           }
+Procedure PositionSheetEntry(Sym : ISch_SheetSymbol; Entry : ISch_SheetEntry);
+Var
+    EdgeX, EdgeY, Dist : Double;
+    Side : Integer;
+Begin
+    Side := Entry.Side;
+    Dist := CoordToMilsF(Entry.DistanceFromTop);
+    EdgeX := CoordToMilsF(Sym.Location.X);
+    EdgeY := CoordToMilsF(Sym.Location.Y);
+    If Side = eLeftSide Then EdgeY := EdgeY - Dist;
+    If Side = eRightSide Then
+    Begin
+        EdgeX := EdgeX + CoordToMilsF(Sym.XSize);
+        EdgeY := EdgeY - Dist;
+    End;
+    If Side = eTopSide Then EdgeX := EdgeX + Dist;
+    If Side = eBottomSide Then
+    Begin
+        EdgeX := EdgeX + Dist;
+        EdgeY := EdgeY - CoordToMilsF(Sym.YSize);
+    End;
+    Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY));
 End;
 
 { Transparent and LineStyle, ALLOWLISTS (an absent member halts the       }
@@ -570,6 +679,19 @@ Begin
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eLine)
         Or (Obj.ObjectId = eRectangle);
+End;
+
+{ XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query     }
+{ of a schematic image asking for XSize raised "Undeclared identifier:      }
+{ XSize" in an error box no Try catches, and the polling loop stopped       }
+{ (issue #267). Only the types this unit already sizes that way carry them: }
+{ the sheet symbol and the harness connector (their placers set XSize /     }
+{ YSize). Anything else answers unreadable / not written.                   }
+Function SchObjectHasSize(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSheetSymbol) Or (Obj.ObjectId = eHarnessConnector);
 End;
 
 { IsHidden belongs to pins and to the complex text types (parameters,
@@ -1306,7 +1428,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') And (Field <> 'Color') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1334,6 +1456,9 @@ Begin
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
         If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);
+        { The label's own colour (the file saves Color on the name and file- }
+        { name records); a colour, like a font, the panel sets per label.     }
+        If Field = 'Color' Then Result := IntToStr(Lbl.Color);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1357,11 +1482,16 @@ Begin
         { A font id is a positive whole number from the font manager; anything }
         { else is refused, never written as font 1.                            }
         If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;
+        { A colour is a whole number 0 .. $FFFFFF (BGR); anything else is   }
+        { refused, never written as black.                                  }
+        If (Field = 'Color') And ((StrToIntDef(Value, -1) < 0)
+            Or (StrToIntDef(Value, -1) > 16777215)) Then Exit;
         Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
         If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);
+        If Field = 'Color' Then Lbl.Color := StrToIntDef(Value, 0);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
@@ -2179,6 +2309,8 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
+    SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -2228,6 +2360,23 @@ Begin
                 Else
                     Result := FloatToJsonStr(CoordToMilsF(Crn.Y));
             End;
+        End
+        { A round rectangle's corner radii live on ISch_RoundRectangle only,
+          so the same narrowing as Corner: never Obj.CornerXRadius on the
+          base interface, which halts the script on any other type
+          (issue #268). }
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerXRadius))
+                Else
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerYRadius));
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // String properties (late-bound across all types, primitives only)
@@ -2506,6 +2655,38 @@ Begin
             If Obj.ObjectId = eSheetEntry Then
                 Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop));
         End
+        { The rest of a sheet symbol's and a sheet entry's Properties panel,
+          each read through its own typed interface. SymbolType is the
+          panel's Source (Local / Device / Managed); TextStyle is Bus Text
+          Style, kept on every entry; ArrowKind is the entry's Kind and
+          HarnessType its Harness Type. Names, not ordinals, as the file
+          stores them (issue #273). }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            If Obj.ObjectId = eSheetSymbol Then
+            Begin
+                SymObj := Obj;
+                Result := SheetSymbolTypeToStr(SymObj.SymbolType);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then
+                    Result := BusTextStyleToStr(EntryObj.TextStyle)
+                Else If PropName = 'ArrowKind' Then
+                    Result := ArrowKindToStr(EntryObj.ArrowKind)
+                Else
+                    Result := EntryObj.HarnessType;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
 
         // Coord properties (returned in mils)
         Else If PropName = 'Width'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
@@ -2551,8 +2732,15 @@ Begin
             PCoord := PinEndY(PCoord, POrient, PLen);
             Result := FloatToJsonStr(CoordToMilsF(PCoord));
         End
-        Else If PropName = 'XSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
-        Else If PropName = 'YSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.YSize))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                NotePropertyDiag('unreadable', PropName)
+            Else If PropName = 'XSize' Then
+                Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
+            Else
+                Result := FloatToJsonStr(CoordToMilsF(Obj.YSize));
+        End
 
         // BoundingRectangle on ISch_Component returns a TCoordRect.
         // Audit code reads X1/Y1/X2/Y2 to detect overlapping component
@@ -2650,10 +2838,62 @@ Begin
         Else If PropName = 'IsMirrored'  Then Result := BoolToJsonStr(Obj.IsMirrored)
         { Readable so obj_select can confirm what it selected. The same
           member Gen_ClearHighlights reads on this interface. }
-        Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection);
+        Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection)
+        { A name no branch above reads came back as a silent blank, the
+          same answer as an empty value: a misspelt or unsupported name
+          looked like a property that is there and empty. Say so
+          (issue #268). }
+        Else
+            NotePropertyDiag('unknown', PropName);
     Except
         Result := '';
     End;
+End;
+
+{ A parameter whose name or value Altium keeps for itself. A port's CrossRef  }
+{ (the sheets the port reaches, written by the compiler) reads               }
+{ NameIsReadOnly and ValueIsReadOnly true. MEASURED on AD 25.8.1: a Text     }
+{ write landed on it anyway, and a Name write did nothing while reporting    }
+{ success. Altium's own Properties panel refuses both, so the generic layer  }
+{ does too. True when Altium keeps the value (ForValue) or the name.        }
+Function SchParamKeptByAltium(Obj : ISch_GraphicalObject; ForValue : Boolean) : Boolean;
+Var
+    Par : ISch_Parameter;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eParameter Then Exit;
+    Par := Obj;
+    Try
+        If ForValue Then Result := Par.ValueIsReadOnly
+        Else Result := Par.NameIsReadOnly;
+    Except
+        Result := False;
+    End;
+End;
+
+{ Says why a parameter write was not made; False, for WroteOK. }
+Function NoteKeptByAltium(ForValue : Boolean) : Boolean;
+Begin
+    Result := False;
+    If ForValue Then
+        NoteNextStep('Not written: Altium keeps this parameter''s value read-only '
+            + '(a port''s CrossRef is written by the compiler). Its font, colour, '
+            + 'justification and visibility can be set.')
+    Else
+        NoteNextStep('Not written: Altium keeps this parameter''s name read-only '
+            + '(a port''s CrossRef is written by the compiler).');
+End;
+
+{ A port's Style is only its axis: 0 horizontal, 4 vertical. MEASURED on     }
+{ AD 25.8.1: 1-3 and 5-7 are taken and read back, then come back as 0 / 4    }
+{ after a save and reopen; Altium draws a port's arrows from its IOType and  }
+{ the end that is wired (ConnectedEnd), not from Style. Writing 4 turns a    }
+{ horizontal port a quarter turn counterclockwise about its Location (the   }
+{ left end becomes the bottom end); 0 turns it back.                         }
+Function PortStyleKept(Value : String) : Boolean;
+Begin
+    Result := (Value = '0') Or (Value = '4');
 End;
 
 {..............................................................................}
@@ -2678,6 +2918,9 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
+    SymObj : ISch_SheetSymbol;
+    EnumVal : Integer;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -2767,19 +3010,44 @@ Begin
                 L.Corner := Crn;
             End;
         End
+        // A round rectangle's corner radii, decimal mils, on that type only
+        // (typed local, as Corner above). Read back by the caller's query.
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    RR.CornerXRadius := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    RR.CornerYRadius := MilsToCoordF(StrToFloatDef(Value, 0));
+            End
+            Else
+                Matched := False;
+        End
 
         // String properties (late-bound across all types, primitives only)
         Else If PropName = 'Text'        Then
         Begin
             If SchObjectHasText(Obj) Then
-                Obj.Text := Value
+            Begin
+                If SchParamKeptByAltium(Obj, True) Then
+                    WroteOK := NoteKeptByAltium(True)
+                Else
+                    Obj.Text := Value;
+            End
             Else
                 Matched := False;
         End
         Else If PropName = 'Name'        Then
         Begin
             If SchObjectHasName(Obj) Then
-                Obj.Name := Value
+            Begin
+                If SchParamKeptByAltium(Obj, False) Then
+                    WroteOK := NoteKeptByAltium(False)
+                Else
+                    Obj.Name := Value;
+            End
             Else
                 Matched := False;
         End
@@ -2973,8 +3241,68 @@ Begin
             Else
                 NotePropertyDiag('unknown', PropName);
         End
+        { A sheet symbol's Source and a sheet entry's Bus Text Style, Kind and
+          Harness Type, by the names the reader gives (see GetSchProperty).
+          A name that is none of them is refused, never written as a
+          default. }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            EnumVal := SheetSymbolTypeOrdinal(Value);
+            If (Obj.ObjectId = eSheetSymbol) And (EnumVal >= 0) Then
+            Begin
+                SymObj := Obj;
+                SymObj.SymbolType := EnumVal;
+            End
+            Else
+                Matched := False;
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If PropName = 'TextStyle' Then EnumVal := BusTextStyleOrdinal(Value)
+            Else If PropName = 'ArrowKind' Then EnumVal := ArrowKindOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then EntryObj.TextStyle := EnumVal
+                Else If PropName = 'ArrowKind' Then EntryObj.ArrowKind := EnumVal
+                Else EntryObj.HarnessType := Value;
+            End
+            Else
+                Matched := False;
+        End
+        { A sheet entry's place on its symbol. Written, then the entry is put
+          on the edge from both, as the placer does: Altium leaves its
+          Location alone until the sheet is reloaded (issue #273). }
+        Else If (PropName = 'Side') Or (PropName = 'DistanceFromTop') Then
+        Begin
+            If PropName = 'Side' Then EnumVal := SheetEntrySideOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'Side' Then EntryObj.Side := EnumVal
+                Else EntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
+                SymObj := EntryObj.OwnerSheetSymbol;
+                If SymObj <> Nil Then PositionSheetEntry(SymObj, EntryObj);
+            End
+            Else
+                Matched := False;
+        End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
-        Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
+        Else If PropName = 'Style'       Then
+        Begin
+            If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
+            Begin
+                WroteOK := False;
+                NoteNextStep('Not written: a port''s Style is only its axis, 0 '
+                    + 'horizontal or 4 vertical; Altium resets any other value '
+                    + 'to one of those when the sheet is reopened.');
+            End
+            Else
+                Obj.Style := StrToIntDef(Value, 0);
+        End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
         Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
@@ -3022,8 +3350,15 @@ Begin
         // Coord properties (expected in mils)
         Else If PropName = 'Width'       Then Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                Matched := False
+            Else If PropName = 'XSize' Then
+                Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
+            Else
+                Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0));
+        End
 
         // Parameter / designator display settings
         Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
@@ -8225,6 +8560,242 @@ End;
 
 
 {..............................................................................}
+{ Gen_SheetTemplate - the sheet template (.SchDot) of the active sheet: read  }
+{ it, set it, update it from its file, or remove it, with no dialog.          }
+{                                                                              }
+{ Params: action = get (default) / set / update / remove; template_file (set: }
+{ the .SchDot to apply; update: optional, else the sheet's own file); vault   }
+{ ('true': also read the vault link the sheet carries).                       }
+{                                                                              }
+{ SET and UPDATE run Altium's own Sch:ChangeCurrentTemplate with              }
+{ TemplateSource=Local, FileName and Silent=True. MEASURED (AD 25.8.1): that  }
+{ form applies the template with no dialog (sheet size, title block off, the  }
+{ template graphics, parameters kept). Its menu forms, Sch:UpdateCurrentTemplate }
+{ and Sch:RemoveTemplate, always ask for a scope and then report in a modal,  }
+{ which blocks the loop. A process reports nothing, so every action is read   }
+{ back: the template file name and the template objects on the sheet.         }
+{                                                                              }
+{ REMOVE does what Sch:RemoveTemplate does without its dialogs: the template  }
+{ object (eTemplate, the container of the border / title block graphics, as   }
+{ ExtractTemplate.pas finds it) leaves the sheet and the file name is         }
+{ cleared. Sheet size and the standard title block flag stay as they are.     }
+{..............................................................................}
+
+Function SheetTemplateObject(SchDoc : ISch_Document) : ISch_GraphicalObject;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Result := Nil;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Result := Obj;
+                Break;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function SheetTemplateCount(SchDoc : ISch_Document; Var Children : Integer) : Integer;
+Var
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+Begin
+    Result := 0;
+    Children := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Inc(Result);
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        Inc(Children);
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function SheetTemplateFile(SchDoc : ISch_Document) : String;
+Begin
+    Result := '';
+    Try Result := SchDoc.GetState_TemplateFileName; Except End;
+End;
+
+{ The vault link a sheet set from the server carries. Read only when asked: }
+{ these names are in the script engine's table but not yet proven on        }
+{ ISch_Document, and an unknown one stops the script.                        }
+Function SheetTemplateVaultJson(SchDoc : ISch_Document) : String;
+Var
+    VaultGuid, ItemGuid, RevGuid, VaultHrid, RevHrid : String;
+Begin
+    VaultGuid := '';
+    ItemGuid := '';
+    RevGuid := '';
+    VaultHrid := '';
+    RevHrid := '';
+    Try VaultGuid := SchDoc.TemplateVaultGUID; Except End;
+    Try ItemGuid := SchDoc.TemplateItemGUID; Except End;
+    Try RevGuid := SchDoc.TemplateRevisionGUID; Except End;
+    Try VaultHrid := SchDoc.TemplateVaultHRID; Except End;
+    Try RevHrid := SchDoc.TemplateRevisionHRID; Except End;
+    Result := JsonObj(JsonStr('vault_guid', VaultGuid) + ','
+        + JsonStr('item_guid', ItemGuid) + ','
+        + JsonStr('revision_guid', RevGuid) + ','
+        + JsonStr('vault_hrid', VaultHrid) + ','
+        + JsonStr('revision_hrid', RevHrid));
+End;
+
+Function SheetTemplateJson(SchDoc : ISch_Document; Vault : Boolean) : String;
+Var
+    Count, Children : Integer;
+    TitleBlock, Border : Boolean;
+    Style : Integer;
+Begin
+    Count := SheetTemplateCount(SchDoc, Children);
+    TitleBlock := False;
+    Border := False;
+    Style := -1;
+    Try TitleBlock := SchDoc.TitleBlockOn; Except End;
+    Try Border := SchDoc.BorderOn; Except End;
+    Try Style := SchDoc.SheetStyle; Except End;
+    Result := JsonStr('template_file', SheetTemplateFile(SchDoc)) + ','
+        + JsonInt('template_objects', Count) + ','
+        + JsonInt('template_graphics', Children) + ','
+        + JsonInt('sheet_style', Style) + ','
+        + JsonBool('title_block_on', TitleBlock) + ','
+        + JsonBool('border_on', Border);
+    If Vault Then
+        Result := Result + ',' + JsonRaw('vault', SheetTemplateVaultJson(SchDoc));
+End;
+
+Function Gen_SheetTemplate(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    What, TplFile, Before, After, Data : String;
+    Vault, Ok : Boolean;
+    Tpl : ISch_GraphicalObject;
+    Guard, Removed, Count, Children : Integer;
+    LastAddr, ThisAddr : Integer;
+Begin
+    What := LowerCase(ExtractJsonValue(Params, 'action'));
+    If What = '' Then What := 'get';
+    TplFile := ExtractJsonValue(Params, 'template_file');
+    Vault := LowerCase(ExtractJsonValue(Params, 'vault')) = 'true';
+    If (What <> 'get') And (What <> 'set') And (What <> 'update') And (What <> 'remove') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
+            'action is get, set, update or remove');
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
+        Exit;
+    End;
+    Before := SheetTemplateFile(SchDoc);
+    Ok := True;
+    Removed := 0;
+
+    If (What = 'set') Or (What = 'update') Then
+    Begin
+        If (What = 'update') And (TplFile = '') Then TplFile := Before;
+        If TplFile = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_TEMPLATE',
+                'The sheet has no template to update; give template_file');
+            Exit;
+        End;
+        If LowerCase(ExtractFileExt(TplFile)) <> '.schdot' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_A_TEMPLATE',
+                'template_file must be a .SchDot: ' + TplFile);
+            Exit;
+        End;
+        If Not FileExists(TplFile) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND',
+                'No such file: ' + TplFile);
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('TemplateSource', 'Local');
+        AddStringParameter('FileName', TplFile);
+        AddStringParameter('Silent', 'True');
+        RunProcess('Sch:ChangeCurrentTemplate');
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+        After := SheetTemplateFile(SchDoc);
+        Count := SheetTemplateCount(SchDoc, Children);
+        Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
+    End
+    Else If What = 'remove' Then
+    Begin
+        SchBeginEdit(SchDoc, '');
+        Try
+            Guard := 50;
+            LastAddr := 0;
+            While Guard > 0 Do
+            Begin
+                Tpl := SheetTemplateObject(SchDoc);
+                If Tpl = Nil Then Break;
+                ThisAddr := 0;
+                Try ThisAddr := Tpl.I_ObjectAddress; Except End;
+                { The same template found again: the remove did nothing. }
+                If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then Break;
+                LastAddr := ThisAddr;
+                SchDoc.RemoveSchObject(Tpl);
+                Inc(Removed);
+                Dec(Guard);
+            End;
+            SchDoc.TemplateFileName := '';
+        Finally
+            SchEndEdit(SchDoc, 'Edit');
+        End;
+        SchDoc.UpdateDocumentProperties;
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+        Count := SheetTemplateCount(SchDoc, Children);
+        After := SheetTemplateFile(SchDoc);
+        Ok := (Count = 0) And (After = '');
+    End;
+
+    Data := JsonStr('sheet', SchDoc.DocumentName)
+        + ',' + JsonStr('action', What)
+        + ',' + JsonBool('applied', Ok)
+        + ',' + JsonStr('template_before', Before);
+    If What = 'remove' Then Data := Data + ',' + JsonInt('removed', Removed);
+    Data := Data + ',' + SheetTemplateJson(SchDoc, Vault);
+    Result := BuildSuccessResponse(RequestId, JsonObj(Data));
+End;
+
+
+{..............................................................................}
 { Place a schematic component instance from a library onto the active sheet.  }
 { Uses ISch_Document.PlaceSchComponent, the verified direct-placement API.   }
 { Params: library_path (.SchLib full path), lib_reference (component name),   }
@@ -9691,11 +10262,16 @@ Begin
     SchPort.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     SchPort.Name := Name;
 
-    // Style: none, left, right, left_right
-    If StyleStr = 'left' Then SchPort.Style := ePortLeft
-    Else If StyleStr = 'right' Then SchPort.Style := ePortRight
-    Else If StyleStr = 'left_right' Then SchPort.Style := ePortLeftRight
-    Else SchPort.Style := ePortNone;
+    { Style is only the axis Altium keeps: 0 horizontal, 4 vertical. The    }
+    { arrows come from IOType and the wired end; 1-3 and 5-7 read back but  }
+    { are 0 / 4 again after a reopen (measured on AD 25.8 and 26.11). The   }
+    { arrow names (none, left, right, left_right) give a horizontal port.   }
+    StyleStr := LowerCase(StyleStr);
+    If (StyleStr = 'vertical') Or (StyleStr = 'top') Or (StyleStr = 'bottom')
+        Or (StyleStr = 'top_bottom') Then
+        SchPort.Style := 4
+    Else
+        SchPort.Style := 0;
 
     // IO Type: unspecified, output, input, bidirectional
     If IOTypeStr = 'output' Then SchPort.IOType := ePortOutput
@@ -18098,6 +18674,7 @@ Begin
         'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
+        'sheet_template':    Result := Gen_SheetTemplate(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'set_sch_component_parameters': Result := Gen_SetSchComponentParameters(Params, RequestId);
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);

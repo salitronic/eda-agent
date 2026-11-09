@@ -5,9 +5,9 @@ bridges large language models to Altium Designer through a DelphiScript
 side-channel. It is single-maintainer and Windows-only by necessity (Altium
 runs on Windows).
 
-Before opening a non-trivial change, please file an issue first so we can
-discuss scope. Drive-by patches that change architecture or rename public
-APIs are unlikely to land without prior agreement.
+Before opening a larger change, please file an issue first so we can
+agree the scope together; for a change to the architecture or a public
+tool's name, that conversation comes first.
 
 ## Ground rules
 
@@ -16,10 +16,91 @@ APIs are unlikely to land without prior agreement.
   [`SECURITY.md`](SECURITY.md).
 - By contributing you agree your contribution is licensed under
   Apache-2.0 (the project licence).
-- Every edit to a design or library file goes through the Delphi bridge and
-  Altium. Modifying a file directly is not accepted unless it is strictly
-  unavoidable or well constrained, and reading design files directly is
-  discouraged too; the few exceptions are agreed in an issue first.
+- Everything goes through Altium. Every write to a design or library
+  file, and every read of one, is made by Altium through its API at the
+  bridge's request, never by opening the file directly, from Python or
+  from the bridge's Pascal. A direct read can occasionally be justified
+  and is agreed in an issue first; a direct write is very hard to justify
+  and needs a strong case in that issue.
+
+## How we work
+
+Contributions of every size are welcome, from a typo fix to a new tool.
+You do not need to get everything below right on the first try: these are
+the things a review looks for, written down so there are no surprises.
+Where a change needs adjusting to fit, the maintainer will usually do that
+part during intake rather than send it back.
+
+### How a pull request lands
+
+- Your work is credited to you. Pull requests are not merged with the
+  merge button; the maintainer cherry-picks your commits, keeping you as
+  the git author, so GitHub lists you as a contributor. Any adapting and
+  extra testing goes into a separate follow-up commit. Merge-from-main
+  commits on your branch are not needed.
+- For a small fix, just open the pull request. For something larger, an
+  issue first saves you time: it is the place to agree the approach,
+  especially when a change alters what an existing tool's argument or
+  reply means. Mention the issue in the PR (`Closes #N`).
+- Bug reports and feature requests are both welcome as issues. Either
+  way, the maintainer decides what is built and how: a bug is confirmed
+  first, a feature is weighed against the project's direction, and the
+  design that lands may differ from the one proposed.
+- You can leave `SCRIPT_VERSION` and the generated
+  `scripts/altium/Altium_MCP.pas` alone. The maintainer bumps the version
+  and rebuilds the bundle at intake, so parallel PRs do not conflict on
+  them.
+
+### What the tools aim for
+
+These come from things that went wrong in real sessions, so each has a
+reason behind it.
+
+- **Read and write through Altium.** Design and library files are read
+  and changed by Altium itself, through its own API (see Ground rules), so
+  what a tool reports is what Altium holds and Altium always knows what
+  changed. Opening the file directly is not the route, whether from Python
+  or from the bridge's own Pascal (a file stream, a text read or rewrite
+  of a .SchDoc or .PrjPcb): the bridge asks Altium to read it, or to make
+  the change and save it.
+- **API first.** The scripting API is preferred over an editor process
+  (`RunProcess`), and a process over driving a dialog. When a process is
+  the only route, a comment saying why and a read-back of the result help
+  a lot.
+- **Name the document.** A tool acts on the document it was given, or the
+  only one it can mean. With several open it lists the candidates rather
+  than guessing from whichever one is in front.
+- **Read back the write.** A reply says what Altium holds after the call,
+  and a check that could not run says so rather than reporting a pass.
+- **Keep capabilities.** A hazard is documented or warned about rather
+  than removed, and a workaround for one Altium version is applied on that
+  version.
+- **Stay neutral on style.** The tools serve many teams with different
+  house rules, so a change that imposes a particular style, preference or
+  rule (a grid, a naming scheme, a pin layout, a check on a design), even
+  one a standard requires, needs a switch on the Config tab so a user can
+  turn it off. You do not need to build the switch yourself: say in the PR
+  that the change imposes a choice, and the maintainer adds it.
+- **Prefer a warning to a refusal,** unless the call would act on the
+  wrong object or write something Altium will not keep. A refusal says why
+  and what to do instead.
+- **Read only proven members.** A DelphiScript `Try` does not catch an
+  undeclared identifier, so reading a member a type lacks stops the
+  script. Ask a member only of the types where it was seen to exist.
+- **Dependencies.** The project uses no third-party engines beyond ngspice
+  and openEMS, and every new import is declared in `pyproject.toml`
+  (`tests/test_imports_are_declared.py` checks this).
+
+### Writing style
+
+- Tool docstrings describe what the tool does now, without history or
+  issue numbers: the model reads them every session, and each has a
+  3000-character budget (`tests/test_tool_description_budget.py`). The
+  commit message is the place for the story.
+- Keep library, project, customer and personal names and private paths
+  out of code, tests and fixtures.
+- When you measured something in Altium, say which version; it is just as
+  useful to say which versions you could not test.
 
 ## Development environment
 

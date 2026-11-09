@@ -1,0 +1,105 @@
+{
+ "vendor": "AdvancedPCB",
+ "source": {
+  "url": "https://www.advancedpcb.com/getmedia/6c0a8498-98c6-46f5-98c3-897a1d259dd0/AdvancedPCB_Aurora-Facility-Capabilities-2026-Final.pdf",
+  "retrieved": "2026-11-08",
+  "note": "Aurora, CO facility (formerly Advanced Circuits), 2026 capabilities sheet, Standard column. Values are in inches; outer layers are listed by BASE copper (1/2 oz base plates to about 1 oz finished)."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12
+     ],
+     "quote": "Maximum Rigid Layer Count 12",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "quote": "Outer Layer Trace Width - ½ oz. Cu. Base 0.004",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "0.004 in = 4 mil; 1/2 oz base, about 1 oz finished"
+    },
+    {
+     "mil": 5,
+     "quote": "Outer Layer Trace Width - 1 oz. Cu. Base 0.005",
+     "when": {
+      "outer_oz": 2
+     },
+     "derived": "0.005 in = 5 mil; 1 oz base, about 2 oz finished"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4,
+     "quote": "Outer Layer Space - Trace to Trace - ½ oz. Cu. Base 0.004",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "0.004 in = 4 mil"
+    },
+    {
+     "mil": 5,
+     "quote": "Outer Layer Space - Trace to Trace - 1 oz. Cu. Base 0.005",
+     "when": {
+      "outer_oz": 2
+     },
+     "derived": "0.005 in = 5 mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 6,
+     "quote": "Smallest Mechanical PTH - Via (Aspect ratio driven) 0.006 0.004",
+     "derived": "0.006 in = 6 mil, Standard column"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 6,
+     "quote": "Drill/Pad Size - No Break Out - Thru Drill nominal +.012",
+     "derived": "pad = drill + 0.012 in, so the ring is 0.006 in = 6 mil"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 10,
+     "quote": "Minimum Hole to Hole Edge for PTH 0.010",
+     "derived": "0.010 in = 10 mil"
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Solder Mask Web Width Over Laminate (i.e. between pads) 0.004 0.003",
+     "derived": "0.004 in = 4 mil, Standard column"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "Minimum Silkscreen Line Width / Height (white only) 0.005 0.003",
+     "derived": "0.005 in = 5 mil, Standard column"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 10,
+     "quote": "Minimum Copper Spacing to Board Edge 0.010",
+     "derived": "0.010 in = 10 mil"
+    }
+   ]
+  }
+ }
+}

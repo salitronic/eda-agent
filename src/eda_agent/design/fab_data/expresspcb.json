@@ -1,0 +1,68 @@
+{
+ "vendor": "ExpressPCB",
+ "source": {
+  "url": "https://www.expresspcb.com/expresspcb-manufacturing-specifications/",
+  "retrieved": "2026-11-08",
+  "note": "ExpressPCB Manufacturing Specifications; outer copper is 1/2 oz, inner 1 oz. Values in inches."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "unpublished": "The specifications page gives no layer counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 6,
+     "quote": "Minimum Trace Width | 0.006 inches",
+     "derived": "0.006 in = 6 mil"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 6,
+     "quote": "Minimum Space | 0.006 inches",
+     "derived": "0.006 in = 6 mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 8,
+     "quote": "Minimum Hole Size | 0.008 inches",
+     "derived": "0.008 in = 8 mil"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "unpublished": "The specifications page gives no annular ring."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The specifications page gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The specifications page gives mask registration, no web."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 6,
+     "quote": "Silkscreen Thickness (Min) | 0.006 inches",
+     "note": "Printed as a thickness; read as the line width.",
+     "derived": "0.006 in = 6 mil"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 15,
+     "quote": "Required Edge Clearance - Top and Bottom | 0.015 inches",
+     "derived": "0.015 in = 15 mil; 20 mil on inner layers"
+    }
+   ]
+  }
+ }
+}

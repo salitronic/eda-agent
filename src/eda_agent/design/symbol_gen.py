@@ -428,6 +428,8 @@ def _norm(name: str) -> str:
 def _role(name: str) -> tuple[str | None, str]:
     """(role, unit) for one pin name; role None when it is not an amp pin."""
     n = _norm(name)
+    if not n:
+        return None, ""
     for pattern, role in ((_SUPPLY_POS, "v+"), (_SUPPLY_NEG, "v-")):
         if pattern.match(n):
             return role, ""

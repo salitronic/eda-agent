@@ -1,0 +1,81 @@
+{
+ "vendor": "ALLPCB",
+ "source": {
+  "url": "https://www.allpcb.com/standard_pcb_manufacturing_capability.html",
+  "retrieved": "2026-11-08"
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14
+     ],
+     "quote": "Layers | 1-14 layers | 1-14 layers PCB prototypes & batch orders",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "quote": "Min Trace | 4mil（0.1mm） | Minimum trace width is 4mil, strongly suggest to design trace above 6mil (0.15mm) to save cost."
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4,
+     "quote": "Min Spacing | 4mil（0.1mm） | Minimum trace spacing is 4mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.2,
+     "quote": "Finished Hole Diameter (CNC) | 0.2--6.5mm"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 6,
+     "quote": "Annular Ring | ≥0.153mm（6mil）"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The table gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mm": 0.1,
+     "quote": "Cell_SolderMaskBridge | 0.1mm | Please make a note, if there is solder mask bridge requirement. The price may rise.",
+     "note": "The row is labelled with the site's field name; it is the solder mask bridge."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.15,
+     "quote": "Min Character Width (Legend) | ≥0.15mm"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 0.8,
+     "quote": "Min Character Height (Legend) | ≥0.8mm"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.3,
+     "quote": "Distance between Trace and Outline | ≥0.3mm（12mil） | Ship as individual boards"
+    }
+   ]
+  }
+ }
+}

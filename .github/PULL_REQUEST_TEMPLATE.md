@@ -35,6 +35,8 @@ Notes:
 
 - [ ] Commit subjects are plain imperative sentences saying what changed,
       with no `type(scope):` prefix (see CONTRIBUTING.md)
+- [ ] I have read "How we work" in CONTRIBUTING.md (anything that does
+      not fit yet can be sorted out in review)
 - [ ] No secrets, customer designs, or proprietary library paths are
       included in the diff or test fixtures
 - [ ] If a Pascal file changed, the PR description notes that reviewers

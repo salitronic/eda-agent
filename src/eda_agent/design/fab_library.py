@@ -172,9 +172,15 @@ def fab_profile(name: str, *, copper_layers: int, outer_oz: float = 1.0,
         return {"ok": False, "reason": f"fill names unknown fields {unknown}",
                 "fields": sorted(_FIELDS)}
 
-    counts = figs["copper_layer_counts"][0]["counts"]
+    listed = figs["copper_layer_counts"][0]
+    counts = listed.get("counts")
+    if counts is None:
+        return {"ok": False, "reason": (
+            f"{got['vendor']} publishes no layer counts ({listed.get('unpublished', '')}); "
+            "ask the fab, then check the board with fab 'custom' and your limits"),
+            "age": got["age"]}
     values: dict[str, Any] = {"copper_layer_counts": counts}
-    provenance: dict[str, dict] = {"copper_layer_counts": figs["copper_layer_counts"][0]}
+    provenance: dict[str, dict] = {"copper_layer_counts": listed}
     missing = []
     if copper_layers not in counts:
         return {"ok": False, "reason": f"{got['vendor']} {tier} does not list "

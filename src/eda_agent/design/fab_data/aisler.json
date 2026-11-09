@@ -1,0 +1,89 @@
+{
+ "vendor": "AISLER",
+ "source": {
+  "url": "https://community.aisler.net/t/2-layer-1-6mm-35-m-enig-design-rules/3732",
+  "also": [
+   "https://community.aisler.net/t/4-layer-35-m-enig-design-rules/3733",
+   "https://community.aisler.net/t/pcb-design-rules/41"
+  ],
+  "retrieved": "2026-11-08",
+  "note": "AISLER's own design rule pages (2 Layer 1.6 mm 35 µm ENIG, last updated 07/07/2025, and 4 Layer 35 µm ENIG). HASL and 70 µm builds have their own, larger rules and are not stored."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      2,
+      4
+     ],
+     "quote": "2L 35 µm ENIG 4L 35 µm ENIG"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 5,
+     "quote": "min. tracewidth | 125 µm / 5 mil",
+     "when": {
+      "outer_oz": 1
+     }
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 5,
+     "quote": "min. spacing copper / copper | 125 µm / 5 mil",
+     "when": {
+      "outer_oz": 1
+     }
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.25,
+     "quote": "min. via drill | 0.25 mm / 10 mil"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "min. via annular ring | 100 μm / 4 mil"
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mil": 12,
+     "quote": "min. PTH annular ring | 300 μm / 12 mil"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The design rules give no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "min. soldermask dam | 100µm / 4 mil"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "The design rules give a silkscreen text height, no line width."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mil": 32,
+     "quote": "min. silkscreen text height | 800µm / 32 mil"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 12,
+     "quote": "min. copper to edge clearance | 300 μm / 12 mil"
+    }
+   ]
+  }
+ }
+}

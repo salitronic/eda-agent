@@ -33,6 +33,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from ..preferences import checks_guide
+
 #: Document kinds a recipe can apply to. ``any`` means it does not turn
 #: on which document is in front.
 DOCUMENT_KINDS = ("library", "board", "schematic", "project", "any")
@@ -45,6 +47,29 @@ DOCUMENT_KINDS = ("library", "board", "schematic", "project", "any")
 #: a caller who is already looking here; naming the wrong one by the
 #: reason it is wrong is what makes a recipe findable from the mistake.
 _RECIPES: tuple[dict[str, Any], ...] = (
+    {
+        "task": "A check refused a build and the user wants to go ahead anyway",
+        "keywords": ("check", "refused", "insist", "anyway", "bypass",
+                     "override", "config", "skip", "unchecked", "deviate"),
+        "when": (("go", "ahead"), ("anyway",), ("insist",), ("bypass",),
+                 ("override",), ("check", "off"), ("switch", "off")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["lib_create_footprint_from_package", "lib_create_ic_symbol",
+                "lib_link_footprint", "lib_create_3d_model", "sim_attach_model",
+                "proj_run_outjob", "proj_export_jlc_assembly"],
+        "avoid": [
+            ("lib_set_pad_properties", "resizing the pads of a footprint "
+                                       "just built passes the drawing check "
+                                       "by another route"),
+            ("lib_add_footprint_pads", "pads placed one by one into a new "
+                                       "footprint are the route the check "
+                                       "closes"),
+            ("obj_modify", "editing pins or pads after the build is the "
+                           "check passed by another route"),
+        ],
+        "note": checks_guide(),
+    },
     {
         "task": "Delete primitives inside a footprint",
         "keywords": ("delete", "primitive", "footprint", "silkscreen",

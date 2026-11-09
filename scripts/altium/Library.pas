@@ -17946,13 +17946,16 @@ End;
 
 {..............................................................................}
 { Lib_SaveFootprintLibrary - write one footprint of a PCB library to a new    }
-{ PCB library file of its own (IPCB_Library.SaveComponentWithLibrary).       }
+{ PCB library file of its own through a fresh destination and full copy.    }
 { Params: library_path (optional), footprint_name, out_path (required).      }
 {..............................................................................}
 Function Lib_SaveFootprintLibrary(Params : String; RequestId : String) : String;
 Var
-    LibPath, FpWanted, OutPath : String;
-    PcbLib : IPCB_Library;
+    LibPath, FpWanted, OutPath, Problem : String;
+    PcbLib, DestLib : IPCB_Library;
+    Footprint, NewFP, Blank : IPCB_LibComponent;
+    OutDoc : IServerDocument;
+    J, Aligned, FailuresBefore : Integer;
     Said : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -17970,18 +17973,141 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library at ' + LibPath);
         Exit;
     End;
-    If FootprintByName(PcbLib, FpWanted) = Nil Then
+    Footprint := FootprintByName(PcbLib, FpWanted);
+    If Footprint = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT',
             'Footprint not found in ' + LibPath + ': ' + FpWanted);
         Exit;
     End;
-    Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
+    OutPath := CanonicalPathValue('path', OutPath);
+    If UpperCase(OutPath) = UpperCase(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAME_LIBRARY',
+            'The output path is the source library; nothing was exported.');
+        Exit;
+    End;
+    If UpperCase(ExtractFileExt(OutPath)) <> '.PCBLIB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PATH', 'out_path must name a .PcbLib');
+        Exit;
+    End;
+    { 25 and later: Altium's own one-footprint save, which writes over an  }
+    { existing output as it always has. AD21's script engine stopped in    }
+    { SaveComponentWithLibrary, so there the footprint goes through a fresh }
+    { library document instead, which only makes a new file.              }
+    If AltiumVersionCode(0) >= 2500 Then
+    Begin
+        Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library', LibPath) + ','
+            + JsonStr('footprint_name', FpWanted) + ','
+            + JsonStr('out_path', OutPath) + ','
+            + JsonBool('reported', Said) + ','
+            + JsonStr('route', 'save_component_with_library')));
+        Exit;
+    End;
+    If Client.GetDocumentByPath(OutPath) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',
+            'The output library is already open; choose a new output path.');
+        Exit;
+    End;
+    If FileExists(OutPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'OUTPUT_EXISTS',
+            'The output file already exists; choose a new output path.');
+        Exit;
+    End;
+    If Not DirectoryExists(ExtractFilePath(OutPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PATH',
+            'The output directory does not exist: ' + ExtractFilePath(OutPath));
+        Exit;
+    End;
+
+    If SaveHeldBack(OutPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+            'Saving is disabled; no destination library was created.');
+        Exit;
+    End;
+
+    { The source is never saved, renamed or pruned. All mutations below are
+      on the newly created, unshared destination document. }
+    OutDoc := Client.OpenNewDocument('PCBLIB', OutPath, ExtractFileName(OutPath), False);
+    If OutDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Could not create ' + OutPath);
+        Exit;
+    End;
+    OutDoc.SetFileName(OutPath);
+    Client.ShowDocument(OutDoc);
+    DestLib := PCBServer.GetCurrentPCBLibrary;
+    Problem := PcbLibPathProblem(DestLib, OutPath);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY', Problem);
+        Exit;
+    End;
+
+    FailuresBefore := WritesFailed;
+    MarkDocDirtyByPath(OutPath);
+    PcbBeginEdit(0);
+    Try
+        { Some versions seed a blank component. Only this fresh document
+          is cleared, so the result always contains exactly one footprint. }
+        For J := DestLib.ComponentCount - 1 DownTo 0 Do
+        Begin
+            Blank := DestLib.GetComponent(J);
+            DestLib.RemoveComponent(Blank);
+            DestLib.DeRegisterComponent(Blank);
+        End;
+        NewFP := DestLib.CreateNewComponent;
+        If NewFP = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COPY_FAILED', 'CreateNewComponent returned Nil');
+            Exit;
+        End;
+        Footprint.CopyTo(NewFP, eFullCopy);
+        Aligned := AlignCopiedFootprint(Footprint, NewFP);
+        NewFP.Name := FpWanted;
+        DestLib.RegisterComponent(NewFP);
+    Finally
+        PcbEndEdit(0);
+    End;
+    { A failed realignment must not become a saved, misleading export. }
+    If WritesFailed > FailuresBefore Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COPY_FAILED',
+            'A copied footprint primitive could not be aligned; the destination was not saved.');
+        Exit;
+    End;
+    If (DestLib.ComponentCount <> 1) Or (FootprintByName(DestLib, FpWanted) = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COPY_FAILED',
+            'The destination does not contain exactly the requested footprint; it was not saved.');
+        Exit;
+    End;
+    OutDoc.DoFileSave('');
+    Said := FileExists(OutPath);
+    If Not Said Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+            'The destination library could not be saved to ' + OutPath);
+        Exit;
+    End;
+    { A fresh output did not exist before DoFileSave. Its creation proves
+      the write, so do not leave the bridge's edit marker blocking close. }
+    ForgetDocEdited(OutPath);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('library', LibPath) + ','
         + JsonStr('footprint_name', FpWanted) + ','
         + JsonStr('out_path', OutPath) + ','
-        + JsonBool('reported', Said)));
+        + JsonBool('reported', Said) + ','
+        + JsonStr('route', 'new_document_full_copy') + ','
+        + JsonInt('footprint_count', DestLib.ComponentCount) + ','
+        + JsonInt('primitives_realigned', Aligned)));
 End;
 
 { Lib_ExportModelStep - write one footprint body's 3D model to a STEP file    }

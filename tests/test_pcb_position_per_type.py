@@ -59,7 +59,6 @@ def test_the_base_interface_is_never_asked_for_a_position(source: str):
     ("ePadObject", "Pad."),
     ("eViaObject", "Via."),
     ("eComponentObject", "Comp."),
-    ("eComponentBodyObject", "Body."),
     ("eTextObject", "Txt."),
     ("eArcObject", "Arc."),
     ("eFillObject", "Fill."),
@@ -145,3 +144,12 @@ def test_the_resolver_cannot_raise_out_of_its_own_try(resolver: str):
     assert "Except" in resolver
     tail = resolver.split("Except", 1)[1]
     assert "Found := False" in tail
+
+
+def test_a_body_position_is_read_only_where_the_member_exists(resolver):
+    """AD21 has no x/y on a component body and halts even inside Try; 25
+    and later read it. The version is asked before the member is reached."""
+    branch = resolver.split("Oid = eComponentBodyObject Then", 1)[1]
+    branch = branch.split("Else If Oid =", 1)[0]
+    gate = branch.index("If AltiumVersionCode(0) >= 2500 Then")
+    assert gate < branch.index("Body.x") and gate < branch.index("Body.y")

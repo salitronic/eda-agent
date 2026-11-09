@@ -1,0 +1,118 @@
+{
+ "vendor": "Bay Area Circuits",
+ "source": {
+  "url": "https://bayareacircuits.com/pcb-capabilities/",
+  "retrieved": "2026-11-08",
+  "note": "Columns Standard and Advanced; tier standard is the first. Values in inches."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+     ],
+     "quote": "Minimum Layer Count | 1 | 1 Maximum Layer Count | 16 | 30",
+     "note": "1 and 2 plus the even counts, Standard column."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "quote": "Outer Layers (finished copper) | 1 oz Cu Min Trace/Space .004″",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "0.004 in = 4 mil"
+    },
+    {
+     "mil": 6,
+     "quote": "2 oz Cu Min Trace/Space .006″",
+     "when": {
+      "outer_oz": 2
+     },
+     "derived": "0.006 in = 6 mil"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4,
+     "quote": "Outer Layers (finished copper) | 1 oz Cu Min Trace/Space .004″",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "0.004 in = 4 mil"
+    },
+    {
+     "mil": 6,
+     "quote": "2 oz Cu Min Trace/Space .006″",
+     "when": {
+      "outer_oz": 2
+     },
+     "derived": "0.006 in = 6 mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 6,
+     "quote": "Finished Hole Size | 0.006″ | 0.004″",
+     "derived": "0.006 in = 6 mil, Standard column"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Annular Ring | 0.005″ At drilled size, class 2",
+     "derived": "0.005 in = 5 mil"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The capabilities table gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 5,
+     "quote": "Web (or Mask Width) | 0.005″ | 0.003″",
+     "derived": "0.005 in = 5 mil, Standard column"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 3,
+     "quote": "Silkscreen Width | 0.003″ | 0.003″",
+     "derived": "0.003 in = 3 mil"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 10,
+     "quote": "Clearance - Copper to Edge of Board | Outer Layer Rout - 0.010″ Outer Layer V-Score - 0.015″ Inner Layer - 0.015″",
+     "derived": "0.010 in = 10 mil to a routed outer edge"
+    }
+   ],
+   "inner_pth_hole_to_copper": [
+    {
+     "mil": 10.5,
+     "quote": "Plated Hole to Internal Copper | 0.0105″ | 0.008″",
+     "derived": "0.0105 in = 10.5 mil"
+    }
+   ],
+   "blind_buried_vias": [
+    {
+     "offered": false,
+     "quote": "Blind Vias | No | Yes Buried Vias | No | Yes"
+    }
+   ]
+  }
+ }
+}

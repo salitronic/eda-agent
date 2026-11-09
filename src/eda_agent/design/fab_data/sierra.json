@@ -1,0 +1,91 @@
+{
+ "vendor": "Sierra Circuits",
+ "source": {
+  "url": "https://www.protoexpress.com/products/rigid-pcb/",
+  "retrieved": "2026-11-08",
+  "note": "Rigid PCB capability table."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36
+     ],
+     "quote": "Minimum Layer Count | 1 | Maximum Layer Count | 36",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "quote": "Minimum Trace Width | 4 mil (0.0040 in/0.102 mm)"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4.25,
+     "quote": "Minimum Etching Guidelines | 4.25 mil (0.00425 in/0.108 mm) spacing and 4 mil (0.0040 in/0.102 mm) trace width for 1 oz",
+     "when": {
+      "outer_oz": 1
+     },
+     "note": "The etching guideline for 1 oz; the table's minimum space is 4 mil."
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 5.9,
+     "quote": "Smallest Mechanical Drill Diameter | 5.9 mil (0.0059 in/0.150 mm)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "Minimum Annular Ring- Mechanically Drilled | 4 mil (0.0040 in/0.102 mm)"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The rigid PCB table gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Solder Mask Minimum Dam Size | 3 mil (0.0030 in/0.076 mm)-4 mil (0.0040 in/0.102 mm) for Green and Red 5 mil (0.0050 in/0.127 mm) for Purple, Black, and Blue",
+     "note": "The upper end of the 3 to 4 mil range for green and red; 5 mil for other colours."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "The rigid PCB table gives legend colours, no line width."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 10,
+     "quote": "V Score , Edge to Copper | 10 mil (0.010 in/0.254 mm)",
+     "note": "Given for V-scored edges."
+    }
+   ]
+  }
+ }
+}

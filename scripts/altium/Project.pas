@@ -49,69 +49,87 @@ Begin
     End;
 End;
 
-Function Proj_Create(Params : String; RequestId : String) : String;
+{..............................................................................}
+{ CreateProjectThroughAltium - a new project made and saved by Altium:        }
+{ IWorkspace.DM_CreateNewDocument(Kind) makes it, untitled, and              }
+{ DoSafeChangeFileNameAndSave puts it under ProjectPath. Kind is the editor  }
+{ window kind (PCBPROJECT, HARNESSDESIGN). Returns '' when saved, else what  }
+{ went wrong.                                                                 }
+{..............................................................................}
+Function CreateProjectThroughAltium(ProjectPath : String; Kind : String) : String;
 Var
-    ProjectPath, ProjectType, ProjectExt : String;
-    StubContent : String;
-    F : TextFile;
+    Workspace : IWorkspace;
+    NewPath : String;
+    Doc : IServerDocument;
     Saved : Boolean;
 Begin
-    ProjectPath := ExtractJsonValue(Params, 'project_path');
-    ProjectType := ExtractJsonValue(Params, 'project_type');
-
-    If ProjectType = '' Then ProjectType := 'PCB';
-
-    // Altium project files are INI-like text. Write a minimal stub directly
-    // to disk so we don't trigger the GUI New Project dialog, then open it
-    // via WorkspaceManager:OpenObject (the documented programmatic open).
-    // The stub is the smallest .PrjPcb that Altium will load and let us
-    // attach documents to.
-    If ProjectType = 'PCB' Then
-    Begin
-        ProjectExt := '.PrjPcb';
-        StubContent :=
-            '[Design]' + #13#10 +
-            'Version=1.0' + #13#10 +
-            'HierarchyMode=0' + #13#10 +
-            'OpenOutputs=1' + #13#10 +
-            'ArchiveProject=0' + #13#10;
-    End
-    Else
-    Begin
-        ProjectExt := '.PrjPcb';
-        StubContent := '[Design]' + #13#10 + 'Version=1.0' + #13#10;
-    End;
-
-    Saved := False;
-    // Ensure the target directory exists; Rewrite throws EInOutError
-    // ("Invalid file name") into an engine modal if the folder is missing,
-    // and that modal escapes the Try/Except below.
-    Try ForceDirectories(ExtractFilePath(ProjectPath)); Except End;
+    Result := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := 'no workspace'; Exit; End;
+    NewPath := '';
     Try
-        AssignFile(F, ProjectPath);
-        Rewrite(F);
-        Try
-            Write(F, StubContent);
-        Finally
-            CloseFile(F);
-        End;
-        Saved := FileExists(ProjectPath);
+        NewPath := Workspace.DM_CreateNewDocument(Kind);
+    Except
+        NewPath := '';
+    End;
+    If NewPath = '' Then
+    Begin
+        Result := 'Altium made no new ' + Kind + ' document';
+        Exit;
+    End;
+    Doc := Nil;
+    Try Doc := Client.GetDocumentByPath(NewPath); Except Doc := Nil; End;
+    If Doc = Nil Then
+    Begin
+        Result := 'Altium made ' + NewPath + ' but it could not be found to save';
+        Exit;
+    End;
+    Saved := False;
+    Try
+        Saved := Doc.DoSafeChangeFileNameAndSave(ProjectPath, Kind);
     Except
         Saved := False;
     End;
+    If Not (Saved And FileExists(ProjectPath)) Then
+        Result := 'Altium made ' + NewPath + ' but did not save it as ' + ProjectPath
+            + '; it is open, unsaved, in the Projects panel';
+End;
 
-    If Not Saved Then
+{..............................................................................}
+{ Proj_Create - a new, empty project, made and saved by Altium (no file is    }
+{ written here). The extension picks the kind (.PrjHar, .LibPkg, .PrjMbd,    }
+{ .PrjScr; anything else a PCB project). An existing file is left alone.     }
+{..............................................................................}
+Function Proj_Create(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, Kind, Problem, Ext : String;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    If ProjectPath = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
-            'Could not write project stub: ' + ProjectPath);
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'project_path is required');
         Exit;
     End;
-
-    // Open the freshly-written project so subsequent commands can target it.
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Project');
-    AddStringParameter('FileName', ProjectPath);
-    RunProcess('WorkspaceManager:OpenObject');
+    If FileExists(ProjectPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_EXISTS',
+            ProjectPath + ' already exists; open it with proj_open, or choose a new path.');
+        Exit;
+    End;
+    { The editor window kinds WorkspaceManager.ins gives each extension. }
+    Ext := LowerCase(ExtractFileExt(ProjectPath));
+    If Ext = '.prjhar' Then Kind := 'HARNESSDESIGN'
+    Else If Ext = '.libpkg' Then Kind := 'INTEGRATEDLIBRARY'
+    Else If Ext = '.prjmbd' Then Kind := 'SYSTEMDESIGN'
+    Else If Ext = '.prjscr' Then Kind := 'SCRIPTPROJECT'
+    Else Kind := 'PCBPROJECT';
+    Try ForceDirectories(ExtractFilePath(ProjectPath)); Except End;
+    Problem := CreateProjectThroughAltium(ProjectPath, Kind);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', Problem);
+        Exit;
+    End;
 
     { SAY WHETHER IT IS FOCUSED, because it usually is not, and the next      }
     { call the caller makes probably assumes it is. Altium's focused project  }
@@ -124,7 +142,7 @@ Begin
     { before, which during the live sweep was a client design.                }
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"project_path":"' + EscapeJsonString(ProjectPath) +
-        '","saved":true,"focused":'
+        '","kind":"' + Kind + '","saved":true,"focused":'
         + BoolToJsonStr(FocusedProjectPathIs(ProjectPath))
         + ',"note":"a new project has no documents, so it cannot become the '
         + 'focused project. Pass project_path explicitly to proj_add_document, '
@@ -2729,22 +2747,124 @@ Begin
 End;
 
 {..............................................................................}
+{ HierItemKey - where a compiled port or sheet entry sits: its sheet file,   }
+{ kind and location in internal units. The same item on a sheet's logical   }
+{ document and on each of its physical documents (one per channel) shares   }
+{ the key.                                                                    }
+{..............................................................................}
+Function HierItemKey(FileName : String; Kind : String; Item : INetItem) : String;
+Var
+    X, Y : Integer;
+Begin
+    X := 0; Y := 0;
+    Try X := Item.DM_LocationX; Except End;
+    Try Y := Item.DM_LocationY; Except End;
+    Result := LowerCase(FileName) + '|' + Kind + '|' + IntToStr(X) + '|' + IntToStr(Y);
+End;
+
+{..............................................................................}
+{ HierPhysicalNets - each port's and sheet entry's net on every physical     }
+{ document. MEASURED on AD 25.8.1: DM_FlattenedNetName read through a        }
+{ sheet's LOGICAL document only repeats the net's name on that sheet; read  }
+{ through the PHYSICAL documents (one per sheet, one per channel of a       }
+{ repeated sheet) it is the name the net takes across the project, the     }
+{ one Altium's Properties panel calls the physical net (see Main.pas,       }
+{ GetCompiledDocs). Keys get HierItemKey; Vals the JSON of each copy        }
+{ (instance, net), joined by ','.                                           }
+{..............................................................................}
+Procedure HierPhysicalNets(Project : IProject; Keys : TStringList; Vals : TStringList;
+    Var Misses : Integer);
+Var
+    Physical : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    Count, I, J, K, At : Integer;
+    FileName, Instance, Net, Key, OneCopy : String;
+Begin
+    Count := 0;
+    Try Count := Project.DM_PhysicalDocumentCount; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Physical := Nil;
+        Try Physical := Project.DM_PhysicalDocuments(I); Except Physical := Nil; End;
+        If Physical = Nil Then Continue;
+        FileName := ''; Instance := '';
+        Try FileName := Physical.DM_FileName; Except Inc(Misses); End;
+        Try Instance := Physical.DM_PhysicalInstanceName; Except Inc(Misses); End;
+        For J := 0 To Physical.DM_PortCount + Physical.DM_SheetSymbolCount - 1 Do
+        Begin
+            For K := 0 To 1023 Do
+            Begin
+                Item := Nil;
+                If J < Physical.DM_PortCount Then
+                Begin
+                    If K > 0 Then Break;
+                    Try Item := Physical.DM_Ports(J); Except Item := Nil; End;
+                    Key := 'port';
+                End
+                Else
+                Begin
+                    Sym := Nil;
+                    Try Sym := Physical.DM_SheetSymbols(J - Physical.DM_PortCount); Except Sym := Nil; End;
+                    If Sym = Nil Then Break;
+                    If K >= Sym.DM_SheetEntryCount Then Break;
+                    Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                    Key := 'entry';
+                End;
+                If Item = Nil Then Continue;
+                Net := '';
+                Try Net := Item.DM_FlattenedNetName; Except Inc(Misses); End;
+                Key := HierItemKey(FileName, Key, Item);
+                OneCopy := JsonObj(JsonStr('instance', Instance) + ',' + JsonStr('net', Net));
+                At := Keys.IndexOf(Key);
+                If At < 0 Then
+                Begin
+                    Keys.Add(Key);
+                    Vals.Add(OneCopy);
+                End
+                Else
+                    Vals.Strings[At] := Vals.Strings[At] + ',' + OneCopy;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
 { HierItemJson - a compiled port or sheet entry: its name and direction.     }
 { The name is DM_PortName, else DM_NetName; both are read, since which one  }
-{ an entry carries is the compiler's choice.                                 }
+{ an entry carries is the compiler's choice. port_name is the raw           }
+{ DM_PortName (empty on a sheet entry). Its two net names: net, the net's   }
+{ name on the item's own sheet (DM_NetName), and physical, the name the net }
+{ takes across the project on each physical copy of the sheet (instance,    }
+{ net) from HierPhysicalNets. They differ when a name from another sheet    }
+{ wins: with "Higher Level Names Take Priority" on, a label above the sheet }
+{ symbol renames the net below. x / y in mils tell apart several items of   }
+{ one name on a sheet.                                                       }
 {..............................................................................}
-Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Function HierItemJson(Item : INetItem; FileName : String; Kind : String;
+    Keys : TStringList; Vals : TStringList; Var Misses : Integer) : String;
 Var
-    Name, NetName, Electric : String;
+    Name, PortName, NetName, Electric, Copies : String;
+    X, Y, At : Integer;
 Begin
-    Name := ''; NetName := ''; Electric := '';
-    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Name := ''; PortName := ''; NetName := ''; Electric := ''; Copies := '';
+    X := 0; Y := 0;
+    Try PortName := Item.DM_PortName; Except Inc(Misses); End;
     Try NetName := Item.DM_NetName; Except Inc(Misses); End;
     Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    Try X := Item.DM_LocationX; Except Inc(Misses); End;
+    Try Y := Item.DM_LocationY; Except Inc(Misses); End;
+    At := Keys.IndexOf(HierItemKey(FileName, Kind, Item));
+    If At >= 0 Then Copies := Vals.Strings[At];
+    Name := PortName;
     If Name = '' Then Name := NetName;
     Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('port_name', PortName) + ','
         + JsonStr('net', NetName) + ','
-        + JsonStr('io', Electric));
+        + JsonRaw('physical', '[' + Copies + ']') + ','
+        + JsonStr('io', Electric) + ','
+        + JsonFloat('x', X / 10000) + ','
+        + JsonFloat('y', Y / 10000));
 End;
 
 {..............................................................................}
@@ -2763,6 +2883,7 @@ Var
     ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
     SymFile, SymName, PName : String;
     I, J, K, Misses, Children, Sheets : Integer;
+    Keys, Vals : TStringList;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Workspace := GetWorkspace;
@@ -2772,6 +2893,10 @@ Begin
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
     SmartCompile(Project);
     Misses := 0;
+    Keys := TStringList.Create;
+    Vals := TStringList.Create;
+    Try
+    HierPhysicalNets(Project, Keys, Vals, Misses);
     TopName := '';
     TopDoc := Nil;
     Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
@@ -2814,7 +2939,7 @@ Begin
                 Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
                 If Item = Nil Then Continue;
                 If Ports <> '' Then Ports := Ports + ',';
-                Ports := Ports + HierItemJson(Item, Misses);
+                Ports := Ports + HierItemJson(Item, FileName, 'port', Keys, Vals, Misses);
             End;
         Except Inc(Misses); End;
 
@@ -2837,7 +2962,7 @@ Begin
                         Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
                         If Item = Nil Then Continue;
                         If Entries <> '' Then Entries := Entries + ',';
-                        Entries := Entries + HierItemJson(Item, Misses);
+                        Entries := Entries + HierItemJson(Item, FileName, 'entry', Keys, Vals, Misses);
                     End;
                 Except Inc(Misses); End;
                 If Syms <> '' Then Syms := Syms + ',';
@@ -2859,6 +2984,10 @@ Begin
         + JsonInt('sheet_count', Sheets) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('sheets', '[' + Items + ']')));
+    Finally
+        Keys.Free;
+        Vals.Free;
+    End;
 End;
 
 {..............................................................................}
@@ -3470,7 +3599,12 @@ End;
 
 {..............................................................................}
 { List output containers from an open .OutJob document                        }
-{ The OutJob file is an INI format, parse sections for containers.           }
+{ The OutJob file is an INI format, parse sections for containers. This is   }
+{ the one direct read of an OutJob: the script engine gives no route to an   }
+{ OutJob's outputs and media (IWSM_OutputJobDocument is not reachable), so   }
+{ every tool asks here rather than opening the file itself. MEASURED on AD  }
+{ 26.11: IWorkspace.DM_GetOutputJobDocumentByPath answers, but the object   }
+{ has none of OutputMediumCount, GetState_OutputMediumCount, DM_OutputerCount. }
 { Params: outjob_path (optional, uses first open OutJob if omitted)          }
 {..............................................................................}
 
@@ -3478,8 +3612,8 @@ Function Proj_GetOutJobContainers(Params : String; RequestId : String) : String;
 Var
     OutJobPath, S : String;
     IniFile : TIniFile;
-    ContainerName, ContainerType : String;
-    G, J : Integer;
+    ContainerName, ContainerType, Outputs, OutputType, Enabled : String;
+    G, J, N : Integer;
     Data : String;
     First : Boolean;
     Workspace : IWorkspace;
@@ -3544,10 +3678,29 @@ Begin
 
                 ContainerType := IniFile.ReadString(S, 'OutputMedium' + IntToStr(J) + '_Type', '');
 
+                { The output types this container writes: OutputTypeN with a }
+                { non-zero OutputEnabledN_OutputMediumJ.                     }
+                Outputs := '';
+                N := 1;
+                While True Do
+                Begin
+                    OutputType := IniFile.ReadString(S, 'OutputType' + IntToStr(N), '');
+                    If OutputType = '' Then Break;
+                    Enabled := Trim(IniFile.ReadString(S, 'OutputEnabled' + IntToStr(N)
+                        + '_OutputMedium' + IntToStr(J), '0'));
+                    If (Enabled <> '') And (Enabled <> '0') Then
+                    Begin
+                        If Outputs <> '' Then Outputs := Outputs + ',';
+                        Outputs := Outputs + '"' + EscapeJsonString(OutputType) + '"';
+                    End;
+                    Inc(N);
+                End;
+
                 If Not First Then Data := Data + ',';
                 First := False;
                 Data := Data + '{"name":"' + EscapeJsonString(ContainerName) + '"';
                 Data := Data + ',"type":"' + EscapeJsonString(ContainerType) + '"';
+                Data := Data + ',"outputs":[' + Outputs + ']';
                 Data := Data + ',"group":' + IntToStr(G) + '}';
 
                 Inc(J);

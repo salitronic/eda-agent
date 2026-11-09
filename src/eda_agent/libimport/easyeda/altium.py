@@ -267,7 +267,15 @@ def build_altium_plan(
                 f"NOT emitted; lib_add_pins requires a designator and "
                 f"silently discards blanks.")
         if pins:
-            steps.append({"tool": "lib_add_pins", "args": {"pins": pins}})
+            # Pins read from a library, not typed from a pin table: they
+            # carry their own id so a new symbol takes them.
+            from ...design.pin_table import IMPORTED
+            import hashlib
+            imported = "imported-" + hashlib.sha1(
+                repr(pins).encode()).hexdigest()[:12]
+            IMPORTED[imported] = len(pins)
+            steps.append({"tool": "lib_add_pins",
+                          "args": {"pins": pins, "datasheet": {"imported": imported}}})
         else:
             warnings.append("symbol has no pins")
 

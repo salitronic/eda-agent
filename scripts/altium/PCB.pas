@@ -8459,8 +8459,8 @@ End;
 { ROTATION IS NOT ACCEPTED, and that is deliberate. IPCB_ComponentBody exposes }
 { no Rotation on AD26 26.9.1.9: assigning it raised "Undeclared identifier",   }
 { which DelphiScript cannot catch, and it took the polling loop down. The      }
-{ rotation lives on the MODEL via SetState(90,0,0,0), whose four arguments are }
-{ documented nowhere this project can verify. Guessing them would repeat that. }
+{ Model.SetState takes RotX, RotY, RotZ, Dz (verification section 40).       }
+{ This tool uses Dz only; exposing rotations is outside this change.           }
 {                                                                              }
 { NO identifier PARAMETER EITHER, for the same reason and caught the same    }
 { way. IPCB_ComponentBody declares                                            }
@@ -8480,10 +8480,11 @@ Var
     Model : IPCB_Model;
     ModelPath, LayerStr, Why : String;
     BodyLayer : TLayer;
-    Standoff, CurX, CurY : Double;
+    Standoff : Double;
     BodyX, BodyY : Double;
-    DidStandoff, DidMove : Boolean;
+    DidStandoff, DidMove, PositionOk : Boolean;
     ReadBackX, ReadBackY : Double;
+    BeforeBox, AfterBox : TCoordRect;
 Begin
     ModelPath := ExtractJsonValue(Params, 'model_path');
     If ModelPath = '' Then
@@ -8550,6 +8551,13 @@ Begin
             Exit;
         End;
 
+        { STEP height belongs to the model, not the extruded body's
+          StandoffHeight property. Same tested path as Lib_Link3DModel. }
+        If Standoff <> 0 Then
+        Begin
+            Model.SetState(0, 0, 0, MilsToCoordF(Standoff));
+            DidStandoff := True;
+        End;
         Body.SetState_FromModel;
         Body.Model := Model;
 
@@ -8571,31 +8579,21 @@ Begin
 
         Try Body.Layer := BodyLayer; Except NoteWriteFailed('3D body Layer'); End;
 
-        { MOVED, NOT ASSIGNED. Lib_Link3DModel positions a body with
-          MoveByXY, which is inherited from IPCB_Primitive and already
-          called by PCB_ReplicateLayout, so it cannot be an undeclared
-          identifier. Writing x and y directly on a body is not something
-          this codebase has ever done successfully, and it was the other
-          half of the crash.
-
-          The delta is computed from where the factory actually put the
-          body rather than assuming it starts at the origin. }
-        Try
-            CurX := CoordToMilsF(Body.x);
-            CurY := CoordToMilsF(Body.y);
-        Except
-            CurX := 0;
-            CurY := 0;
-        End;
+        { A newly loaded model is at its own authored origin. x/y are
+          offsets from that origin, not the first vertex of its outline.
+          IPCB_ComponentBody has NO x/y member on AD21: even a READ inside
+          Try/Except halts the script and leaves this transaction open.
+          Verify translation through the supported primitive bounds. }
+        BeforeBox := Body.BoundingRectangle;
         { Inside the body's modify bracket, now that it has a board. Moved   }
         { without it, the spatial index kept the body at the origin, so it   }
         { could not be picked where it was drawn (measured on AD 26.10).     }
-        If (BodyX <> CurX) Or (BodyY <> CurY) Then
+        If (BodyX <> 0) Or (BodyY <> 0) Then
             Try
                 Body.BeginModify;
                 Try
-                    Body.MoveByXY(MilsToCoordF(BodyX - CurX),
-                                  MilsToCoordF(BodyY - CurY));
+                    Body.MoveByXY(MilsToCoordF(BodyX),
+                                  MilsToCoordF(BodyY));
                     DidMove := True;
                 Finally
                     Body.EndModify;
@@ -8603,11 +8601,6 @@ Begin
                 Body.GraphicallyInvalidate;
             Except { the move flag in the reply reports it } End;
 
-        If Standoff <> 0 Then
-            Try
-                Body.StandoffHeight := MilsToCoordF(Standoff);
-                DidStandoff := True;
-            Except { the standoff flag in the reply reports it } End;
     Finally
         PcbEndEdit(0);
     End;
@@ -8615,24 +8608,28 @@ Begin
     { READ THE POSITION BACK. The placement is the one thing a caller cannot
       check without opening the 3D view, and this tool exists because a
       session spent a long time unable to see whether anything had landed. }
-    ReadBackX := BodyX;
-    ReadBackY := BodyY;
-    Try
-        ReadBackX := CoordToMilsF(Body.x);
-        ReadBackY := CoordToMilsF(Body.y);
-    Except End;
+    AfterBox := Body.BoundingRectangle;
+    ReadBackX := CoordToMilsF(AfterBox.Left - BeforeBox.Left);
+    ReadBackY := CoordToMilsF(AfterBox.Bottom - BeforeBox.Bottom);
+    PositionOk := (Abs(ReadBackX - BodyX) < 0.01)
+                  And (Abs(ReadBackY - BodyY) < 0.01)
+                  And (Abs(CoordToMilsF(AfterBox.Right - BeforeBox.Right) - BodyX) < 0.01)
+                  And (Abs(CoordToMilsF(AfterBox.Top - BeforeBox.Top) - BodyY) < 0.01);
 
     MarkDocDirtyByPath(Board.FileName);
 
     { The one thing a caller cannot check from here. }
     NoteNextStep('Look at it before trusting the placement: obj_switch_view '
         + '3d. The body sits at the model''s own origin, so where it lands '
-        + 'depends on how the STEP was authored. obj_modify on '
-        + 'eComponentBodyObject moves it, and obj_delete removes it.');
+        + 'depends on how the STEP was authored. BoundsLeft/Bottom/Right/Top '
+        + 'read its actual extent; obj_delete can remove it.');
 
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
-            JsonBool('success', True) + ',' +
+            JsonBool('success', PositionOk) + ',' +
+            JsonBool('placed', True) + ',' +
+            JsonBool('position_verified', PositionOk) + ',' +
+            JsonStr('position_reference', 'model_origin_offset') + ',' +
             JsonStr('model_path', ModelPath) + ',' +
             JsonFloat('x', ReadBackX) + ',' +
             JsonFloat('y', ReadBackY) + ',' +
@@ -8641,10 +8638,12 @@ Begin
             JsonBool('standoff_applied', DidStandoff) + ',' +
             JsonBool('moved', DidMove) + ',' +
             JsonBool('rotation_applied', False) + ',' +
-            JsonStr('note', 'rotation is not settable from here: '
-                + 'IPCB_ComponentBody exposes no Rotation, and the model-level '
-                + 'SetState signature is undocumented. Rotate in the editor if '
-                + 'the orientation is wrong.')
+            JsonRaw('bounds', '{' + JsonFloat('left', CoordToMilsF(AfterBox.Left))
+                + ',' + JsonFloat('bottom', CoordToMilsF(AfterBox.Bottom))
+                + ',' + JsonFloat('right', CoordToMilsF(AfterBox.Right))
+                + ',' + JsonFloat('top', CoordToMilsF(AfterBox.Top)) + '}') + ',' +
+            JsonStr('note', 'x/y are verified offsets from the STEP model origin; '
+                + 'authored geometry coordinates are preserved. Rotation is unchanged.')
         ));
 End;
 

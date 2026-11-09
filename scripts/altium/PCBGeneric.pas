@@ -626,9 +626,16 @@ Begin
         End
         Else If Oid = eComponentBodyObject Then
         Begin
-            Body := Obj;
-            If WantY Then Result := Body.y Else Result := Body.x;
-            Found := True;
+            { IPCB_ComponentBody has no x/y on AD21: even a read inside Try
+              halts the script. Read on 25 and later, where it was measured;
+              elsewhere Bounds* give the extent. The version is asked in an
+              If of its own, before the member is reached. }
+            If AltiumVersionCode(0) >= 2500 Then
+            Begin
+                Body := Obj;
+                If WantY Then Result := Body.y Else Result := Body.x;
+                Found := True;
+            End;
         End
         Else If Oid = eTextObject Then
         Begin

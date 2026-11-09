@@ -808,3 +808,20 @@ def test_a_land_outline_becomes_copper_and_mask_regions():
               ("assembly", "Mechanical13"), ("courtyard", "Mechanical15"))}
     regions = altium_plan(model, layers)["regions"]
     assert {r["layer"] for r in regions} >= {"TopLayer", "TopSolder"}
+
+
+def test_custom_pads_build_unchecked_when_the_panel_turns_the_check_off(altium, monkeypatch):
+    from eda_agent import preferences
+    run, box = altium
+    package = {"family": "custom", "name": "NO_CHECK", "body_x": 6, "body_y": 4,
+               "custom_pads": [
+                   {"number": "1", "x": -1.5, "y": 0, "width": 1.0, "height": 1.0},
+                   {"number": "2", "x": 1.5, "y": 0, "width": 1.0, "height": 1.0}]}
+    refused = run(package=dict(package))
+    assert not refused["ok"] and "drawing_numbers" in refused["reason"]
+    monkeypatch.setattr(preferences, "_read",
+                        lambda workspace=None: {"checks_off": "footprint_drawing"})
+    out = run(package=dict(package))
+    assert out["ok"], out.get("reason") or out["readback"]
+    assert "switched off" in out["unchecked"]["skipped"]
+    assert len(box["bridge"].pads) == 2

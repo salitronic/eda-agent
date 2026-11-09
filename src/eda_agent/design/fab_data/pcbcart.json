@@ -1,0 +1,76 @@
+{
+ "vendor": "PCBCart",
+ "source": {
+  "url": "https://www.pcbcart.com/pcb-fab/standard-pcb.html",
+  "retrieved": "2026-11-08",
+  "note": "Standard PCB capability table."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32
+     ],
+     "quote": "Number of Layers | 1 - 32layers",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 3,
+     "quote": "Min Tracing/Spacing | 3mil/3mil"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3,
+     "quote": "Min Tracing/Spacing | 3mil/3mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 6,
+     "quote": "Min Drilling Hole Diameter | 6mil, 4mil-laser drill"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 3,
+     "quote": "Min Annular Ring | 3mil"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The standard PCB table gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The standard PCB table gives a mask tolerance, no web or dam."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "The standard PCB table gives silkscreen colours, no line width."
+    }
+   ]
+  }
+ }
+}

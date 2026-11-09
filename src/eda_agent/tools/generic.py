@@ -2344,6 +2344,62 @@ def register_generic_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def sch_sheet_template(
+        action: str = "get",
+        template_file: str = "",
+        vault: bool = False,
+    ) -> dict[str, Any]:
+        """Read, set, update or remove the sheet template (.SchDot) of the
+        active schematic sheet, with no dialog.
+
+        A template carries the sheet size, the border and the company
+        title block. Setting one switches the standard title block off
+        and keeps the sheet's parameters (Title and the rest), which the
+        title block then shows. Altium's own update and remove commands
+        ask for a scope in a dialog; these do not, and act on the active
+        sheet only. Every action is read back.
+
+        Args:
+            action: "get" (default), "set", "update" or "remove".
+            template_file: The .SchDot for "set". For "update" it is
+                optional: without it the sheet's own template file is
+                read again (it must still exist on this machine).
+            vault: Also read the vault link (vault, item and revision
+                GUIDs and names) a sheet set from the server carries.
+
+        Returns:
+            ``applied`` (the sheet reads back as asked), ``template_file``,
+            ``template_before``, ``template_objects`` (1 with a template,
+            0 without), ``template_graphics`` (the objects the template
+            draws), ``sheet_style``, ``title_block_on``, ``border_on``;
+            ``removed`` for "remove"; ``vault`` when asked.
+        """
+        action = (action or "get").strip().lower()
+        if action not in ("get", "set", "update", "remove"):
+            return {"ok": False,
+                    "reason": "action is get, set, update or remove"}
+        params: dict[str, Any] = {"action": action}
+        if template_file:
+            if action not in ("set", "update"):
+                return {"ok": False,
+                        "reason": "template_file is for set and update"}
+            if not template_file.lower().endswith(".schdot"):
+                return {"ok": False,
+                        "reason": "template_file must be a .SchDot file"}
+            params["template_file"] = template_file
+        elif action == "set":
+            return {"ok": False, "reason": "set needs template_file"}
+        if vault:
+            params["vault"] = "true"
+        reply = await get_bridge().send_command_async(
+            "generic.sheet_template", params)
+        if isinstance(reply, dict) and reply.get("applied") is False:
+            reply["ok"] = False
+            reply["reason"] = ("the sheet does not read back as asked: "
+                               "see template_file and template_objects")
+        return reply
+
+    @mcp.tool()
     async def sch_audit_outside_sheet(limit: int = 100,
                                       apply: bool = False) -> dict[str, Any]:
         """Find anything drawn outside the active schematic's sheet, and
@@ -2495,7 +2551,10 @@ def register_generic_tools(mcp):
             name: Port name (maps to net name)
             x: X coordinate in mils
             y: Y coordinate in mils
-            style: Arrow style, "none", "left", "right", "left_right"
+            style: The port's axis: "horizontal" (also "none", "left",
+                "right", "left_right") or "vertical" (also "top",
+                "bottom"). Altium keeps only the axis; the arrows follow
+                io_type and the end that is wired.
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
             width: Port length in mils. Auto-size is turned off so it
                 holds; 0 leaves the port sizing itself to its name.

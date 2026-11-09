@@ -15,8 +15,18 @@ from eda_agent.tools import project
 
 
 class _B:
+    def __init__(self, boards=(r"C:\work\RoundLED.PcbDoc",)):
+        self.boards = boards
+        self.focused = ""
+
     async def send_command_async(self, command, params=None, timeout=None):
+        if command == "application.get_open_documents":
+            return {"documents": [{"file_path": b} for b in self.boards]}
+        if command == "pcb.focus_board":
+            self.focused = params["board_path"]
+            return {"success": True}
         if command == "pcb.export_coordinates":
+            assert self.focused, "the board is brought forward before it is read"
             return {"board_name": "RoundLED.PcbDoc", "placements": [
                 {"designator": "C1", "footprint": "C0402", "comment": "100nF",
                  "x": 5100, "y": 5000, "rotation": 90.0, "side": "Bottom"},
@@ -46,8 +56,12 @@ def test_both_files_come_from_the_board(tmp_path, monkeypatch):
             return deco
 
     project.register_project_tools(_Mcp())
-    out = asyncio.run(tools["proj_export_jlc_assembly"](str(tmp_path)))
+    refused = asyncio.run(tools["proj_export_jlc_assembly"](str(tmp_path)))
+    assert not refused["ok"] and refused["check"] == "fab_export"
+    assert refused["without_lcsc"] == ["U1"] and not list(tmp_path.glob("*.csv"))
+    out = asyncio.run(tools["proj_export_jlc_assembly"](str(tmp_path), not_placed=["u1"]))
     assert out["without_lcsc"] == ["U1"] and out["bom_rows"] == 2
+    assert out["not_placed"] == ["U1"]
     bom = list(csv.reader(open(out["bom_path"], encoding="utf-8")))
     assert bom[0] == ["Comment", "Designator", "Footprint", "LCSC Part #"]
     assert ["100nF", "C1,C2", "C0402", "C307331"] in bom
@@ -56,3 +70,28 @@ def test_both_files_come_from_the_board(tmp_path, monkeypatch):
     assert cpl[1] == ["C1", "2.5400mm", "0.0000mm", "Bottom", "90"]
     assert cpl[2][4] == "90", "rotation kept within a turn"
     assert out["cpl_path"].endswith("RoundLED_CPL_JLCPCB.csv")
+
+
+def _tool(monkeypatch, bridge):
+    monkeypatch.setattr(project, "get_bridge", lambda: bridge)
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+    project.register_project_tools(_Mcp())
+    return tools["proj_export_jlc_assembly"]
+
+
+def test_with_two_boards_open_the_export_names_its_board(tmp_path, monkeypatch):
+    two = _B(boards=(r"C:\a\One.PcbDoc", r"C:\b\Two.PcbDoc"))
+    run = _tool(monkeypatch, two)
+    refused = asyncio.run(run(str(tmp_path), not_placed=["U1"]))
+    assert not refused["ok"] and "several boards are open" in refused["reason"]
+    assert not list(tmp_path.glob("*.csv"))
+    out = asyncio.run(run(str(tmp_path), not_placed=["U1"], board_path=r"C:\b\Two.PcbDoc"))
+    assert out["ok"] and out["board"] == r"C:\b\Two.PcbDoc" and two.focused == out["board"]

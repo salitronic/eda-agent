@@ -40,7 +40,7 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, DialogMode, WorkspaceDir : String;
+    UiAutomationMode, KeepInViewMode, DialogMode, ChecksOff, WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
 var P, Q : Integer;
@@ -355,3 +355,88 @@ def test_python_refuses_deletes_and_closes_when_the_panel_says_so(monkeypatch, t
     assert safety.refuse_command("pcb.embedded_data", {"action": "write"}) is None
     assert "closing documents" in safety.refuse_command("application.close_document")
     assert safety.refuse_command("pcb.place_tracks") is None
+
+
+_CHECK_STUBS = """
+type TLog = record Lines : TStringList; end;
+var mmo_Log : TLog;
+procedure PaintAgentSettings(Dummy : Integer); begin end;
+"""
+
+
+def test_every_check_is_on_until_the_panel_turns_it_off(tmp_path):
+    assert preferences.checks_off(tmp_path) == set()
+    assert all(preferences.check_on(n, tmp_path) for n in preferences.CHECKS)
+    with pytest.raises(KeyError):
+        preferences.check_on("no_such_check", tmp_path)
+    (tmp_path / "preferences.json").write_text(
+        '{"checks_off":"spice_model, footprint_drawing,bogus"}')
+    assert preferences.checks_off(tmp_path) == {"spice_model", "footprint_drawing"}
+    assert not preferences.check_on("footprint_drawing", tmp_path)
+    assert preferences.check_on("pins_pads", tmp_path)
+    note = preferences.check_skipped("footprint_drawing")
+    assert note["check"] == "footprint_drawing" and "switched off" in note["skipped"]
+
+
+def test_the_panel_turns_checks_off_and_on_and_keeps_them(tmp_path):
+    fpc = shutil.which("fpc")
+    if not fpc:
+        pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
+    global _STUBS
+    saved = _STUBS
+    _STUBS = saved + _CHECK_STUBS
+    try:
+        out = _run(tmp_path, [
+            "  mmo_Log.Lines := TStringList.Create;",
+            "  LoadPreferences(0); WriteLn('[', ChecksOff, ']');",
+            "  ChooseCheck('spice_model', False); ChooseCheck('fab_export', False);",
+            "  ChooseCheck('spice_model', False);",
+            "  WriteLn(ChecksOff, ' ', CheckIsOff('spice_model'), ' ', CheckIsOff('model_body'));",
+            "  ChecksOff := ''; LoadPreferences(0); WriteLn(ChecksOff);",
+            "  ChooseCheck('spice_model', True); WriteLn(ChecksOff);",
+            "  ChooseCheck('fab_export', True); WriteLn('[', ChecksOff, ']');",
+        ], extra=("CheckIsOff", "ChooseCheck"))
+    finally:
+        _STUBS = saved
+    assert out == ["[]", "fab_export,spice_model TRUE FALSE",
+                   "fab_export,spice_model", "fab_export", "[]"]
+
+
+def test_the_check_switches_are_wired_on_the_config_tab():
+    dfm = (SCRIPTS / "StatusForm.dfm").read_text(encoding="ascii")
+    form = functions(strip_comments(_code("StatusForm.pas")))
+    painted = form["PaintChecks"]
+    names = {"Fp": "footprint_drawing", "Sym": "symbol_pins", "Pad": "pins_pads",
+             "Body": "model_body", "Spice": "spice_model", "Fab": "fab_export"}
+    assert set(names.values()) == set(preferences.CHECKS)
+    for suffix, name in names.items():
+        for state, turn_on in (("On", "True"), ("Off", "False")):
+            handler = f"opt_Chk{suffix}{state}Click"
+            assert f"= {handler}" in dfm, handler
+            assert f"ChooseCheck('{name}', {turn_on})" in form[handler], handler
+            assert f"opt_Chk{suffix}{state}" in painted, handler
+    assert "StorePreferences(0)" in form["ChooseCheck"]
+    assert "PaintChecks(0)" in form["PaintAgentSettings"]
+    assert "lbl_CfgChecksHint" in painted
+
+
+def test_config_md_the_panel_and_the_server_name_the_same_checks():
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md").read_text(
+        encoding="utf-8")
+    dfm = (SCRIPTS / "StatusForm.dfm").read_text(encoding="ascii")
+    assert set(preferences.CHECK_LABELS) == set(preferences.CHECKS) == set(
+        preferences.CHECK_REASONS)
+    for name, label in preferences.CHECK_LABELS.items():
+        row = f"| {label} | {preferences.CHECKS[name]} | {preferences.CHECK_REASONS[name]} |"
+        assert row in doc, name
+        assert f"Caption = '{label}'" in dfm, label
+        hint = preferences.if_the_user_insists(name)
+        assert f'"{label}" off on the Config' in hint and "CONFIG.md" in hint
+        assert label in preferences.checks_guide()
+
+
+def test_tool_guide_answers_a_user_who_insists():
+    from eda_agent.tools import guidance
+    recipe = next(r for r in guidance._RECIPES if "go ahead anyway" in r["task"])
+    assert recipe["note"] == preferences.checks_guide()
+    assert "lib_set_pad_properties" in [name for name, _ in recipe["avoid"]]

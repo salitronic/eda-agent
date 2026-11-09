@@ -1,4 +1,4 @@
-# Release verification: 2026.11.08.1
+# Release verification: 2026.11.09.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -146,7 +146,7 @@ works elsewhere cannot be an undeclared identifier:
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 | 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
 | 44, net display | `ShowNetConnects`, `HideNetConnects`, `LoopRemoval` on a net | no, nowhere | low, ran live, read back and restored |
-| 44, one footprint | `SaveComponentWithLibrary` on a library | no, nowhere | low, writes a file only; ran live |
+| 44, one footprint | `CreateNewComponent`, `CopyTo`, `RegisterComponent` on a fresh library | yes, library copy helpers | low, saves a new destination only; AD21 handler acceptance recorded below |
 | 44, project library | `CreateLibraryFromProject` on a sheet | no, nowhere | low, writes a new library only; ran live |
 | 44, scope and output | `DM_SetHierarchyMode`, `DM_SetOutputPath` on a project | no, nowhere | medium, ran live, read back and restored |
 | 44, pin functions | `AddDefinedFunction`, `ClearDefinedFunctions` on a pin | no, nowhere | low, ran live and read back |
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.08.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.09.7`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3939,6 +3939,33 @@ On AD 25 or 26, with a scratch board and library:
 On AD 21, the same pad reads answer without stopping the loop, and the
 filtered visibility call returns.
 
+## 77. Checks before a part is built, switchable on the Config tab
+
+The Config tab has a CHECKS group: one On / Off row per check (footprint
+vs drawing, symbol vs pin table, symbol pins vs pads, 3D body vs drawing,
+SPICE model file, fab export), all On by default. The panel stores the
+rows switched off as `checks_off` in `preferences.json`; the server reads
+it on every call. A refusal names its check and says how the user can go
+ahead (`if_the_user_insists`, docs/CONFIG.md); a result built with a check
+off carries `unchecked`.
+
+With the scripts deployed, on scratch libraries:
+
+1. Open the Config tab: six rows under CHECKS, each On, and the hint says
+   every check runs.
+2. Click Off on "Symbol pins vs pads": the row turns amber, the hint names
+   it, the log says `check pins_pads off`, and `preferences.json` holds
+   `"checks_off":"pins_pads"`. Restart the pump: the row is still Off.
+3. With it On, `lib_link_footprint` linking a 3-pin symbol to a footprint
+   with pads 1, 2 and EP is refused, naming pin 3 and pad EP. With it Off,
+   the same link goes through and the reply carries `unchecked`.
+4. Switch it back On and confirm the hint again says every check runs.
+5. Fab export: on a scratch project whose OutJob has a Gerber container,
+   `proj_run_outjob` without `fab` is refused, naming the outputs; with
+   `fab="OSH Park"` and a 4 mil track on the board it is refused naming the
+   track, the board it examined and OSH Park's quote; with
+   `fab="JLCPCB"` it runs and the reply carries `fab_check`.
+
 ## Still open, and not blocking
 
 * **Redo doubles a placed schematic object.** Measured 2026-10-30 on a
@@ -4093,3 +4120,33 @@ Repeatable live acceptance on disposable documents:
    close the disposable documents at the end.
 
 Live results for this candidate are recorded below once performed.
+
+## Fresh-destination footprint export on Altium 21
+
+Validated on Altium 21.4.1.30 on 2026-11-08 using neutral disposable libraries.
+The candidate export handler was temporarily substituted into an installed
+AD21-compatible bridge; a compiled unit stamp confirmed the loaded revision.
+The Python tools came from the isolated current-upstream worktree. This is
+handler acceptance on that host, not deployment of the entire upstream bridge
+or verification on AD25/26.
+
+- Explicit-source and focused-source exports to the source path were refused.
+- Existing closed and already-open destinations were refused. Invalid extension,
+  missing directory and missing footprint requests also returned errors.
+- With another library in front, an explicit source path selected the intended
+  library. A successful new export closed normally without discarding changes.
+- Reopening the output showed exactly one requested footprint. All three pad
+  records (SMD, drilled and slotted) and the STEP body metadata matched the source.
+- The source, existing destination and other open library kept their file hashes.
+  Scratch documents were closed without saving; the original installed script
+  was restored afterward. Production design files were not used as fixtures.
+
+The handler rejects recorded copy/alignment write failures before saving and
+keeps any partially created destination marked dirty. That rejection is covered
+by offline source guards; an Altium alignment fault was not deliberately induced.
+A failed destination can remain open for inspection. The error promises that
+this export call did not save it, not that a later save-all cannot do so.
+
+These checks compare native readback, not rendered 3D output or byte-for-byte
+STEP payload identity. Other Altium versions and unsaved source libraries need
+separate native coverage. Existing destinations are intentionally never replaced.

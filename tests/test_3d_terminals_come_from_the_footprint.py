@@ -86,8 +86,10 @@ def _tool(monkeypatch, tmp_path, lands):
 def test_the_tool_places_terminals_from_the_footprint(monkeypatch, tmp_path):
     run, sent, written = _tool(monkeypatch, tmp_path, _LANDS)
     out = asyncio.run(run("LGA3", [_BODY], "drawing p.1",
-                          terminals={"kind": "plate", "height": 0.05}))
+                          terminals={"kind": "plate", "height": 0.05},
+                          drawing={"body_x": 3.0, "body_y": 2.0, "height": 0.9}))
     assert out["ok"] and out["terminals"] == 3
+    assert all(r["ok"] for r in out["drawing_dims"])
     assert [c for c, _ in sent].count("library.get_pad_geometry") == 1
     assert sum(s.role == "gold" for s in written[0].solids) == 3
 
