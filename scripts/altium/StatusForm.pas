@@ -918,6 +918,71 @@ Begin
 End;
 
 
+{ A check on the Config tab is off when its name is in ChecksOff. }
+Function CheckIsOff(CheckName : String) : Boolean;
+Begin
+    Result := Pos(',' + CheckName + ',', ',' + ChecksOff + ',') > 0;
+End;
+
+{ The checks on the Config tab: On is the default, Off shows amber, and the }
+{ hint names every check that is off.                                      }
+Procedure PaintChecks(Dummy : Integer);
+Var
+    Off : String;
+Begin
+    Try
+        Off := '';
+        PaintOption(opt_ChkFpOn, Not CheckIsOff('footprint_drawing'));
+        PaintWarnOption(opt_ChkFpOff, CheckIsOff('footprint_drawing'));
+        If CheckIsOff('footprint_drawing') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'footprints vs drawing';
+        End;
+        PaintOption(opt_ChkSymOn, Not CheckIsOff('symbol_pins'));
+        PaintWarnOption(opt_ChkSymOff, CheckIsOff('symbol_pins'));
+        If CheckIsOff('symbol_pins') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'symbols vs pin table';
+        End;
+        PaintOption(opt_ChkPadOn, Not CheckIsOff('pins_pads'));
+        PaintWarnOption(opt_ChkPadOff, CheckIsOff('pins_pads'));
+        If CheckIsOff('pins_pads') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'pins vs pads';
+        End;
+        PaintOption(opt_ChkBodyOn, Not CheckIsOff('model_body'));
+        PaintWarnOption(opt_ChkBodyOff, CheckIsOff('model_body'));
+        If CheckIsOff('model_body') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + '3D bodies vs drawing';
+        End;
+        PaintOption(opt_ChkSpiceOn, Not CheckIsOff('spice_model'));
+        PaintWarnOption(opt_ChkSpiceOff, CheckIsOff('spice_model'));
+        If CheckIsOff('spice_model') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'SPICE model files';
+        End;
+        PaintOption(opt_ChkFabOn, Not CheckIsOff('fab_export'));
+        PaintWarnOption(opt_ChkFabOff, CheckIsOff('fab_export'));
+        If CheckIsOff('fab_export') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'fab exports';
+        End;
+        If Off = '' Then
+            lbl_CfgChecksHint.Caption := 'Every check runs before a part is '
+                + 'built or fab files are written.'
+        Else
+            lbl_CfgChecksHint.Caption := 'Off: ' + Off + '. Those run without '
+                + 'the check, and each result says it was skipped.';
+    Except End;
+End;
+
 { The agent and view settings on the Config tab, with what each does. }
 Procedure PaintAgentSettings(Dummy : Integer);
 Begin
@@ -967,6 +1032,7 @@ Begin
         Else
             lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
                 + 'open: change orders, teardrops.';
+        PaintChecks(0);
     Except End;
 End;
 
@@ -1530,6 +1596,85 @@ Begin ChooseAgentSetting('keep_in_view', 'off'); End;
 
 Procedure opt_ViewOnClick(Sender : TObject);
 Begin ChooseAgentSetting('keep_in_view', 'on'); End;
+
+{ A check switched on or off on the Config tab, stored at once. }
+Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);
+Var
+    Rest, Item, Kept : String;
+    P : Integer;
+Begin
+    Try
+        Kept := '';
+        Rest := ChecksOff;
+        While Rest <> '' Do
+        Begin
+            P := Pos(',', Rest);
+            If P = 0 Then
+            Begin
+                Item := Rest;
+                Rest := '';
+            End
+            Else
+            Begin
+                Item := Copy(Rest, 1, P - 1);
+                Rest := Copy(Rest, P + 1, Length(Rest));
+            End;
+            If (Item <> '') And (Item <> CheckName) Then
+            Begin
+                If Kept <> '' Then Kept := Kept + ',';
+                Kept := Kept + Item;
+            End;
+        End;
+        If Not TurnOn Then
+        Begin
+            If Kept <> '' Then Kept := Kept + ',';
+            Kept := Kept + CheckName;
+        End;
+        ChecksOff := Kept;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        If TurnOn Then
+            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' on')
+        Else
+            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' off');
+    Except End;
+End;
+
+Procedure opt_ChkFpOnClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', True); End;
+
+Procedure opt_ChkFpOffClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', False); End;
+
+Procedure opt_ChkSymOnClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', True); End;
+
+Procedure opt_ChkSymOffClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', False); End;
+
+Procedure opt_ChkPadOnClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', True); End;
+
+Procedure opt_ChkPadOffClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', False); End;
+
+Procedure opt_ChkBodyOnClick(Sender : TObject);
+Begin ChooseCheck('model_body', True); End;
+
+Procedure opt_ChkBodyOffClick(Sender : TObject);
+Begin ChooseCheck('model_body', False); End;
+
+Procedure opt_ChkSpiceOnClick(Sender : TObject);
+Begin ChooseCheck('spice_model', True); End;
+
+Procedure opt_ChkSpiceOffClick(Sender : TObject);
+Begin ChooseCheck('spice_model', False); End;
+
+Procedure opt_ChkFabOnClick(Sender : TObject);
+Begin ChooseCheck('fab_export', True); End;
+
+Procedure opt_ChkFabOffClick(Sender : TObject);
+Begin ChooseCheck('fab_export', False); End;
 
 
 { ============================================================================ }

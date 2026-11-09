@@ -1,0 +1,220 @@
+{
+ "vendor": "Multi-CB",
+ "source": {
+  "url": "https://www.multi-circuit-boards.eu/en/pcb-design-aid/design-parameters.html",
+  "also": [
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/surface/legend-marking-print.html",
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/layer-buildup/standard-buildup.html"
+  ],
+  "retrieved": "2026-11-08",
+  "note": "Columns 'Standard (min.)' and 'Special production (min.)', for 35 µm copper. Tier standard is the first column, special the second (prior data check needed)."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40,
+      42,
+      44,
+      46,
+      48
+     ],
+     "quote": "1 - 48 layers",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.1,
+     "quote": "H, I | Conductors | width | space | 100µm | 100µm | 75µm | 75µm",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "100 µm = 0.1 mm; The following parameters are exemplary for 35μm copper thickness."
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.1,
+     "quote": "H, I | Conductors | width | space | 100µm | 100µm | 75µm | 75µm",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "100 µm = 0.1 mm; The following parameters are exemplary for 35μm copper thickness."
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.2,
+     "quote": "A, B, C | Via, buried via ... diameter ... 200µm ... 150µm",
+     "derived": "200 µm via diameter"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.1,
+     "quote": "annular ring ... 100µm circular ... 75µm circular",
+     "derived": "100 µm via ring"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The design parameters give no hole-to-hole spacing; conductor/pad to hole is 200 µm."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mm": 0.1,
+     "quote": "L | Solder-stop, green | clearance bridge | 50µm circular 100µm | 25µm circ. (BGA) 80µm",
+     "derived": "bridge 100 µm on green"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.15,
+     "quote": "Font height | Optimum font width 1.2mm | 150µm (6mil)",
+     "note": "An optimum width for the smallest font listed, not a stated minimum.",
+     "derived": "150 µm"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.2,
+     "quote": "Font height | Optimum font width 1.2mm | 150µm (6mil)",
+     "note": "The smallest font height in the table."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.2,
+     "quote": "J | Conductor/pad to milling edge Conductor/pad to scoring edge | space | 200µm 500µm",
+     "derived": "200 µm to a milled edge (500 µm to a scored one)"
+    }
+   ]
+  },
+  "special": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40,
+      42,
+      44,
+      46,
+      48
+     ],
+     "quote": "1 - 48 layers",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.075,
+     "quote": "H, I | Conductors | width | space | 100µm | 100µm | 75µm | 75µm",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "75 µm = 0.075 mm; The following parameters are exemplary for 35μm copper thickness."
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.075,
+     "quote": "H, I | Conductors | width | space | 100µm | 100µm | 75µm | 75µm",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "75 µm = 0.075 mm; The following parameters are exemplary for 35μm copper thickness."
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.15,
+     "quote": "A, B, C | Via, buried via ... diameter ... 200µm ... 150µm",
+     "derived": "150 µm via diameter"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.075,
+     "quote": "annular ring ... 100µm circular ... 75µm circular",
+     "derived": "75 µm via ring"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The design parameters give no hole-to-hole spacing; conductor/pad to hole is 200 µm."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mm": 0.08,
+     "quote": "L | Solder-stop, green | clearance bridge | 50µm circular 100µm | 25µm circ. (BGA) 80µm",
+     "derived": "bridge 80 µm on green"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.15,
+     "quote": "Font height | Optimum font width 1.2mm | 150µm (6mil)",
+     "note": "An optimum width for the smallest font listed, not a stated minimum.",
+     "derived": "150 µm"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.2,
+     "quote": "Font height | Optimum font width 1.2mm | 150µm (6mil)",
+     "note": "The smallest font height in the table."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.2,
+     "quote": "J | Conductor/pad to milling edge Conductor/pad to scoring edge | space | 200µm 500µm",
+     "derived": "200 µm to a milled edge (500 µm to a scored one)"
+    }
+   ]
+  }
+ }
+}

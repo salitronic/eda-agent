@@ -217,7 +217,7 @@ def test_every_step_that_writes_a_property_is_ranked():
 # control flow of a loop whose NameOn / CommentOn writes are unchanged.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
                              "30", "58", "59", "61", "66", "67", "71", "72", "73", "74", "75",
-                             "76"}
+                             "76", "77"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

@@ -122,7 +122,7 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_create_standard_footprint",
     "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components", "lib_get_pad_geometry",
-    "lib_link_3d_model", "lib_link_footprint",
+    "lib_link_3d_model",
     "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
     "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
     "obj_select", "obj_zoom", "pcb_bind_pad_nets",

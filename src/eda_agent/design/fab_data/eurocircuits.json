@@ -1,0 +1,155 @@
+{
+ "vendor": "Eurocircuits",
+ "source": {
+  "url": "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/classification/",
+  "also": [
+   "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/drilled-holes/",
+   "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/legend-print/",
+   "https://www.eurocircuits.com/services/standard-pool/",
+   "https://www.eurocircuits.com/"
+  ],
+  "retrieved": "2026-11-08",
+  "note": "The classification is published as an image; its figures are read from it and quoted as printed. Tier pcb_proto is the PCB proto service (pattern class 6, drill class C); tier standard is STANDARD pool (pattern class 8, drill class E). Base copper raises the pattern minimum: 35 µm base needs 0.125 mm."
+ },
+ "tiers": {
+  "pcb_proto": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      2,
+      4
+     ],
+     "quote": "PCB proto ... 2 or 4 Layers",
+     "note": "From https://www.eurocircuits.com/ (the service list)."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.15,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 6: OTW 0.150 mm, OTT-OTP-OPP 0.150 mm",
+     "when": {
+      "outer_oz": 1
+     },
+     "note": "18 µm base copper; 35 µm base needs 0.125 mm."
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.15,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 6: OTT-OTP-OPP 0.150 mm",
+     "when": {
+      "outer_oz": 1
+     }
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.25,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] Drill Class PTH 0.25 mm (finished hole)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.125,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 6: OAR 0.125 mm"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mm": 0.25,
+     "quote": "The minimum drill hole to drill hole distance is 0.25mm (10mil), this is measured edge to edge of the drill TOOLSIZE."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The soldermask guideline names the web (MSM) in a drawing but prints no value."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image Legend-Line-width-and-Height.jpg] Min. Line Width 0.10mm"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.0,
+     "quote": "[read from the image Legend-Line-width-and-Height.jpg] Min. Text Height 1.00mm"
+    }
+   ]
+  },
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+     ],
+     "quote": "Number of Layers | Pooling: 0, 1, 2, 4, 6, 8 Non-Pooling: 10, 12, 14, 16",
+     "note": "From https://www.eurocircuits.com/services/standard-pool/; 10 to 16 are not pooled and cost more."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 8: OTW 0.100 mm, OTT-OTP-OPP 0.100 mm",
+     "when": {
+      "outer_oz": 1
+     },
+     "note": "18 µm base copper; 35 µm base needs 0.125 mm."
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 8: OTT-OTP-OPP 0.100 mm",
+     "when": {
+      "outer_oz": 1
+     }
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] Drill Class PTH 0.10 mm (finished hole)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image EC-classification-ENGLISH-5-2024-V3.png, eC-classification Table - 07/05/2024] class 8: OAR 0.100 mm"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mm": 0.25,
+     "quote": "The minimum drill hole to drill hole distance is 0.25mm (10mil), this is measured edge to edge of the drill TOOLSIZE."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The soldermask guideline names the web (MSM) in a drawing but prints no value."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.1,
+     "quote": "[read from the image Legend-Line-width-and-Height.jpg] Min. Line Width 0.10mm"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.0,
+     "quote": "[read from the image Legend-Line-width-and-Height.jpg] Min. Text Height 1.00mm"
+    }
+   ]
+  }
+ }
+}

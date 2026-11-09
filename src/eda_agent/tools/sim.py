@@ -31,9 +31,10 @@ wave's figures, and ``sim_get_results()`` returns the traces.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..bridge import get_bridge
+from ..preferences import if_the_user_insists
 from ..sim.sdf import SdfError, latest_charts, read_sdf, summarise
 from ..sim.simcfg import (ANALYSES, DEFAULT_NAME, SimCfgError, analysis_changes,
                           apply, describe, new_simcfg, only_analyses, read_simcfg,
@@ -314,11 +315,43 @@ def register_sim_tools(mcp):
                 Use "D"/"Q"/"M" when the file declares a .MODEL of
                 that kind instead of a subcircuit.
 
+        The file is checked first: the model must be declared in it
+        (a .SUBCKT for "X", a .MODEL of the element's type otherwise),
+        its header comments must name the publisher, and a subcircuit
+        may not have more nodes than the part has pins.
+
         Returns:
-            Dict with success, designator, file_path, model_name.
+            Dict with success, designator, file_path, model_name and
+            ``model_check`` (kind, nodes, publisher).
         """
+        from ..preferences import check_on, check_skipped
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        checked: Optional[dict[str, Any]] = None
+        if check_on("spice_model"):
+            from ..bridge.exceptions import AltiumError
+            from ..sim.model_file import check_model_file
+            pin_count: Optional[int] = None
+            if (primitive or "X").strip().upper().startswith("X"):
+                try:
+                    info = await bridge.send_command_async(
+                        "project.get_component_info",
+                        {"designator": designator, "with_pin_nets": "false",
+                         "with_parameters": "false"})
+                except AltiumError as e:
+                    return {"success": False, "check": "spice_model",
+                    "if_the_user_insists": if_the_user_insists("spice_model"), "reason": (
+                        f"could not read {designator}'s pins to compare with "
+                        f"the model's nodes: {e}")}
+                pins = info.get("pins") if isinstance(info, dict) else None
+                if isinstance(pins, list):
+                    pin_count = len({str(p.get("pin", "")) for p in pins
+                                     if isinstance(p, dict)})
+            checked = check_model_file(file_path, model_name, primitive, pin_count)
+            if not checked["ok"]:
+                return {"success": False, "check": "spice_model",
+                    "if_the_user_insists": if_the_user_insists("spice_model"),
+                        "model_check": checked, "reason": checked["reason"]}
+        result = await bridge.send_command_async(
             "generic.attach_spice_model",
             {
                 "designator": designator,
@@ -327,6 +360,12 @@ def register_sim_tools(mcp):
                 "primitive": primitive,
             },
         )
+        if isinstance(result, dict):
+            if checked is not None:
+                result = {**result, "model_check": checked}
+            else:
+                result = {**result, "unchecked": check_skipped("spice_model")}
+        return result
 
     @mcp.tool()
     async def sim_run(

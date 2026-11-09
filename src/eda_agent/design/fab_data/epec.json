@@ -1,0 +1,87 @@
+{
+ "vendor": "Epec",
+ "source": {
+  "url": "https://www.epectec.com/pcb/board-specifications.html",
+  "retrieved": "2026-11-08",
+  "note": "Circuit Boards Specifications, columns Standard and Advanced; tier standard is the first. Values in inches; outer layers listed by base copper."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "unpublished": "The specifications page gives no layer counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "quote": "Outer Layer Line width on H ounce base copper | Minimum -0.004\"",
+     "when": {
+      "outer_oz": 1
+     },
+     "derived": "0.004 in = 4 mil; half-ounce base, about 1 oz finished"
+    },
+    {
+     "mil": 5,
+     "quote": "Outer Layer Line width on 1 ounce base copper | Minimum -0.005\"",
+     "when": {
+      "outer_oz": 2
+     },
+     "derived": "0.005 in = 5 mil; 1 oz base, about 2 oz finished"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 5,
+     "quote": "Outer layer Feature to Feature on 1 ounce or less base copper | Minimum -0.005\"",
+     "derived": "0.005 in = 5 mil"
+    }
+   ],
+   "min_drill": [
+    {
+     "unpublished": "The specifications page gives pad and clearance sizes, no minimum drill."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 7,
+     "quote": "External Minimum Pad Size | 0.014\" larger than finished hole size",
+     "derived": "pad = finished hole + 0.014 in, so the ring is 0.007 in = 7 mil at the finished hole"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The specifications page gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 5,
+     "quote": "LPI Mask Web | 0.005\" Minimum",
+     "derived": "0.005 in = 5 mil"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 8,
+     "quote": "Silk Screen Ink | 0.008\" minimum aperture",
+     "derived": "0.008 in = 8 mil"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 10,
+     "quote": "Feature to Board Edge *does not include tabs | Minimum -0.010\"",
+     "derived": "0.010 in = 10 mil"
+    }
+   ],
+   "inner_pth_hole_to_copper": [
+    {
+     "mil": 15,
+     "quote": "PTH & NPTH Hole to Inner Layer Trace | 0.015\" Spacing",
+     "derived": "0.015 in = 15 mil"
+    }
+   ]
+  }
+ }
+}

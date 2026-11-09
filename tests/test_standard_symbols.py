@@ -22,6 +22,15 @@ from eda_agent.design.symbol_gen import (
 from tests.pascal_source import load
 
 
+@pytest.fixture(autouse=True)
+def _no_pin_table(monkeypatch):
+    """These build symbols to check their layout; the pin table check has
+    its own tests (test_symbol_pins_against_the_pin_table.py)."""
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, "_read",
+                        lambda workspace=None: {"checks_off": "symbol_pins"})
+
+
 def _pins(names):
     return [{"designator": str(i), "name": n} for i, n in enumerate(names, 1)]
 

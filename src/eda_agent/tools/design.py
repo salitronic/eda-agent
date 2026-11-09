@@ -2587,7 +2587,8 @@ def register_design_tools(mcp) -> None:
         their quotes instead.
 
         Args:
-            vendor: "JLCPCB" or "PCBWay" (see design_list_fab_vendors)
+            vendor: a fab from design_list_fab_vendors ("JLCPCB",
+                "Eurocircuits", "Sierra Circuits", ...)
             copper_layers: copper layer count of the board
             outer_oz: outer copper weight, oz
             tier: the vendor's tier, "standard" by default

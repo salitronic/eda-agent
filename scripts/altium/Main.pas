@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.08.1';
+    SCRIPT_VERSION = '2026.11.09.5';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -170,6 +170,11 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { ChecksOff lists the checks switched off on the Config tab, by name,  }
+    { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
+    { model_body, spice_model, fab_export). Empty, the default, keeps    }
+    { every check on; the Python side runs them.                         }
+    ChecksOff : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
@@ -2648,6 +2653,7 @@ Begin
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
     DialogMode := 'auto';
+    ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
     ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
@@ -2661,6 +2667,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+    ChecksOff := LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2670,7 +2677,8 @@ Begin
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
         + '","keep_in_view":"' + KeepInViewMode
-        + '","dialogs":"' + DialogMode + '"}');
+        + '","dialogs":"' + DialogMode
+        + '","checks_off":"' + ChecksOff + '"}');
 End;
 
 {..............................................................................}

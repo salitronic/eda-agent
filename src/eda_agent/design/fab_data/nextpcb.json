@@ -1,0 +1,125 @@
+{
+ "vendor": "NextPCB",
+ "source": {
+  "url": "https://www.nextpcb.com/pcb-capabilities",
+  "retrieved": "2026-11-08",
+  "note": "One capability table; track and gap by copper weight."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32
+     ],
+     "quote": "Layer count | 1 - 32 layers",
+     "note": "1 and 2 plus the even counts, as for the other fabs; the page names no odd count."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 3,
+     "quote": "1 oz(Outer layer) | 3mil (3mil≈0.08mm) | 3mil (3mil≈0.08mm)",
+     "when": {
+      "outer_oz": 1
+     }
+    },
+    {
+     "mil": 5.5,
+     "quote": "2 oz(Outer layer) | 5.5mil (5.5mil≈0.14mm) | 5.5mil (5.5mil≈0.14mm)",
+     "when": {
+      "outer_oz": 2
+     }
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3,
+     "quote": "1 oz(Outer layer) | 3mil (3mil≈0.08mm) | 3mil (3mil≈0.08mm)",
+     "when": {
+      "outer_oz": 1
+     }
+    },
+    {
+     "mil": 5.5,
+     "quote": "2 oz(Outer layer) | 5.5mil (5.5mil≈0.14mm) | 5.5mil (5.5mil≈0.14mm)",
+     "when": {
+      "outer_oz": 2
+     }
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.15,
+     "quote": "Drill hole size(Mechanical) | 0.15-6.5mm | Minimum drill hole size is 0.15 mm (available for PCB thickness ≤ 1.2 mm).",
+     "note": "0.15 mm only on boards up to 1.2 mm thick."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 3.5,
+     "quote": "1 oz Copper | 3.5mil (single side) (3.5mil≈0.09mm)",
+     "when": {
+      "outer_oz": 1
+     }
+    },
+    {
+     "mil": 4.5,
+     "quote": "2 oz Copper | 4.5mil (single side) (4.5mil≈0.11mm)",
+     "when": {
+      "outer_oz": 2
+     }
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 12,
+     "quote": "Hole to hole clearance(Different nets) | ≥12mil(Avoid conductive anodic filament)(12mil≈0.30mm)",
+     "note": "Different nets; same-net vias may be 8 mil apart."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 3.5,
+     "quote": "Solder bridge | Green: 3.5mil Black/White: 5mil other solder mask: 4mil",
+     "note": "Green; 4 mil for other colours, 5 mil for black and white."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "Minimum line width | Silkscreen printing≥5mil (5mil≈0.12mm) Printer printing≥3mil (3mil≈0.08mm)",
+     "note": "Silkscreen printing; 3 mil with the legend printer."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mil": 30,
+     "quote": "Minimum text height | Silkscreen printing≥30mil (30mil≈0.76mm) Printer printing≥24mil (24mil≈0.61mm)"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.2,
+     "quote": "Trace to outline | ≥0.2mm | For individually routed boards"
+    }
+   ]
+  }
+ }
+}

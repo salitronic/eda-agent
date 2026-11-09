@@ -81,3 +81,15 @@ def test_a_failed_comparison_says_to_stop(monkeypatch, tmp_path):
            "custom_pads": [{"number": "1", "x": 0, "y": 0, "width": 0.3, "height": 0.3}]}
     out = asyncio.run(t["footprint_compare_drawing"](pkg, [0, 0, 1, 1]))
     assert not out["ok"] and "stop and report" in out["next"]
+
+
+def test_the_panel_can_let_unchecked_lands_in_and_says_so(tools, monkeypatch):
+    from eda_agent import preferences
+    t, bridge = tools
+    monkeypatch.setattr(preferences, "_read",
+                        lambda workspace=None: {"checks_off": "footprint_drawing"})
+    asyncio.run(t["lib_create_footprint"](name="LGA16"))
+    out = asyncio.run(t["lib_add_footprint_pads"](pads=_PADS))
+    assert out["success"] and "switched off" in out["unchecked"]["skipped"]
+    one = asyncio.run(t["lib_add_footprint_pad"](designator="3", x=2, y=0))
+    assert one["success"] and one["unchecked"]["check"] == "footprint_drawing"

@@ -19,6 +19,15 @@ import pytest
 from eda_agent.bridge import altium_bridge
 from eda_agent.tools import application, generic, library, pcb, project
 
+
+@pytest.fixture(autouse=True)
+def _no_pin_table(monkeypatch):
+    """These build symbols to check their layout; the pin table check has
+    its own tests (test_symbol_pins_against_the_pin_table.py)."""
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, "_read",
+                        lambda workspace=None: {"checks_off": "symbol_pins"})
+
 ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

@@ -1,0 +1,81 @@
+{
+ "vendor": "PCB Universe",
+ "source": {
+  "url": "https://www.pcbuniverse.com/pcbu_capabilities.php",
+  "retrieved": "2026-11-08",
+  "note": "Capabilities and tolerances table."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40,
+      42
+     ],
+     "quote": "Rigid PCBs up to 42 layers",
+     "note": "1 and 2 plus the even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 2.5,
+     "quote": "Line Width/Spacing (Outer Layer) | 2.5 / 3 mil | 0.0635 mm/0.0752 mm"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3,
+     "quote": "Line Width/Spacing (Outer Layer) | 2.5 / 3 mil | 0.0635 mm/0.0752 mm"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 8,
+     "quote": "Min Drill Size | 8 mil | 0.203 mm"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "unpublished": "The capabilities table gives no annular ring."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The capabilities table gives no hole-to-hole spacing."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 3,
+     "quote": "Min Solder Mask Print Width (Mask Dam) | 3 mil | 0.076 mm"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "The capabilities table gives no legend line width."
+    }
+   ]
+  }
+ }
+}

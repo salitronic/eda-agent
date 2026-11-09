@@ -1,4 +1,4 @@
-# Release verification: 2026.11.08.1
+# Release verification: 2026.11.09.5
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.08.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.09.5`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3938,6 +3938,33 @@ On AD 25 or 26, with a scratch board and library:
 
 On AD 21, the same pad reads answer without stopping the loop, and the
 filtered visibility call returns.
+
+## 77. Checks before a part is built, switchable on the Config tab
+
+The Config tab has a CHECKS group: one On / Off row per check (footprint
+vs drawing, symbol vs pin table, symbol pins vs pads, 3D body vs drawing,
+SPICE model file, fab export), all On by default. The panel stores the
+rows switched off as `checks_off` in `preferences.json`; the server reads
+it on every call. A refusal names its check and says how the user can go
+ahead (`if_the_user_insists`, docs/CONFIG.md); a result built with a check
+off carries `unchecked`.
+
+With the scripts deployed, on scratch libraries:
+
+1. Open the Config tab: six rows under CHECKS, each On, and the hint says
+   every check runs.
+2. Click Off on "Symbol pins vs pads": the row turns amber, the hint names
+   it, the log says `check pins_pads off`, and `preferences.json` holds
+   `"checks_off":"pins_pads"`. Restart the pump: the row is still Off.
+3. With it On, `lib_link_footprint` linking a 3-pin symbol to a footprint
+   with pads 1, 2 and EP is refused, naming pin 3 and pad EP. With it Off,
+   the same link goes through and the reply carries `unchecked`.
+4. Switch it back On and confirm the hint again says every check runs.
+5. Fab export: on a scratch project whose OutJob has a Gerber container,
+   `proj_run_outjob` without `fab` is refused, naming the outputs; with
+   `fab="OSH Park"` and a 4 mil track on the board it is refused naming the
+   track, the board it examined and OSH Park's quote; with
+   `fab="JLCPCB"` it runs and the reply carries `fab_check`.
 
 ## Still open, and not blocking
 

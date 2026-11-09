@@ -1,0 +1,145 @@
+{
+ "vendor": "OSH Park",
+ "source": {
+  "url": "https://docs.oshpark.com/services/two-layer/",
+  "also": [
+   "https://docs.oshpark.com/services/four-layer/"
+  ],
+  "retrieved": "2026-11-08",
+  "note": "One page per service: 2 Layer Prototype (1 oz) and 4 Layer Prototype (1 oz outer, 1/2 oz inner). Figures depend on the layer count."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      2,
+      4
+     ],
+     "quote": "Copper Layers | 2 ... Copper Layers | 4"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 6,
+     "quote": "Trace Width | 6mil (0.1524mm)",
+     "when": {
+      "layers": [
+       2,
+       2
+      ]
+     }
+    },
+    {
+     "mil": 5,
+     "quote": "Trace Width | 5mil (0.127mm)",
+     "when": {
+      "layers": [
+       4,
+       4
+      ]
+     }
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 6,
+     "quote": "Trace Spacing | 6mil (0.1524mm)",
+     "when": {
+      "layers": [
+       2,
+       2
+      ]
+     }
+    },
+    {
+     "mil": 5,
+     "quote": "Trace Spacing | 5mil (0.127mm)",
+     "when": {
+      "layers": [
+       4,
+       4
+      ]
+     }
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 10,
+     "quote": "Minimum Drill Size | 10mil (0.254mm)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Minimum Annular Ring | 5mil (0.127mm)",
+     "when": {
+      "layers": [
+       2,
+       2
+      ]
+     }
+    },
+    {
+     "mil": 4,
+     "quote": "Minimum Annular Ring | 4mil (0.1016mm)",
+     "when": {
+      "layers": [
+       4,
+       4
+      ]
+     }
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 5,
+     "quote": "Overlapping drills | Allowed, but not guaranteed. May result in missing or slotted holes. 5 mil (0.127mm) clearance is recommended between holes.",
+     "note": "A recommendation, given under overlapping drills."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Minimum soldermask web | 4 mil (0.1016mm)"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 3,
+     "quote": "Silkscreen minimum line width | 5 mil (0.127mm) (recommended minimum) 3 mil (0.0762mm) (short lines, text, graphics)",
+     "note": "3 mil for text; 5 mil is recommended for lines."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "unpublished": "OSH Park gives a line width for silkscreen, no text height."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 15,
+     "quote": "Board Edge Keepout | 15mil (0.381) from nominal board edge"
+    }
+   ],
+   "inner_pth_hole_to_copper": [
+    {
+     "mil": 10,
+     "quote": "Plated Drill to Internal Layer Copper Clearance | 10mil (0.254mm)",
+     "when": {
+      "layers": [
+       4,
+       4
+      ]
+     }
+    }
+   ],
+   "blind_buried_vias": [
+    {
+     "offered": false,
+     "quote": "Buried Via | No ... Blind Via | No"
+    }
+   ]
+  }
+ }
+}

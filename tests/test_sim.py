@@ -151,11 +151,16 @@ class TestSimToolsOrchestration:
         assert guidance["search_hints"][0]["designator"] == "U1"
 
     @pytest.mark.asyncio
-    async def test_attach_model_requires_model_name(self, monkeypatch):
+    async def test_attach_model_requires_model_name(self, monkeypatch, tmp_path):
         sent: dict = {}
+        model = tmp_path / "TL072.cir"
+        model.write_text("* TL072 operational amplifier, Texas Instruments\n"
+                         ".SUBCKT TL072 1 2 3 4 5\n.ENDS\n")
 
         class FakeBridge:
             async def send_command_async(self, command, params=None, timeout=None):
+                if command == "project.get_component_info":
+                    return {"pins": [{"pin": str(n)} for n in range(1, 9)]}
                 sent["command"] = command
                 sent["params"] = params
                 return {"success": True}
@@ -178,7 +183,7 @@ class TestSimToolsOrchestration:
         sim_mod.register_sim_tools(DummyMcp())
         await captured["sim_attach_model"](
             designator="U3",
-            file_path=r"C:\models\TL072.cir",
+            file_path=str(model),
             model_name="TL072",
         )
         assert sent["params"]["model_name"] == "TL072"
