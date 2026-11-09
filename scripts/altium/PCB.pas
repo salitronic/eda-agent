@@ -30051,6 +30051,32 @@ Begin
     Result := UpperCase(R);
 End;
 
+{..............................................................................}
+{ LayerStackManagerRefusal - '' where the Layer Stack Manager's script     }
+{ interface is there, else the error reply. Reported on AD 21.4 (issue     }
+{ #275): RemoveLayerStackProvider, a layer's GetState_Weight, the stack's  }
+{ GetDrillPairCount and OpenDocumentFromPcb are undeclared and halt the    }
+{ script in a way no Try catches, and reading the provider without the     }
+{ refresh returns the stack as it was before the last change. So the       }
+{ version is asked first and nothing of the manager is touched below it.   }
+{ AD 22 to 24 are not measured and are let through; an unreadable version  }
+{ is let through too.                                                      }
+{..............................................................................}
+Function LayerStackManagerRefusal(RequestId : String) : String;
+Var
+    Code : Integer;
+Begin
+    Result := '';
+    Code := AltiumVersionCode(0);
+    If (Code > 0) And (Code < 2200) Then
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_VERSION',
+            'The Layer Stack Manager cannot be read or changed from a script on '
+            + 'this Altium version (' + IntToStr(Code div 100) + '.' + IntToStr(Code mod 100)
+            + '): the calls it needs halt the script, and the cached stack it '
+            + 'can read is out of date after a change. pcb_physical_stack reads '
+            + 'the board''s own stack. Nothing was read or changed.');
+End;
+
 Function PCB_LayerStackManager(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -30069,6 +30095,8 @@ Var
     PropName, PropValue, LName, LGuid, SpanName : String;
     I, J, LayerCount, PropCount, StartId, StopId : Integer;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Model := LowerCase(Trim(ExtractJsonValue(Params, 'include_model')));
     If (Model <> '') And (Model <> 'xml') And (Model <> 'records') Then
     Begin
@@ -30259,6 +30287,8 @@ Var
     Steps, Done, J : Integer;
     WasSym, Alone, SymOff, Refused, Can, SymAfter : Boolean;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
@@ -30428,6 +30458,8 @@ Var
     SL : TStringList;
     WasSym, SymAfter, Can : Boolean;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
