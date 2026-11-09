@@ -12656,7 +12656,9 @@ Begin
         + '","part_id":' + IntToStr(PartIdAfter)
         + ',"location_x":' + FloatToJsonStr(CoordToMilsF(CompLoc.X))
         + ',"location_y":' + FloatToJsonStr(CoordToMilsF(CompLoc.Y))
-        + ',"matched":' + IntToStr(Total) + '}');
+        { One copy is changed; the others sharing its designator are counted }
+        { apart, so the count is not read as the number written.             }
+        + ',"changed":1,"same_designator":' + IntToStr(Total) + '}');
 End;
 
 {..............................................................................}
@@ -15153,7 +15155,7 @@ Function Gen_PlaceSchVaultComponents(Params : String; RequestId : String) : Stri
 Var
     PlaceStr, Op, Remaining, ItemsJson, VaultName, Note : String;
     DesignItemId, Desig, Reason, LoadedId, VaultGuid, ItemGuid, RevGuid : String;
-    OpCount, Placed, Linked, Failed, Kind : Integer;
+    OpCount, Placed, Linked, Failed, Kind, PartId, PartAfter : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
     Raised, AnyRaised, IsPlaced, IsLinked : Boolean;
@@ -15195,6 +15197,12 @@ Begin
             Inc(OpCount);
             DesignItemId := GetBatchField(Op, 'design_item_id');
             Desig := GetBatchField(Op, 'designator');
+            { The part of a multi-part component, as the library placement  }
+            { takes it: part 1 unless asked, written before the add so the  }
+            { loader's own pick (the last part, measured) never lands.      }
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);
+            If PartId < 1 Then PartId := 1;
+            PartAfter := -1;
             IsPlaced := False;
             IsLinked := False;
             Reason := '';
@@ -15227,19 +15235,29 @@ Begin
                 Inc(Failed)
             Else
             Begin
+                Try Comp.SetState_CurrentPartID(PartId); Except { written and checked again on the sheet below } End;
+                Try Comp.CurrentPartID := PartId; Except { written and checked again on the sheet below } End;
                 PutLoadedComponent(SchDoc, Comp,
                     StrToFloatDef(GetBatchField(Op, 'x'), 0),
                     StrToFloatDef(GetBatchField(Op, 'y'), 0),
                     StrToIntDef(GetBatchField(Op, 'rotation'), 0), Desig);
-                Inc(Placed);
+                SetSchPartId(Comp, PartId);
+                Try PartAfter := Comp.CurrentPartID; Except End;
                 IsPlaced := True;
+                If PartAfter = PartId Then Inc(Placed)
+                Else
+                Begin
+                    { On the sheet, but not as the part asked for. }
+                    Inc(Failed);
+                    Reason := 'PART_REFUSED';
+                End;
                 Try LoadedId := Comp.DesignItemId; Except End;
                 Try VaultGuid := Comp.VaultGUID; Except End;
                 Try ItemGuid := Comp.ItemGUID; Except End;
                 Try RevGuid := Comp.RevisionGUID; Except End;
                 IsLinked := (VaultGuid <> '') And (ItemGuid <> '');
                 If IsLinked Then Inc(Linked)
-                Else Reason := 'PLACED_WITHOUT_LINK';
+                Else If Reason = '' Then Reason := 'PLACED_WITHOUT_LINK';
             End;
 
             If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
@@ -15247,6 +15265,7 @@ Begin
                 + ',"design_item_id":"' + EscapeJsonString(DesignItemId) + '"'
                 + ',"placed":' + BoolToJsonStr(IsPlaced)
                 + ',"linked":' + BoolToJsonStr(IsLinked)
+                + ',"part_id":' + IntToStr(PartAfter)
                 + ',"loaded_design_item_id":"' + EscapeJsonString(LoadedId) + '"'
                 + ',"vault_guid":"' + EscapeJsonString(VaultGuid) + '"'
                 + ',"item_guid":"' + EscapeJsonString(ItemGuid) + '"'

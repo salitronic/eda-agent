@@ -52,6 +52,7 @@ PLACEMENT_KEYS = frozenset({
 #: The keys a managed placement dict is read for.
 MANAGED_PLACEMENT_KEYS = frozenset({
     "design_item_id",
+    "part_id",
     "x",
     "y",
     "rotation",
@@ -4019,8 +4020,9 @@ def register_generic_tools(mcp):
             location_y: Symbol Y in mils, to choose one of several.
 
         Returns:
-            Dict with success, designator, part_id, the location written
-            and how many symbols carried the designator. On ambiguity,
+            Dict with success, designator, part_id, the location written,
+            ``changed`` (always 1, the one symbol written) and
+            ``same_designator`` (how many carry it). On ambiguity,
             an AMBIGUOUS_DESIGNATOR error carrying `candidates`.
         """
         bridge = get_bridge()
@@ -4472,7 +4474,9 @@ def register_generic_tools(mcp):
 
         Args:
             placements: dicts with "design_item_id" (required), ``x``,
-                ``y`` (mils), optional ``designator`` and ``rotation``.
+                ``y`` (mils), optional ``designator``, ``rotation`` and
+                ``part_id`` (which part of a multi-part component goes
+                down; default 1, set before the part reaches the sheet).
             vault: The Workspace name; usually read off managed parts on
                 an open sheet. If refused, ask the user, don't invent it.
             document_path: The .SchDoc to focus and place onto.
@@ -4482,8 +4486,9 @@ def register_generic_tools(mcp):
         Returns:
             ``placed``, ``linked`` (read back a VaultGUID and ItemGUID),
             ``failed``, ``total``, ``vault``, lib_identifier_kind,
-            ``loader_callable``, ``note``, ``items`` (``reason``
-            PLACED_WITHOUT_LINK, NOT_FOUND_IN_VAULT or LOAD_RAISED).
+            ``loader_callable``, ``note``, ``items`` (``part_id`` as read
+            back; ``reason`` PLACED_WITHOUT_LINK, PART_REFUSED (on the
+            sheet as another part), NOT_FOUND_IN_VAULT or LOAD_RAISED).
         """
         refusal = _unknown_keys_refusal(
             placements, MANAGED_PLACEMENT_KEYS,
@@ -4503,6 +4508,13 @@ def register_generic_tools(mcp):
             ]
             if p.get("designator"):
                 fields.append(f"designator={payload_safe(p['designator'])}")
+            if p.get("part_id") not in (None, ""):
+                try:
+                    fields.append(f"part_id={int(p['part_id'])}")
+                except (TypeError, ValueError):
+                    return {"error": "BAD_PART_ID", "reason":
+                            f"part_id {p['part_id']!r} is not a whole number; "
+                            "nothing was placed", "placed": 0}
             op_strs.append(";".join(fields))
         if not op_strs:
             return {"error": "No valid placements", "placed": 0}
