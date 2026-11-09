@@ -75,6 +75,12 @@ reason behind it.
 - **Keep capabilities.** A hazard is documented or warned about rather
   than removed, and a workaround for one Altium version is applied on that
   version.
+- **Stay neutral on style.** The tools serve many teams with different
+  house rules, so a change that imposes a particular style, preference or
+  rule (a grid, a naming scheme, a pin layout, a check on a design), even
+  one a standard requires, needs a switch on the Config tab so a user can
+  turn it off. You do not need to build the switch yourself: say in the PR
+  that the change imposes a choice, and the maintainer adds it.
 - **Prefer a warning to a refusal,** unless the call would act on the
   wrong object or write something Altium will not keep. A refusal says why
   and what to do instead.
