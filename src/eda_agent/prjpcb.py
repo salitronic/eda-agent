@@ -168,7 +168,15 @@ def prune_stale_documents(project_path: str, members: Iterable[str],
     except OSError:
         discard(tmp)
         raise
-    return {"pruned": len(stale),
-            "removed_sections": [f"Document{d[0]}" for d in stale],
-            "removed_paths": [d[3] for d in stale],
-            "kept": keep, "backup": str(backup)}
+    out = {"pruned": len(stale),
+           "removed_sections": [f"Document{d[0]}" for d in stale],
+           "removed_paths": [d[3] for d in stale],
+           "kept": keep, "backup": str(backup)}
+    # A leftover that repeats a document still listed is a copy, not a
+    # second document dropped; say so, or the path reads as a loss.
+    copies = [d[3] for d in stale if _name(d[3]) in set(kept)]
+    if copies:
+        out["duplicates_of_kept"] = copies
+        out["note"] = ("these removed sections repeated documents the project "
+                       "still lists; only the copies went")
+    return out

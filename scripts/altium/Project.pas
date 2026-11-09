@@ -8004,6 +8004,239 @@ End;
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
+{..............................................................................}
+{ Proj_RenameDocument - a project document given a new file name by Altium.  }
+{ The document is saved under the new name with DoSafeChangeFileNameAndSave  }
+{ (Altium's Save As), the project entry is read back and moved only if Altium }
+{ left it, every sheet symbol in the project naming the old file is pointed  }
+{ at the new one, and the project is saved and compiled. The old file stays  }
+{ on disk: nothing here deletes a file.                                       }
+{..............................................................................}
+
+Function RenameSheetSymbolsIn(Project : IProject; OldPath, NewPath : String;
+    Var Failed : String) : String;
+Var
+    I : Integer;
+    Doc : IDocument;
+    DocPath, Ref, NewRef, OldName, NewName : String;
+    SchDoc : ISch_Document;
+    It : ISch_Iterator;
+    Sym : ISch_SheetSymbol;
+    Touched : Boolean;
+Begin
+    Result := '';
+    Failed := '';
+    OldName := ExtractFileName(OldPath);
+    NewName := ExtractFileName(NewPath);
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except End;
+        If Doc = Nil Then Continue;
+        If Doc.DM_DocumentKind <> 'SCH' Then Continue;
+        DocPath := '';
+        Try DocPath := Doc.DM_FullPath; Except End;
+        SchDoc := SchDocByPathLoading(DocPath);
+        If SchDoc = Nil Then Continue;
+        Touched := False;
+        It := SchDoc.SchIterator_Create;
+        Try
+            It.AddFilter_ObjectSet(MkSet(eSheetSymbol));
+            Sym := It.FirstSchObject;
+            While Sym <> Nil Do
+            Begin
+                Ref := '';
+                Try Ref := Sym.SheetFileName.Text; Except End;
+                NewRef := '';
+                If SameText(Ref, OldName) Then NewRef := NewName
+                Else If SameText(Ref, OldPath) Then NewRef := NewPath;
+                If NewRef <> '' Then
+                Begin
+                    If Not Touched Then SchBeginEdit(SchDoc, '');
+                    Touched := True;
+                    { Announced, as obj_modify does: without it the compile }
+                    { kept the old file name after a recompile.            }
+                    SchBeginModify(Sym);
+                    Try Sym.SheetFileName.Text := NewRef; Except { read back below and listed as not changed } End;
+                    SchEndModify(Sym);
+                    Ref := '';
+                    Try Ref := Sym.SheetFileName.Text; Except End;
+                    If Ref = NewRef Then
+                    Begin
+                        If Result <> '' Then Result := Result + ',';
+                        Result := Result + '{"sheet":"' + EscapeJsonString(DocPath)
+                            + '","sheet_file_name":"' + EscapeJsonString(NewRef) + '"}';
+                    End
+                    Else
+                    Begin
+                        If Failed <> '' Then Failed := Failed + ',';
+                        Failed := Failed + '"' + EscapeJsonString(DocPath) + '"';
+                    End;
+                End;
+                Sym := It.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(It);
+        End;
+        If Touched Then
+        Begin
+            SchEndEdit(SchDoc, 'Edit');
+            Try SchDoc.GraphicallyInvalidate; Except End;
+            MarkDocDirtyByPath(DocPath);
+        End;
+    End;
+End;
+
+Function Proj_RenameDocument(Params : String; RequestId : String) : String;
+Var
+    OldPath, NewName, NewPath, ProjectPath, Kind, Symbols, Failed, Note : String;
+    Project : IProject;
+    Workspace : IWorkspace;
+    ServerDoc : IServerDocument;
+    Saved, ListsNew, ListsOld, Moved : Boolean;
+Begin
+    OldPath := ExtractJsonValue(Params, 'document_path');
+    NewName := ExtractJsonValue(Params, 'new_name');
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    If (OldPath = '') Or (NewName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'document_path and new_name are required');
+        Exit;
+    End;
+    If (Pos('\', NewName) > 0) Or (Pos('/', NewName) > 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_NAME',
+            'new_name is a file name, not a path: the document stays in its folder.');
+        Exit;
+    End;
+    If ExtractFileExt(NewName) = '' Then
+        NewName := NewName + ExtractFileExt(OldPath);
+    If Not SameText(ExtractFileExt(NewName), ExtractFileExt(OldPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_NAME',
+            'new_name changes the extension (' + ExtractFileExt(OldPath) + ' to '
+            + ExtractFileExt(NewName) + '), which would change the document kind.');
+        Exit;
+    End;
+    NewPath := ExtractFilePath(OldPath) + NewName;
+    If FileExists(NewPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_EXISTS',
+            NewPath + ' already exists. Nothing was renamed.');
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
+        Exit;
+    End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := ProjectHoldingDoc(OldPath);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_MEMBER',
+            OldPath + ' is not a document of an open project. Nothing was renamed.');
+        Exit;
+    End;
+    If Not ProjectListsDocument(Project, OldPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_MEMBER',
+            OldPath + ' is not a document of ' + Project.DM_ProjectFullPath
+            + '. Nothing was renamed.');
+        Exit;
+    End;
+
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(OldPath); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        Try Client.OpenDocument('', OldPath); Except End;
+        Try ServerDoc := Client.GetDocumentByPath(OldPath); Except ServerDoc := Nil; End;
+    End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'Altium could not open ' + OldPath + '. Nothing was renamed.');
+        Exit;
+    End;
+    Kind := '';
+    Try Kind := ServerDoc.Kind; Except Kind := ''; End;
+
+    Saved := False;
+    Try Saved := ServerDoc.DoSafeChangeFileNameAndSave(NewPath, Kind); Except Saved := False; End;
+    Saved := Saved And FileExists(NewPath);
+    { MEASURED (AD 26.11): for a sheet this declines and writes nothing.   }
+    { The document is pointed at the new name and saved instead, the way   }
+    { the board's save-a-copy writes its copy.                             }
+    If Not Saved Then
+    Begin
+        Try ServerDoc.SetFileName(NewPath); Except { the file check below decides } End;
+        Try
+            ServerDoc.SetModified(True);
+            ServerDoc.DoFileSave('');
+        Except { the file check below decides } End;
+        Saved := FileExists(NewPath);
+        If Not Saved Then
+        Begin
+            Try ServerDoc.SetFileName(OldPath); Except NoteWriteFailed('point the document back at its old name'); End;
+        End;
+    End;
+    If Not Saved Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
+            'Altium did not save ' + OldPath + ' as ' + NewPath + '. Nothing was renamed.');
+        Exit;
+    End;
+
+    { Altium's Save As is expected to move the project entry with the      }
+    { document. Only when it did not is the entry moved here, which puts   }
+    { it last in the document order.                                       }
+    Moved := False;
+    ListsNew := ProjectListsDocument(Project, NewPath);
+    ListsOld := ProjectListsDocument(Project, OldPath);
+    If Not ListsNew Then
+    Begin
+        Try Project.DM_AddSourceDocument(NewPath); Except End;
+        ListsNew := ProjectListsDocument(Project, NewPath);
+        Moved := ListsNew;
+    End;
+    If ListsOld And ListsNew Then
+    Begin
+        Try Project.DM_RemoveSourceDocument(OldPath); Except End;
+        ListsOld := ProjectListsDocument(Project, OldPath);
+    End;
+
+    Symbols := '';
+    Failed := '';
+    If SameText(ExtractFileExt(NewPath), '.SchDoc') Then
+        Symbols := RenameSheetSymbolsIn(Project, OldPath, NewPath, Failed);
+
+    Try Project.DM_Compile; Except End;
+    Note := '';
+    If FileExists(OldPath) Then
+        Note := 'The old file ' + OldPath + ' is still on disk; nothing here deletes files.';
+    If Moved Then
+        Note := Note + 'Altium did not move the project entry, so it was added '
+            + 'again and now comes last in the document order.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr(ListsNew And (Not ListsOld) And (Failed = ''))
+        + ',"old_path":"' + EscapeJsonString(OldPath) + '"'
+        + ',"new_path":"' + EscapeJsonString(NewPath) + '"'
+        + ',"project_path":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+        + ',"saved":true'
+        + ',"in_project":' + BoolToJsonStr(ListsNew)
+        + ',"old_entry_left":' + BoolToJsonStr(ListsOld)
+        + ',"entry_moved_last":' + BoolToJsonStr(Moved)
+        + ',"sheet_symbols":[' + Symbols + ']'
+        + ',"sheet_symbols_not_changed":[' + Failed + ']'
+        + ',"project_saved":' + BoolToJsonStr(SaveProjectFile(Project))
+        + ',"note":"' + EscapeJsonString(Note) + '"}');
+End;
+
 Function HandleProjectCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -8014,6 +8247,7 @@ Begin
         'get_documents':     Result := Proj_GetDocuments(Params, RequestId);
         'add_document':      Result := Proj_AddDocument(Params, RequestId);
         'remove_document':   Result := Proj_RemoveDocument(Params, RequestId);
+        'rename_document':   Result := Proj_RenameDocument(Params, RequestId);
         'get_parameters':    Result := Proj_GetParameters(Params, RequestId);
         'set_parameter':     Result := Proj_SetParameter(Params, RequestId);
         'push_params_to_sheets': Result := Proj_PushParamsToSheets(Params, RequestId);

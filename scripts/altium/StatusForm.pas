@@ -1800,6 +1800,11 @@ Begin
         Result := SavingOffError(RequestId, 'A new document is created by writing its file.');
         Exit;
     End;
+    If Command = 'project.rename_document' Then
+    Begin
+        Result := SavingOffError(RequestId, 'A rename is made by saving the document under its new name.');
+        Exit;
+    End;
     If (Command = 'pcb.make_library') Or (Command = 'pcb.make_pad_via_library') Then
     Begin
         Result := SavingOffError(RequestId, 'The library is made by writing a new file.');

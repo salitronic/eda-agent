@@ -350,7 +350,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_set_units": "Altium document units; KiCad files are mm",
     # project bookkeeping
     **{name: _ALT_DOC for name in (
-        "proj_add_document", "proj_remove_document", "proj_import_document",
+        "proj_add_document", "proj_remove_document", "proj_rename_document", "proj_import_document",
         "proj_load_sheets", "proj_close", "proj_open", "proj_save",
         "proj_get_compile_freshness", "proj_get_declared_design_objects",
         "proj_get_channels", "proj_get_hierarchy", "proj_push_parameters",

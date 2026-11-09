@@ -724,6 +724,43 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_rename_document(
+        document_path: str,
+        new_name: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rename a project document, keeping the project and its sheet
+        symbols pointing at it.
+
+        Altium saves the document under the new name in the same folder
+        (its Save As, unsaved edits included), the project entry follows
+        it, every sheet symbol in the project whose file name names the
+        old file is changed to the new one, and the project is saved and
+        compiled. The old file is left on disk. Refused when the new
+        name exists, changes the extension, or the document is in no
+        open project.
+
+        Args:
+            document_path: Full path of the document.
+            new_name: The new file name (extension optional, same kind).
+            project_path: The project; defaults to the one holding it.
+
+        Returns:
+            ``old_path``, ``new_path``, ``project_path``, ``in_project``,
+            ``old_entry_left``, ``entry_moved_last`` (Altium did not move
+            the entry, so it was added again at the end),
+            ``sheet_symbols`` changed (sheet and new file name),
+            ``sheet_symbols_not_changed``, ``project_saved``; ``success``
+            when the project lists only the new name and every symbol
+            took the change.
+        """
+        params = {"document_path": document_path, "new_name": new_name}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.rename_document", params)
+
+    @mcp.tool()
     async def proj_get_parameters(
         project_path: Optional[str] = None,
     ) -> list[dict[str, Any]]:
