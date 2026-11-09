@@ -38,7 +38,10 @@ def test_body_placement_never_probes_the_missing_xy_members():
         _safe_placement(body.replace("BeforeBox := Body.BoundingRectangle;",
                                      "CurX := Body.x;"))
     generic = load(ROOT / "scripts/altium/PCBGeneric.pas")["PCBPrimitivePos"]
-    assert not re.search(r"\bBody\.[xy]\b", generic, re.I)
+    for m in re.finditer(r"\bBody\.[xy]\b", generic, re.I):
+        before = generic[:m.start()]
+        assert before.rfind("If AltiumVersionCode(0) >= 2500 Then") > \
+            before.rfind("Else If Oid ="), "a body x/y read outside the version gate"
 
 
 def test_step_standoff_is_set_on_model_before_binding():

@@ -2872,6 +2872,19 @@ Begin
     End;
 End;
 
+{ Says why a parameter write was not made; False, for WroteOK. }
+Function NoteKeptByAltium(ForValue : Boolean) : Boolean;
+Begin
+    Result := False;
+    If ForValue Then
+        NoteNextStep('Not written: Altium keeps this parameter''s value read-only '
+            + '(a port''s CrossRef is written by the compiler). Its font, colour, '
+            + 'justification and visibility can be set.')
+    Else
+        NoteNextStep('Not written: Altium keeps this parameter''s name read-only '
+            + '(a port''s CrossRef is written by the compiler).');
+End;
+
 { A port's Style is only its axis: 0 horizontal, 4 vertical. MEASURED on     }
 { AD 25.8.1: 1-3 and 5-7 are taken and read back, then come back as 0 / 4    }
 { after a save and reopen; Altium draws a port's arrows from its IOType and  }
@@ -3019,7 +3032,7 @@ Begin
             If SchObjectHasText(Obj) Then
             Begin
                 If SchParamKeptByAltium(Obj, True) Then
-                    WroteOK := False
+                    WroteOK := NoteKeptByAltium(True)
                 Else
                     Obj.Text := Value;
             End
@@ -3031,7 +3044,7 @@ Begin
             If SchObjectHasName(Obj) Then
             Begin
                 If SchParamKeptByAltium(Obj, False) Then
-                    WroteOK := False
+                    WroteOK := NoteKeptByAltium(False)
                 Else
                     Obj.Name := Value;
             End
@@ -3281,7 +3294,12 @@ Begin
         Else If PropName = 'Style'       Then
         Begin
             If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
-                WroteOK := False
+            Begin
+                WroteOK := False;
+                NoteNextStep('Not written: a port''s Style is only its axis, 0 '
+                    + 'horizontal or 4 vertical; Altium resets any other value '
+                    + 'to one of those when the sheet is reopened.');
+            End
             Else
                 Obj.Style := StrToIntDef(Value, 0);
         End
@@ -10244,11 +10262,16 @@ Begin
     SchPort.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     SchPort.Name := Name;
 
-    // Style: none, left, right, left_right
-    If StyleStr = 'left' Then SchPort.Style := ePortLeft
-    Else If StyleStr = 'right' Then SchPort.Style := ePortRight
-    Else If StyleStr = 'left_right' Then SchPort.Style := ePortLeftRight
-    Else SchPort.Style := ePortNone;
+    { Style is only the axis Altium keeps: 0 horizontal, 4 vertical. The    }
+    { arrows come from IOType and the wired end; 1-3 and 5-7 read back but  }
+    { are 0 / 4 again after a reopen (measured on AD 25.8 and 26.11). The   }
+    { arrow names (none, left, right, left_right) give a horizontal port.   }
+    StyleStr := LowerCase(StyleStr);
+    If (StyleStr = 'vertical') Or (StyleStr = 'top') Or (StyleStr = 'bottom')
+        Or (StyleStr = 'top_bottom') Then
+        SchPort.Style := 4
+    Else
+        SchPort.Style := 0;
 
     // IO Type: unspecified, output, input, bidirectional
     If IOTypeStr = 'output' Then SchPort.IOType := ePortOutput

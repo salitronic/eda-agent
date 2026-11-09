@@ -2286,7 +2286,7 @@ def register_library_tools(mcp):
 
         The current symbol is the one created LAST: make a symbol and add
         its pins before making the next. A batch of lib_create_symbol
-        followed by lib_add_pins puts every pin on the last symbol (#263);
+        followed by lib_add_pins puts every pin on the last symbol;
         lib_create_ic_symbol makes the symbol and its pins together.
 
         Args:
@@ -7269,8 +7269,9 @@ def register_library_tools(mcp):
 
         Args:
             footprint_name: The footprint.
-            out_path: Full path of a new .PcbLib. Existing or open outputs
-                are refused; the source is never overwritten.
+            out_path: Full path of the .PcbLib to write; never the source.
+                On Altium 25 and later an existing file is written over; on
+                older versions it must be a new file.
             library_path: The source library. Defaults to the focused one.
 
         Returns:

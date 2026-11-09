@@ -96,7 +96,7 @@
    "copper_to_edge": [
     {
      "mil": 10,
-     "quote": "Clearance – Copper to Edge of Board | Outer Layer Rout – 0.010″ Outer Layer V-Score – 0.015″ Inner Layer – 0.015″",
+     "quote": "Clearance - Copper to Edge of Board | Outer Layer Rout - 0.010″ Outer Layer V-Score - 0.015″ Inner Layer - 0.015″",
      "derived": "0.010 in = 10 mil to a routed outer edge"
     }
    ],

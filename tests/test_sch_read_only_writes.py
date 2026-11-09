@@ -55,8 +55,11 @@ def test_text_and_name_writes_honour_the_flags_before_writing():
         # The type guard first (the bridge stops on a member a type lacks).
         assert branch.index(f"If SchObjectHas{prop}(Obj) Then") < branch.index("SchParamKeptByAltium")
         guard = branch.index(f"SchParamKeptByAltium(Obj, {flag})")
-        refused = branch.index("WroteOK := False", guard)
+        refused = branch.index(f"WroteOK := NoteKeptByAltium({flag})", guard)
         assert guard < refused < branch.index(f"Obj.{prop} := Value")
+    # The note says why, and answers False so the write is listed as failed.
+    note = _routine(_source(), "NoteKeptByAltium")
+    assert "Result := False;" in note and note.count("NoteNextStep(") == 2
 
 
 def test_port_style_takes_only_its_axis():

@@ -59,7 +59,7 @@
    "copper_to_edge": [
     {
      "mil": 15,
-     "quote": "Required Edge Clearance – Top and Bottom | 0.015 inches",
+     "quote": "Required Edge Clearance - Top and Bottom | 0.015 inches",
      "derived": "0.015 in = 15 mil; 20 mil on inner layers"
     }
    ]

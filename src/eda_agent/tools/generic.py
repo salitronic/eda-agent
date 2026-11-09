@@ -2551,7 +2551,10 @@ def register_generic_tools(mcp):
             name: Port name (maps to net name)
             x: X coordinate in mils
             y: Y coordinate in mils
-            style: Arrow style, "none", "left", "right", "left_right"
+            style: The port's axis: "horizontal" (also "none", "left",
+                "right", "left_right") or "vertical" (also "top",
+                "bottom"). Altium keeps only the axis; the arrows follow
+                io_type and the end that is wired.
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
             width: Port length in mils. Auto-size is turned off so it
                 holds; 0 leaves the port sizing itself to its name.

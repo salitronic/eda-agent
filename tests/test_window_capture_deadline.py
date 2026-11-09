@@ -161,8 +161,8 @@ def test_capture_launch_is_hidden_and_output_is_discarded(monkeypatch):
     monkeypatch.setattr(ocr, 'no_window', lambda: {'creationflags': 0x08000000})
     monkeypatch.setattr(ocr.subprocess, 'Popen', launch)
     assert ocr._run_capture(['worker'], timeout=1.25) == 0
-    assert seen == {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL,
-                    'creationflags': 0x08000000}
+    assert seen == {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL,
+                    'stderr': subprocess.DEVNULL, 'creationflags': 0x08000000}
 
 
 @pytest.mark.parametrize("failure", ["child_kill", "root_kill", "root_wait", "child_wait", "survivor"])

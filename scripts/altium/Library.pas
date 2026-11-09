@@ -17992,6 +17992,21 @@ Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PATH', 'out_path must name a .PcbLib');
         Exit;
     End;
+    { 25 and later: Altium's own one-footprint save, which writes over an  }
+    { existing output as it always has. AD21's script engine stopped in    }
+    { SaveComponentWithLibrary, so there the footprint goes through a fresh }
+    { library document instead, which only makes a new file.              }
+    If AltiumVersionCode(0) >= 2500 Then
+    Begin
+        Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library', LibPath) + ','
+            + JsonStr('footprint_name', FpWanted) + ','
+            + JsonStr('out_path', OutPath) + ','
+            + JsonBool('reported', Said) + ','
+            + JsonStr('route', 'save_component_with_library')));
+        Exit;
+    End;
     If Client.GetDocumentByPath(OutPath) <> Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',

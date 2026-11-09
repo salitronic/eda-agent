@@ -43,10 +43,22 @@ def test_destination_rejections_exit_before_creation(guard):
     assert "Exit;" in block
 
 
+def test_the_one_call_export_runs_only_where_it_does_not_stop_the_script():
+    """SaveComponentWithLibrary stopped AD21's script engine; 25 and later
+    keep it (it writes over an existing output). The version is asked first."""
+    body = routine()
+    gate = body.index("If AltiumVersionCode(0) >= 2500 Then")
+    call = body.index("PcbLib.SaveComponentWithLibrary(")
+    assert gate < call < body.index("Exit;", call) < body.index("Client.OpenNewDocument(")
+    assert body.count(".SaveComponentWithLibrary(") == 1
+
+
 def test_export_never_calls_one_call_export_or_mutates_source():
     body = routine()
-    assert ".SaveComponentWithLibrary(" not in body
-    assert not re.search(r"\bPcbLib\.(?:RemoveComponent|DeRegisterComponent|Save)", body)
+    fresh = body[body.index("Client.OpenNewDocument("):]
+    assert ".SaveComponentWithLibrary(" not in fresh
+    assert not re.search(r"\bPcbLib\.(?:RemoveComponent|DeRegisterComponent)", body)
+    assert not re.search(r"\bPcbLib\.Save(?!ComponentWithLibrary)", body)
     assert "Footprint.CopyTo(NewFP, eFullCopy);" in body
     assert "AlignCopiedFootprint(Footprint, NewFP)" in body
     assert "DestLib.RegisterComponent(NewFP);" in body

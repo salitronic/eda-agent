@@ -115,7 +115,10 @@ def _capture_command(hwnd: int, path: str, enlarge: int) -> list[str]:
 
 
 def _run_capture(command: list[str], timeout: float) -> int:
-    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL,
+    # stdin closed too: inherited, the worker shares the MCP server's stdio
+    # pipe, and a native module load in it can then wait on that pipe.
+    proc = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, **no_window())
     try:
         return proc.wait(timeout=timeout)
