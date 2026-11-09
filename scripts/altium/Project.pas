@@ -40,11 +40,34 @@ Begin
         Proj := Workspace.DM_Projects(I);
         If Proj <> Nil Then
         Begin
-            If Proj.DM_ProjectFullPath = ProjectPath Then
+            If SameText(Proj.DM_ProjectFullPath, ProjectPath) Then
             Begin
                 Result := Proj;
                 Exit;
             End;
+        End;
+    End;
+End;
+
+{ ProjectListsDocument - the project's own document list holds DocPath. }
+Function ProjectListsDocument(Project : IProject; DocPath : String) : Boolean;
+Var
+    I : Integer;
+    Doc : IDocument;
+    Full : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        Full := '';
+        Try Full := Doc.DM_FullPath; Except End;
+        If SameText(Full, DocPath) Then
+        Begin
+            Result := True;
+            Exit;
         End;
     End;
 End;

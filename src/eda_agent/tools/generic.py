@@ -1804,26 +1804,33 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def proj_add_sheet(
         name: str = "NewSheet",
+        project_path: str = "",
     ) -> dict[str, Any]:
-        """Create a new schematic sheet and add it to the focused project.
+        """Create a new schematic sheet and add it to a project.
 
         The sheet is created in the same directory as the project file.
         Refused (FILE_EXISTS) when a file of that name is already there,
         as one removed with proj_delete_sheet is: it would open with its
-        old drawing.
+        old drawing. Refused (NO_PROJECT) when no project is named and
+        the focused document belongs to none, as a library opened on its
+        own does.
 
         Args:
             name: Name for the new sheet (without .SchDoc extension).
                   Default "NewSheet".
+            project_path: The open project to add it to; empty means the
+                focused project.
 
         Returns:
-            Dictionary with the path of the newly created sheet
+            ``path``, ``project_path``, ``saved``, ``added_to_project``
+            (read back from the project's document list) and
+            ``project_saved``; ``success`` only when saved and added.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.add_sheet",
-            {"name": name},
-        )
+        params = {"name": name}
+        if project_path:
+            params["project_path"] = project_path
+        result = await bridge.send_command_async("generic.add_sheet", params)
         return result
 
     @mcp.tool()

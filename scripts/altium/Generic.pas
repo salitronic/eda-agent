@@ -5966,7 +5966,7 @@ End;
 
 Function Gen_AddSheet(Params : String; RequestId : String) : String;
 Var
-    SheetName : String;
+    SheetName, ProjectPath : String;
     Workspace : IWorkspace;
     Project : IProject;
     NewDocPath : String;
@@ -5975,6 +5975,7 @@ Var
 Begin
     SheetName := ExtractJsonValue(Params, 'name');
     If SheetName = '' Then SheetName := 'NewSheet';
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -5983,10 +5984,34 @@ Begin
         Exit;
     End;
 
-    Project := Workspace.DM_FocusedProject;
+    If ProjectPath <> '' Then
+    Begin
+        Project := FindProjectByPath(Workspace, ProjectPath);
+        If Project = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_OPEN',
+                'Not an open project: ' + ProjectPath + '. Open it with '
+                + 'proj_open first. Nothing was created.');
+            Exit;
+        End;
+    End
+    Else
+        Project := Workspace.DM_FocusedProject;
     If Project = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Exit;
+    End;
+
+    { A free document (a library opened on its own, say) is focused under   }
+    { a project that has no file. The sheet went in as an unsaved document  }
+    { with a bare name, in no project, and the reply said it was added.     }
+    If Not LooksAbsolutePath(Project.DM_ProjectFullPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'The focused document belongs to no project, so there is nowhere '
+            + 'to add the sheet. Name the project with project_path, or bring '
+            + 'one of its documents forward. Nothing was created.');
         Exit;
     End;
 
@@ -6052,11 +6077,14 @@ Begin
     Added := False;
     Try
         Project.DM_AddSourceDocument(NewDocPath);
-        Added := True;
-    Except Added := False; End;
+    Except End;
+    { Read back: the call raising nothing is not the sheet being listed. }
+    Added := ProjectListsDocument(Project, NewDocPath);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"path":"' + EscapeJsonString(NewDocPath) + '"' +
+        '{"success":' + BoolToJsonStr(Saved And Added) +
+        ',"path":"' + EscapeJsonString(NewDocPath) + '"' +
+        ',"project_path":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
         ',"added_to_project":' + BoolToJsonStr(Added) +
         { Written now, or the add is gone after a reopen. }
