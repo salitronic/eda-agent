@@ -4236,6 +4236,7 @@ Begin
                         Try
                             Sym.RemoveSchObject(FoundObj);
                             Removed := True;
+                            SchRegisterObject(Sym, FoundObj);
                             Break;
                         Except { not this symbol's entry; try the next } End;
                         Sym := SymIter.NextSchObject;
@@ -4262,12 +4263,18 @@ Begin
                     NoteDeleteFault('removing an object raised an error');
                     Break;
                 End;
+                { The removal is announced, as Altium's own delete example   }
+                { does. Without it the compiled model kept the object: a     }
+                { deleted power port still joined its rail to a new label    }
+                { until the sheet was closed and reopened.                   }
+                SchRegisterObject(SchDoc, FoundObj);
             End;
             Inc(TotalMatched);
             Dec(MaxIter);
         End;
         SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
+        If (SchDoc <> Nil) And (TotalMatched > 0) Then MarkDocDirtyByPath(SchDoc.DocumentName);
         Exit;
     End;
 
@@ -8849,7 +8856,7 @@ Begin
             Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
         End;
         SchDoc.GraphicallyInvalidate;
-        MarkDocDirtyByPath(SchDoc.DocumentName);
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
         After := SheetTemplateFile(SchDoc);
         Count := SheetTemplateCount(SchDoc, Children);
         Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
@@ -8870,6 +8877,7 @@ Begin
                 If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then Break;
                 LastAddr := ThisAddr;
                 SchDoc.RemoveSchObject(Tpl);
+                SchRegisterObject(SchDoc, Tpl);
                 Inc(Removed);
                 Dec(Guard);
             End;
@@ -8879,7 +8887,7 @@ Begin
         End;
         SchDoc.UpdateDocumentProperties;
         SchDoc.GraphicallyInvalidate;
-        MarkDocDirtyByPath(SchDoc.DocumentName);
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
         Count := SheetTemplateCount(SchDoc, Children);
         After := SheetTemplateFile(SchDoc);
         Ok := (Count = 0) And (After = '');
@@ -12177,7 +12185,7 @@ Begin
 
         If ((Missing <> ';') Or (Moved <> ';')) And (Not AllowPinChanges) Then
         Begin
-            Try SchDoc.RemoveSchObject(NewComp); Except NoteWriteFailed('swap: take the new symbol back off'); End;
+            Try SchDoc.RemoveSchObject(NewComp); SchRegisterObject(SchDoc, NewComp); Except NoteWriteFailed('swap: take the new symbol back off'); End;
             Result := BuildErrorResponse(RequestId, 'PIN_MISMATCH',
                 'The new symbol''s pins do not land where the old ones did, so '
                 + 'wires would come off them. Nothing was changed. Missing: '
@@ -12186,7 +12194,7 @@ Begin
             Exit;
         End;
 
-        Try SchDoc.RemoveSchObject(OldComp); Except NoteWriteFailed('swap: remove the old symbol'); End;
+        Try SchDoc.RemoveSchObject(OldComp); SchRegisterObject(SchDoc, OldComp); Except NoteWriteFailed('swap: remove the old symbol'); End;
         { The old part is gone, so its UniqueId is free and the stamp sticks;
           AddSchObject remints an id that is still on the sheet. }
         If OldId <> '' Then
