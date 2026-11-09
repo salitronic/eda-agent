@@ -224,6 +224,7 @@ COVERED: dict[str, str] = {
     "sch_increment_designators": "kicad_sch_annotate",
     "sch_set_sheet_size": "kicad_sch_set_page",
     "sch_set_sheet_options": "kicad_sch_set_page",
+    "sch_sheet_template": "kicad_sch_set_page",
     "sch_get_sheet_parameters": "kicad_sch_get_items",
     "sch_render_svg": "kicad_export_schematic_svg",
     # libraries

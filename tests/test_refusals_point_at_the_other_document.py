@@ -51,6 +51,8 @@ _NO_HINT_NEEDED = {
     # redirect a hint would have added.
     "NOT_A_PLANE": "a wrong layer kind, not a wrong document, and the "
                    "message already names the tool for the other case",
+    "NOT_A_TEMPLATE": "the sheet is the right document; the template_file "
+                      "argument is not a .SchDot and the message says so",
     "WRONG_DOCUMENT_FOCUSED": "already names asked-for and actual",
     "WRONG_LIBRARY": "already names asked-for and actual",
     "WRONG_DOC_KIND": "already says to pass sheet_path",
