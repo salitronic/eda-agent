@@ -689,3 +689,19 @@ def _no_leaked_easyeda_server():
         except Exception:
             pass
         easyeda_bridge._BRIDGE = None
+
+
+@pytest.fixture(autouse=True)
+def _library_session_marks_start_clear():
+    """The library tools remember, for the session, which symbol and
+    footprints were just made (their checks apply to those) and which pin
+    lists came from an import. A test that made a symbol left the mark for
+    whichever test ran next in the same process, where lib_add_pins then
+    asked for a datasheet it was never meant to need. Cleared after each
+    test."""
+    yield
+    from eda_agent.tools import library
+    from eda_agent.design import pin_table
+    library._NEW_SYMBOL.clear()
+    library._NEW_FOOTPRINTS.clear()
+    pin_table.IMPORTED.clear()
