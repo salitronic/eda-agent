@@ -240,6 +240,21 @@ def _fresh_bulk_hint_counts():
 
 
 @pytest.fixture(autouse=True)
+def _no_new_symbol_left_over():
+    """Start each test with no symbol marked as just created.
+
+    lib_create_symbol records the symbol it made process-wide, and
+    lib_add_pins then asks for the datasheet pin table before writing into
+    it. A test that creates a symbol left that mark for the next test on
+    the same worker, whose lib_add_pins was refused and sent nothing.
+    """
+    from eda_agent.tools import library
+    library._NEW_SYMBOL.clear()
+    yield
+    library._NEW_SYMBOL.clear()
+
+
+@pytest.fixture(autouse=True)
 def _restore_active_backend():
     """Undo any backend a test registers, so the next one starts clean.
 
