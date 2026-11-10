@@ -52,7 +52,10 @@ def register_convert_tools(mcp):
         - a flat project given a root sheet;
         - board nets named as the schematic names them;
         - rules, stack-up and net classes read from the open Altium board;
-        - footprints in project libraries, mechanical layers mapped by kind.
+        - footprints in project libraries, mechanical layers mapped by kind;
+        - pours filled with Altium's neck width and island removal;
+        - Altium's variants as KiCad variants (not fitted = DNP, varied
+          values as field values).
         The Altium files are only read.
 
         Every step is checked against the pin-to-net map. ``ok`` is true
@@ -65,8 +68,10 @@ def register_convert_tools(mcp):
             project_path: The .PrjPcb; empty = the focused project.
             board_path: Its .PcbDoc; empty = the project's only board.
             kicad_cli: kicad-cli.exe; empty = the newest KiCad installed.
-            remove_title_block: Take out an Altium-drawn title block in the
-                bottom-right corner; KiCad draws its own.
+            remove_title_block: Take out what each sheet's Altium template
+                drew (border, title block, logo), found by the template
+                objects' own boxes, so what the user drew stays; KiCad
+                draws its own.
 
         Returns:
             ``ok``, ``project`` (the .kicad_pro), ``steps`` (what each step

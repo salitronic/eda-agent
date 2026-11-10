@@ -8793,6 +8793,57 @@ Begin
     End;
 End;
 
+{ Each object the sheet's template draws, as its bounding box in mils:       }
+{ [[x1,y1,x2,y2],...]. A converter takes out what lies in these and keeps    }
+{ what the user drew.                                                        }
+Function SheetTemplateBoxes(SchDoc : ISch_Document) : String;
+Var
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+    Box : String;
+Begin
+    Result := '';
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        Box := '';
+                        Try
+                            Box := '[' + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X2)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y2)) + ']';
+                        Except
+                            Box := '';
+                        End;
+                        If Box <> '' Then
+                        Begin
+                            If Result <> '' Then Result := Result + ',';
+                            Result := Result + Box;
+                        End;
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+    Result := '[' + Result + ']';
+End;
+
 Function SheetTemplateFile(SchDoc : ISch_Document) : String;
 Begin
     Result := '';
@@ -8991,6 +9042,8 @@ Begin
         + ',' + JsonStr('template_before', Before);
     If What = 'remove' Then Data := Data + ',' + JsonInt('removed', Removed);
     Data := Data + ',' + SheetTemplateJson(SchDoc, Vault);
+    If LowerCase(ExtractJsonValue(Params, 'boxes')) = 'true' Then
+        Data := Data + ',' + JsonRaw('template_boxes', SheetTemplateBoxes(SchDoc));
     Result := BuildSuccessResponse(RequestId, JsonObj(Data));
 End;
 

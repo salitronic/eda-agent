@@ -346,7 +346,7 @@ async def read_board(bridge, board_path: str, project_path: str) -> dict[str, An
     docs = await bridge.send_command_async("project.get_documents",
                                            {"project_path": project_path})
     docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
-    sheets = {}
+    sheets, boxes = {}, {}
     for d in docs:
         path = str(d.get("file_path") or "")
         if not path.lower().endswith(".schdoc"):
@@ -356,12 +356,19 @@ async def read_board(bridge, board_path: str, project_path: str) -> dict[str, An
         stem = path.replace("/", "\\").rsplit("\\", 1)[-1].rsplit(".", 1)[0]
         sheets[stem] = {str(p.get("name")): str(p.get("value") or "")
                         for p in (reply or {}).get("parameters") or [] if p.get("name")}
+        tpl = await bridge.send_command_async("generic.sheet_template",
+                                              {"action": "get", "boxes": "true", "file_path": path})
+        boxes[stem] = (tpl or {}).get("template_boxes")
     out["sheet_parameters"] = sheets
+    out["template_boxes"] = boxes
     pours = await bridge.send_command_async("generic.query_objects", {
         "scope": "active_doc", "object_type": "polygon", "filter": "",
         "properties": "Net,Layer,NeckWidthThreshold,RemoveNarrowNecks,"
                       "IslandAreaThreshold,RemoveDead,RemoveIslandsByArea"})
     out["pours"] = (pours or {}).get("objects") or []
+    variants = await bridge.send_command_async("project.get_variants",
+                                               {"project_path": project_path}, timeout=120.0)
+    out["variants"] = (variants or {}).get("variants") or []
     return out
 
 

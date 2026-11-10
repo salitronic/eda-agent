@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import Any, Optional
 
-from . import altium_side, checks, footprints, hierarchy, importer, schematic
+from . import altium_side, checks, footprints, hierarchy, importer, schematic, variants
 from .tree import find, first, read, write
 
 #: Where KiCad installs on Windows, newest version first.
@@ -64,6 +64,37 @@ def netlist(cli: str, root_sheet: str, out_xml: str) -> str:
     if r.returncode != 0 or not os.path.isfile(out_xml):
         raise RuntimeError(f"netlist export failed: {r.stderr[-400:]}")
     return out_xml
+
+
+def altium_sheet(kicad_stem: str, altium_stems: list[str],
+                 kicad_stems: list[str]) -> Optional[str]:
+    """The Altium sheet a KiCad sheet came from: the one of its name, else,
+    for the sheet KiCad names after the project, the one Altium sheet no
+    KiCad sheet is named after. None when that is not one sheet (the root
+    the converter draws for a flat project has no Altium sheet)."""
+    by_lower = {s.lower(): s for s in altium_stems}
+    if kicad_stem.lower() in by_lower:
+        return by_lower[kicad_stem.lower()]
+    taken = {s.lower() for s in kicad_stems}
+    left = [s for s in altium_stems if s.lower() not in taken]
+    return left[0] if len(left) == 1 else None
+
+
+def escaped_net_names(cli: str, root_sheet: str, out_net: str) -> dict[str, str]:
+    """Net names as the schematic stores them, keyed by the plain name the
+    XML netlist gives. A '/' in a pin name is ``{slash}`` in the net name
+    KiCad builds from it, while a '/' the XML gives may also part sheets,
+    so only KiCad's own netlist tells them apart."""
+    r = _cli(cli, "sch", "export", "netlist", "--format", "kicadsexpr", "-o", out_net, root_sheet)
+    if r.returncode != 0 or not os.path.isfile(out_net):
+        return {}
+    nets = first(read(out_net), "nets")
+    out = {}
+    for net in find(nets, "net") if nets is not None else []:
+        name = first(net, "name")
+        if name is not None and "{slash}" in name[1]:
+            out[name[1].replace("{slash}", "/")] = name[1]
+    return out
 
 
 def power_flags(project_dir: str, project: str, cli: str, root_sheet: str,
@@ -241,17 +272,25 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
         os.remove(os.path.join(out_dir, f))
     steps["schematic"]["altium_library_copies_removed"] = copies
 
+    varied = variants.plan(altium.get("variants") or [])
     wiring = []
-    for path in schematic.sheets_in(out_dir):
+    kicad_sheets = schematic.sheets_in(out_dir)
+    for path in kicad_sheets:
         tree = read(path)
         w = schematic.trim_stubs(tree)
+        stem = altium_sheet(os.path.splitext(os.path.basename(path))[0],
+                            list((altium.get("sheet_parameters") or {}).keys()),
+                            [os.path.splitext(os.path.basename(p))[0] for p in kicad_sheets])
         if remove_title_block:
-            w["title_block_removed"] = schematic.remove_title_block(tree)
-        stem = os.path.splitext(os.path.basename(path))[0]
+            # A sheet no Altium sheet drew (the converter's root) has no template.
+            known = altium.get("template_boxes") or {}
+            boxes = known.get(stem) if stem else ([] if known else None)
+            w["title_block_removed"] = schematic.remove_title_block(tree, boxes)
         fields = altium_side.title_block((altium.get("sheet_parameters") or {}).get(stem, {}),
                                          altium.get("project_parameters") or {})
         w["title_block"] = fields
         schematic.set_title_block(tree, fields)
+        w["variant_instances"] = variants.apply_sheet(tree, varied["parts"])
         write(path, tree)
         wiring.append({"sheet": os.path.basename(path), **w})
     steps["wiring"] = wiring
@@ -269,7 +308,8 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
     rules = altium_side.board_rules(altium.get("rules") or [])
     job = {"board": board, "netlist": xml, "rules": rules,
            "mechanical_library": f"{name}_Mechanical",
-           "pours": altium_side.pour_settings(altium.get("pours") or [])}
+           "pours": altium_side.pour_settings(altium.get("pours") or []),
+           "escaped_names": escaped_net_names(cli, root, os.path.join(work, "schematic.net"))}
     try:
         steps["board"] = _board_pass(cli, job, os.path.join(work, "board_job.json"))
     except RuntimeError as e:
@@ -313,8 +353,22 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
     except RuntimeError as e:
         steps["library_sync"] = {"error": str(e)}
 
+    # After the last board pass: pcbnew's Python saves a board without its
+    # variants, where kicad-cli keeps them.
+    if varied["names"]:
+        variants.apply_project(os.path.join(out_dir, name + ".kicad_pro"), varied["names"])
+        text, fitted = variants.apply_board(footprints.read(board), varied["names"],
+                                            varied["parts"])
+        footprints.write(board, text)
+        steps["variants"] = {"names": [n for n, _ in varied["names"]],
+                             "parts_varied": len(varied["parts"]),
+                             "footprints_varied": fitted,
+                             "schematic_instances_varied": sum(
+                                 w.get("variant_instances", 0) for w in wiring),
+                             "footprints_not_varied": varied["footprints_not_varied"]}
+
     drc_json = os.path.join(work, "drc.json")
-    _cli(cli, "pcb", "drc", "--refill-zones", "--save-board", "--format", "json",
+    _cli(cli, "pcb", "drc", "--refill-zones", "--save-board", "--schematic-parity", "--format", "json",
          "--severity-all", "-o", drc_json, board, timeout=900)
     drc_counts: dict[str, int] = {}
     if os.path.isfile(drc_json):

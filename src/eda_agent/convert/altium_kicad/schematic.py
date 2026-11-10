@@ -24,6 +24,7 @@ import uuid
 from collections import Counter
 from typing import Any, Optional
 
+from ...units import MM_PER_MIL as MIL
 from .tree import Sym, find, first, num, prop, read, write
 
 GRID = 1.27
@@ -440,25 +441,59 @@ def _coords(node) -> list[tuple[float, float]]:
     return out
 
 
-def remove_title_block(sheet: list, width: float = 130.0, height: float = 50.0) -> list[str]:
-    """Graphics lying wholly in the sheet's bottom-right corner, where an
-    Altium template draws its title block: KiCad draws its own there. Only
-    text, lines, rectangles and text boxes; what was taken out is named."""
+_TEMPLATE_KINDS = ("text", "polyline", "rectangle", "text_box", "image", "arc", "circle", "bezier")
+
+#: How far, in mm, a converted point may sit outside its template object's box.
+TEMPLATE_SLACK_MM = 0.3
+
+
+def _paper_size(sheet: list) -> Optional[tuple[float, float]]:
     paper = first(sheet, "paper")
     size = _PAPER.get(str(paper[1])) if paper else None
-    if paper is not None and size is None and len(paper) >= 3:
+    if paper is not None and str(paper[1]) == "User" and len(paper) >= 4:
         try:
-            size = (float(paper[1]), float(paper[2]))
+            return (float(paper[2]), float(paper[3]))
         except ValueError:
-            size = None
+            return None
+    if size is not None and len(paper) > 2 and str(paper[-1]) == "portrait":
+        size = (size[1], size[0])
+    return size
+
+
+def remove_title_block(sheet: list, template_boxes: Optional[list] = None,
+                       width: float = 130.0, height: float = 50.0) -> list[str]:
+    """What the Altium sheet template drew, taken out: KiCad draws its own
+    border and title block. ``template_boxes`` are the template objects'
+    boxes as Altium reads them ([x1, y1, x2, y2] in mils, y up); a graphic
+    goes when every point of it lies in one of them, so what the user drew
+    stays. A sheet with no template (``[]``) loses nothing. Without the
+    boxes, graphics wholly in the bottom-right ``width`` x ``height`` mm go.
+    Only text, lines, shapes, text boxes and images; what was taken out is
+    named."""
+    size = _paper_size(sheet)
     if size is None:
         return []
-    x0, y0 = size[0] - width, size[1] - height
+    if template_boxes is not None:
+        s = TEMPLATE_SLACK_MM
+        boxes = []
+        for b in template_boxes:
+            x1, x2 = sorted((b[0] * MIL, b[2] * MIL))
+            y1, y2 = sorted((size[1] - b[1] * MIL, size[1] - b[3] * MIL))
+            boxes.append((x1 - s, y1 - s, x2 + s, y2 + s))
+
+        def drawn(pts):
+            return any(all(x1 <= x <= x2 and y1 <= y <= y2 for x, y in pts)
+                       for x1, y1, x2, y2 in boxes)
+    else:
+        x0, y0 = size[0] - width, size[1] - height
+
+        def drawn(pts):
+            return all(x >= x0 and y >= y0 for x, y in pts)
     gone = []
     for e in list(sheet):
-        if isinstance(e, list) and e and e[0] in ("text", "polyline", "rectangle", "text_box"):
+        if isinstance(e, list) and e and e[0] in _TEMPLATE_KINDS:
             pts = _coords(e)
-            if pts and all(x >= x0 and y >= y0 for x, y in pts):
+            if pts and drawn(pts):
                 sheet.remove(e)
                 gone.append(e[1] if e[0] in ("text", "text_box") and isinstance(e[1], str) else str(e[0]))
     return gone

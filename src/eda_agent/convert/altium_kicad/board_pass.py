@@ -85,19 +85,29 @@ def run(job):
     mm = pcbnew.FromMM
     board = pcbnew.LoadBoard(job["board"])
     pin_net, fields = _schematic(job["netlist"])
+    escaped = job.get("escaped_names") or {}
+    pin_net = {k: escaped.get(v, v) for k, v in pin_net.items()}
     out = {"nets_renamed": 0, "net_conflicts": [], "zones": 0, "holes": [],
-           "fields_set": 0, "library_footprints": 0, "libraries": []}
+           "fields_set": 0, "library_footprints": 0, "libraries": [],
+           "unconnected_pins_named": 0}
 
-    # Board nets named as the schematic names them.
-    renames = {}
+    # Board nets named as the schematic names them, and a pin the schematic
+    # leaves unconnected on its own net, as KiCad's update from the
+    # schematic puts it.
+    renames, lone = {}, []
     for fp in board.GetFootprints():
         for pad in fp.Pads():
             key = (fp.GetReference(), pad.GetNumber())
             old = pad.GetNetname()
-            if key in pin_net and old:
-                new = pin_net[key]
-                if renames.setdefault(old, new) != new:
-                    out["net_conflicts"].append([old, renames[old], new])
+            if key not in pin_net:
+                continue
+            new = pin_net[key]
+            if not old:
+                if "unconnected-(" in new:
+                    lone.append((pad, new))
+                continue
+            if renames.setdefault(old, new) != new:
+                out["net_conflicts"].append([old, renames[old], new])
     if out["net_conflicts"]:
         out["error"] = ("a board net reaches pins the schematic puts on two "
                         "nets; nothing was renamed")
@@ -107,6 +117,13 @@ def run(job):
         if old != new and old in by_name:
             by_name[old].SetNetname(new)
             out["nets_renamed"] += 1
+    for pad, name in lone:
+        net = board.FindNet(name)
+        if net is None:
+            net = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(net)
+        pad.SetNet(net)
+        out["unconnected_pins_named"] += 1
 
     clearance = job.get("rules", {}).get("clearance_mm")
     if clearance:

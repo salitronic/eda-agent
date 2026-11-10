@@ -15,7 +15,7 @@ import os
 import pytest
 
 from eda_agent.convert.altium_kicad import (altium_side, checks, footprints, hierarchy,
-                                            schematic)
+                                            pipeline, schematic, variants)
 from eda_agent.convert.altium_kicad.tree import Sym, dump, find, first, parse, read, write
 
 
@@ -79,6 +79,31 @@ def test_only_graphics_in_the_title_block_corner_go():
     gone = schematic.remove_title_block(s)
     assert gone == ["REV A"]
     assert len(find(s, "text")) == 1 and len(find(s, "polyline")) == 1
+
+
+def test_what_the_template_drew_goes_and_what_the_user_drew_stays():
+    # A user-size sheet 400 x 300 mm. Altium's y runs up from the bottom.
+    s = parse('(kicad_sch (paper "User" "400" "300")'
+              '(polyline (pts (xy 5 5) (xy 395 5)))'
+              '(text "${TITLE}" (at 350 280 0))'
+              '(image (at 30 20))'
+              '(text "MY NOTE" (at 360 270 0))'
+              '(text_box "MIDDLE" (at 200 150 0) (size 20 5)))')
+    mil = 1 / 0.0254
+    boxes = [[5 * mil, 294.9 * mil, 395 * mil, 295.1 * mil],
+             [340 * mil, 18 * mil, 360 * mil, 22 * mil],
+             [20 * mil, 270 * mil, 40 * mil, 290 * mil]]
+    gone = schematic.remove_title_block(s, boxes)
+    assert sorted(gone) == ["${TITLE}", "image", "polyline"]
+    assert [e[1] for e in find(s, "text")] == ["MY NOTE"] and find(s, "text_box")
+    assert schematic.remove_title_block(s, []) == []
+
+
+def test_a_kicad_sheet_finds_the_altium_sheet_it_came_from():
+    alt = ["Power", "MCU"]
+    assert pipeline.altium_sheet("power", alt, ["Proj", "power"]) == "Power"
+    assert pipeline.altium_sheet("Proj", alt, ["Proj", "Power"]) == "MCU"
+    assert pipeline.altium_sheet("Proj", alt, ["Proj", "Power", "MCU"]) is None
 
 
 # --- hierarchy -----------------------------------------------------------
@@ -365,3 +390,45 @@ def test_pours_keep_altiums_neck_width_and_island_removal():
     assert rows[1]["min_width_mm"] == 0.0254 and rows[1]["islands"] == "area"
     assert rows[1]["min_island_mm2"] == pytest.approx(1.6129, abs=1e-4)
     assert rows[2]["islands"] == "never"
+
+
+ALTIUM_VARIANTS = [{"name": "Lite", "description": "Lite", "variations": [
+    {"designator": "R2", "kind": "Not Fitted", "parameters": []},
+    {"designator": "R1", "kind": "Fitted", "alternate_part": "4k7",
+     "parameters": [{"name": "Comment", "value": "4k7"}]},
+    {"designator": "U1", "kind": "Alternate", "alternate_part": "LDO-B",
+     "alternate_link": {"footprint": "SOT-23-5", "same_footprint": True}, "parameters": []},
+    {"designator": "U2", "kind": "Alternate", "alternate_part": "LDO-C",
+     "alternate_link": {"footprint": "SOT-223", "same_footprint": False}, "parameters": []},
+    {"designator": "R9", "kind": "Fitted", "parameters": []},
+]}]
+
+
+def test_altium_variants_become_kicad_dnp_and_field_values():
+    p = variants.plan(ALTIUM_VARIANTS)
+    assert p["names"] == [("Lite", "")]
+    assert p["parts"]["R2"] == {"Lite": {"dnp": True, "fields": {}}}
+    assert p["parts"]["R1"]["Lite"]["fields"] == {"Value": "4k7"}
+    assert p["parts"]["U1"]["Lite"]["fields"] == {"Value": "LDO-B"}
+    assert "R9" not in p["parts"]
+    assert p["footprints_not_varied"] == [{"variant": "Lite", "designator": "U2",
+                                           "footprint": "SOT-223"}]
+
+
+def test_variants_go_on_the_instances_and_the_footprints():
+    p = variants.plan(ALTIUM_VARIANTS)
+    sheet = parse('(kicad_sch (symbol (lib_id "x:R") (instances (project "P" '
+                  '(path "/a/b" (reference "R2") (unit 1))))) (symbol (lib_id "x:R") '
+                  '(instances (project "P" (path "/a/c" (reference "R5") (unit 1))))))')
+    assert variants.apply_sheet(sheet, p["parts"]) == 1
+    text = dump(sheet)
+    assert '(variant\n' in text and "(dnp yes)" in text and text.count("(variant") == 1
+    board = ('(kicad_pcb\n\t(setup\n\t\t(pad_to_mask_clearance 0)\n\t)\n'
+             '\t(footprint "L:R"\n\t\t(property "Reference" "R1"\n\t\t)\n\t)\n'
+             '\t(footprint "L:R"\n\t\t(property "Reference" "R7"\n\t\t)\n\t)\n)\n')
+    out, n = variants.apply_board(board, p["names"], p["parts"])
+    assert n == 1
+    assert out.index("(variants") > out.index("(setup") and out.index("(variants") < out.index("(footprint")
+    assert '(variant (name "Lite") (field (name "Value") (value "4k7")))' in out
+    assert out.count("(variant (name") == 2
+    assert variants.apply_board(board, [], {}) == (board, 0)
