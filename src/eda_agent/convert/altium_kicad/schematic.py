@@ -464,6 +464,34 @@ def remove_title_block(sheet: list, width: float = 130.0, height: float = 50.0) 
     return gone
 
 
+def set_title_block(sheet: list, fields: dict[str, str]) -> int:
+    """KiCad's title block filled from ``fields`` (title, rev, date,
+    company, "comment 1".."comment 9"); fields not given are left."""
+    if not fields:
+        return 0
+    block = first(sheet, "title_block")
+    if block is None:
+        block = [Sym("title_block")]
+        at = next((i for i, e in enumerate(sheet) if isinstance(e, list) and e
+                   and e[0] in ("lib_symbols",)), len(sheet))
+        sheet.insert(at, block)
+    for key, value in fields.items():
+        if key.startswith("comment "):
+            number = key.split()[1]
+            old = next((c for c in find(block, "comment") if str(c[1]) == number), None)
+            if old is None:
+                block.append([Sym("comment"), Sym(number), value])
+            else:
+                old[2] = value
+            continue
+        old = first(block, key)
+        if old is None:
+            block.append([Sym(key), value])
+        else:
+            old[1] = value
+    return len(fields)
+
+
 def power_flag_definition(kicad_share: str) -> Optional[list]:
     """KiCad's own PWR_FLAG symbol, from its power library."""
     path = os.path.join(kicad_share, "symbols", "power.kicad_sym")

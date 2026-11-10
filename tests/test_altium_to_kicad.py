@@ -224,6 +224,64 @@ def test_classes_a_rule_names_are_listed():
     assert altium_side.classes_named(rules) == {"HV", "LV"}
 
 
+def test_more_rule_kinds_are_ported():
+    rules = [
+        {"name": "DiffPairsRouting", "enabled": True, "priority": 1, "scope_1": "All", "scope_2": "All",
+         "descriptor": "Differential Pairs Uncoupled Length using the Gap Constraints (Min=5.5mil) "
+                       "(Max=8mil) (Prefered=6mil)  and Width Constraints (Min=8mil) (Max=11mil) "
+                       "(Prefered=10.3mil) (All)"},
+        {"name": "TentVias", "enabled": True, "priority": 1, "scope_1": "IsVia", "scope_2": "All",
+         "descriptor": "Solder Mask Expansion (Expansion =-12mil) (IsVia)"},
+        {"name": "SilkToSolderMaskClearance", "enabled": True, "priority": 1, "scope_1": "IsPad",
+         "scope_2": "All", "descriptor": "Silk To Solder Mask (Clearance=2mil) (IsPad),(All)"},
+        {"name": "HoleSize", "enabled": True, "priority": 1, "scope_1": "All", "scope_2": "All",
+         "descriptor": "Hole Size Constraint (Min=1mil) (Max=130mil) (All)"},
+    ]
+    text, skipped = altium_side.rules_file(rules, {})
+    assert skipped == []
+    assert "A.inDiffPair('*')" in text
+    assert "(constraint diff_pair_gap (min 0.1397mm) (opt 0.1524mm) (max 0.2032mm))" in text
+    assert "(constraint track_width (min 0.2032mm) (opt 0.2616mm) (max 0.2794mm))" in text
+    assert "(constraint solder_mask_expansion (opt -0.3048mm))" in text
+    assert "A.Type == 'Via'" in text
+    assert "(constraint silk_clearance (min 0.0508mm))" in text
+    assert "(constraint hole_size (min 0.0254mm) (max 3.302mm))" in text
+
+
+def test_a_layer_holding_only_designators_goes_to_fab():
+    board = ('(kicad_pcb (footprint "L:R" (layer "F.Cu")'
+             '(fp_text user "${REFERENCE}" (at 0 0) (layer "User.18")))'
+             '(footprint "L:C" (layer "B.Cu")'
+             '(fp_text user "${REFERENCE}" (at 0 0) (layer "User.18"))'
+             '(fp_line (start 0 0) (end 1 0) (layer "User.9"))'
+             '(fp_text user "${REFERENCE}" (at 0 0) (layer "User.9"))))')
+    assert footprints.designator_layers(board) == {"User.18": "F.Fab"}
+    counts = {"remapped": 0, "crosses_to_fab": 0}
+    back = footprints._map_footprint('(footprint "L:C" (layer "B.Cu") (fp_text user "${REFERENCE}" '
+                                     '(at 0 0) (layer "User.18")))', {"User.18": "F.Fab"}, counts,
+                                     frozenset({"User.18"}))
+    assert '(layer "B.Fab")' in back
+
+
+def test_a_layer_without_a_kind_maps_by_its_name():
+    m = footprints.layer_map([{"layer": "Mechanical21", "kind": "Not Set", "name": "Bottom Courtyard"},
+                              {"layer": "Mechanical13", "kind": "Not Set", "name": "Assembly"},
+                              {"layer": "Mechanical2", "kind": "Not Set", "name": "Mechanical 2"}])
+    assert m == {"User.21": "B.CrtYd", "User.13": "F.Fab"}
+
+
+def test_the_title_block_is_filled_from_sheet_and_project_parameters():
+    fields = altium_side.title_block(
+        {"Title": "*", "Revision": "=REVISION", "CompanyName": "Acme", "DrawnBy": "*"},
+        {"TITLE": "Power board", "REVISION": "B", "ENGINEER": "GS"})
+    assert fields == {"title": "Power board", "rev": "B", "company": "Acme", "comment 1": "GS"}
+    sheet = _sheet("")
+    schematic.set_title_block(sheet, fields)
+    block = first(sheet, "title_block")
+    assert first(block, "title")[1] == "Power board"
+    assert [c[2] for c in find(block, "comment")] == ["GS"]
+
+
 def test_the_stackup_adds_up():
     block, total = altium_side.stackup_block([
         {"order": 1, "copper_thickness_mils": 1.378, "dielectric_type": "PrePreg",
@@ -274,3 +332,36 @@ def test_the_tree_keeps_bare_atoms_bare():
     node = parse('(property "Value" "1k" (hide yes))')
     assert isinstance(first(node, "hide")[1], Sym)
     assert dump(node) == '(property "Value" "1k"\n\t(hide yes)\n)'
+
+
+def test_outline_seams_go_and_the_outline_stays_closed():
+    board = (
+        '(kicad_pcb\n'
+        '\t(gr_arc (start 10.000000 0) (mid 7.07 7.07) (end 0 10.000590) (layer "Edge.Cuts"))\n'
+        '\t(gr_line (start 0 10.000590) (end 0 10) (layer "Edge.Cuts"))\n'
+        '\t(gr_line (start 0 10) (end 0 20) (layer "Edge.Cuts"))\n'
+        '\t(gr_line (start 5 5) (end 5 5.0001) (layer "F.SilkS"))\n'
+        ')\n')
+    text, removed = footprints.tidy_outline(board)
+    assert removed == 1
+    assert text.count("10.000590") == 2
+    assert "(end 0 10.000590)" in text and "(start 0 10.000590) (end 0 20)" in text
+    assert "(end 5 5.0001)" in text
+    assert footprints.tidy_outline(text) == (text, 0)
+
+
+def test_pours_keep_altiums_neck_width_and_island_removal():
+    rows = altium_side.pour_settings([
+        {"Net": "GND", "Layer": "BottomLayer", "NeckWidthThreshold": "5",
+         "RemoveNarrowNecks": "true", "IslandAreaThreshold": "2500",
+         "RemoveDead": "true", "RemoveIslandsByArea": "true"},
+        {"Net": "VIN", "Layer": "TopLayer", "NeckWidthThreshold": "5",
+         "RemoveNarrowNecks": "false", "IslandAreaThreshold": "2500",
+         "RemoveDead": "false", "RemoveIslandsByArea": "true"},
+        {"Net": "VIN", "Layer": "MidLayer1", "RemoveDead": "false"},
+    ])
+    assert rows[0] == {"net": "GND", "layer": "BottomLayer", "min_width_mm": 0.127,
+                       "islands": "always"}
+    assert rows[1]["min_width_mm"] == 0.0254 and rows[1]["islands"] == "area"
+    assert rows[1]["min_island_mm2"] == pytest.approx(1.6129, abs=1e-4)
+    assert rows[2]["islands"] == "never"

@@ -9,7 +9,8 @@ Run as ``python.exe board_pass.py job.json``; the job is written by
   flat while the schematic's are hierarchical, which KiCad reports as a
   conflict on every net),
 - sets the zones' clearance to the board clearance rule (the importer put
-  0.5 mm on every zone),
+  0.5 mm on every zone), and fills each as its Altium pour (narrowest
+  neck, island removal),
 - gives unnamed mounting holes references and keeps them off the BOM and
   position files,
 - copies the schematic's fields onto the footprints,
@@ -40,6 +41,42 @@ def _schematic(netlist_xml):
             f["Description"] = comp.findtext("description")
         fields[comp.get("ref")] = f
     return pin_net, fields
+
+
+def _squash(name):
+    return "".join(name.split()).lower()
+
+
+def _pour_settings(board, pours, pcbnew):
+    """Each copper zone filled as its Altium pour is: the same narrowest
+    neck and the same island removal. A zone meets its pour by net and
+    layer (Altium's TopLayer is KiCad's "Top Layer" without the space),
+    else by net when the net has one pour."""
+    modes = {"always": pcbnew.ISLAND_REMOVAL_MODE_ALWAYS,
+             "never": pcbnew.ISLAND_REMOVAL_MODE_NEVER,
+             "area": pcbnew.ISLAND_REMOVAL_MODE_AREA}
+    by_net = {}
+    for p in pours:
+        by_net.setdefault(p["net"], []).append(p)
+    done = 0
+    for zone in board.Zones():
+        if zone.GetIsRuleArea():
+            continue
+        mine = by_net.get(zone.GetNetname()) or []
+        names = {_squash(board.GetLayerName(l)) for l in zone.GetLayerSet().Seq()}
+        names |= {_squash(pcbnew.LSET.Name(l)) for l in zone.GetLayerSet().Seq()}
+        match = [p for p in mine if _squash(p["layer"]) in names]
+        if not match and len(mine) == 1:
+            match = mine
+        if len(match) != 1:
+            continue
+        p = match[0]
+        zone.SetMinThickness(pcbnew.FromMM(p["min_width_mm"]))
+        zone.SetIslandRemovalMode(modes[p["islands"]])
+        if p["islands"] == "area":
+            zone.SetMinIslandArea(int(p["min_island_mm2"] * 1e12))
+        done += 1
+    return done
 
 
 def run(job):
@@ -77,15 +114,27 @@ def run(job):
             if not zone.GetIsRuleArea():
                 zone.SetLocalClearance(mm(clearance))
                 out["zones"] += 1
+    out["zones_filled_as_altium"] = _pour_settings(board, job.get("pours") or [], pcbnew)
 
     holes = [fp for fp in board.GetFootprints() if not fp.GetReference()]
     holes.sort(key=lambda f: (f.GetPosition().y, f.GetPosition().x))
+    mechanical = job.get("mechanical_library") or "Mechanical"
     for i, fp in enumerate(holes, 1):
         fp.SetReference(f"H{i}")
+        # A footprint of its own in the project's mechanical library, named
+        # by its hole, rather than the importer's anonymous one.
+        drills = [p.GetDrillSizeX() for p in fp.Pads() if p.GetDrillSizeX() > 0]
+        if drills:
+            size = f"{round(pcbnew.ToMM(max(drills)), 2):g}"
+            plated = any(p.GetAttribute() == pcbnew.PAD_ATTRIB_PTH for p in fp.Pads())
+            name = f"MountingHole_{size}mm" + ("" if plated else "_NPTH")
+            fp.SetFPID(pcbnew.LIB_ID(mechanical, name))
+            fp.SetValue(name)
         fp.SetBoardOnly(True)
         fp.SetExcludedFromBOM(True)
         fp.SetExcludedFromPosFiles(True)
         fp.Reference().SetVisible(False)
+        fp.Value().SetVisible(False)
         out["holes"].append(f"H{i}")
 
     skip = {"Reference", "Footprint"}
@@ -170,7 +219,77 @@ def run(job):
     return out
 
 
+def _copy_text(src, dst):
+    dst.SetText(src.GetText())
+    dst.SetAttributes(src)
+    dst.SetPosition(src.GetPosition())
+    dst.SetLayer(src.GetLayer())
+    dst.SetVisible(src.IsVisible())
+
+
+def _swap(board, old, new):
+    """``new`` (a library copy) in ``old``'s place: position, side,
+    orientation, fields, pad nets, attributes and its schematic link."""
+    import pcbnew
+    new.SetParent(board)
+    new.SetPosition(old.GetPosition())
+    if new.GetLayer() != old.GetLayer():
+        side = getattr(pcbnew, "FLIP_DIRECTION_TOP_BOTTOM", False)
+        new.Flip(new.GetPosition(), side)
+    new.SetOrientation(old.GetOrientation())
+    new.SetFPID(old.GetFPID())
+    for field in old.GetFields():
+        name = field.GetName()
+        if not new.HasField(name):
+            new.SetField(name, field.GetText())
+        target = new.GetField(name)
+        if target is not None:
+            _copy_text(field, target)
+    by_number = {}
+    for pad in old.Pads():
+        by_number.setdefault(pad.GetNumber(), []).append(pad)
+    for pad in new.Pads():
+        same = by_number.get(pad.GetNumber())
+        if same:
+            pad.SetNet(same.pop(0).GetNet())
+    new.SetAttributes(old.GetAttributes())
+    new.SetPath(old.GetPath())
+    new.SetSheetname(old.GetSheetname())
+    new.SetSheetfile(old.GetSheetfile())
+    new.SetLocked(old.IsLocked())
+    board.Remove(old)
+    board.Add(new)
+
+
+def sync(job):
+    """Every board footprint that differs from its project library copy is
+    replaced by that copy. The copy was saved from one instance; another
+    placed at another angle came in from Altium with its shapes rounded
+    differently (a pin 1 mark off by 0.00001 mm at 180 degrees), and KiCad
+    reports each such part as not matching its library."""
+    import pcbnew
+    board = pcbnew.LoadBoard(job["board"])
+    project_dir = os.path.dirname(job["board"])
+    swapped, missing = [], []
+    for fp in list(board.GetFootprints()):
+        lib = str(fp.GetFPID().GetLibNickname())
+        name = str(fp.GetFPID().GetLibItemName())
+        folder = os.path.join(project_dir, lib + ".pretty")
+        if not lib or not os.path.isfile(os.path.join(folder, name + ".kicad_mod")):
+            missing.append(fp.GetReference())
+            continue
+        copy = pcbnew.FootprintLoad(folder, name)
+        if copy is None or not fp.FootprintNeedsUpdate(copy):
+            continue
+        _swap(board, fp, copy)
+        swapped.append(fp.GetReference())
+    if swapped:
+        pcbnew.SaveBoard(job["board"], board)
+    return {"replaced_from_library": swapped, "not_in_a_project_library": missing}
+
+
 if __name__ == "__main__":
     with open(sys.argv[1], encoding="utf-8") as fh:
-        result = run(json.load(fh))
+        job = json.load(fh)
+    result = sync(job) if job.get("mode") == "sync" else run(job)
     print(json.dumps(result))

@@ -120,6 +120,39 @@ def power_flags(project_dir: str, project: str, cli: str, root_sheet: str,
     return {"added": added}
 
 
+def _board_pass(cli: str, job: dict[str, Any], job_path: str) -> dict[str, Any]:
+    """``board_pass.py`` under KiCad's Python; its one JSON line back."""
+    with open(job_path, "w", encoding="utf-8") as fh:
+        json.dump(job, fh)
+    script = os.path.join(os.path.dirname(__file__), "board_pass.py")
+    from ...noconsole import no_window
+    run = subprocess.run([_kicad_python(cli), script, job_path], capture_output=True,
+                         text=True, timeout=900, **no_window())
+    lines = [ln for ln in run.stdout.splitlines() if ln.startswith("{")]
+    if run.returncode != 0 or not lines:
+        raise RuntimeError((run.stderr or run.stdout)[-800:])
+    return json.loads(lines[-1])
+
+
+def _text_variables(pro_path: str, params: dict[str, str]) -> int:
+    """Altium's project parameters as the KiCad project's text variables,
+    so a field or title block written ``${TITLE}`` reads the same."""
+    values = {k: v for k, v in params.items() if v and v != "*"}
+    if not values or not os.path.isfile(pro_path):
+        return 0
+    with open(pro_path, encoding="utf-8") as fh:
+        pro = json.load(fh)
+    variables = pro.setdefault("text_variables", {})
+    for k, v in values.items():
+        variables.setdefault(k, v)
+    from ...atomicfile import replace_with_retry
+    tmp = pro_path + ".eda-tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(pro, fh, indent=2)
+    replace_with_retry(tmp, pro_path)
+    return len(values)
+
+
 def _insert_stackup(board_text: str, block: str, thickness: float) -> tuple[str, bool]:
     if "(stackup" in board_text:
         return board_text, False
@@ -214,9 +247,16 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
         w = schematic.trim_stubs(tree)
         if remove_title_block:
             w["title_block_removed"] = schematic.remove_title_block(tree)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        fields = altium_side.title_block((altium.get("sheet_parameters") or {}).get(stem, {}),
+                                         altium.get("project_parameters") or {})
+        w["title_block"] = fields
+        schematic.set_title_block(tree, fields)
         write(path, tree)
         wiring.append({"sheet": os.path.basename(path), **w})
     steps["wiring"] = wiring
+    steps["text_variables"] = _text_variables(os.path.join(out_dir, name + ".kicad_pro"),
+                                              altium.get("project_parameters") or {})
     steps["power_flags"] = power_flags(out_dir, name, cli, root, work)
 
     xml = netlist(cli, root, os.path.join(work, "schematic.xml"))
@@ -227,19 +267,14 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
         steps["check_schematic_vs_altium"] = checks.compare(sch_pins, alt_pins)
 
     rules = altium_side.board_rules(altium.get("rules") or [])
-    job = {"board": board, "netlist": xml, "rules": rules}
-    job_path = os.path.join(work, "board_job.json")
-    with open(job_path, "w", encoding="utf-8") as fh:
-        json.dump(job, fh)
-    script = os.path.join(os.path.dirname(__file__), "board_pass.py")
-    from ...noconsole import no_window
-    run = subprocess.run([_kicad_python(cli), script, job_path], capture_output=True,
-                         text=True, timeout=900, **no_window())
-    lines = [ln for ln in run.stdout.splitlines() if ln.startswith("{")]
-    if run.returncode != 0 or not lines:
-        report.update(stage="board", reason=(run.stderr or run.stdout)[-800:])
+    job = {"board": board, "netlist": xml, "rules": rules,
+           "mechanical_library": f"{name}_Mechanical",
+           "pours": altium_side.pour_settings(altium.get("pours") or [])}
+    try:
+        steps["board"] = _board_pass(cli, job, os.path.join(work, "board_job.json"))
+    except RuntimeError as e:
+        report.update(stage="board", reason=str(e))
         return report
-    steps["board"] = json.loads(lines[-1])
     if steps["board"].get("error"):
         report.update(stage="board", reason=steps["board"]["error"])
         return report
@@ -248,6 +283,8 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
     steps["library_footprints_cleaned"] = footprints.library_fields(out_dir)
 
     text = footprints.read(board)
+    text, steps["outline_seams_removed"] = footprints.tidy_outline(text)
+    footprints.write(board, text)
     if altium.get("stackup"):
         block, thickness = altium_side.stackup_block(altium["stackup"])
         text, done = _insert_stackup(text, block, thickness)
@@ -269,6 +306,12 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
                           # matches nothing, in Altium as in KiCad.
                           "rules_naming_missing_classes": sorted(
                               altium_side.classes_named(altium["rules"]) - defined)}
+
+    try:
+        steps["library_sync"] = _board_pass(cli, {"board": board, "mode": "sync"},
+                                            os.path.join(work, "sync_job.json"))
+    except RuntimeError as e:
+        steps["library_sync"] = {"error": str(e)}
 
     drc_json = os.path.join(work, "drc.json")
     _cli(cli, "pcb", "drc", "--refill-zones", "--save-board", "--format", "json",

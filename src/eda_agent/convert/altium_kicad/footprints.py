@@ -67,16 +67,50 @@ def npth_sizes(text: str) -> tuple[str, int]:
     return replace_in_blocks(text, "pad", fix)
 
 
+#: Words in an Altium layer NAME that say what the layer is for, used when
+#: its kind is not set.
+_NAME_HINTS = (("courtyard", "CrtYd"), ("assembly", "Fab"), ("assy", "Fab"),
+               ("fabrication", "Fab"), ("designator", "Fab"), ("component center", "Fab"))
+
+
+def _side(name: str) -> str:
+    return "B" if re.search(r"\b(bottom|bot)\b", name, re.I) else "F"
+
+
 def layer_map(mech_layers: list[dict[str, Any]]) -> dict[str, str]:
-    """``User.N`` to a KiCad layer, from the Altium layers' kinds."""
+    """``User.N`` to a KiCad layer, from the Altium layers' kinds, or their
+    names when no kind is set."""
     out = {}
     for m in mech_layers or []:
         kind = str(m.get("kind") or "").strip().lower()
         target = KIND_TO_LAYER.get(kind)
+        if target is None:
+            name = str(m.get("name") or "").lower()
+            hint = next((v for word, v in _NAME_HINTS if word in name), None)
+            if hint:
+                target = f"{_side(name)}.{hint}"
         number = re.search(r"(\d+)$", str(m.get("layer") or ""))
         if target and number:
             out[f"User.{number.group(1)}"] = target
     return out
+
+
+def designator_layers(board_text: str) -> dict[str, str]:
+    """User layers that carry nothing but each footprint's designator text
+    (``${REFERENCE}``): Altium's assembly designators on a mechanical layer
+    whose kind and name say nothing. They go to F.Fab."""
+    seen: dict[str, bool] = {}
+    for a, b in blocks(board_text, "footprint"):
+        fp = board_text[a:b]
+        for head in ("fp_text", "fp_line", "fp_arc", "fp_poly", "fp_rect", "fp_circle"):
+            for ia, ib in blocks(fp, head):
+                item = fp[ia:ib]
+                layer = re.search(r'\(layer "(User\.\d+)"\)', item)
+                if not layer:
+                    continue
+                only_ref = head == "fp_text" and '"${REFERENCE}"' in item
+                seen[layer.group(1)] = seen.get(layer.group(1), True) and only_ref
+    return {layer: "F.Fab" for layer, ok in seen.items() if ok}
 
 
 def _is_centre_cross(line: str) -> bool:
@@ -89,7 +123,8 @@ def _is_centre_cross(line: str) -> bool:
     return flat or upright
 
 
-def _map_footprint(fp: str, mapping: dict[str, str], counts: dict[str, int]) -> str:
+def _map_footprint(fp: str, mapping: dict[str, str], counts: dict[str, int],
+                   by_content: frozenset = frozenset()) -> str:
     gets_courtyard = any(v in ("F.CrtYd", "B.CrtYd") for v in mapping.values())
     if gets_courtyard:
         def cross(line: str) -> str:
@@ -100,7 +135,12 @@ def _map_footprint(fp: str, mapping: dict[str, str], counts: dict[str, int]) -> 
                     return line.replace(tag, f'(layer "{side}.Fab")')
             return line
         fp, _ = replace_in_blocks(fp, "fp_line", cross)
+    # A user layer has no back twin, so on a part placed on the back a
+    # layer found by its content goes to the back's Fab layer.
+    on_back = re.search(r'^\(footprint\s+"[^"]*"\s*(?:\([^()]*\)\s*)*?\(layer "B\.Cu"\)', fp) is not None
     for src, dst in mapping.items():
+        if on_back and src in by_content and dst.startswith("F."):
+            dst = "B." + dst[2:]
         n = fp.count(f'(layer "{src}")')
         if n:
             fp = fp.replace(f'(layer "{src}")', f'(layer "{dst}")')
@@ -132,12 +172,15 @@ def map_layers(project_dir: str, board_path: str,
     mapping = layer_map(mech_layers)
     counts = {"remapped": 0, "crosses_to_fab": 0, "fields_to_fab": 0}
     text = read(board_path)
+    by_content = frozenset(layer for layer, target in designator_layers(text).items()
+                           if mapping.setdefault(layer, target) == target)
     text, _ = replace_in_blocks(
-        text, "footprint", lambda fp: fields_off_silk(_map_footprint(fp, mapping, counts), counts))
+        text, "footprint",
+        lambda fp: fields_off_silk(_map_footprint(fp, mapping, counts, by_content), counts))
     write(board_path, text)
     for path in glob.glob(os.path.join(project_dir, "*.pretty", "*.kicad_mod")):
         fp = read(path)
-        new = fields_off_silk(_map_footprint(fp, mapping, counts), counts)
+        new = fields_off_silk(_map_footprint(fp, mapping, counts, by_content), counts)
         if new != fp:
             write(path, new)
     return {"layer_map": mapping, **counts}
@@ -158,6 +201,64 @@ def library_fields(project_dir: str) -> int:
             write(path, new)
             cleaned += 1
     return cleaned
+
+
+#: Shorter than this, an outline piece is a seam the import left, not a side.
+OUTLINE_SEAM_MM = 0.001
+
+_POINT = r"\((start|mid|end) ([-\d.]+) ([-\d.]+)\)"
+
+
+def tidy_outline(board_text: str) -> tuple[str, int]:
+    """Board outline seams under 1 um taken out.
+
+    Altium's arcs come in with their ends a few hundred nanometres off the
+    next piece, as straight bits of 3 to 600 nm that KiCad reports as a
+    malformed outline. Each is removed and the piece that ended on its far
+    end now ends on its near end, so the outline stays closed."""
+    seams = []
+    for a, b in blocks(board_text, "gr_line"):
+        item = board_text[a:b]
+        if '(layer "Edge.Cuts")' not in item:
+            continue
+        ends = {k: (x, y) for k, x, y in re.findall(_POINT, item)}
+        if "start" in ends and "end" in ends:
+            (x1, y1), (x2, y2) = [(float(x), float(y)) for x, y in (ends["start"], ends["end"])]
+            if ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 < OUTLINE_SEAM_MM:
+                seams.append((a, b, ends["start"], ends["end"]))
+    if not seams:
+        return board_text, 0
+    moves = {}
+    for _, _, keep, gone in seams:
+        moves[gone] = keep
+    out, last = [], 0
+    for a, b, _, _ in seams:
+        k = a
+        while k > last and board_text[k - 1] in " \t":
+            k -= 1
+        if k > last and board_text[k - 1] == "\n":
+            k -= 1
+        out.append(board_text[last:k])
+        last = b
+    out.append(board_text[last:])
+    text = "".join(out)
+
+    def snap(item: str) -> str:
+        if '(layer "Edge.Cuts")' not in item:
+            return item
+
+        def move(m):
+            point = (float(m.group(2)), float(m.group(3)))
+            for gone, keep in moves.items():
+                if (m.group(1) != "mid" and abs(point[0] - float(gone[0])) < 1e-9
+                        and abs(point[1] - float(gone[1])) < 1e-9):
+                    return f"({m.group(1)} {keep[0]} {keep[1]})"
+            return m.group(0)
+        return re.sub(_POINT, move, item)
+
+    for head in ("gr_line", "gr_arc"):
+        text, _ = replace_in_blocks(text, head, snap)
+    return text, len(seams)
 
 
 def board_footprints(board_text: str) -> dict[str, str]:

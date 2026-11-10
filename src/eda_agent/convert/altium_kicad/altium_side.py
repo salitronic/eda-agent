@@ -202,10 +202,32 @@ def _mm(v: float) -> str:
     return f"{round(v, 4)}mm"
 
 
+def _rule_kind(descriptor: str) -> Optional[str]:
+    """Which ported rule an Altium rule description is, or None."""
+    for prefix, kind in (("Clearance Constraint", "clearance"), ("Width Constraint", "width"),
+                         ("Polygon Connect Rule", "connect"), ("Differential Pairs", "diffpair"),
+                         ("Solder Mask Expansion", "mask"), ("Paste Mask Expansion", "paste"),
+                         ("Silk To Solder Mask", "silk"), ("Hole Size Constraint", "hole")):
+        if descriptor.startswith(prefix):
+            return kind
+    return None
+
+
+def _min_opt_max(text: str) -> str:
+    """``(min ..) (opt ..) (max ..)`` from Min=, Prefered= / Preferred= and
+    Max= in an Altium description, those present."""
+    lo, hi = _mils(text, "Min"), _mils(text, "Max")
+    opt = _mils(text, "Preferred")
+    opt = _mils(text, "Prefered") if opt is None else opt
+    return " ".join(f"({k} {_mm(v)})" for k, v in (("min", lo), ("opt", opt), ("max", hi))
+                    if v is not None)
+
+
 def rules_file(rules: list[dict[str, Any]], net_names: dict[str, str]) -> tuple[str, list[str]]:
-    """A ``.kicad_dru`` for the scoped clearance, width and polygon-connect
-    rules, lowest priority first (KiCad lets the last matching rule win,
-    Altium the first); and the rules that were not ported, with why."""
+    """A ``.kicad_dru`` for the scoped clearance, width, mask and paste
+    rules, and every polygon-connect, differential-pair, silk-to-mask and
+    hole-size rule, lowest priority first (KiCad lets the last matching
+    rule win, Altium the first); and the rules not ported, with why."""
     lines = ["(version 1)"]
     skipped = []
     ordered = sorted([r for r in rules or [] if r.get("enabled", True)],
@@ -213,12 +235,10 @@ def rules_file(rules: list[dict[str, Any]], net_names: dict[str, str]) -> tuple[
     for r in ordered:
         d = str(r.get("descriptor") or "")
         name = str(r.get("name") or "rule").replace('"', "'")
-        kind = ("clearance" if d.startswith("Clearance Constraint")
-                else "width" if d.startswith("Width Constraint")
-                else "connect" if d.startswith("Polygon Connect Rule") else None)
+        kind = _rule_kind(d)
         if kind is None:
             continue
-        if kind != "connect" and _general(r):
+        if kind in ("clearance", "width", "mask", "paste") and _general(r):
             continue  # in the board settings already
         cond = _condition(r, net_names)
         if cond is None:
@@ -226,7 +246,40 @@ def rules_file(rules: list[dict[str, Any]], net_names: dict[str, str]) -> tuple[
                            "has no KiCad condition here")
             continue
         body = []
-        if kind == "clearance":
+        if kind == "diffpair":
+            # Altium's own spelling "Prefered"; the gap values come before
+            # the width values in the description.
+            gap_part, _, width_part = d.partition("Width Constraints")
+            for constraint, part in (("diff_pair_gap", gap_part), ("track_width", width_part)):
+                vals = _min_opt_max(part)
+                if vals:
+                    body.append(f"(constraint {constraint} {vals})")
+            if not body:
+                continue
+            cond = " && ".join(c for c in ("A.inDiffPair('*')", cond) if c)
+        elif kind == "mask":
+            e = _mils(d, "Expansion ")
+            e = _mils(d, "Expansion") if e is None else e
+            if e is None:
+                continue
+            body.append(f"(constraint solder_mask_expansion (opt {_mm(e)}))")
+        elif kind == "paste":
+            e = _mils(d, "Expansion ")
+            e = _mils(d, "Expansion") if e is None else e
+            if e is None:
+                continue
+            body.append(f"(constraint solder_paste_abs_margin (opt {_mm(e)}))")
+        elif kind == "silk":
+            gap = _mils(d, "Clearance")
+            if gap is None:
+                continue
+            body.append(f"(constraint silk_clearance (min {_mm(gap)}))")
+        elif kind == "hole":
+            vals = _min_opt_max(d)
+            if not vals:
+                continue
+            body.append(f"(constraint hole_size {vals})")
+        elif kind == "clearance":
             gap = r.get("gap_mm") or _mils(d, "Gap")
             if not gap:
                 continue
@@ -285,4 +338,97 @@ async def read_board(bridge, board_path: str, project_path: str) -> dict[str, An
     nets = await bridge.send_command_async(
         "project.get_nets", {"project_path": project_path, "limit": "100000"}, timeout=120.0)
     out["pins"] = (nets or {}).get("pins") or []
+    params = await bridge.send_command_async("project.get_parameters",
+                                             {"project_path": project_path})
+    rows = params if isinstance(params, list) else (params or {}).get("result") or []
+    out["project_parameters"] = {str(p.get("name")): str(p.get("value") or "")
+                                 for p in rows if isinstance(p, dict) and p.get("name")}
+    docs = await bridge.send_command_async("project.get_documents",
+                                           {"project_path": project_path})
+    docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+    sheets = {}
+    for d in docs:
+        path = str(d.get("file_path") or "")
+        if not path.lower().endswith(".schdoc"):
+            continue
+        reply = await bridge.send_command_async("generic.get_sheet_parameters",
+                                                {"file_path": path})
+        stem = path.replace("/", "\\").rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+        sheets[stem] = {str(p.get("name")): str(p.get("value") or "")
+                        for p in (reply or {}).get("parameters") or [] if p.get("name")}
+    out["sheet_parameters"] = sheets
+    pours = await bridge.send_command_async("generic.query_objects", {
+        "scope": "active_doc", "object_type": "polygon", "filter": "",
+        "properties": "Net,Layer,NeckWidthThreshold,RemoveNarrowNecks,"
+                      "IslandAreaThreshold,RemoveDead,RemoveIslandsByArea"})
+    out["pours"] = (pours or {}).get("objects") or []
+    return out
+
+
+def pour_settings(pours: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each Altium pour's fill settings in KiCad's terms: the narrowest
+    copper kept (``min_width_mm``) and which islands go (``islands``:
+    ``always``, ``area`` with ``min_island_mm2``, or ``never``)."""
+    def num(v: Any) -> float:
+        try:
+            return float(str(v).replace(",", "."))
+        except ValueError:
+            return 0.0
+
+    def yes(v: Any) -> bool:
+        return str(v).strip().lower() == "true"
+
+    out = []
+    for p in pours:
+        neck = num(p.get("NeckWidthThreshold"))
+        row = {"net": str(p.get("Net") or ""), "layer": str(p.get("Layer") or ""),
+               # Necks are kept when Altium does not remove them; KiCad needs
+               # some width, so 1 mil stands for none.
+               "min_width_mm": round((neck if yes(p.get("RemoveNarrowNecks")) and neck > 0
+                                      else 1.0) * MIL, 4)}
+        if yes(p.get("RemoveDead")):
+            row["islands"] = "always"
+        elif yes(p.get("RemoveIslandsByArea")):
+            row["islands"] = "area"
+            row["min_island_mm2"] = round(num(p.get("IslandAreaThreshold")) * MIL ** 2, 4)
+        else:
+            row["islands"] = "never"
+        out.append(row)
+    return out
+
+
+#: KiCad title block fields from Altium's sheet parameters, first found wins.
+TITLE_FIELDS = (
+    ("title", ("Title", "TITLE", "ProjectName")),
+    ("rev", ("Revision", "REVISION")),
+    ("date", ("Date", "DATE")),
+    ("company", ("CompanyName", "COMPANY", "Organization")),
+    ("comment 1", ("DrawnBy", "Engineer", "ENGINEER", "Author")),
+    ("comment 2", ("CheckedBy",)),
+    ("comment 3", ("ApprovedBy",)),
+    ("comment 4", ("DocumentNumber",)),
+)
+
+
+def _value(name: str, sheet: dict[str, str], project: dict[str, str]) -> str:
+    """A parameter's value: the sheet's, else the project's. ``*`` is
+    Altium's "not set"; ``=NAME`` refers to another parameter."""
+    for source in (sheet, project):
+        v = (source.get(name) or "").strip()
+        if v.startswith("=") and len(v) > 1:
+            ref = v[1:]
+            v = (sheet.get(ref) or project.get(ref) or "").strip()
+        if v and v != "*":
+            return v
+    return ""
+
+
+def title_block(sheet: dict[str, str], project: dict[str, str]) -> dict[str, str]:
+    out = {}
+    for field, names in TITLE_FIELDS:
+        for name in names:
+            v = _value(name, sheet, project)
+            if v:
+                out[field] = v
+                break
     return out
