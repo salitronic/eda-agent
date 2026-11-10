@@ -16,25 +16,25 @@ from tests.test_handlers_verify_their_outcome import _body, _decommented, _src
 
 
 def test_every_write_is_behind_its_own_parameter():
-    body = _decommented(_body(_src("Library.pas"), "Lib_SetPadProperties"))
+    body = _decommented(_body(_src("Library.pas"), "ApplyPadEdit"))
     for key, write in (("x_size", "Pad.TopXSize :="), ("y_size", "Pad.TopYSize :="),
                        ("rotation", "Pad.Rotation :="), ("hole_size", "Pad.HoleSize :="),
                        ("hole_width", "Pad.HoleWidth :="),
                        ("hole_rotation", "Pad.HoleRotation :=")):
-        guard = body.index(f"ExtractJsonValue(Params, '{key}')")
+        guard = body.index(f"PadArg(Src, IsOp, '{key}')")
         assert guard < body.index(write), key
 
 
 def test_expansions_set_the_manual_flag_and_go_back_through_the_cache():
-    body = _decommented(_body(_src("Library.pas"), "Lib_SetPadProperties"))
+    body = _decommented(_body(_src("Library.pas"), "ApplyPadEdit"))
     assert "Cache.SolderMaskExpansionValid := eCacheManual" in body
     assert "Cache.PasteMaskExpansionValid := eCacheManual" in body
     assert body.index("Cache := Pad.GetState_Cache") < body.index("Pad.SetState_Cache := Cache")
 
 
 def test_the_reply_is_the_read_back():
-    body = _decommented(_body(_src("Library.pas"), "Lib_SetPadProperties"))
-    reply = body[body.index("PadsJson := PadsJson + '{\"name\""):]
+    body = _decommented(_body(_src("Library.pas"), "PadEditJson"))
+    reply = body[body.index("Result := '{\"name\""):]
     for read in ("Pad.TopXSize", "Pad.HoleRotation", "Pad.Plated",
                  "CacheStateName(Pad, True)"):
         assert read in reply, read

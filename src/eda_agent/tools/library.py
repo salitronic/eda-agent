@@ -7806,7 +7806,7 @@ def register_library_tools(mcp):
 
         Returns:
             {name, description, library_path, pad_count, pads: [{
-             name, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
+             name, id, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
              shape, corner_pct, rotation, hole_rotation, hole_mm,
              hole_w_mm, hole_type, slot_aligned (slots only), plated,
              layer, selected, mode, paste_expansion_mm,
@@ -7816,7 +7816,8 @@ def register_library_tools(mcp):
             selected is whether the pad is selected in the editor (what
             lib_set_pad_properties selected=True acts on); mode is the
             stack mode, 0 simple, 1 top-middle-bottom, 2 full stack.
-            x/y is the pad origin, copper_x/y the copper centre (differs
+            id names the pad for lib_set_pad_geometry (stable while the
+            library is open). x/y is the pad origin, copper_x/y the copper centre (differs
             on a custom pad). hole_rotation is relative to the pad.
             mask_expansion_mm is the top side when mask_separate, else
             both; mask_bottom_expansion_mm is the stored bottom value.
@@ -8001,6 +8002,86 @@ def register_library_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.set_pad_properties", _with_units(params, units))
+
+    @mcp.tool()
+    async def lib_set_pad_geometry(
+        footprint_name: str,
+        rows: list[dict[str, Any]],
+        library_path: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Change many pads of one PcbLib footprint in ONE call.
+
+        Each row names its pad by ``id`` (from ``lib_get_pad_geometry``)
+        and carries the fields to write, under the names
+        ``lib_set_pad_properties`` uses: x_size, y_size, bottom_x_size,
+        bottom_y_size, shape, corner_radius_pct, stack_mode, rotation,
+        hole_type, hole_size, hole_width, hole_rotation, plated,
+        paste_expansion, paste_manual, mask_expansion,
+        mask_bottom_expansion, mask_separate, mask_manual,
+        mask_from_hole_edge, paste_top_enabled, x, y (a move, from the
+        footprint origin) and new_name. ``x_mm`` / ``y_mm`` as the read
+        gave them guard a row: a pad that has moved refuses the call.
+        Every row is checked before anything is written. Pads are
+        matched by id, never by name, so renumbering (3 -> 5, 5 -> 7)
+        needs no temporary names. About 6 s for 200 pads, against
+        ~0.2 s per ``lib_set_pad_properties`` call. In a library Undo
+        takes back one pad at a time.
+
+        Args:
+            footprint_name: The footprint holding the pads.
+            rows: One dict per pad: ``id`` (required), optional
+                ``x_mm`` / ``y_mm`` guard, then the fields to change.
+            library_path: Optional .PcbLib path; defaults to the
+                focused library.
+            units: "mil" (default) or "mm", for every length in rows.
+
+        Returns:
+            ``rows``, ``pads_changed``, ``pads_with_a_failed_write``,
+            ``repeats`` (pads the walk handed out twice, expected 0),
+            ``note``, and ``pads`` as read back, each with its ``id``.
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        if not rows:
+            return {"success": False, "error": "rows is empty"}
+        lengths = {"x_size", "y_size", "bottom_x_size", "bottom_y_size",
+                   "hole_size", "hole_width", "paste_expansion",
+                   "mask_expansion", "mask_bottom_expansion", "x", "y"}
+        numbers = {"rotation", "hole_rotation", "corner_radius_pct",
+                   "x_mm", "y_mm"}
+        flags = {"plated", "paste_manual", "mask_separate", "mask_manual",
+                 "mask_from_hole_edge", "paste_top_enabled"}
+        words = {"id", "shape", "stack_mode", "hole_type", "new_name"}
+        known = lengths | numbers | flags | words
+        ops = []
+        for i, row in enumerate(rows):
+            unknown = sorted(set(row) - known)
+            if unknown:
+                return {"success": False,
+                        "error": f"row {i}: unknown field(s) {unknown}"}
+            if not str(row.get("id") or "").strip():
+                return {"success": False, "error": f"row {i}: id is required"}
+            fields = []
+            for key, value in row.items():
+                if value is None:
+                    continue
+                if key in lengths:
+                    text = format_length(value)
+                elif key in numbers:
+                    text = repr(float(value))
+                elif key in flags:
+                    text = "true" if value else "false"
+                else:
+                    text = _payload_safe(str(value).strip())
+                fields.append(f"{key}={text}")
+            ops.append(";".join(fields))
+        params = {"footprint_name": footprint_name, "rows": "~~".join(ops),
+                  "library_path": library_path}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_pad_geometry", _with_units(params, units))
 
     @mcp.tool()
     async def lib_get_footprint_primitives(

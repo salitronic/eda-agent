@@ -71,7 +71,7 @@ def test_size_and_mask_writes_are_compared_with_what_was_asked():
 
 
 def test_the_paste_flag_makes_the_paste_manual_before_writing():
-    body = _lib("Lib_SetPadProperties")
+    body = _lib("ApplyPadEdit")
     flag = body.index("Pad.SetState_IsTopPasteEnabled(")
     manual = body.rindex("Cache.PasteMaskExpansionValid := eCacheManual", 0, flag)
     assert body.index("paste_top_enabled") < manual < flag

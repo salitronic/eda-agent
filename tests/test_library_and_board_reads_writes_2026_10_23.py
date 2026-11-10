@@ -225,7 +225,7 @@ def test_each_kind_of_the_footprint_read_can_be_left_out():
 # -- #110 / #111: pad and via writers -------------------------------------------
 
 def test_handing_a_mask_back_to_the_rule_uses_eCacheInvalid():
-    for unit, func in (("Library.pas", "Lib_SetPadProperties"),
+    for unit, func in (("Library.pas", "ApplyPadEdit"),
                        ("Library.pas", "Lib_SetViaProperties"),
                        ("PCBGeneric.pas", "PCBSetMask")):
         body = _fn(unit, func)
@@ -234,7 +234,7 @@ def test_handing_a_mask_back_to_the_rule_uses_eCacheInvalid():
 
 
 def test_the_pad_writer_sets_the_stack_before_the_sizes():
-    body = _fn("Library.pas", "Lib_SetPadProperties")
+    body = _fn("Library.pas", "ApplyPadEdit")
     assert body.index("Pad.Mode := ePadMode_Simple") < body.index("Pad.TopXSize :=")
     assert "SetPadRoundRect(Pad, CornerPct)" in body
 

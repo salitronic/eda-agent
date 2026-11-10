@@ -12713,6 +12713,7 @@ Begin
             If Count > 0 Then PadsJson := PadsJson + ',';
             PadsJson := PadsJson +
                 '{"name":"' + EscapeJsonString(Pad.Name) + '"' +
+                ',"id":"' + PadAddr + '"' +
                 ',"x_mm":' + FloatToJsonStr(CoordToMM(Pad.X - XOrg)) +
                 ',"y_mm":' + FloatToJsonStr(CoordToMM(Pad.Y - YOrg)) +
                 ',"copper_x_mm":' + FloatToJsonStr(CoordToMM(CuX - XOrg)) +
@@ -12849,6 +12850,427 @@ Begin
     Except End;
 End;
 
+{ One field of a pad edit: from the request, or from one batch row of      }
+{ set_pad_geometry (issue #303).                                           }
+Function PadArg(Src : String; IsOp : Boolean; Key : String) : String;
+Begin
+    If IsOp Then Result := GetBatchField(Src, Key)
+    Else Result := ExtractJsonValue(Src, Key);
+End;
+
+{ The checks set_pad_properties makes before it touches a pad, shared with  }
+{ set_pad_geometry, whose rows carry the same fields (issue #303). Src is   }
+{ the request (IsOp False) or one batch row (IsOp True). Empty = fine; else }
+{ the message, with its error code in Code.                                 }
+Function PadEditProblem(Src : String; IsOp : Boolean; Var Code : String) : String;
+Var
+    HoleTypeStr, Shape, CornerStr, StackStr, XStr, YStr : String;
+    MaskManualStr, PasteManualStr : String;
+    CornerPct : Integer;
+Begin
+    Result := '';
+    Code := '';
+    HoleTypeStr := LowerCase(PadArg(Src, IsOp, 'hole_type'));
+    If (HoleTypeStr <> '') And (HoleTypeStr <> 'round')
+        And (HoleTypeStr <> 'square') And (HoleTypeStr <> 'slot') Then
+    Begin
+        Code := 'INVALID_HOLE_TYPE';
+        Result := ('hole_type must be round, square or slot');
+        Exit;
+    End;
+    If ((HoleTypeStr = 'round') Or (HoleTypeStr = 'square'))
+        And (PadArg(Src, IsOp, 'hole_width') <> '') Then
+    Begin
+        Code := 'INVALID_HOLE_TYPE';
+        Result := ('hole_width makes a slot; leave it out for a round or square hole');
+        Exit;
+    End;
+    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
+    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
+    If (Shape <> '') And (Shape <> 'round') And (Shape <> 'rectangular')
+        And (Shape <> 'octagonal') And (Shape <> 'roundrect') Then
+    Begin
+        Code := 'INVALID_SHAPE';
+        Result := ('shape must be round, rectangular, octagonal or roundrect');
+        Exit;
+    End;
+    CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
+    CornerPct := -1;
+    If CornerStr <> '' Then
+    Begin
+        If IsFloatStr(CornerStr) Then CornerPct := Round(StrToFloatDef(CornerStr, -1));
+        If (CornerPct < 0) Or (CornerPct > 100) Then
+        Begin
+            Code := 'BAD_PARAM';
+            Result := ('corner_radius_pct is 0 to 100, a percentage of half the shorter '
+                + 'side; nothing was changed');
+            Exit;
+        End;
+        If (Shape <> '') And (Shape <> 'roundrect') Then
+        Begin
+            Code := 'BAD_PARAM';
+            Result := ('corner_radius_pct needs shape roundrect; nothing was changed');
+            Exit;
+        End;
+    End;
+    If (Shape = 'roundrect') And (CornerPct < 0) Then CornerPct := 25;
+    StackStr := LowerCase(PadArg(Src, IsOp, 'stack_mode'));
+    If (StackStr <> '') And (StackStr <> 'simple') And (StackStr <> 'top-middle-bottom') Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('stack_mode is simple or top-middle-bottom; nothing was changed');
+        Exit;
+    End;
+    If (StackStr = 'simple') And ((PadArg(Src, IsOp, 'bottom_x_size') <> '')
+        Or (PadArg(Src, IsOp, 'bottom_y_size') <> '')) Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('A simple pad has one size: a bottom size needs top-middle-bottom; '
+            + 'nothing was changed');
+        Exit;
+    End;
+    XStr := PadArg(Src, IsOp, 'x');
+    YStr := PadArg(Src, IsOp, 'y');
+    If ((XStr <> '') And (Not IsFloatStr(XStr))) Or ((YStr <> '') And (Not IsFloatStr(YStr))) Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('x and y are numbers from the footprint origin; nothing was changed');
+        Exit;
+    End;
+    MaskManualStr := LowerCase(PadArg(Src, IsOp, 'mask_manual'));
+    PasteManualStr := LowerCase(PadArg(Src, IsOp, 'paste_manual'));
+    If (MaskManualStr = 'false') And ((PadArg(Src, IsOp, 'mask_expansion') <> '')
+        Or (PadArg(Src, IsOp, 'mask_bottom_expansion') <> '')) Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('mask_manual=false hands the mask to the design rule, so a mask '
+            + 'value with it would be ignored; nothing was changed');
+        Exit;
+    End;
+    If (PasteManualStr = 'false') And (PadArg(Src, IsOp, 'paste_expansion') <> '') Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('paste_manual=false hands the paste to the design rule, so a paste '
+            + 'value with it would be ignored; nothing was changed');
+        Exit;
+    End;
+End;
+
+{ One pad edit: the body set_pad_properties runs per matched pad and       }
+{ set_pad_geometry per row (issue #303): the robots BeginModify / EndModify }
+{ round it, every field in Src written and read back where it can be.     }
+{ MayMove False leaves x / y alone (set_pad_properties moves one pad      }
+{ only). Returns whether every write held; notes are added to Notes.      }
+Function ApplyPadEdit(Pad : IPCB_Pad; Src : String; IsOp : Boolean; XOrg : Integer;
+    YOrg : Integer; UnitsStr : String; MayMove : Boolean; Var Notes : String) : Boolean;
+Var
+    Str, Shape, CornerStr, StackStr, NewName, XStr, YStr : String;
+    HoleTypeStr, PlatedStr, EdgeStr, MaskManualStr, PasteManualStr : String;
+    CornerPct : Integer;
+    Cache : TPadCache;
+    Ok : Boolean;
+Begin
+    { The same normalising as PadEditProblem, which has passed already. }
+    HoleTypeStr := LowerCase(PadArg(Src, IsOp, 'hole_type'));
+    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
+    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
+    CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
+    CornerPct := -1;
+    If (CornerStr <> '') And IsFloatStr(CornerStr) Then
+        CornerPct := Round(StrToFloatDef(CornerStr, -1));
+    If (Shape = 'roundrect') And (CornerPct < 0) Then CornerPct := 25;
+    StackStr := LowerCase(PadArg(Src, IsOp, 'stack_mode'));
+    NewName := Trim(PadArg(Src, IsOp, 'new_name'));
+    XStr := PadArg(Src, IsOp, 'x');
+    YStr := PadArg(Src, IsOp, 'y');
+    EdgeStr := LowerCase(PadArg(Src, IsOp, 'mask_from_hole_edge'));
+    MaskManualStr := LowerCase(PadArg(Src, IsOp, 'mask_manual'));
+    PasteManualStr := LowerCase(PadArg(Src, IsOp, 'paste_manual'));
+    Ok := True;
+    Try
+        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
+            c_Broadcast, PCBM_BeginModify, c_NoEventData);
+    Except End;
+
+    { The stack first: its sizes have nowhere to go before. }
+    If StackStr = 'simple' Then
+    Begin
+        Try
+            Pad.Mode := ePadMode_Simple;
+            If Pad.Mode <> ePadMode_Simple Then Ok := False;
+        Except Ok := False; End;
+    End
+    Else If (StackStr = 'top-middle-bottom')
+        Or (PadArg(Src, IsOp, 'bottom_x_size') <> '')
+        Or (PadArg(Src, IsOp, 'bottom_y_size') <> '') Then
+    Begin
+        Try
+            If Pad.Mode = ePadMode_Simple Then Pad.Mode := ePadMode_LocalStack;
+            If Pad.Mode = ePadMode_Simple Then Ok := False;
+        Except Ok := False; End;
+    End;
+
+    Str := PadArg(Src, IsOp, 'x_size');
+    If Str <> '' Then
+    Begin
+        Try Pad.TopXSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'y_size');
+    If Str <> '' Then
+    Begin
+        Try Pad.TopYSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'bottom_x_size');
+    If Str <> '' Then
+    Begin
+        Try Pad.BotXSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'bottom_y_size');
+    If Str <> '' Then
+    Begin
+        Try Pad.BotYSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    If (Shape = 'roundrect') Or ((Shape = '') And (CornerPct >= 0)) Then
+    Begin
+        { The per-layer route the pad creators use: TopShape
+          alone left a through-hole pad round, corner 0. }
+        Try
+            SetPadRoundRect(Pad, CornerPct);
+            If (Pad.Layer <> eBottomLayer) And (Pad.TopShape <> eRoundedRectangular) Then Ok := False;
+        Except Ok := False; End;
+    End
+    Else If Shape <> '' Then
+    Begin
+        Try
+            If Shape = 'rectangular' Then Pad.TopShape := eRectangular
+            Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
+            Else Pad.TopShape := eRounded;
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'rotation');
+    If Str <> '' Then
+        Try Pad.Rotation := StrToFloatDef(Str, 0); Except Ok := False; End;
+    { x and y are from the footprint origin.                 }
+    If ((XStr <> '') Or (YStr <> '')) And MayMove Then
+    Begin
+        Try
+            If XStr <> '' Then
+                Pad.X := XOrg + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);
+            If YStr <> '' Then
+                Pad.Y := YOrg + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    If NewName <> '' Then
+    Begin
+        Try
+            Pad.Name := NewName;
+            If Pad.Name <> NewName Then Ok := False;
+        Except Ok := False; End;
+    End;
+    If HoleTypeStr <> '' Then
+    Begin
+        Try
+            If HoleTypeStr = 'slot' Then Pad.HoleType := eSlotHole
+            Else If HoleTypeStr = 'square' Then Pad.HoleType := eSquareHole
+            Else Pad.HoleType := eRoundHole;
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'hole_size');
+    If Str <> '' Then
+    Begin
+        Try Pad.HoleSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'hole_width');
+    If Str <> '' Then
+    Begin
+        Try
+            Pad.HoleType := eSlotHole;
+            Pad.HoleWidth := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+        Except Ok := False; End;
+    End;
+    Str := PadArg(Src, IsOp, 'hole_rotation');
+    If Str <> '' Then
+        Try Pad.HoleRotation := StrToFloatDef(Str, 0); Except Ok := False; End;
+    PlatedStr := LowerCase(PadArg(Src, IsOp, 'plated'));
+    If PlatedStr <> '' Then
+    Begin
+        Try Pad.Plated := (PlatedStr = 'true') Or (PlatedStr = '1');
+        Except Ok := False; End;
+    End;
+
+    { The top paste opening's on/off flag (issue #80). Set on
+      its own, apart from the expansion below. }
+    Str := LowerCase(PadArg(Src, IsOp, 'paste_top_enabled'));
+    If ((Str = 'true') Or (Str = 'false')) And (Not PadPasteFlagSupported(0)) Then
+    Begin
+        Ok := False;
+        If Pos('paste flag', Notes) = 0 Then
+            Notes := Notes + 'paste flag: the pad paste on/off flag needs '
+                + 'Altium Designer 25 or later; it was not changed;';
+    End
+    Else If (Str = 'true') Or (Str = 'false') Then
+    Begin
+        { Read back: this build accepts the write without
+          error, so a flag that did not change is a failed
+          write, not a success. MEASURED (AD 26.11): the flag
+          is kept only while the paste expansion is manual,
+          as via tenting is with the mask. A rule-driven
+          paste is switched to manual first, at the value it
+          already holds, and the note says so. }
+        Try
+            Cache := Pad.GetState_Cache;
+            If Cache.PasteMaskExpansionValid <> eCacheManual Then
+            Begin
+                Cache.PasteMaskExpansionValid := eCacheManual;
+                Pad.SetState_Cache := Cache;
+                If Pos('paste manual', Notes) = 0 Then
+                    Notes := Notes + 'paste manual: a rule-driven paste expansion '
+                        + 'was made manual at its current value so the paste '
+                        + 'flag would hold;';
+            End;
+        Except Ok := False; End;
+        Try
+            Pad.SetState_IsTopPasteEnabled(Str = 'true');
+            If Pad.GetState_IsTopPasteEnabled <> (Str = 'true') Then Ok := False;
+        Except Ok := False; End;
+    End;
+
+    { Measured from the hole edge: set before the mask value
+      whose meaning it changes. }
+    If (EdgeStr = 'true') Or (EdgeStr = 'false') Then
+    Begin
+        Try
+            Pad.SolderMaskExpansionFromHoleEdge := (EdgeStr = 'true');
+            If Pad.SolderMaskExpansionFromHoleEdge <> (EdgeStr = 'true') Then Ok := False;
+        Except Ok := False; End;
+    End;
+
+    If (PadArg(Src, IsOp, 'paste_expansion') <> '')
+        Or (PadArg(Src, IsOp, 'mask_expansion') <> '')
+        Or (PadArg(Src, IsOp, 'mask_bottom_expansion') <> '')
+        Or (PadArg(Src, IsOp, 'mask_separate') <> '')
+        Or (MaskManualStr = 'true') Or (MaskManualStr = 'false')
+        Or (PasteManualStr = 'true') Or (PasteManualStr = 'false') Then
+    Begin
+        Try
+            Cache := Pad.GetState_Cache;
+            { The source before any value: a value written
+              while the rule governs is ignored. }
+            If MaskManualStr = 'true' Then Cache.SolderMaskExpansionValid := eCacheManual
+            Else If MaskManualStr = 'false' Then Cache.SolderMaskExpansionValid := eCacheInvalid;
+            If PasteManualStr = 'true' Then Cache.PasteMaskExpansionValid := eCacheManual
+            Else If PasteManualStr = 'false' Then Cache.PasteMaskExpansionValid := eCacheInvalid;
+            Str := PadArg(Src, IsOp, 'paste_expansion');
+            If Str <> '' Then
+            Begin
+                Cache.PasteMaskExpansionValid := eCacheManual;
+                Cache.PasteMaskExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+            End;
+            { SolderMaskExpansion is the top value once the   }
+            { sides are separate, and the bottom value is    }
+            { kept while they are linked, ready to take      }
+            { effect on unlinking. So a value given for the  }
+            { pad goes to both sides unless the bottom has a }
+            { value of its own, and nothing is left behind   }
+            { on the side the caller did not mention.        }
+            Str := PadArg(Src, IsOp, 'mask_expansion');
+            If Str <> '' Then
+            Begin
+                Cache.SolderMaskExpansionValid := eCacheManual;
+                Cache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+                If PadArg(Src, IsOp, 'mask_bottom_expansion') = '' Then
+                    Cache.SolderMaskBottomExpansion := Cache.SolderMaskExpansion;
+            End;
+            Str := PadArg(Src, IsOp, 'mask_bottom_expansion');
+            If Str <> '' Then
+            Begin
+                Cache.SolderMaskExpansionValid := eCacheManual;
+                Cache.SolderMaskBottomExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
+                Cache.UseSeparateExpansions := True;
+            End;
+            Str := PadArg(Src, IsOp, 'mask_separate');
+            If Str <> '' Then
+                Cache.UseSeparateExpansions := (Str = 'true');
+            Pad.SetState_Cache := Cache;
+            Cache := Pad.GetState_Cache;
+            If (MaskManualStr = 'true') And (Cache.SolderMaskExpansionValid <> eCacheManual) Then Ok := False;
+            If (MaskManualStr = 'false') And (Cache.SolderMaskExpansionValid = eCacheManual) Then Ok := False;
+            If (PasteManualStr = 'true') And (Cache.PasteMaskExpansionValid <> eCacheManual) Then Ok := False;
+            If (PasteManualStr = 'false') And (Cache.PasteMaskExpansionValid = eCacheManual) Then Ok := False;
+        Except Ok := False; End;
+    End;
+
+    Try
+        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
+            c_Broadcast, PCBM_EndModify, c_NoEventData);
+    Except End;
+    Try Pad.GraphicallyInvalidate; Except End;
+
+    If ((PadArg(Src, IsOp, 'x_size') <> '')
+        Or (PadArg(Src, IsOp, 'y_size') <> ''))
+        And (Pad.Mode <> ePadMode_Simple) And (Pos('stack', Notes) = 0) Then
+        Notes := Notes + 'a pad with a per-layer stack had only its top '
+            + 'size written;';
+    Result := Ok;
+End;
+
+{ The reply record of one edited pad, read back off the pad (issue #303). }
+Function PadEditJson(Pad : IPCB_Pad; XOrg : Integer; YOrg : Integer;
+    Ok : Boolean) : String;
+Var
+    Str, ModeName, EdgeStr : String;
+    CornerPct : Integer;
+Begin
+    ModeName := 'unknown';
+    Try
+        If Pad.Mode = ePadMode_Simple Then ModeName := 'simple'
+        Else If Pad.Mode = ePadMode_LocalStack Then ModeName := 'top-middle-bottom'
+        Else If Pad.Mode = ePadMode_ExternalStack Then ModeName := 'full-stack';
+    Except End;
+    Str := 'round';
+    Try
+        If Pad.TopShape = eRectangular Then Str := 'rectangular'
+        Else If Pad.TopShape = eOctagonal Then Str := 'octagonal'
+        Else If Pad.TopShape = eRoundedRectangular Then Str := 'roundrect'
+        Else If ShapeIsCustom(Pad.TopShape) Then Str := 'custom';
+    Except End;
+    CornerPct := 0;
+    If Str = 'roundrect' Then
+        Try CornerPct := Pad.CRPercentage[eTopLayer]; Except End;
+    EdgeStr := 'null';
+    Try EdgeStr := BoolToJsonStr(Pad.SolderMaskExpansionFromHoleEdge); Except End;
+
+    Result := '{"name":"' + EscapeJsonString(Pad.Name) + '"'
+        + ',"x_mm":' + FloatToJsonStr(CoordToMM(Pad.X - XOrg))
+        + ',"y_mm":' + FloatToJsonStr(CoordToMM(Pad.Y - YOrg))
+        + ',"w_mm":' + FloatToJsonStr(CoordToMM(Pad.TopXSize))
+        + ',"h_mm":' + FloatToJsonStr(CoordToMM(Pad.TopYSize))
+        + ',"bottom_w_mm":' + FloatToJsonStr(CoordToMM(Pad.BotXSize))
+        + ',"bottom_h_mm":' + FloatToJsonStr(CoordToMM(Pad.BotYSize))
+        + ',"shape":"' + Str + '"'
+        + ',"corner_radius_pct":' + IntToStr(CornerPct)
+        + ',"stack_mode":"' + ModeName + '"'
+        + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
+        + ',"hole_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleSize))
+        + ',"hole_w_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleWidth))
+        + ',"hole_type":"' + PadHoleKind(Pad) + '"'
+        + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
+        + ',"plated":' + BoolToJsonStr(Pad.Plated)
+        + ',"paste_expansion_state":"' + CacheStateName(Pad, False) + '"'
+        + ',"mask_expansion_state":"' + CacheStateName(Pad, True) + '"'
+        + ',"mask_expansion_mm":' + FloatToJsonStr(MaskTopMM(Pad))
+        + ',"mask_bottom_expansion_mm":' + FloatToJsonStr(MaskBottomMM(Pad))
+        + ',"mask_separate":' + BoolToJsonStr(MaskSeparate(Pad))
+        + ',"mask_from_hole_edge":' + EdgeStr
+        + ',"paste_top_enabled":' + PadPasteTopJson(Pad)
+        + ',"all_writes_ran":' + BoolToJsonStr(Ok) + '}';
+End;
+
 {..............................................................................}
 { Lib_SetPadProperties - change pads that already exist in a PcbLib footprint. }
 {                                                                              }
@@ -12885,9 +13307,9 @@ Var
     LibPath, FocusedPath, FpWanted, FpName, PadWanted, UnitsStr, Shape : String;
     Str, PadsJson, Notes, PlatedStr, HoleTypeStr : String;
     StackStr, EdgeStr, MaskManualStr, PasteManualStr, CornerStr, ModeName : String;
-    NewName, XStr, YStr : String;
+    NewName, XStr, YStr, Code : String;
     CornerPct : Integer;
-    BySelection, MovedOne : Boolean;
+    BySelection, MovedOne, Moving : Boolean;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -12913,93 +13335,15 @@ Begin
             'footprint_name and pad_name (or selected=true) are required');
         Exit;
     End;
-    HoleTypeStr := LowerCase(ExtractJsonValue(Params, 'hole_type'));
-    If (HoleTypeStr <> '') And (HoleTypeStr <> 'round')
-        And (HoleTypeStr <> 'square') And (HoleTypeStr <> 'slot') Then
+    Str := PadEditProblem(Params, False, Code);
+    If Str <> '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_HOLE_TYPE',
-            'hole_type must be round, square or slot');
+        Result := BuildErrorResponse(RequestId, Code, Str);
         Exit;
     End;
-    If ((HoleTypeStr = 'round') Or (HoleTypeStr = 'square'))
-        And (ExtractJsonValue(Params, 'hole_width') <> '') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_HOLE_TYPE',
-            'hole_width makes a slot; leave it out for a round or square hole');
-        Exit;
-    End;
-    Shape := LowerCase(ExtractJsonValue(Params, 'shape'));
-    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
-    If (Shape <> '') And (Shape <> 'round') And (Shape <> 'rectangular')
-        And (Shape <> 'octagonal') And (Shape <> 'roundrect') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_SHAPE',
-            'shape must be round, rectangular, octagonal or roundrect');
-        Exit;
-    End;
-    CornerStr := ExtractJsonValue(Params, 'corner_radius_pct');
-    CornerPct := -1;
-    If CornerStr <> '' Then
-    Begin
-        If IsFloatStr(CornerStr) Then CornerPct := Round(StrToFloatDef(CornerStr, -1));
-        If (CornerPct < 0) Or (CornerPct > 100) Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-                'corner_radius_pct is 0 to 100, a percentage of half the shorter '
-                + 'side; nothing was changed');
-            Exit;
-        End;
-        If (Shape <> '') And (Shape <> 'roundrect') Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-                'corner_radius_pct needs shape roundrect; nothing was changed');
-            Exit;
-        End;
-    End;
-    If (Shape = 'roundrect') And (CornerPct < 0) Then CornerPct := 25;
-    StackStr := LowerCase(ExtractJsonValue(Params, 'stack_mode'));
-    If (StackStr <> '') And (StackStr <> 'simple') And (StackStr <> 'top-middle-bottom') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'stack_mode is simple or top-middle-bottom; nothing was changed');
-        Exit;
-    End;
-    If (StackStr = 'simple') And ((ExtractJsonValue(Params, 'bottom_x_size') <> '')
-        Or (ExtractJsonValue(Params, 'bottom_y_size') <> '')) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'A simple pad has one size: a bottom size needs top-middle-bottom; '
-            + 'nothing was changed');
-        Exit;
-    End;
-    NewName := Trim(ExtractJsonValue(Params, 'new_name'));
     XStr := ExtractJsonValue(Params, 'x');
     YStr := ExtractJsonValue(Params, 'y');
-    If ((XStr <> '') And (Not IsFloatStr(XStr))) Or ((YStr <> '') And (Not IsFloatStr(YStr))) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'x and y are numbers from the footprint origin; nothing was changed');
-        Exit;
-    End;
     MovedOne := False;
-    EdgeStr := LowerCase(ExtractJsonValue(Params, 'mask_from_hole_edge'));
-    MaskManualStr := LowerCase(ExtractJsonValue(Params, 'mask_manual'));
-    PasteManualStr := LowerCase(ExtractJsonValue(Params, 'paste_manual'));
-    If (MaskManualStr = 'false') And ((ExtractJsonValue(Params, 'mask_expansion') <> '')
-        Or (ExtractJsonValue(Params, 'mask_bottom_expansion') <> '')) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'mask_manual=false hands the mask to the design rule, so a mask '
-            + 'value with it would be ignored; nothing was changed');
-        Exit;
-    End;
-    If (PasteManualStr = 'false') And (ExtractJsonValue(Params, 'paste_expansion') <> '') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'paste_manual=false hands the paste to the design rule, so a paste '
-            + 'value with it would be ignored; nothing was changed');
-        Exit;
-    End;
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -13077,77 +13421,12 @@ Begin
                              And (UpperCase(Pad.Name) = UpperCase(PadWanted)))) Then
                 Begin
                     If PadAddr <> '' Then SeenPads.Add(PadAddr);
-                    Ok := True;
-                    Try
-                        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
-                            c_Broadcast, PCBM_BeginModify, c_NoEventData);
-                    Except End;
-
-                    { The stack first: its sizes have nowhere to go before. }
-                    If StackStr = 'simple' Then
-                    Begin
-                        Try
-                            Pad.Mode := ePadMode_Simple;
-                            If Pad.Mode <> ePadMode_Simple Then Ok := False;
-                        Except Ok := False; End;
-                    End
-                    Else If (StackStr = 'top-middle-bottom')
-                        Or (ExtractJsonValue(Params, 'bottom_x_size') <> '')
-                        Or (ExtractJsonValue(Params, 'bottom_y_size') <> '') Then
-                    Begin
-                        Try
-                            If Pad.Mode = ePadMode_Simple Then Pad.Mode := ePadMode_LocalStack;
-                            If Pad.Mode = ePadMode_Simple Then Ok := False;
-                        Except Ok := False; End;
-                    End;
-
-                    Str := ExtractJsonValue(Params, 'x_size');
-                    If Str <> '' Then
-                    Begin
-                        Try Pad.TopXSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'y_size');
-                    If Str <> '' Then
-                    Begin
-                        Try Pad.TopYSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'bottom_x_size');
-                    If Str <> '' Then
-                    Begin
-                        Try Pad.BotXSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'bottom_y_size');
-                    If Str <> '' Then
-                    Begin
-                        Try Pad.BotYSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    If (Shape = 'roundrect') Or ((Shape = '') And (CornerPct >= 0)) Then
-                    Begin
-                        { The per-layer route the pad creators use: TopShape
-                          alone left a through-hole pad round, corner 0. }
-                        Try
-                            SetPadRoundRect(Pad, CornerPct);
-                            If (Pad.Layer <> eBottomLayer) And (Pad.TopShape <> eRoundedRectangular) Then Ok := False;
-                        Except Ok := False; End;
-                    End
-                    Else If Shape <> '' Then
-                    Begin
-                        Try
-                            If Shape = 'rectangular' Then Pad.TopShape := eRectangular
-                            Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
-                            Else Pad.TopShape := eRounded;
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'rotation');
-                    If Str <> '' Then
-                        Try Pad.Rotation := StrToFloatDef(Str, 0); Except Ok := False; End;
+                    Moving := (XStr <> '') Or (YStr <> '');
+                    Ok := ApplyPadEdit(Pad, Params, False, XOrg, YOrg, UnitsStr,
+                        Not MovedOne, Notes);
                     { A move takes one pad: two pads named alike would land  }
                     { on one spot. x and y are from the footprint origin.    }
-                    If (XStr <> '') Or (YStr <> '') Then
+                    If Moving Then
                     Begin
                         If MovedOne Then
                         Begin
@@ -13155,216 +13434,13 @@ Begin
                             If Pos('one pad', Notes) = 0 Then
                                 Notes := Notes + 'move: more than one pad matched and only '
                                     + 'the first was moved; select one pad to move it;';
-                        End
-                        Else
-                        Begin
-                            MovedOne := True;
-                            Try
-                                If XStr <> '' Then
-                                    Pad.X := XOrg + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);
-                                If YStr <> '' Then
-                                    Pad.Y := YOrg + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);
-                            Except Ok := False; End;
                         End;
+                        MovedOne := True;
                     End;
-                    If NewName <> '' Then
-                    Begin
-                        Try
-                            Pad.Name := NewName;
-                            If Pad.Name <> NewName Then Ok := False;
-                        Except Ok := False; End;
-                    End;
-                    If HoleTypeStr <> '' Then
-                    Begin
-                        Try
-                            If HoleTypeStr = 'slot' Then Pad.HoleType := eSlotHole
-                            Else If HoleTypeStr = 'square' Then Pad.HoleType := eSquareHole
-                            Else Pad.HoleType := eRoundHole;
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'hole_size');
-                    If Str <> '' Then
-                    Begin
-                        Try Pad.HoleSize := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'hole_width');
-                    If Str <> '' Then
-                    Begin
-                        Try
-                            Pad.HoleType := eSlotHole;
-                            Pad.HoleWidth := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                        Except Ok := False; End;
-                    End;
-                    Str := ExtractJsonValue(Params, 'hole_rotation');
-                    If Str <> '' Then
-                        Try Pad.HoleRotation := StrToFloatDef(Str, 0); Except Ok := False; End;
-                    PlatedStr := LowerCase(ExtractJsonValue(Params, 'plated'));
-                    If PlatedStr <> '' Then
-                    Begin
-                        Try Pad.Plated := (PlatedStr = 'true') Or (PlatedStr = '1');
-                        Except Ok := False; End;
-                    End;
-
-                    { The top paste opening's on/off flag (issue #80). Set on
-                      its own, apart from the expansion below. }
-                    Str := LowerCase(ExtractJsonValue(Params, 'paste_top_enabled'));
-                    If ((Str = 'true') Or (Str = 'false')) And (Not PadPasteFlagSupported(0)) Then
-                    Begin
-                        Ok := False;
-                        If Pos('paste flag', Notes) = 0 Then
-                            Notes := Notes + 'paste flag: the pad paste on/off flag needs '
-                                + 'Altium Designer 25 or later; it was not changed;';
-                    End
-                    Else If (Str = 'true') Or (Str = 'false') Then
-                    Begin
-                        { Read back: this build accepts the write without
-                          error, so a flag that did not change is a failed
-                          write, not a success. MEASURED (AD 26.11): the flag
-                          is kept only while the paste expansion is manual,
-                          as via tenting is with the mask. A rule-driven
-                          paste is switched to manual first, at the value it
-                          already holds, and the note says so. }
-                        Try
-                            Cache := Pad.GetState_Cache;
-                            If Cache.PasteMaskExpansionValid <> eCacheManual Then
-                            Begin
-                                Cache.PasteMaskExpansionValid := eCacheManual;
-                                Pad.SetState_Cache := Cache;
-                                If Pos('paste manual', Notes) = 0 Then
-                                    Notes := Notes + 'paste manual: a rule-driven paste expansion '
-                                        + 'was made manual at its current value so the paste '
-                                        + 'flag would hold;';
-                            End;
-                        Except Ok := False; End;
-                        Try
-                            Pad.SetState_IsTopPasteEnabled(Str = 'true');
-                            If Pad.GetState_IsTopPasteEnabled <> (Str = 'true') Then Ok := False;
-                        Except Ok := False; End;
-                    End;
-
-                    { Measured from the hole edge: set before the mask value
-                      whose meaning it changes. }
-                    If (EdgeStr = 'true') Or (EdgeStr = 'false') Then
-                    Begin
-                        Try
-                            Pad.SolderMaskExpansionFromHoleEdge := (EdgeStr = 'true');
-                            If Pad.SolderMaskExpansionFromHoleEdge <> (EdgeStr = 'true') Then Ok := False;
-                        Except Ok := False; End;
-                    End;
-
-                    If (ExtractJsonValue(Params, 'paste_expansion') <> '')
-                        Or (ExtractJsonValue(Params, 'mask_expansion') <> '')
-                        Or (ExtractJsonValue(Params, 'mask_bottom_expansion') <> '')
-                        Or (ExtractJsonValue(Params, 'mask_separate') <> '')
-                        Or (MaskManualStr = 'true') Or (MaskManualStr = 'false')
-                        Or (PasteManualStr = 'true') Or (PasteManualStr = 'false') Then
-                    Begin
-                        Try
-                            Cache := Pad.GetState_Cache;
-                            { The source before any value: a value written
-                              while the rule governs is ignored. }
-                            If MaskManualStr = 'true' Then Cache.SolderMaskExpansionValid := eCacheManual
-                            Else If MaskManualStr = 'false' Then Cache.SolderMaskExpansionValid := eCacheInvalid;
-                            If PasteManualStr = 'true' Then Cache.PasteMaskExpansionValid := eCacheManual
-                            Else If PasteManualStr = 'false' Then Cache.PasteMaskExpansionValid := eCacheInvalid;
-                            Str := ExtractJsonValue(Params, 'paste_expansion');
-                            If Str <> '' Then
-                            Begin
-                                Cache.PasteMaskExpansionValid := eCacheManual;
-                                Cache.PasteMaskExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                            End;
-                            { SolderMaskExpansion is the top value once the   }
-                            { sides are separate, and the bottom value is    }
-                            { kept while they are linked, ready to take      }
-                            { effect on unlinking. So a value given for the  }
-                            { pad goes to both sides unless the bottom has a }
-                            { value of its own, and nothing is left behind   }
-                            { on the side the caller did not mention.        }
-                            Str := ExtractJsonValue(Params, 'mask_expansion');
-                            If Str <> '' Then
-                            Begin
-                                Cache.SolderMaskExpansionValid := eCacheManual;
-                                Cache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                                If ExtractJsonValue(Params, 'mask_bottom_expansion') = '' Then
-                                    Cache.SolderMaskBottomExpansion := Cache.SolderMaskExpansion;
-                            End;
-                            Str := ExtractJsonValue(Params, 'mask_bottom_expansion');
-                            If Str <> '' Then
-                            Begin
-                                Cache.SolderMaskExpansionValid := eCacheManual;
-                                Cache.SolderMaskBottomExpansion := CoordFromUnits(StrToFloatDef(Str, 0), UnitsStr);
-                                Cache.UseSeparateExpansions := True;
-                            End;
-                            Str := ExtractJsonValue(Params, 'mask_separate');
-                            If Str <> '' Then
-                                Cache.UseSeparateExpansions := (Str = 'true');
-                            Pad.SetState_Cache := Cache;
-                            Cache := Pad.GetState_Cache;
-                            If (MaskManualStr = 'true') And (Cache.SolderMaskExpansionValid <> eCacheManual) Then Ok := False;
-                            If (MaskManualStr = 'false') And (Cache.SolderMaskExpansionValid = eCacheManual) Then Ok := False;
-                            If (PasteManualStr = 'true') And (Cache.PasteMaskExpansionValid <> eCacheManual) Then Ok := False;
-                            If (PasteManualStr = 'false') And (Cache.PasteMaskExpansionValid = eCacheManual) Then Ok := False;
-                        Except Ok := False; End;
-                    End;
-
-                    Try
-                        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
-                            c_Broadcast, PCBM_EndModify, c_NoEventData);
-                    Except End;
-                    Try Pad.GraphicallyInvalidate; Except End;
-
-                    If ((ExtractJsonValue(Params, 'x_size') <> '')
-                        Or (ExtractJsonValue(Params, 'y_size') <> ''))
-                        And (Pad.Mode <> ePadMode_Simple) And (Pos('stack', Notes) = 0) Then
-                        Notes := Notes + 'a pad with a per-layer stack had only its top '
-                            + 'size written;';
                     If Not Ok Then Inc(Failed);
 
-                    ModeName := 'unknown';
-                    Try
-                        If Pad.Mode = ePadMode_Simple Then ModeName := 'simple'
-                        Else If Pad.Mode = ePadMode_LocalStack Then ModeName := 'top-middle-bottom'
-                        Else If Pad.Mode = ePadMode_ExternalStack Then ModeName := 'full-stack';
-                    Except End;
-                    Str := 'round';
-                    Try
-                        If Pad.TopShape = eRectangular Then Str := 'rectangular'
-                        Else If Pad.TopShape = eOctagonal Then Str := 'octagonal'
-                        Else If Pad.TopShape = eRoundedRectangular Then Str := 'roundrect'
-                        Else If ShapeIsCustom(Pad.TopShape) Then Str := 'custom';
-                    Except End;
-                    CornerPct := 0;
-                    If Str = 'roundrect' Then
-                        Try CornerPct := Pad.CRPercentage[eTopLayer]; Except End;
-                    EdgeStr := 'null';
-                    Try EdgeStr := BoolToJsonStr(Pad.SolderMaskExpansionFromHoleEdge); Except End;
-
                     If PadsJson <> '' Then PadsJson := PadsJson + ',';
-                    PadsJson := PadsJson + '{"name":"' + EscapeJsonString(Pad.Name) + '"'
-                        + ',"x_mm":' + FloatToJsonStr(CoordToMM(Pad.X - XOrg))
-                        + ',"y_mm":' + FloatToJsonStr(CoordToMM(Pad.Y - YOrg))
-                        + ',"w_mm":' + FloatToJsonStr(CoordToMM(Pad.TopXSize))
-                        + ',"h_mm":' + FloatToJsonStr(CoordToMM(Pad.TopYSize))
-                        + ',"bottom_w_mm":' + FloatToJsonStr(CoordToMM(Pad.BotXSize))
-                        + ',"bottom_h_mm":' + FloatToJsonStr(CoordToMM(Pad.BotYSize))
-                        + ',"shape":"' + Str + '"'
-                        + ',"corner_radius_pct":' + IntToStr(CornerPct)
-                        + ',"stack_mode":"' + ModeName + '"'
-                        + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
-                        + ',"hole_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleSize))
-                        + ',"hole_w_mm":' + FloatToJsonStr(CoordToMM(Pad.HoleWidth))
-                        + ',"hole_type":"' + PadHoleKind(Pad) + '"'
-                        + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
-                        + ',"plated":' + BoolToJsonStr(Pad.Plated)
-                        + ',"paste_expansion_state":"' + CacheStateName(Pad, False) + '"'
-                        + ',"mask_expansion_state":"' + CacheStateName(Pad, True) + '"'
-                        + ',"mask_expansion_mm":' + FloatToJsonStr(MaskTopMM(Pad))
-                        + ',"mask_bottom_expansion_mm":' + FloatToJsonStr(MaskBottomMM(Pad))
-                        + ',"mask_separate":' + BoolToJsonStr(MaskSeparate(Pad))
-                        + ',"mask_from_hole_edge":' + EdgeStr
-                        + ',"paste_top_enabled":' + PadPasteTopJson(Pad)
-                        + ',"all_writes_ran":' + BoolToJsonStr(Ok) + '}';
+                    PadsJson := PadsJson + PadEditJson(Pad, XOrg, YOrg, Ok);
                     Inc(Count);
                 End;
                 Pad := GrpIter.NextPCBObject;
@@ -13392,6 +13468,237 @@ Begin
         + ',"pads_with_a_failed_write":' + IntToStr(Failed)
         + ',"pads":[' + PadsJson + ']'
         + ',"note":"' + EscapeJsonString(Notes) + '"}');
+End;
+
+{..............................................................................}
+{ Lib_SetPadGeometry - change many pads of one PcbLib footprint in ONE call   }
+{ (issue #303). rows is a batch, ops joined by ~~; each names its pad by id,  }
+{ the object address get_pad_geometry gives a pad, and carries any field     }
+{ set_pad_properties takes: x_size, y_size, shape, corner_radius_pct,        }
+{ new_name, x, y, rotation, hole_*, plated, mask_*, paste_* .... x_mm and    }
+{ y_mm, as get_pad_geometry reported them, guard a row: a pad that is no     }
+{ longer there refuses the call. Every row is checked first (id found once,  }
+{ guard held, fields valid) and nothing is written unless all pass; then one }
+{ walk writes the pad of each row once, inside one edit. A pad is matched by }
+{ id, never by its name, so a renumbering table (3 -> 5, 5 -> 7) needs no    }
+{ temporary names. Renaming and moving leave the walk itself alone: no pad   }
+{ came up twice in it, the count is reported as repeats. Measured on AD 25.8: }
+{ 33 pads in 0.9 s and 200 in 5.6 s with every pad read back, against about  }
+{ 0.22 s per set_pad_properties call. Undo in a library takes back one pad   }
+{ at a time.                                                                 }
+{ Params: footprint_name, rows (required); library_path, units.              }
+{..............................................................................}
+Function Lib_SetPadGeometry(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, FpWanted, FpName, UnitsStr, RowsStr, Remaining : String;
+    Op, Str, Code, PadAddr, Notes, PadsJson, Rec : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint, Target : IPCB_LibComponent;
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    Ids, Rows, Hits, Seen, Done : TStringList;
+    XOrg, YOrg, Idx, I, Count, Failed, Repeats : Integer;
+    WantX, WantY, HaveX, HaveY : Double;
+    Ok : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpWanted := ExtractJsonValue(Params, 'footprint_name');
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    RowsStr := ExtractJsonValue(Params, 'rows');
+    If (FpWanted = '') Or (RowsStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'footprint_name and rows are required');
+        Exit;
+    End;
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+
+    Ids := TStringList.Create;
+    Rows := TStringList.Create;
+    Hits := TStringList.Create;
+    Seen := TStringList.Create;
+    Done := TStringList.Create;
+    Try
+        { Every row before anything else: its own id, valid fields. }
+        Remaining := RowsStr;
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Str := Trim(GetBatchField(Op, 'id'));
+            If (Str = '') Or (Ids.IndexOf(Str) >= 0) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_ROWS',
+                    'every row needs an id of its own (missing or repeated: "'
+                    + Str + '"); nothing was changed');
+                Exit;
+            End;
+            Ids.Add(Str);
+            Rows.Add(Op);
+            Hits.Add('0');
+            Code := '';
+            Op := PadEditProblem(Op, True, Code);
+            If Op <> '' Then
+            Begin
+                Result := BuildErrorResponse(RequestId, Code, 'row ' + Str + ': ' + Op);
+                Exit;
+            End;
+        End;
+
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+            Exit;
+        End;
+        FocusedPath := '';
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+        If LibPath = '' Then LibPath := FocusedPath;
+        If LibPath = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_LIBRARY',
+                'No library is active and library_path was not supplied');
+            Exit;
+        End;
+        If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+        Begin
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Document');
+            AddStringParameter('FileName', LibPath);
+            RunProcess('WorkspaceManager:OpenObject');
+        End;
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+                'Failed to focus PCB library at ' + LibPath);
+            Exit;
+        End;
+        Target := Nil;
+        Iter := PcbLib.LibraryIterator_Create;
+        Try
+            Footprint := Iter.FirstPCBObject;
+            While Footprint <> Nil Do
+            Begin
+                FpName := '';
+                Try FpName := Footprint.Name; Except End;
+                If FpName = FpWanted Then Begin Target := Footprint; Break; End;
+                Footprint := Iter.NextPCBObject;
+            End;
+        Finally
+            PcbLib.LibraryIterator_Destroy(Iter);
+        End;
+        If Target = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT',
+                'Footprint not found: ' + FpWanted);
+            Exit;
+        End;
+        XOrg := 0;  YOrg := 0;
+        Try XOrg := Target.X; Except End;
+        Try YOrg := Target.Y; Except End;
+
+        { Walk 1: find the pad of every row, check its guard. Nothing written. }
+        Notes := '';
+        GrpIter := Target.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GrpIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                PadAddr := '';
+                Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
+                Idx := Ids.IndexOf(PadAddr);
+                If (Idx >= 0) And (Seen.IndexOf(PadAddr) < 0) Then
+                Begin
+                    Seen.Add(PadAddr);
+                    Hits.Strings[Idx] := '1';
+                    Op := Rows.Strings[Idx];
+                    HaveX := CoordToMM(Pad.X - XOrg);
+                    HaveY := CoordToMM(Pad.Y - YOrg);
+                    WantX := StrToFloatDef(GetBatchField(Op, 'x_mm'), HaveX);
+                    WantY := StrToFloatDef(GetBatchField(Op, 'y_mm'), HaveY);
+                    If (Abs(WantX - HaveX) > 0.0005) Or (Abs(WantY - HaveY) > 0.0005) Then
+                        Notes := Notes + 'row ' + PadAddr + ': the pad is no longer at '
+                            + 'x_mm / y_mm;';
+                End;
+                Pad := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Target.GroupIterator_Destroy(GrpIter);
+        End;
+        For I := 0 To Ids.Count - 1 Do
+            If Hits.Strings[I] = '0' Then
+                Notes := Notes + 'row ' + Ids.Strings[I] + ': no pad with that id in '
+                    + FpWanted + ';';
+        If Notes <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ROWS_REFUSED',
+                Notes + ' nothing was changed; read the pads again');
+            Exit;
+        End;
+
+        { Walk 2: write. Each pad once; one a walk hands out again is counted. }
+        Count := 0;  Failed := 0;  Repeats := 0;
+        PadsJson := '';
+        PcbBeginEdit(0);
+        Try
+            GrpIter := Target.GroupIterator_Create;
+            Try
+                GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                Pad := GrpIter.FirstPCBObject;
+                While Pad <> Nil Do
+                Begin
+                    PadAddr := '';
+                    Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
+                    If Done.IndexOf(PadAddr) >= 0 Then
+                        Inc(Repeats)
+                    Else
+                    Begin
+                        Done.Add(PadAddr);
+                        Idx := Ids.IndexOf(PadAddr);
+                        If Idx >= 0 Then
+                        Begin
+                            Ok := ApplyPadEdit(Pad, Rows.Strings[Idx], True, XOrg, YOrg,
+                                UnitsStr, True, Notes);
+                            If Not Ok Then Inc(Failed);
+                            Rec := PadEditJson(Pad, XOrg, YOrg, Ok);
+                            If PadsJson <> '' Then PadsJson := PadsJson + ',';
+                            PadsJson := PadsJson + Copy(Rec, 1, Length(Rec) - 1)
+                                + ',"id":"' + PadAddr + '"}';
+                            Inc(Count);
+                        End;
+                    End;
+                    Pad := GrpIter.NextPCBObject;
+                End;
+            Finally
+                Target.GroupIterator_Destroy(GrpIter);
+            End;
+        Finally
+            PcbEndEdit(0);
+        End;
+        Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(LibPath);
+
+        Result := BuildSuccessResponse(RequestId,
+            '{"footprint":"' + EscapeJsonString(FpWanted) + '"'
+            + ',"rows":' + IntToStr(Ids.Count)
+            + ',"pads_changed":' + IntToStr(Count)
+            + ',"pads_with_a_failed_write":' + IntToStr(Failed)
+            + ',"repeats":' + IntToStr(Repeats)
+            + ',"pads":[' + PadsJson + ']'
+            + ',"note":"' + EscapeJsonString(Notes) + '"}');
+    Finally
+        Ids.Free;  Rows.Free;  Hits.Free;  Seen.Free;  Done.Free;
+    End;
 End;
 
 { Whether a footprint read was asked for this kind: kinds is a '|' list such }
@@ -21362,6 +21669,7 @@ Begin
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'get_vault_name':       Result := Lib_GetVaultName(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
+        'set_pad_geometry':     Result := Lib_SetPadGeometry(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);

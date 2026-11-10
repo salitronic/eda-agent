@@ -48,13 +48,19 @@ def _tools(monkeypatch):
 
 def test_a_move_takes_one_pad_from_the_footprint_origin_and_a_rename_is_read_back():
     body = _routine("Lib_SetPadProperties")
-    move = body[body.index("If (XStr <> '') Or (YStr <> '') Then"):]
+    move = body[body.index("If Moving Then"):]
     assert move.index("If MovedOne Then") < move.index("Ok := False;") < move.index(
         "MovedOne := True;")
-    assert "Pad.X := XOrg + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);" in move
-    assert "Pad.Y := YOrg + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);" in move
-    assert "If Pad.Name <> NewName Then Ok := False;" in body
-    assert body.index("Not IsFloatStr(XStr)") < body.index("Workspace := GetWorkspace;")
+    assert "Ok := ApplyPadEdit(Pad, Params, False, XOrg, YOrg, UnitsStr," in body
+    assert "Not MovedOne, Notes);" in body
+    edit = _routine("ApplyPadEdit")
+    moved = edit[edit.index("If ((XStr <> '') Or (YStr <> '')) And MayMove Then"):]
+    assert "Pad.X := XOrg + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);" in moved
+    assert "Pad.Y := YOrg + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);" in moved
+    assert "If Pad.Name <> NewName Then Ok := False;" in edit
+    assert "Not IsFloatStr(XStr)" in _routine("PadEditProblem")
+    assert body.index("PadEditProblem(Params, False, Code)") < body.index(
+        "Workspace := GetWorkspace;")
 
 
 def test_the_pad_edit_arguments_reach_the_bridge(monkeypatch):

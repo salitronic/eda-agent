@@ -46,25 +46,28 @@ def test_a_selection_replaces_the_name_match():
 
 
 def test_a_bad_or_conflicting_hole_type_is_refused_before_anything_is_touched():
+    # The checks live in PadEditProblem, shared with set_pad_geometry; the
+    # writer runs them before it looks for the library or opens an edit.
+    checks = _lib()["PadEditProblem"]
+    assert checks.count("'INVALID_HOLE_TYPE'") == 2
+    assert "And (PadArg(Src, IsOp, 'hole_width') <> '') Then" in checks
     body = _set()
-    first = body.index("'INVALID_HOLE_TYPE'")
-    assert body.count("'INVALID_HOLE_TYPE'") == 2
-    assert "And (ExtractJsonValue(Params, 'hole_width') <> '') Then" in body
-    assert first < body.index("Workspace := GetWorkspace;")
-    assert body.rindex("'INVALID_HOLE_TYPE'") < body.index("PcbBeginEdit(0);")
+    call = body.index("Str := PadEditProblem(Params, False, Code);")
+    assert call < body.index("Workspace := GetWorkspace;")
+    assert call < body.index("PcbBeginEdit(0);")
 
 
 def test_the_drill_type_is_written_before_the_hole_sizes():
-    body = _set()
+    body = _lib()["ApplyPadEdit"]
     kind = body.index("If HoleTypeStr = 'slot' Then Pad.HoleType := eSlotHole")
-    assert kind < body.index("Str := ExtractJsonValue(Params, 'hole_size');")
-    assert kind < body.index("Str := ExtractJsonValue(Params, 'hole_width');")
+    assert kind < body.index("Str := PadArg(Src, IsOp, 'hole_size');")
+    assert kind < body.index("Str := PadArg(Src, IsOp, 'hole_width');")
     assert "Else If HoleTypeStr = 'square' Then Pad.HoleType := eSquareHole" in body
     assert "Else Pad.HoleType := eRoundHole;" in body
 
 
 def test_each_pad_reads_its_drill_type_back():
-    assert "',\"hole_type\":\"' + PadHoleKind(Pad) + '\"'" in _set()
+    assert "',\"hole_type\":\"' + PadHoleKind(Pad) + '\"'" in _lib()["PadEditJson"]
     kind = _lib()["PadHoleKind"]
     assert "If Pad.HoleType = eSlotHole Then Result := 'slot'" in kind
     assert "Else If Pad.HoleType = eSquareHole Then Result := 'square';" in kind
