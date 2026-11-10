@@ -12,9 +12,11 @@ browser is found or the shot fails, the caller still has the SVG.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -88,19 +90,32 @@ def build_screenshot_cmd(
     png_path: str,
     width: int,
     height: int,
+    profile_dir: Optional[str] = None,
 ) -> list[str]:
-    """Build the headless-screenshot argument list (pure / testable)."""
+    """Build the headless-screenshot argument list (pure / testable).
+
+    ``profile_dir`` is a fresh profile of the shot's own. Without one,
+    a headless Edge started while the user's Edge is open joins that
+    browser's profile and does not exit, so every shot ran into the
+    timeout (#301).
+    """
     uri = Path(svg_path).resolve().as_uri()
-    return [
+    cmd = [
         browser,
         "--headless",
         "--disable-gpu",
         "--hide-scrollbars",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
         "--force-device-scale-factor=1",
         f"--window-size={int(width)},{int(height)}",
         f"--screenshot={png_path}",
-        uri,
     ]
+    if profile_dir:
+        cmd.append(f"--user-data-dir={profile_dir}")
+    cmd.append(uri)
+    return cmd
 
 
 def rasterize_svg(
@@ -122,6 +137,8 @@ def rasterize_svg(
         return {"ok": False, "reason": f"svg not found: {svg_path}", "png_path": None}
     if png_path is None:
         png_path = str(svg.with_suffix(".png"))
+    # The browser resolves a relative path against its own folder.
+    png_path = str(Path(png_path).resolve())
     if height is None:
         height = width
 
@@ -134,20 +151,52 @@ def rasterize_svg(
             "png_path": None,
         }
 
+    profile = tempfile.mkdtemp(prefix="eda-agent-raster-")
     cmd = build_screenshot_cmd(browser, str(svg.resolve()), png_path,
-                               int(width), int(height))
+                               int(width), int(height), profile_dir=profile)
+    log = os.path.join(profile, "stderr.txt")
+    reason = ""
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                              **no_window())
-    except Exception as exc:  # subprocess timeout / OS error
-        return {"ok": False, "reason": f"rasterize failed: {exc}", "png_path": None}
+        # Output goes to a file, not a pipe: a browser helper process that
+        # inherits a pipe keeps the read open after the browser exits.
+        with open(log, "wb") as err:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
+                                    stdin=subprocess.DEVNULL, **no_window())
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                reason = f"the browser did not exit within {timeout:g} s"
+    except Exception as exc:  # OS error starting the browser
+        reason = f"rasterize failed: {exc}"
+    try:
+        with open(log, "rb") as err:
+            stderr = err.read(400)
+    except OSError:
+        stderr = b""
+    shutil.rmtree(profile, ignore_errors=True)
 
-    if Path(png_path).exists():
+    if Path(png_path).exists() and Path(png_path).stat().st_size > 0:
         return {"ok": True, "png_path": png_path}
-    stderr = proc.stderr or b""
     return {
         "ok": False,
-        "reason": "browser produced no PNG",
+        "reason": reason or "browser produced no PNG",
         "png_path": None,
-        "stderr": stderr[:400].decode("utf-8", "replace"),
+        "stderr": stderr.decode("utf-8", "replace"),
     }
+
+
+def _kill_tree(proc: "subprocess.Popen") -> None:
+    """Stop the browser and the helper processes it started."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=15, **no_window())
+        except Exception:  # noqa: BLE001 - fall through to kill()
+            pass
+    try:
+        proc.kill()
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001 - already gone
+        pass
