@@ -1796,7 +1796,20 @@ Begin
             Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
             { A free text, or a component's designator / comment text: the   }
             { same member PCB_PlaceText and the layout copy already write.    }
-            Else If Oid = eTextObject Then Begin Txt := Obj; Txt.Rotation := StrToFloatDef(Value, 0); End
+            { A designator turns about its CENTRE, so its anchor (XLocation, }
+            { which X / Y read and move from) shifts, but Altium updates the }
+            { anchor only at the next geometry operation. MEASURED: in one   }
+            { set Rotation|X|Y the X write read the anchor from before the   }
+            { turn and landed off by the whole shift (up to ~110 mil), while }
+            { the Y after it was exact. The zero move brings the anchor up   }
+            { to date for the next property; a free text turns about its     }
+            { anchor and is not moved by it.                                 }
+            Else If Oid = eTextObject Then
+            Begin
+                Txt := Obj;
+                Txt.Rotation := StrToFloatDef(Value, 0);
+                Txt.MoveByXY(0, 0);
+            End
             Else Matched := False;
         End
         { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }
