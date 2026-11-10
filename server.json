@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.salitronic/eda-agent",
+  "title": "eda-agent",
+  "description": "Drive a live Altium Designer session: schematic, PCB and library tools. KiCad and EasyEDA too.",
+  "version": "0.8.1",
+  "websiteUrl": "https://github.com/salitronic/eda-agent",
+  "repository": {
+    "url": "https://github.com/salitronic/eda-agent",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "eda-agent",
+      "version": "0.8.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "EDA_AGENT_BACKEND",
+          "description": "The EDA tool to drive; both = Altium and KiCad",
+          "default": "altium",
+          "choices": ["altium", "kicad", "easyeda", "both"],
+          "isRequired": false
+        },
+        {
+          "name": "EDA_AGENT_TOOLSET",
+          "description": "full lists every tool; minimal lists two meta-tools that reach them all",
+          "default": "full",
+          "choices": ["full", "minimal"],
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

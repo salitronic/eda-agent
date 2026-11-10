@@ -8,11 +8,11 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 
 Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board in Altium Designer from a written spec to manufacturing files. It builds a project library from scratch, with a symbol, footprint, 3D model and part numbers for every part. It then draws the schematic, places 61 LEDs in rings, routes the USB pair at 90 ohms, pours stitched ground, gets DRC clean and writes the Gerbers, drill, BOM, pick-and-place and STEP files. A correction round follows: a review prompt lists issues from the first pass, and Claude reroutes the whole USB pair as a coupled differential pair, gives every part a realistic 3D model from its datasheet drawing and finishes the schematics with title blocks. The result would still get a manual tweaking pass before prototyping, but it is already at a very good stage.
 
-[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
+[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
 
 Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
 
-[![eda-agent demo: a schematic from a one-line spec in Altium Designer](assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
+[![eda-agent demo: a schematic from a one-line spec in Altium Designer](https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
 
 ## Support the project
 
@@ -27,7 +27,7 @@ Professional and Company sponsors appear here with their logo, and Backer and Bi
 
 ## Dashboard
 
-<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
+<img src="https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
 
 Two dashboards ship with eda-agent:
 
@@ -82,7 +82,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - An EDA tool, one of:
   - **Altium Designer** (recent versions, AD20+ preferred) - Windows only
   - **KiCad 10** with its API enabled (Preferences → Plugins → Enable KiCad API) and the board open in the PCB editor; nothing extra to install
-  - **EasyEDA Pro** with the bundled extension installed (see [`extensions/easyeda/README.md`](extensions/easyeda/README.md))
+  - **EasyEDA Pro** with the bundled extension installed (see [`extensions/easyeda/README.md`](https://github.com/salitronic/eda-agent/blob/main/extensions/easyeda/README.md))
 
 The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), so one install drives any of them. See [EDA backends](#eda-backends).
 
@@ -93,6 +93,14 @@ git clone https://github.com/salitronic/eda-agent
 cd eda-agent
 python -m pip install -e .
 ```
+
+or, from PyPI:
+
+```bash
+python -m pip install eda-agent
+```
+
+A clone gets every commit as it lands and is updated with `server_update`; a PyPI install gets tagged releases and is updated with `python -m pip install --upgrade eda-agent`. Each looks for updates where it came from.
 
 Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
 
@@ -177,7 +185,7 @@ The EasyEDA connection runs the other way round: the editor dials out to
 this server, so nothing here can start it or make it connect.
 
 Full detail, including what differs between them and what each one
-cannot do, is in [`docs/BACKENDS.md`](docs/BACKENDS.md).
+cannot do, is in [`docs/BACKENDS.md`](https://github.com/salitronic/eda-agent/blob/main/docs/BACKENDS.md).
 
 ## Finding the right tool
 
@@ -250,7 +258,7 @@ default**, and there is no fallback order, so a result always names its
 source.
 
 The providers, their credentials and their access policies are in
-[`docs/PART_SOURCING.md`](docs/PART_SOURCING.md).
+[`docs/PART_SOURCING.md`](https://github.com/salitronic/eda-agent/blob/main/docs/PART_SOURCING.md).
 
 ## Altium 365, company policies, simulators
 
@@ -348,7 +356,7 @@ A list given to `obj_modify`, `pcb_move_components` or `sch_place_components` (o
 
 **This tool is experimental. Please read this section before using on a design you haven't backed up.**
 
-> Bridge changes are checked by Free Pascal and a linter before they ship, which cannot prove Altium's own DelphiScript engine accepts them: the two differ on which identifiers exist, and an undeclared one faults at runtime rather than at compile time. [`docs/RELEASE_VERIFICATION.md`](docs/RELEASE_VERIFICATION.md) is the procedure for closing that gap on a release, starting with a self-test that runs inside Altium and needs no document.
+> Bridge changes are checked by Free Pascal and a linter before they ship, which cannot prove Altium's own DelphiScript engine accepts them: the two differ on which identifiers exist, and an undeclared one faults at runtime rather than at compile time. [`docs/RELEASE_VERIFICATION.md`](https://github.com/salitronic/eda-agent/blob/main/docs/RELEASE_VERIFICATION.md) is the procedure for closing that gap on a release, starting with a self-test that runs inside Altium and needs no document.
 
 ### UI automation synthesises real keyboard and mouse input
 
@@ -372,7 +380,7 @@ Every synthesised event is then refused. Reading stays available on purpose, bec
 
 One case is not solvable: Altium's menu bar carries entries that are commands rather than menus (Place a Comment, Share, Open Home page, Preferences), and nothing distinguishes them. Measured across all 17 bar items: identical MSAA state including `HASPOPUP`, identical `accDefaultAction`, identical UIA control type. Listing such an entry clicks it, and clicking it runs it.
 
-Full detail in [`docs/ui-automation.md`](docs/ui-automation.md).
+Full detail in [`docs/ui-automation.md`](https://github.com/salitronic/eda-agent/blob/main/docs/ui-automation.md).
 
 ### Altium DelphiScript engine can crash
 
@@ -468,7 +476,7 @@ The polling loop goes into idle mode after a second or two of no MCP commands (1
 
 ## Tool reference
 
-[`docs/TOOL_REFERENCE.md`](docs/TOOL_REFERENCE.md) lists every tool with
+[`docs/TOOL_REFERENCE.md`](https://github.com/salitronic/eda-agent/blob/main/docs/TOOL_REFERENCE.md) lists every tool with
 its arguments, its **maturity** (offline / simulator / live-verified) and
 its **interaction** badge, flagging the ones that open a blocking dialog
 or leave work incomplete. It is generated by
@@ -615,7 +623,9 @@ At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` in
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0. See [LICENSE](https://github.com/salitronic/eda-agent/blob/main/LICENSE) and [NOTICE](https://github.com/salitronic/eda-agent/blob/main/NOTICE).
+
+<!-- mcp-name: io.github.salitronic/eda-agent -->
 
 ## Disclaimer
 
