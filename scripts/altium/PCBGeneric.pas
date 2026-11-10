@@ -1803,7 +1803,7 @@ Begin
             { turn and landed off by the whole shift (up to ~110 mil), while }
             { the Y after it was exact. The zero move brings the anchor up   }
             { to date for the next property; a free text turns about its     }
-            { anchor and is not moved by it.                                 }
+            { anchor and is not moved by it (issue #305).                    }
             Else If Oid = eTextObject Then
             Begin
                 Txt := Obj;
