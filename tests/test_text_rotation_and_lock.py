@@ -39,6 +39,17 @@ def test_a_text_rotation_is_written_on_the_text():
     assert "Matched := False" in branch
 
 
+def test_a_turned_text_has_its_anchor_brought_up_to_date():
+    """A designator turns about its centre and its anchor moves, but Altium
+    updates the anchor only at the next geometry operation, so an X / Y
+    written in the same set read the anchor from before the turn. A zero
+    move straight after the turn makes the next property read it as it is.
+    """
+    branch = _branch(_setter(), "Rotation")
+    assert re.search(r"Txt\.Rotation\s*:=\s*StrToFloatDef\(Value,\s*0\);"
+                     r"\s*Txt\.MoveByXY\(0,\s*0\);", branch), branch
+
+
 def test_locked_is_written_as_the_inverse_of_moveable():
     body = _setter()
     assert re.search(r"PropName\s*=\s*'Locked'\s+Then\s+Obj\.Moveable\s*:=\s*"
