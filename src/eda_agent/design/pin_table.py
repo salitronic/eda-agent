@@ -26,6 +26,8 @@ PIN_TABLE_TERMS = (
 #: Characters that differ between how a datasheet and a symbol write a name.
 _DROP = re.compile(r"[\\#/~!_\s̅‾*']")
 _SPLIT = re.compile(r"[\s,;()\[\]|]+")
+#: Words a subscripted name can be printed as: V, CC, LO for V_CC_LO.
+_SUBSCRIPT_WORDS = 3
 #: A pin number or ball name standing alone: 7, 12, A1, AB12.
 _ANY_NUMBER = re.compile(r"(?<![A-Za-z0-9.])[A-Z]{0,2}\d{1,3}(?![A-Za-z0-9.])")
 
@@ -49,10 +51,17 @@ def _name_in(name: str, line: str) -> bool:
     want = norm(name)
     if not want:
         return False
-    for token in _SPLIT.split(line):
-        got = norm(token)
-        if got == want or got == "N" + want or want == "N" + got:
-            return True
+    tokens = [norm(t) for t in _SPLIT.split(line)]
+    for start in range(len(tokens)):
+        # A subscript comes out of the PDF as its own word ("V CC" for
+        # V_CC), so up to three neighbouring words are read as one name.
+        got = ""
+        for token in tokens[start:start + _SUBSCRIPT_WORDS]:
+            got += token
+            if got == want or got == "N" + want or want == "N" + got:
+                return True
+            if len(got) >= len(want) + 1:
+                break
     return False
 
 
