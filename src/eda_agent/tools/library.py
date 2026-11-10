@@ -1860,6 +1860,25 @@ async def _show_one_part(bridge: Any, name: str) -> Optional[int]:
         return None
 
 
+async def _courtyard_layer(bridge) -> tuple[str, str]:
+    """The focused library's courtyard layer, by kind or name, and a note
+    when there is none and Mechanical1 is used."""
+    from ..design.landpattern.emit import LayerRoleError, resolve_altium_layers
+    try:
+        mech = await bridge.send_command_async("library.get_mech_layers", {})
+        # Only the courtyard is wanted here; the assembly role is named so
+        # its lookup cannot refuse the call.
+        layers = resolve_altium_layers((mech or {}).get("layers") or [],
+                                       assembly_layer="-")
+        return str(layers["courtyard"]["layer"]), ""
+    except LayerRoleError as e:
+        return "", (f"{e} The courtyard went on Mechanical1; pass "
+                    "courtyard_layer to choose.")
+    except Exception as e:  # noqa: BLE001 - the footprint is still made
+        return "", (f"the library's mechanical layers could not be read "
+                    f"({e}); the courtyard went on Mechanical1")
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -2627,6 +2646,7 @@ def register_library_tools(mcp):
         tab_w: float = 0.0,
         tab_h: float = 0.0,
         description: str = "",
+        courtyard_layer: str = "",
     ) -> dict[str, Any]:
         """Create a COMPLETE standard footprint in ONE call from the land
         dimensions you give (pads, silk outline, courtyard). For a package
@@ -2653,8 +2673,12 @@ def register_library_tools(mcp):
                 for quad it runs along each row.
             row_span: Centre-to-centre between rows (dual, quad), mils.
             shape: Pad shape (default "roundrect", corner_radius in %).
-            silk: Draw a TopOverlay body outline.
-            courtyard: Courtyard margin, mils (0 = none; Mechanical1).
+            silk: Draw the body outline on TopOverlay, cut clear of the
+                pads, with a pin 1 mark where the part needs one.
+            courtyard: Courtyard margin past pads, body and silk, mils
+                (0 = none).
+            courtyard_layer: Its layer; empty takes the library's
+                Courtyard Top layer, else Mechanical1.
             body_w, body_h: Body size for the silk (default pad extent).
             hole: Drill, mils; > 0 gives through-hole pads, pin 1 square.
             description: Footprint description.
@@ -2675,6 +2699,9 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": str(e)}
 
         bridge = get_bridge()
+        cy_layer, cy_note = courtyard_layer, ""
+        if courtyard > 0 and not cy_layer:
+            cy_layer, cy_note = await _courtyard_layer(bridge)
         created = await bridge.send_command_async(
             "library.create_footprint",
             {"name": name, "description": description},
@@ -2695,7 +2722,8 @@ def register_library_tools(mcp):
             "library.add_footprint_pads",
             {"pads": pads_payload, "footprint_name": name})
 
-        tracks = geom.all_tracks()
+        tracks = list(geom.silk_tracks) + [
+            {**t, "layer": cy_layer or t["layer"]} for t in geom.courtyard_tracks]
         tracks_res: dict[str, Any] = {}
         if tracks:
             # Unrounded, like the pads: round() moved every fractional mil,
@@ -2719,6 +2747,9 @@ def register_library_tools(mcp):
             "pin_count": pin_count,
             "pads": len(geom.pads),
             "tracks": len(tracks),
+            **({"courtyard_layer": cy_layer or "Mechanical1"}
+               if geom.courtyard_tracks else {}),
+            **({"courtyard_note": cy_note} if cy_note else {}),
             "width_mils": geom.width_mils,
             "height_mils": geom.height_mils,
             "create": created,

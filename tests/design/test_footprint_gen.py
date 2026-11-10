@@ -22,16 +22,18 @@ def test_chip_two_pads_symmetric():
 
 
 def test_silk_and_courtyard_emitted():
+    # A chip whose body reaches past its pads keeps the outline's long
+    # sides; the short sides cross the pads and are cut away.
     g = generate_footprint("chip", 2, pitch=40, pad_w=24, pad_h=30,
-                           silk=True, courtyard=10)
-    assert len(g.silk_tracks) == 4               # rectangle
+                           body_w=60, body_h=60, silk=True, courtyard=10)
+    assert len(g.silk_tracks) == 2
     assert len(g.courtyard_tracks) == 4
     # courtyard sits on a mechanical layer, silk on overlay
     assert all(t["layer"] == "TopOverlay" for t in g.silk_tracks)
     assert all(t["layer"].startswith("Mechanical") for t in g.courtyard_tracks)
-    # courtyard extends past the pad extent by `courtyard`
+    # courtyard extends past the body and silk by `courtyard`
     cx = max(t["x1"] for t in g.courtyard_tracks)
-    assert cx == pytest.approx(g.width_mils / 2 + 10)
+    assert cx == pytest.approx(30 + 6 + 10)   # ink outside the body
 
 
 def test_courtyard_zero_disables():

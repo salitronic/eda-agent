@@ -91,8 +91,8 @@ def test_standard_footprint_tracks_keep_fractional_mils(monkeypatch):
     want = [{k: float(t[k]) for k in ("x1", "y1", "x2", "y2", "width")}
             for t in geom.all_tracks()]
     assert sent == want
-    assert any(v["x1"] == pytest.approx(-39.37) for v in sent), (
-        "the body edge was rounded to a whole mil")
+    assert any(v["x1"] != round(v["x1"]) for v in sent), (
+        "every edge was rounded to a whole mil")
 
 
 # --- easyeda_create_standard_footprint ---------------------------------------
@@ -352,3 +352,26 @@ def test_build_pcb_reports_only_the_boxes():
                                        {"refdes": "R2", "pin": "1"}]}],
               mod_texts={"R1": mod}, placeholders=boxes)
     assert boxes == ["R2"]
+
+
+def test_standard_footprint_courtyard_goes_on_the_courtyard_layer(monkeypatch):
+    # #302: the courtyard went on Mechanical1 as plain tracks and the
+    # renderer found no layer of the Courtyard kind.
+    class Bridge(_Recorder):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "library.get_mech_layers":
+                self.calls.append((command, dict(params or {})))
+                return {"layers": [{"layer": "Mechanical15", "name": "Courtyard",
+                                    "kind": "Courtyard Top"}]}
+            return await super().send_command_async(command, params, timeout)
+
+    bridge = Bridge()
+    tools = _library_tools(monkeypatch, bridge)
+    out = asyncio.run(tools["lib_create_standard_footprint"](
+        name="SON", family="dual", pin_count=8, pitch=25.6, pad_w=30,
+        pad_h=12, row_span=110, body_w=118, body_h=118))
+    tracks = next(p for c, p in bridge.calls
+                  if c == "library.add_footprint_tracks")["tracks"]
+    layers = [get_batch_field(op, "layer") for op in _ops(tracks)]
+    assert layers.count("Mechanical15") == 4 and "Mechanical1" not in layers
+    assert out["courtyard_layer"] == "Mechanical15"
