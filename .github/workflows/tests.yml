@@ -25,11 +25,11 @@ jobs:
   cross-validate:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -57,7 +57,7 @@ jobs:
       # indistinguishable from deleting the job.
       - name: Cache Free Pascal
         id: fpc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:\tools\freepascal
           key: freepascal-3.2.2-${{ runner.os }}
@@ -150,12 +150,12 @@ jobs:
       # compare and passes vacuously. That would leave the one check that
       # catches a release number which has already shipped inert in CI,
       # which is the only place it runs unattended.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -238,11 +238,11 @@ jobs:
   python-311:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -266,11 +266,11 @@ jobs:
   package:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
