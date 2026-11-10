@@ -216,6 +216,57 @@ def test_a_package_check_looks_again_when_the_branch_moves(monkeypatch, tmp_path
     head[0] = "ccc"
     assert updates.check()["update_available"] is True
 
+
+class _Dist:
+    def __init__(self, direct_url):
+        self.direct_url = direct_url
+
+    def read_text(self, name):
+        return self.direct_url if name == "direct_url.json" else None
+
+
+@pytest.mark.parametrize("direct_url, from_index", [
+    (None, True),                                                      # pip install eda-agent
+    ('{"url": "file:///c:/eda-agent", "dir_info": {"editable": true}}', False),  # a clone
+    ('{"url": "https://github.com/salitronic/eda-agent", '
+     '"vcs_info": {"vcs": "git", "commit_id": "aaa"}}', False),       # git+https
+    ('{"url": "file:///c:/eda-agent", "dir_info": {}}', False),        # pip install .
+    ('{"url": "file:///c:/eda_agent-0.8.1-py3-none-any.whl", "archive_info": {}}', False),
+])
+def test_only_a_copy_from_pypi_counts_as_from_pypi(monkeypatch, direct_url, from_index):
+    monkeypatch.setattr(updates.metadata, "distribution", lambda name: _Dist(direct_url))
+    assert updates._from_index() is from_index
+
+
+def test_a_copy_from_pypi_checks_pypi_and_upgrades_from_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, "repo_root", lambda: None)
+    monkeypatch.setattr(updates, "_cache_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.8.1")
+    monkeypatch.setattr(updates, "_from_index", lambda: True)
+    monkeypatch.setattr(updates, "_pypi_version", lambda: "0.9.0")
+    monkeypatch.setattr(updates, "_published_version",
+                        lambda: pytest.fail("a PyPI copy read GitHub's version"))
+    info = updates.check(force=True)
+    assert info["source"] == "pypi" and info["update_available"] is True
+    news = updates.notice()
+    assert news["latest"] == "0.9.0"
+    assert "pip install --upgrade eda-agent" in news["next_step"]
+    assert "git+" not in news["next_step"]
+
+
+def test_a_copy_from_github_never_checks_pypi(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, "repo_root", lambda: None)
+    monkeypatch.setattr(updates, "_cache_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(updates, "_installed_version", lambda: "0.8.1")
+    monkeypatch.setattr(updates, "_from_index", lambda: False)
+    monkeypatch.setattr(updates, "_installed_commit", lambda: "")
+    monkeypatch.setattr(updates, "_published_version", lambda: "0.9.0")
+    monkeypatch.setattr(updates, "_pypi_version",
+                        lambda: pytest.fail("a GitHub copy read PyPI's version"))
+    info = updates.check(force=True)
+    assert info["source"] == "github" and info["update_available"] is True
+    assert f"git+{updates.REPO_URL}" in updates.notice()["next_step"]
+
 @pytest.fixture()
 def fresh_delivery(monkeypatch):
     monkeypatch.setattr(updates, "_delivered", set())
