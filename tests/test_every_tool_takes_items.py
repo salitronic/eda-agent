@@ -318,3 +318,28 @@ def test_renames_by_index_run_one_by_one(monkeypatch, tmp_path):
     assert [c for c, _ in bridge.sent] == ["library.rename_component"] * 2
     assert bridge.sent[0][1]["component_index"] == 3
     assert out["succeeded"] == 2
+
+
+def test_a_tool_that_answers_with_a_list_may_answer_items_with_a_dict():
+    # proj_list_documents declared list[...]; its items reply is a dict and
+    # the server refused it ("Input should be a valid list").
+    import typing
+
+    async def listing(project_path: str = "") -> list[dict]:
+        """List."""
+        return []
+    tool = tool_bulk.with_items(listing, "proj_list_things")
+    returns = tool.__signature__.return_annotation
+    assert typing.get_origin(returns) is typing.Union
+    assert dict[str, typing.Any] in typing.get_args(returns)
+
+    async def as_dict(x: int = 0) -> dict:
+        """Dict."""
+        return {}
+    assert tool_bulk.with_items(as_dict, "obj_thing").__signature__.return_annotation is dict
+
+
+def test_an_item_that_placed_nothing_and_failed_counts_as_failed():
+    assert tool_bulk._failed({"placed": 0, "failed": 1, "total": 1})
+    assert not tool_bulk._failed({"placed": 1, "failed": 0, "total": 1})
+    assert not tool_bulk._failed({"placed": 2, "failed": 1, "total": 3})

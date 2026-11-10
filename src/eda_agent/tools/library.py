@@ -8193,7 +8193,7 @@ def register_library_tools(mcp):
                 if key in lengths:
                     text = format_length(value)
                 elif key in numbers:
-                    text = repr(float(value))
+                    text = format_length(value)
                 elif key in flags:
                     text = "true" if value else "false"
                 else:
