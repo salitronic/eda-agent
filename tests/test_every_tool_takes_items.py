@@ -120,6 +120,25 @@ def test_a_read_then_a_write_is_two_requests_for_any_count(wire):
     assert out["succeeded"] == 10
 
 
+def test_application_commands_go_one_request_per_item(wire):
+    # Altium refuses a bulk request for an application command, so every
+    # item of sch_reload_document failed (#295). Each goes on its own, in
+    # order, and the items after still gather.
+    async def reload(file_path: str) -> dict:
+        b = bridge_pkg.get_bridge()
+        await b.send_command_async("application.save_document",
+                                   {"file_path": file_path})
+        return await b.send_command_async("generic.compile", {"f": file_path})
+    tool = tool_bulk.with_items(reload, "sch_reload_one")
+
+    out = asyncio.run(tool(items=[{"file_path": p} for p in "ABC"]))
+
+    assert wire.requests[:3] == [("application.save_document", {"file_path": p})
+                                 for p in "ABC"]
+    assert [c for c, _ in wire.requests[3:]] == ["generic.compile"]
+    assert out["succeeded"] == 3 and out["altium_requests"] == 4
+
+
 def test_a_failed_item_stops_the_rest_and_says_which(monkeypatch):
     bridge = WireBridge(fail_on=lambda p: "off the board" if p.get("x") == 2 else None)
     monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: bridge)
