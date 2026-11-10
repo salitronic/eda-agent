@@ -523,6 +523,15 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
+        if "|" in properties:
+            # A property name never holds a '|'. Sent on, the whole list
+            # came back as one key and its first name was called unknown.
+            return {"ok": False, "success": False, "error": "BAD_PROPERTIES",
+                    "reason": "properties are separated by ',' "
+                              f"({properties.replace('|', ',')!r}); '|' "
+                              "separates filter conditions and obj_modify "
+                              "settings. Nothing was read.",
+                    "objects": [], "count": 0}
         try:
             wire_scope = scope_to_wire(scope)
         except ScopeError as exc:
