@@ -236,6 +236,19 @@ BUILT_IN: tuple[Request, ...] = (
               "infer rather than read as an inference."),
         tools={"*": ("get_board_info", "list_components", "list_nets")},
     ),
+    Request(
+        name="convert_to_kicad",
+        title="Convert to KiCad",
+        description="The open Altium project as a clean KiCad project, checked pin by pin.",
+        text=("Convert the open Altium project into a KiCad project in {folder}. "
+              "Report what each step did and whether the schematic, the board and "
+              "Altium's own netlist still put the same pins together. Then list "
+              "what is left for me: the ERC and DRC findings by kind and the "
+              "rules that were not ported. Do not change the Altium project."),
+        tools={"altium": ("proj_convert_to_kicad",)},
+        arguments=(Argument("folder", "An empty folder for the KiCad project, "
+                                      "for example D:/Work/Board_KiCad"),),
+    ),
 )
 
 

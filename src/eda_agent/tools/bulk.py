@@ -34,7 +34,7 @@ NO_BULK = frozenset({
     "proj_sync_schematic", "proj_annotate", "pcb_autoroute",
     "pcb_autoroute_apply", "pcb_autoplace", "pcb_autoplace_apply",
     "pcb_repour_polygons", "pcb_save_copy_as", "pcb_build_from_project",
-    "sim_run", "sim_run_deck", "review_design",
+    "sim_run", "sim_run_deck", "review_design", "proj_convert_to_kicad",
 })
 
 #: Tools that take their list as their own argument and run it as one
