@@ -2796,14 +2796,156 @@ Begin
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
+{ Keepouts on the footprint primitives that can be keepouts: tracks, arcs,  }
+{ fills and regions (Place > Keepout). keepout_for lists what one keeps     }
+{ out, in the words lib_add_footprint_* send and the footprint reader       }
+{ reports: Altium's Keepout Restrictions in the Properties panel (Copper,   }
+{ Track, Via, SMD Pad, TH Pad). Copper alone is a wall that pours stop at   }
+{ while tracks, vias and pads may still cross it, so a keepout on a signal  }
+{ layer can keep copper off that layer alone, which the Keep-Out layer      }
+{ (every copper layer) cannot. Only ever asked of those four kinds: asked   }
+{ of a via, IsKeepoutForCopper raised 'Undeclared identifier' as a modal.   }
+Function KeepoutListHas(List : String; Word : String) : Boolean;
+Begin
+    Result := Pos(',' + Word + ',', ',' + LowerCase(List) + ',') > 0;
+End;
+
+{ The first word of a keepout_for list that names no restriction, '' when   }
+{ every word is known. An empty list or an empty word is refused too: a     }
+{ keepout that keeps nothing out is not what anyone asked for.              }
+Function KeepoutListProblem(List : String) : String;
+Var
+    Rest, W : String;
+    P : Integer;
+Begin
+    Result := '';
+    Rest := LowerCase(List);
+    If Trim(Rest) = '' Then
+    Begin
+        Result := '(empty)';
+        Exit;
+    End;
+    While Rest <> '' Do
+    Begin
+        P := Pos(',', Rest);
+        If P = 0 Then
+        Begin
+            W := Trim(Rest);
+            Rest := '';
+        End
+        Else
+        Begin
+            W := Trim(Copy(Rest, 1, P - 1));
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End;
+        If (W <> 'copper') And (W <> 'track') And (W <> 'via') And
+           (W <> 'smd_pad') And (W <> 'th_pad') Then
+        Begin
+            Result := W;
+            If Result = '' Then Result := '(empty)';
+            Exit;
+        End;
+    End;
+End;
+
+{ What one authoring call asks for, from its keepout and keepout_for       }
+{ fields: '' when it makes sense, with Wanted set and KeepFor filled in     }
+{ (all five restrictions when absent), else the reason it is refused.       }
+{ keepout other than 0 / 1, an unknown keepout_for word, or keepout_for     }
+{ without keepout=1 is refused. On the Keep-Out layer the object is a       }
+{ keepout unless keepout=0, as PCB_PlaceTrack makes one on a board: a       }
+{ footprint region made there without the flag read back with no           }
+{ restrictions, keeping nothing out, until the library was saved and       }
+{ reopened.                                                                 }
+Function KeepoutRequest(KeepStr : String; Var KeepFor : String; Layer : TLayer;
+    Var Wanted : Boolean) : String;
+Var
+    Asked : String;
+Begin
+    Result := '';
+    Wanted := False;
+    Asked := KeepStr;
+    If (Asked = '') And (Layer = eKeepOutLayer) Then Asked := '1';
+    If (Asked <> '') And (Asked <> '1') And (Asked <> '0') Then
+    Begin
+        Result := 'keepout must be 0 or 1, not ' + Asked;
+        Exit;
+    End;
+    If Asked = '1' Then
+    Begin
+        If KeepFor = '' Then KeepFor := 'copper,track,via,smd_pad,th_pad';
+        If KeepoutListProblem(KeepFor) <> '' Then
+        Begin
+            Result := 'keepout_for names no restriction: ' + KeepoutListProblem(KeepFor);
+            Exit;
+        End;
+        Wanted := True;
+    End
+    Else If KeepFor <> '' Then
+        Result := 'keepout_for needs keepout=1';
+End;
+
+{ Makes Prim a keepout of exactly KeepFor (every restriction not named is  }
+{ cleared), then reads it back: True only when every flag reads as asked.  }
+Function KeepoutApply(Prim : IPCB_Primitive; KeepFor : String) : Boolean;
+Begin
+    Result := False;
+    Try
+        Prim.IsKeepout := True;
+        Prim.IsKeepoutForCopper := KeepoutListHas(KeepFor, 'copper');
+        Prim.IsKeepoutForTrack := KeepoutListHas(KeepFor, 'track');
+        Prim.IsKeepoutForVia := KeepoutListHas(KeepFor, 'via');
+        Prim.IsKeepoutForSMDPad := KeepoutListHas(KeepFor, 'smd_pad');
+        Prim.IsKeepoutForTHPad := KeepoutListHas(KeepFor, 'th_pad');
+        Result := Prim.IsKeepout
+            And (Prim.IsKeepoutForCopper = KeepoutListHas(KeepFor, 'copper'))
+            And (Prim.IsKeepoutForTrack = KeepoutListHas(KeepFor, 'track'))
+            And (Prim.IsKeepoutForVia = KeepoutListHas(KeepFor, 'via'))
+            And (Prim.IsKeepoutForSMDPad = KeepoutListHas(KeepFor, 'smd_pad'))
+            And (Prim.IsKeepoutForTHPad = KeepoutListHas(KeepFor, 'th_pad'));
+    Except
+        Result := False;
+    End;
+End;
+
+{ The reader's keepout fields for one track, arc, fill or region:          }
+{ ,"keepout":true|false, and ,"keepout_for":[...] where the restrictions    }
+{ act -- on a keepout, or on the Keep-Out layer. '' when unreadable.        }
+Function KeepoutFieldsJson(Prim : IPCB_Primitive; Layer : TLayer) : String;
+Var
+    IsKeep : Boolean;
+    S : String;
+Begin
+    Result := '';
+    IsKeep := False;
+    S := '';
+    Try
+        IsKeep := Prim.IsKeepout;
+        If IsKeep Or (Layer = eKeepOutLayer) Then
+        Begin
+            If Prim.IsKeepoutForCopper Then S := S + ',"copper"';
+            If Prim.IsKeepoutForTrack Then S := S + ',"track"';
+            If Prim.IsKeepoutForVia Then S := S + ',"via"';
+            If Prim.IsKeepoutForSMDPad Then S := S + ',"smd_pad"';
+            If Prim.IsKeepoutForTHPad Then S := S + ',"th_pad"';
+            If S <> '' Then S := Copy(S, 2, Length(S));
+            S := ',"keepout_for":[' + S + ']';
+        End;
+    Except
+        Exit;
+    End;
+    Result := ',"keepout":' + BoolToJsonStr(IsKeep) + S;
+End;
+
 { Batch track authoring: same shape as Lib_AddFootprintPads. A `tracks` array }
 { (~~ / ; / = separators) -- silkscreen outline + assembly outline in one IPC }
 { round-trip instead of one-per-segment. Per-track fields: x1,y1,x2,y2,width, }
 { layer (TopOverlay default / BottomOverlay), mirroring the singular handler. }
 Function Lib_AddFootprintTracks(Params : String; RequestId : String) : String;
 Var
-    TracksStr, Op, Remaining, LayerStr, BadLayers : String;
-    OpCount, Added, Failed : Integer;
+    TracksStr, Op, Remaining, LayerStr, BadLayers, KeepFor : String;
+    OpCount, Added, Failed, Keepouts, KeepoutFailed, BadKeepouts : Integer;
+    KeepWanted : Boolean;
     X1, Y1, X2, Y2, Width : Double;
     UnitsStr : String;
     PcbLib : IPCB_Library;
@@ -2842,6 +2984,9 @@ Begin
     Added := 0;
     Failed := 0;
     OpCount := 0;
+    Keepouts := 0;
+    KeepoutFailed := 0;
+    BadKeepouts := 0;
     BadLayers := '';
     Remaining := TracksStr;
 
@@ -2870,6 +3015,14 @@ Begin
                     BadLayers := BadLayers + ', ' + LayerStr;
                 Continue;
             End;
+            KeepFor := GetBatchField(Op, 'keepout_for');
+            If KeepoutRequest(GetBatchField(Op, 'keepout'), KeepFor, Layer,
+                KeepWanted) <> '' Then
+            Begin
+                Inc(BadKeepouts);
+                Inc(Failed);
+                Continue;
+            End;
 
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
@@ -2884,6 +3037,11 @@ Begin
             Track.Y2 := FootprintOriginY(Footprint) + CoordFromUnits(Y2, UnitsStr);
             Track.Width := CoordFromUnits(Width, UnitsStr);
             Track.Layer := Layer;
+            If KeepWanted Then
+            Begin
+                If KeepoutApply(Track, KeepFor) Then Inc(Keepouts)
+                Else Inc(KeepoutFailed);
+            End;
 
             Footprint.AddPCBObject(Track);
             { The primitive must be registered with the library's backing Board as
@@ -2909,6 +3067,9 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"keepouts":' + IntToStr(Keepouts)
+        + ',"keepout_failures":' + IntToStr(KeepoutFailed)
+        + ',"bad_keepouts":' + IntToStr(BadKeepouts)
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
@@ -3217,6 +3378,9 @@ End;
 { counterclockwise from a1 to a2. Such a region is built from shape segments }
 { (ShapeSegments, then UpdateContourFromShape), as Place Region builds one,  }
 { so it keeps the arc; one with no arcs keeps the plain contour route.       }
+{ keepout=1 makes the region a keepout on its own layer (Place > Keepout >  }
+{ Solid Region) and keepout_for=copper,track,via,smd_pad,th_pad says what   }
+{ it keeps out; see KeepoutRequest. The flags are read back.               }
 { A region with no layer is refused rather than defaulted: the only default  }
 { the other authoring calls have is copper or silkscreen, and a solid shape  }
 { dropped on top copper by default is a short.                               }
@@ -3228,7 +3392,10 @@ End;
 Function Lib_AddFootprintRegions(Params : String; RequestId : String) : String;
 Var
     RegionsStr, Op, Remaining, LayerStr, BadLayers, PointsStr, ArcsStr : String;
+    KeepFor : String;
+    KeepWanted : Boolean;
     OpCount, Added, Failed, BadPoints, NPts, I, K, ArcEdges : Integer;
+    Keepouts, KeepoutFailed, BadKeepouts : Integer;
     UnitsStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
@@ -3274,6 +3441,9 @@ Begin
     BadPoints := 0;
     ArcEdges := 0;
     OpCount := 0;
+    Keepouts := 0;
+    KeepoutFailed := 0;
+    BadKeepouts := 0;
     BadLayers := '';
     Remaining := RegionsStr;
 
@@ -3320,6 +3490,16 @@ Begin
             If Not ArcsOk Then
             Begin
                 Inc(BadPoints);
+                Inc(Failed);
+                Continue;
+            End;
+
+            { A keepout is checked before anything is made (KeepoutRequest). }
+            KeepFor := GetBatchField(Op, 'keepout_for');
+            If KeepoutRequest(GetBatchField(Op, 'keepout'), KeepFor, Layer,
+                KeepWanted) <> '' Then
+            Begin
+                Inc(BadKeepouts);
                 Inc(Failed);
                 Continue;
             End;
@@ -3380,6 +3560,12 @@ Begin
                         Inc(ArcEdges);
             End;
 
+            If KeepWanted Then
+            Begin
+                If KeepoutApply(Region, KeepFor) Then Inc(Keepouts)
+                Else Inc(KeepoutFailed);
+            End;
+
             Footprint.AddPCBObject(Region);
             PcbLib.Board.AddPCBObject(Region);
             PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
@@ -3398,6 +3584,9 @@ Begin
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
         + ',"bad_points":' + IntToStr(BadPoints)
         + ',"arc_edges":' + IntToStr(ArcEdges)
+        + ',"keepouts":' + IntToStr(Keepouts)
+        + ',"keepout_failures":' + IntToStr(KeepoutFailed)
+        + ',"bad_keepouts":' + IntToStr(BadKeepouts)
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
@@ -3425,8 +3614,10 @@ End;
 { authoring call here, or the save discards it; settled by the dispatcher.    }
 Function Lib_AddFootprintFills(Params : String; RequestId : String) : String;
 Var
-    FillsStr, Op, Remaining, LayerStr, BadLayers : String;
+    FillsStr, Op, Remaining, LayerStr, BadLayers, KeepFor : String;
     OpCount, Added, Failed, BadExtent : Integer;
+    Keepouts, KeepoutFailed, BadKeepouts : Integer;
+    KeepWanted : Boolean;
     UnitsStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
@@ -3471,6 +3662,9 @@ Begin
     Failed := 0;
     BadExtent := 0;
     OpCount := 0;
+    Keepouts := 0;
+    KeepoutFailed := 0;
+    BadKeepouts := 0;
     BadLayers := '';
     Remaining := FillsStr;
 
@@ -3506,6 +3700,14 @@ Begin
                 Inc(Failed);
                 Continue;
             End;
+            KeepFor := GetBatchField(Op, 'keepout_for');
+            If KeepoutRequest(GetBatchField(Op, 'keepout'), KeepFor, Layer,
+                KeepWanted) <> '' Then
+            Begin
+                Inc(BadKeepouts);
+                Inc(Failed);
+                Continue;
+            End;
 
             Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
             If Fill = Nil Then
@@ -3519,6 +3721,11 @@ Begin
             Fill.Y2Location := OrgY + CoordFromUnits(Y2, UnitsStr);
             Fill.Rotation := Rotation;
             Fill.Layer := Layer;
+            If KeepWanted Then
+            Begin
+                If KeepoutApply(Fill, KeepFor) Then Inc(Keepouts)
+                Else Inc(KeepoutFailed);
+            End;
 
             Footprint.AddPCBObject(Fill);
             PcbLib.Board.AddPCBObject(Fill);
@@ -3537,6 +3744,9 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
         + ',"bad_extent":' + IntToStr(BadExtent)
+        + ',"keepouts":' + IntToStr(Keepouts)
+        + ',"keepout_failures":' + IntToStr(KeepoutFailed)
+        + ',"bad_keepouts":' + IntToStr(BadKeepouts)
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
@@ -3783,6 +3993,8 @@ Var
     TargetProblem : String;
     Arc : IPCB_Arc;
     Layer : TLayer;
+    KeepFor, KeepProblem : String;
+    KeepWanted, KeepOk : Boolean;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -3822,6 +4034,14 @@ Begin
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
         Exit;
     End;
+    KeepFor := ExtractJsonValue(Params, 'keepout_for');
+    KeepProblem := KeepoutRequest(ExtractJsonValue(Params, 'keepout'), KeepFor, Layer,
+        KeepWanted);
+    If KeepProblem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_KEEPOUT', KeepProblem);
+        Exit;
+    End;
 
     PcbBeginEdit(0);
 
@@ -3835,6 +4055,8 @@ Begin
         Arc.EndAngle := EndAngle;
         Arc.LineWidth := CoordFromUnits(Width, UnitsStr);
         Arc.Layer := Layer;
+        KeepOk := True;
+        If KeepWanted Then KeepOk := KeepoutApply(Arc, KeepFor);
 
         Footprint.AddPCBObject(Arc);
         { The primitive must be registered with the library's backing Board as
@@ -3851,7 +4073,13 @@ Begin
         PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Arc.I_ObjectAddress);
 
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        { A keepout is reported as read back off the arc. }
+        If KeepWanted Then
+            Result := BuildSuccessResponse(RequestId, '{"success":true'
+                + ',"keepout_verified":' + BoolToJsonStr(KeepOk)
+                + KeepoutFieldsJson(Arc, Layer) + '}')
+        Else
+            Result := BuildSuccessResponse(RequestId, '{"success":true}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc');
@@ -13939,7 +14167,8 @@ Begin
                             + ',"x2":' + FloatToJsonStr(CoordToMM(Track.X2 - XOrg))
                             + ',"y2":' + FloatToJsonStr(CoordToMM(Track.Y2 - YOrg))
                             + ',"width":' + FloatToJsonStr(CoordToMM(Track.Width))
-                            + ',"selected":' + BoolToJsonStr(Track.Selected) + '}';
+                            + ',"selected":' + BoolToJsonStr(Track.Selected)
+                            + KeepoutFieldsJson(Track, LayerId) + '}';
                     Except
                         Rec := '';
                     End;
@@ -13987,7 +14216,8 @@ Begin
                             + ',"start":' + FloatToJsonStr(Arc.StartAngle)
                             + ',"end":' + FloatToJsonStr(Arc.EndAngle)
                             + ',"width":' + FloatToJsonStr(CoordToMM(Arc.LineWidth))
-                            + ',"selected":' + BoolToJsonStr(Arc.Selected) + '}';
+                            + ',"selected":' + BoolToJsonStr(Arc.Selected)
+                            + KeepoutFieldsJson(Arc, LayerId) + '}';
                     Except
                         Rec := '';
                     End;
@@ -14049,6 +14279,7 @@ Begin
                             + ',"area":' + FloatToJsonStr(AreaMM2)
                             + ',"arc_edges":' + IntToStr(RegionArcs)
                             + ',"selected":' + BoolToJsonStr(Region.Selected);
+                        Rec := Rec + KeepoutFieldsJson(Region, LayerId);
                         RgnShape := RegionShapeJson(Region, 10000000.0 / 25.4, XOrg, YOrg, RgnArc);
                         If RgnShape <> '' Then Rec := Rec + ',"shape_mm":' + RgnShape;
                         Rec := Rec + '}';
@@ -14099,7 +14330,8 @@ Begin
                             + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
                             + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
                             + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
-                            + ',"selected":' + SelStr + '}';
+                            + ',"selected":' + SelStr
+                            + KeepoutFieldsJson(FillObj, LayerId) + '}';
                     Except
                         Rec := '';
                     End;
