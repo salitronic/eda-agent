@@ -453,6 +453,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_make_paste_grid": "free pads: KiCad 10.0's API creates pads only inside footprints",
     # Altium-only schematic objects
     "sch_place_harness_connector": "Altium signal harnesses",
+    "sch_place_signal_harness": "Altium signal harnesses",
     "sch_get_constraint_groups": "Altium constraint groups",
     "sch_add_directive": "Altium schematic directives; KiCad uses net classes and rules",
     "sch_get_directives": "Altium schematic directives",

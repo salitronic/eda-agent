@@ -3778,18 +3778,43 @@ def register_generic_tools(mcp):
         width: float = 500,
         height: float = 800,
         harness_type: str = "",
+        entries: Optional[list[str]] = None,
+        entry_side: str = "left",
+        entry_pitch: float = 100,
     ) -> dict[str, Any]:
-        """Place a harness connector on the active schematic sheet.
+        """Place a harness connector on the active schematic sheet, with
+        its entries.
 
+        Draw the signal harness from it with sch_place_signal_harness.
+        Move a placed one with obj_modify Location.X / Location.Y on
+        eHarnessConnector: its entries go with it. eHarnessEntry and
+        eSignalHarness are obj_query / obj_delete types.
 
         Args:
-            x, y: Bottom-left corner in mils.
+            x, y: Top-left corner in mils; the body hangs below it.
             width, height: Connector rectangle size in mils.
             harness_type: Named harness type (optional).
+            entries: Entry names, top to bottom (e.g. ["USB+", "USB-"]).
+            entry_side: "left", "right", "top" or "bottom".
+            entry_pitch: mils from the top to the first entry and between
+                entries; keep the height long enough for them.
 
         Returns:
-            Dict with success, x, y, width, height, harness_type.
+            Dict with success, x, y, width, height, harness_type,
+            ``entries`` as read back and ``entries_placed`` (those at the
+            side and distance asked).
         """
+        side = (entry_side or "left").strip().lower()
+        if side not in ("left", "right", "top", "bottom"):
+            return {"ok": False, "success": False,
+                    "reason": "entry_side is left, right, top or bottom"}
+        names = [str(n).strip() for n in (entries or []) if str(n).strip()]
+        if any(";" in n for n in names):
+            return {"ok": False, "success": False,
+                    "reason": "an entry name cannot hold ';'"}
+        if entry_pitch <= 0:
+            return {"ok": False, "success": False,
+                    "reason": "entry_pitch must be above 0"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "x": str(x), "y": str(y),
