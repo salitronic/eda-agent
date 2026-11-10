@@ -2830,7 +2830,10 @@ def register_generic_tools(mcp):
             active: False places it switched off.
 
         Returns:
-            Every option read back.
+            Every option read back. ``error_kinds`` and
+            ``connection_pairs`` are left out while ``suppress_all`` reads
+            back true: they suppress nothing more then, and they are some
+            3 KB a marker.
         """
         if orientation is not None and orientation not in (0, 1, 2, 3):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
@@ -2842,7 +2845,11 @@ def register_generic_tools(mcp):
         for key, flag in (("suppress_all", suppress_all), ("active", active)):
             if flag is not None:
                 args[key] = "true" if flag else "false"
-        return await get_bridge().send_command_async("generic.place_no_erc", args)
+        reply = await get_bridge().send_command_async("generic.place_no_erc", args)
+        if isinstance(reply, dict) and reply.get("suppress_all") is True:
+            reply = {k: v for k, v in reply.items()
+                     if k not in ("error_kinds", "connection_pairs")}
+        return reply
 
     @mcp.tool()
     async def sch_place_junction(
