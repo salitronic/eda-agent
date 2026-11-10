@@ -15,6 +15,7 @@ from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
 from .library import _mils
+from ..units import format_length
 from .pin_hints import pin_location_hint
 from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
@@ -522,6 +523,15 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
+        if "|" in properties:
+            # A property name never holds a '|'. Sent on, the whole list
+            # came back as one key and its first name was called unknown.
+            return {"ok": False, "success": False, "error": "BAD_PROPERTIES",
+                    "reason": "properties are separated by ',' "
+                              f"({properties.replace('|', ',')!r}); '|' "
+                              "separates filter conditions and obj_modify "
+                              "settings. Nothing was read.",
+                    "objects": [], "count": 0}
         try:
             wire_scope = scope_to_wire(scope)
         except ScopeError as exc:
@@ -2829,7 +2839,10 @@ def register_generic_tools(mcp):
             active: False places it switched off.
 
         Returns:
-            Every option read back.
+            Every option read back. ``error_kinds`` and
+            ``connection_pairs`` are left out while ``suppress_all`` reads
+            back true: they suppress nothing more then, and they are some
+            3 KB a marker.
         """
         if orientation is not None and orientation not in (0, 1, 2, 3):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
@@ -2841,7 +2854,11 @@ def register_generic_tools(mcp):
         for key, flag in (("suppress_all", suppress_all), ("active", active)):
             if flag is not None:
                 args[key] = "true" if flag else "false"
-        return await get_bridge().send_command_async("generic.place_no_erc", args)
+        reply = await get_bridge().send_command_async("generic.place_no_erc", args)
+        if isinstance(reply, dict) and reply.get("suppress_all") is True:
+            reply = {k: v for k, v in reply.items()
+                     if k not in ("error_kinds", "connection_pairs")}
+        return reply
 
     @mcp.tool()
     async def sch_place_junction(
@@ -2885,18 +2902,19 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_set_grid(
-        snap_grid: int = 0,
-        visible_grid: int = 0,
+        snap_grid: float = 0,
+        visible_grid: float = 0,
         snap_grid_on: Optional[bool] = None,
         visible_grid_on: Optional[bool] = None,
-        hotspot_grid: int = 0,
+        hotspot_grid: float = 0,
         hotspot_grid_on: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Set the snap, visible and electrical grids for the active
         schematic. pcb_set_grids sets a board's grids.
 
         Args:
-            snap_grid: Snap grid size in mils (0 = don't change)
+            snap_grid: Snap grid size in mils (0 = don't change); a metric
+                grid in mils keeps its fraction (0.5 mm = 19.685)
             visible_grid: Visible grid size in mils (0 = don't change)
             snap_grid_on: Switch the snap grid on or off (None = don't change)
             visible_grid_on: Switch the visible grid on or off (None = don't change)
@@ -2911,15 +2929,15 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         params: dict[str, str] = {}
         if snap_grid > 0:
-            params["snap_grid"] = str(snap_grid)
+            params["snap_grid"] = format_length(snap_grid)
         if visible_grid > 0:
-            params["visible_grid"] = str(visible_grid)
+            params["visible_grid"] = format_length(visible_grid)
         if snap_grid_on is not None:
             params["snap_grid_on"] = "true" if snap_grid_on else "false"
         if visible_grid_on is not None:
             params["visible_grid_on"] = "true" if visible_grid_on else "false"
         if hotspot_grid > 0:
-            params["hotspot_grid"] = str(hotspot_grid)
+            params["hotspot_grid"] = format_length(hotspot_grid)
         if hotspot_grid_on is not None:
             params["hotspot_grid_on"] = "true" if hotspot_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
@@ -3760,18 +3778,43 @@ def register_generic_tools(mcp):
         width: float = 500,
         height: float = 800,
         harness_type: str = "",
+        entries: Optional[list[str]] = None,
+        entry_side: str = "left",
+        entry_pitch: float = 100,
     ) -> dict[str, Any]:
-        """Place a harness connector on the active schematic sheet.
+        """Place a harness connector on the active schematic sheet, with
+        its entries.
 
+        Draw the signal harness from it with sch_place_signal_harness.
+        Move a placed one with obj_modify Location.X / Location.Y on
+        eHarnessConnector: its entries go with it. eHarnessEntry and
+        eSignalHarness are obj_query / obj_delete types.
 
         Args:
-            x, y: Bottom-left corner in mils.
+            x, y: Top-left corner in mils; the body hangs below it.
             width, height: Connector rectangle size in mils.
             harness_type: Named harness type (optional).
+            entries: Entry names, top to bottom (e.g. ["USB+", "USB-"]).
+            entry_side: "left", "right", "top" or "bottom".
+            entry_pitch: mils from the top to the first entry and between
+                entries; keep the height long enough for them.
 
         Returns:
-            Dict with success, x, y, width, height, harness_type.
+            Dict with success, x, y, width, height, harness_type,
+            ``entries`` as read back and ``entries_placed`` (those at the
+            side and distance asked).
         """
+        side = (entry_side or "left").strip().lower()
+        if side not in ("left", "right", "top", "bottom"):
+            return {"ok": False, "success": False,
+                    "reason": "entry_side is left, right, top or bottom"}
+        names = [str(n).strip() for n in (entries or []) if str(n).strip()]
+        if any(";" in n for n in names):
+            return {"ok": False, "success": False,
+                    "reason": "an entry name cannot hold ';'"}
+        if entry_pitch <= 0:
+            return {"ok": False, "success": False,
+                    "reason": "entry_pitch must be above 0"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "x": str(x), "y": str(y),
@@ -3779,9 +3822,39 @@ def register_generic_tools(mcp):
         }
         if harness_type:
             params["harness_type"] = harness_type
+        if names:
+            params["entries"] = ";".join(names)
+            params["entry_side"] = side
+            params["entry_pitch"] = format_length(entry_pitch)
         return await bridge.send_command_async(
             "generic.place_harness_connector", params
         )
+
+    @mcp.tool()
+    async def sch_place_signal_harness(
+        vertices: list[list[float]],
+    ) -> dict[str, Any]:
+        """Draw a signal harness on the active sheet: the thick line that
+        carries a harness from a harness connector or harness port to a
+        sheet entry. Its ends must meet those objects' connection points.
+
+        Args:
+            vertices: [[x, y], ...] in mils, two points or more.
+
+        Returns:
+            ``success`` (every vertex read back), ``vertices``, ``asked``.
+        """
+        points = []
+        for v in vertices or []:
+            if not isinstance(v, (list, tuple)) or len(v) != 2:
+                return {"ok": False, "success": False,
+                        "reason": "each vertex is [x, y] in mils"}
+            points.append(f"{format_length(v[0])},{format_length(v[1])}")
+        if len(points) < 2:
+            return {"ok": False, "success": False,
+                    "reason": "a signal harness needs two points or more"}
+        return await get_bridge().send_command_async(
+            "generic.place_signal_harness", {"vertices": ",".join(points)})
 
     @mcp.tool()
     async def sch_place_cross_sheet_connector(
@@ -4001,8 +4074,8 @@ def register_generic_tools(mcp):
     async def sch_set_component_part_id(
         designator: str,
         part_id: int,
-        location_x: int | None = None,
-        location_y: int | None = None,
+        location_x: float | None = None,
+        location_y: float | None = None,
     ) -> dict[str, Any]:
         """Switch the active sub-part on a multi-part schematic component.
 
@@ -4030,9 +4103,9 @@ def register_generic_tools(mcp):
         params: dict[str, str] = {
             "designator": designator, "part_id": str(part_id)}
         if location_x is not None:
-            params["location_x"] = str(int(location_x))
+            params["location_x"] = format_length(location_x)
         if location_y is not None:
-            params["location_y"] = str(int(location_y))
+            params["location_y"] = format_length(location_y)
         return await bridge.send_command_async(
             "generic.set_component_part_id", params,
         )
@@ -4351,7 +4424,7 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_wires(
-        wires: list[dict[str, int]],
+        wires: list[dict[str, float]],
     ) -> dict[str, Any]:
         """Place MANY wire segments on the active schematic in ONE call.
 
@@ -4361,6 +4434,8 @@ def register_generic_tools(mcp):
 
         Args:
             wires: List of wire dicts, each with x1, y1, x2, y2 in mils.
+                Fractions are kept, so a pin end on a metric grid
+                (30905.45) is met exactly.
 
         Returns:
             Dict with placed, failed, total counts.
@@ -4368,8 +4443,8 @@ def register_generic_tools(mcp):
         op_strs: list[str] = []
         for w in wires:
             op_strs.append(
-                f"x1={int(w.get('x1', 0))};y1={int(w.get('y1', 0))};"
-                f"x2={int(w.get('x2', 0))};y2={int(w.get('y2', 0))}"
+                f"x1={format_length(w.get('x1', 0))};y1={format_length(w.get('y1', 0))};"
+                f"x2={format_length(w.get('x2', 0))};y2={format_length(w.get('y2', 0))}"
             )
         if not op_strs:
             return {"error": "No wires provided", "placed": 0}

@@ -1080,7 +1080,8 @@ def register_uiauto_tools(mcp):
 
     @mcp.tool()
     async def app_context_menu(x: int, y: int,
-                               item: str = "") -> dict[str, Any]:
+                               item: str = "",
+                               relative_to: str = "screen") -> dict[str, Any]:
         """Right click at a point: read the context menu, or pick from it.
 
         CONTEXT MENUS WERE ENTIRELY UNREACHABLE, and Altium puts a great
@@ -1098,6 +1099,8 @@ def register_uiauto_tools(mcp):
                 app_set_dialog_control(list_only=true) give you these.
             item: the entry to choose. Nested entries take a '|' path,
                 matched by name at each level like the menu bar.
+            relative_to: "window" takes x, y as pixels of the main
+                window, as app_screenshot pictures it.
 
         Returns:
             Reading: ``{"ok": true, "items": [...], "count": N}``.
@@ -1107,6 +1110,9 @@ def register_uiauto_tools(mcp):
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
+        x, y, bad = _to_screen(pid, x, y, relative_to)
+        if bad is not None:
+            return bad
         if item:
             return menu.context_click(pid, x, y, item)
         return menu.context_menu(pid, x, y)
@@ -1233,7 +1239,9 @@ def register_uiauto_tools(mcp):
         Returns:
             ``ok``, ``path``, ``hwnd``, and the picture's ``width`` and
             ``height`` in pixels; it is the window at its real size, so
-            things can be measured on it. Read the file to look at it.
+            things can be measured on it. ``window_left`` /
+            ``window_top`` place it on the screen. Read the file to look
+            at it.
         """
         import os
         import time as _time
@@ -1278,9 +1286,17 @@ def register_uiauto_tools(mcp):
                 pixels = dict(zip(("width", "height"), picture.size))
         except Exception:  # noqa: BLE001 - the file is the answer; its size is a bonus
             pass
-        return {"ok": True, "path": path, "hwnd": target, **pixels,
-                "created_folder": created_folder,
-                "note": "read the file to look at it"}
+        out: dict[str, Any] = {"ok": True, "path": path, "hwnd": target, **pixels,
+                               "created_folder": created_folder,
+                               "note": "read the file to look at it"}
+        rect = windows.window_rect(target)
+        if rect:
+            out["window_left"], out["window_top"] = rect[0], rect[1]
+            out["coordinates"] = (
+                "picture pixel (x, y) is screen point (window_left + x, "
+                "window_top + y); the click tools take screen points, or "
+                "relative_to='window' for the main window's pixels")
+        return out
 
     @mcp.tool()
     async def app_recover_script(force: bool = False) -> dict[str, Any]:
@@ -1338,9 +1354,25 @@ def register_uiauto_tools(mcp):
                 "call is running. Pass force=True to restart anyway.")
         return outcome
 
+    def _to_screen(pid: int, x: int, y: int, relative_to: str):
+        """Screen point for (x, y) given in ``relative_to`` pixels, or a
+        refusal dict."""
+        where = (relative_to or "screen").strip().lower()
+        if where == "screen":
+            return x, y, None
+        if where != "window":
+            return 0, 0, {"ok": False, "reason":
+                          "relative_to is 'screen' or 'window'"}
+        target = menu.frame(pid)
+        rect = windows.window_rect(target.hwnd) if target else None
+        if not rect:
+            return 0, 0, {"ok": False, "reason": "no Altium main window"}
+        return rect[0] + x, rect[1] + y, None
+
     @mcp.tool()
     async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,
-                         double: bool = False) -> dict[str, Any]:
+                         double: bool = False,
+                         relative_to: str = "screen") -> dict[str, Any]:
         """Click or drag on the editor canvas, at screen coordinates.
 
         THE CANVAS HAS NO NAMED CONTROLS, so every other tool here could
@@ -1354,10 +1386,18 @@ def register_uiauto_tools(mcp):
         NO READ-BACK IS POSSIBLE. The reply says what gesture was made
         and never what it did. Confirm with a bridge read, which can see
         the document, rather than trusting this.
+
+        ``relative_to="window"`` takes the points as pixels of the main
+        window, as app_screenshot pictures it.
         """
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
+        x, y, bad = _to_screen(pid, x, y, relative_to)
+        if bad is None and (to_x or to_y):
+            to_x, to_y, bad = _to_screen(pid, to_x, to_y, relative_to)
+        if bad is not None:
+            return bad
         if not windows.available():
             return {"ok": False, "reason": "UI automation is unavailable here"}
         if not menu.bring_to_front(pid):

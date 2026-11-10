@@ -97,6 +97,9 @@ Begin
     Else If N = 'note'            Then Result := eNote
     Else If N = 'probe'           Then Result := eProbe
     Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    { A harness connector's entries, and the signal harness drawn from it. }
+    Else If N = 'harnessentry'    Then Result := eHarnessEntry
+    Else If N = 'signalharness'   Then Result := eSignalHarness
     { The objects of a harness wiring diagram. }
     Else If N = 'harnesscomponent' Then Result := eHarnessComponent
     Else If N = 'harnesspin'      Then Result := eHarnessPin
@@ -132,6 +135,7 @@ Begin
             + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, ePolyline, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
+            + 'eHarnessEntry, eSignalHarness, '
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
             + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
@@ -151,7 +155,8 @@ Begin
     If Obj = Nil Then Exit;
     Id := Obj.ObjectId;
     Result := (Id = eWire) Or (Id = eBus) Or (Id = ePolyline)
-        Or (Id = ePolygon) Or (Id = eBezier) Or (Id = eBlanket);
+        Or (Id = ePolygon) Or (Id = eBezier) Or (Id = eBlanket)
+        Or (Id = eSignalHarness);
 End;
 
 { Parse 'x1,y1,x2,y2,...' (mils) into two lists. False when the count is   }
@@ -324,6 +329,7 @@ Begin
         Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
         Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
         Or (Obj.ObjectId = eHarnessConnector) Or (Obj.ObjectId = eProbe)
+        Or (Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = eSignalHarness)
         Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
         Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
         Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
@@ -827,6 +833,7 @@ Begin
     Result := False;
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eHarnessEntry)
         Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
         Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName);
 End;
@@ -2648,12 +2655,22 @@ Begin
           DistanceFromTop is in mils, matching Location.X / Location.Y. }
         Else If PropName = 'Side' Then
         Begin
-            If Obj.ObjectId = eSheetEntry Then Result := IntToStr(Obj.Side);
+            If Obj.ObjectId = eSheetEntry Then Result := IntToStr(Obj.Side)
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := IntToStr(HarnessEntryObj.Side);
+            End;
         End
         Else If PropName = 'DistanceFromTop' Then
         Begin
             If Obj.ObjectId = eSheetEntry Then
-                Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop));
+                Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop))
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := FloatToJsonStr(CoordToMilsF(HarnessEntryObj.DistanceFromTop));
+            End;
         End
         { The sheet symbol an entry is on, by its designator (Sheet Name). It }
         { had no case, so it read empty and the owner had to be guessed from }
@@ -2922,6 +2939,42 @@ End;
 { Coordinates are expected in mils. Caller handles BeginModify/EndModify.    }
 {..............................................................................}
 
+{ Move a harness connector to (X, Y). MoveToXY carries its entries, but  }
+{ not the harness type label under it, which stayed at the old place; a   }
+{ MoveByXY of the label by the same offset threw it off the sheet (both   }
+{ measured on AD 26.11). So the label's offset from the connector is read }
+{ first and its Location set from the connector's new one.                }
+Procedure MoveHarnessConnector(Obj : ISch_GraphicalObject; X : TCoord; Y : TCoord);
+Var
+    Harness : ISch_HarnessConnector;
+    TypeLabel : ISch_GraphicalObject;
+    Was, LabelWas : TLocation;
+    HasLabel : Boolean;
+Begin
+    Harness := Obj;
+    Was := Harness.Location;
+    TypeLabel := Nil;
+    Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
+    HasLabel := False;
+    If TypeLabel <> Nil Then
+    Begin
+        Try
+            LabelWas := TypeLabel.Location;
+            HasLabel := True;
+        Except
+            HasLabel := False;
+        End;
+    End;
+    Harness.MoveToXY(X, Y);
+    If HasLabel Then
+    Begin
+        { Point, not fields of a local: a record local that was never   }
+        { read from a property has no fields here ('Undeclared X').      }
+        Try TypeLabel.Location := Point(X + (LabelWas.X - Was.X), Y + (LabelWas.Y - Was.Y));
+        Except NoteWriteFailed('HarnessConnectorType.Location'); End;
+    End;
+End;
+
 Function SetSchProperty(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Integer;
 { Returns: 1 = handled, 0 = unknown property name, -1 = write threw.        }
 { Unknown and failed names are appended to the module-level _PropertyDiag   }
@@ -2988,6 +3041,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
         End
@@ -3000,6 +3057,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
         End
@@ -3306,6 +3367,13 @@ Begin
                 Else EntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
                 SymObj := EntryObj.OwnerSheetSymbol;
                 If SymObj <> Nil Then PositionSheetEntry(SymObj, EntryObj);
+            End
+            { A harness entry sits on its connector by these two alone. }
+            Else If (Obj.ObjectId = eHarnessEntry) And (EnumVal >= 0) Then
+            Begin
+                HarnessEntryObj := Obj;
+                If PropName = 'Side' Then HarnessEntryObj.Side := EnumVal
+                Else HarnessEntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
             End
             Else
                 Matched := False;
@@ -3758,6 +3826,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
         Except
@@ -12457,21 +12529,110 @@ End;
 { Gen_PlaceHarnessConnector - Place an ISch_HarnessConnector on the active      }
 { sheet. Harness connectors group a set of wires/buses into a named harness    }
 { so cross-sheet signal bundles can be represented as a single connection.     }
-{ Params: x, y, width, height (mils), harness_type (optional name string)      }
+{ Params: x, y (top left), width, height (mils), harness_type, entries.      }
 {..............................................................................}
+
+{ Entries on a harness connector: Names separated by ';', on Side, the    }
+{ first Pitch from the top and the rest Pitch apart. The add positions an }
+{ entry itself and drops Side and DistanceFromTop, as it does for a sheet }
+{ entry, so both are written again after it and read back. The add also  }
+{ leaves the entry's Location stacked below the sheet origin (measured:   }
+{ 2400,-50 on a connector at 2000,3000), so it is put on the edge from    }
+{ the two, as PositionSheetEntry does for a sheet entry. Returns the      }
+{ entries as placed, as JSON objects; Placed counts the ones that read    }
+{ back where they were asked.                                             }
+Function AddHarnessEntries(Harness : ISch_HarnessConnector; Names : String;
+    SideStr : String; Pitch : Double; Var Placed : Integer) : String;
+Var
+    Rest, EntryName : String;
+    P, K, WantSide, GotSide : Integer;
+    Entry : ISch_HarnessEntry;
+    Dist, GotDist, EdgeX, EdgeY : Double;
+    Corner : TLocation;
+Begin
+    Result := '';
+    Placed := 0;
+    Corner := Harness.Location;
+    If SideStr = 'right' Then WantSide := eRightSide
+    Else If SideStr = 'top' Then WantSide := eTopSide
+    Else If SideStr = 'bottom' Then WantSide := eBottomSide
+    Else WantSide := eLeftSide;
+    Rest := Names;
+    K := 0;
+    While Rest <> '' Do
+    Begin
+        P := Pos(';', Rest);
+        If P > 0 Then
+        Begin
+            EntryName := Trim(Copy(Rest, 1, P - 1));
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            EntryName := Trim(Rest);
+            Rest := '';
+        End;
+        If EntryName = '' Then Continue;
+        Inc(K);
+        Dist := Pitch * K;
+        Entry := SchServer.SchObjectFactory(eHarnessEntry, eCreate_Default);
+        If Entry = Nil Then
+        Begin
+            NoteWriteFailed('HarnessEntry.create');
+            Continue;
+        End;
+        Entry.Name := EntryName;
+        Entry.Side := WantSide;
+        Entry.DistanceFromTop := MilsToCoordF(Dist);
+        Harness.AddAndPositionSchObject(Entry);
+        Try Entry.Side := WantSide; Except NoteWriteFailed('HarnessEntry.Side'); End;
+        Try Entry.DistanceFromTop := MilsToCoordF(Dist); Except NoteWriteFailed('HarnessEntry.DistanceFromTop'); End;
+        EdgeX := CoordToMilsF(Corner.X);
+        EdgeY := CoordToMilsF(Corner.Y);
+        If WantSide = eLeftSide Then EdgeY := EdgeY - Dist
+        Else If WantSide = eRightSide Then
+        Begin
+            EdgeX := EdgeX + CoordToMilsF(Harness.XSize);
+            EdgeY := EdgeY - Dist;
+        End
+        Else If WantSide = eTopSide Then EdgeX := EdgeX + Dist
+        Else
+        Begin
+            EdgeX := EdgeX + Dist;
+            EdgeY := EdgeY - CoordToMilsF(Harness.YSize);
+        End;
+        Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except NoteWriteFailed('HarnessEntry.Location'); End;
+        GotSide := -1;
+        GotDist := -1;
+        Try GotSide := Entry.Side; Except End;
+        Try GotDist := CoordToMilsF(Entry.DistanceFromTop); Except End;
+        If (GotSide = WantSide) And (Abs(GotDist - Dist) < 0.01) Then Inc(Placed);
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '{"name":"' + EscapeJsonString(EntryName) + '"'
+            + ',"distance_from_top":' + FloatToJsonStr(GotDist)
+            + ',"side_as_asked":' + BoolToJsonStr(GotSide = WantSide) + '}';
+    End;
+End;
 
 Function Gen_PlaceHarnessConnector(Params : String; RequestId : String) : String;
 Var
     X, Y, W, H : Double;
-    HarnessType : String;
+    HarnessType, EntryNames, EntrySide, EntriesJson : String;
+    EntryPitch : Double;
+    EntriesPlaced : Integer;
     SchDoc : ISch_Document;
     Harness : ISch_HarnessConnector;
+    TypeLabel : ISch_GraphicalObject;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     W := StrToFloatDef(ExtractJsonValue(Params, 'width'), 500);
     H := StrToFloatDef(ExtractJsonValue(Params, 'height'), 800);
     HarnessType := ExtractJsonValue(Params, 'harness_type');
+    EntryNames := ExtractJsonValue(Params, 'entries');
+    EntrySide := LowerCase(ExtractJsonValue(Params, 'entry_side'));
+    EntryPitch := StrToFloatDef(ExtractJsonValue(Params, 'entry_pitch'), 100);
+    If EntryPitch <= 0 Then EntryPitch := 100;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -12490,7 +12651,7 @@ Begin
     { ISch_HarnessConnector is an ISch_RectangularGroup -- no Corner property
       (using it raises "Undeclared identifier: Corner", and the local must be
       typed as the derived interface, not ISch_GraphicalObject). Size via
-      XSize/YSize from the bottom-left Location, like ISch_SheetSymbol. }
+      XSize/YSize down and right from the top-left Location (measured: entries at 100 and 200 from the top read Location.Y 1900 and 1800 on a connector at Y 2000). }
     SchBeginEdit(SchDoc, '');
     Harness.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     Harness.XSize := MilsToCoordF(W);
@@ -12502,6 +12663,20 @@ Begin
 
     SchDoc.RegisterSchObjectInContainer(Harness);
     SchRegisterObject(SchDoc, Harness);
+    EntriesJson := '';
+    EntriesPlaced := 0;
+    If EntryNames <> '' Then
+        EntriesJson := AddHarnessEntries(Harness, EntryNames, EntrySide,
+            EntryPitch, EntriesPlaced);
+    { The type label is left where Altium happens to put it, off the body }
+    { and once below the sheet, so it goes under the bottom-left corner.  }
+    TypeLabel := Nil;
+    Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
+    If TypeLabel <> Nil Then
+    Begin
+        Try TypeLabel.Location := Point(MilsToCoordF(X), MilsToCoordF(Y - H - 100));
+        Except NoteWriteFailed('HarnessConnectorType.Location'); End;
+    End;
     SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
@@ -12516,7 +12691,68 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y)
         + ',"width":' + FloatToJsonStr(W) + ',"height":' + FloatToJsonStr(H)
-        + ',"harness_type":"' + EscapeJsonString(HarnessType) + '"}');
+        + ',"harness_type":"' + EscapeJsonString(HarnessType) + '"'
+        + ',"entries":[' + EntriesJson + ']'
+        + ',"entries_placed":' + IntToStr(EntriesPlaced) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceSignalHarness - draw a signal harness, the thick line that carries  }
+{ a harness from a harness connector or a harness port to a sheet entry.      }
+{ Params: vertices 'x1,y1,x2,y2,...' (mils, two points or more).              }
+{ Built like a wire: InsertVertex then SetState_Vertex for each point.        }
+{..............................................................................}
+
+Function Gen_PlaceSignalHarness(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Harness : ISch_GraphicalObject;
+    Xs, Ys : TStringList;
+    I, Count : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    Xs := TStringList.Create;
+    Ys := TStringList.Create;
+    Try
+        If (Not ParseVertexList(ExtractJsonValue(Params, 'vertices'), Xs, Ys))
+            Or (Xs.Count < 2) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VERTICES',
+                'vertices is x1,y1,x2,y2,... in mils, two points or more. Nothing was drawn.');
+            Exit;
+        End;
+        Harness := SchServer.SchObjectFactory(eSignalHarness, eCreate_Default);
+        If Harness = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create signal harness');
+            Exit;
+        End;
+        SchBeginEdit(SchDoc, '');
+        For I := 0 To Xs.Count - 1 Do
+        Begin
+            Harness.InsertVertex := I + 1;
+            Harness.SetState_Vertex(I + 1, Point(MilsToCoordF(StrToFloatDef(Xs[I], 0)),
+                MilsToCoordF(StrToFloatDef(Ys[I], 0))));
+        End;
+        SchDoc.RegisterSchObjectInContainer(Harness);
+        SchRegisterObject(SchDoc, Harness);
+        SchEndEdit(SchDoc, 'Edit');
+        SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+        Count := -1;
+        Try Count := Harness.VerticesCount; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":' + BoolToJsonStr(Count = Xs.Count)
+            + ',"vertices":' + IntToStr(Count) + ',"asked":' + IntToStr(Xs.Count) + '}');
+    Finally
+        Xs.Free;
+        Ys.Free;
+    End;
 End;
 
 {..............................................................................}
@@ -18855,6 +19091,7 @@ Begin
         'relink_components': Result := Gen_RelinkComponents(Params, RequestId);
         'get_constraint_groups':      Result := Gen_GetConstraintGroups(Params, RequestId);
         'place_harness_connector':    Result := Gen_PlaceHarnessConnector(Params, RequestId);
+        'place_signal_harness':       Result := Gen_PlaceSignalHarness(Params, RequestId);
         'place_cross_sheet_connector': Result := Gen_PlaceCrossSheetConnector(Params, RequestId);
         'place_text_frame': Result := Gen_PlaceTextFrame(Params, RequestId);
         'increment_designators': Result := Gen_IncrementDesignators(Params, RequestId);

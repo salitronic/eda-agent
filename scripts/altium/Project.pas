@@ -1118,7 +1118,20 @@ End;
 { skipped_nil counts documents, components and pins the model returned as   }
 { Nil, so a short list is not mistaken for the whole design. Proj_GetBOM    }
 { reports the same two.                                                      }
+{                                                                              }
+{ A multi-part symbol placed on several sheets is one compiled component per }
+{ sheet, each listing the pins of the whole device, and a pin whose part is  }
+{ on another sheet reads its net as '?'. So a pin is listed once: a first    }
+{ pass notes the pins some copy names a net for, and the second lists each   }
+{ pin one time, from a copy that names its net when one does (#296).         }
 {..............................................................................}
+
+{ A net name that says the pin has a net: not empty and not the '?' a copy }
+{ of a multi-part symbol reads for a pin of a part on another sheet.       }
+Function IsNamedNet(NetName : String) : Boolean;
+Begin
+    Result := (NetName <> '') And (NetName <> '?');
+End;
 
 Function Proj_GetNets(Params : String; RequestId : String) : String;
 Var
@@ -1128,10 +1141,11 @@ Var
     Doc : IDocument;
     Comp : IComponent;
     Pin : IPin;
-    I, J, K, Count, Limit, DocCount, Skipped : Integer;
+    I, J, K, Pass, Count, Limit, DocCount, Skipped, Repeats : Integer;
     UsePhysical, LimitHit : Boolean;
-    Data, CompDesig, NetName : String;
+    Data, CompDesig, NetName, Key : String;
     First : Boolean;
+    Named, Listed : TStringList;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     FilterComp := ExtractJsonValue(Params, 'component');
@@ -1165,47 +1179,88 @@ Begin
     First := True;
     Count := 0;
     Skipped := 0;
+    Repeats := 0;
     LimitHit := False;
-
-    GetCompiledDocs(Project, DocCount, UsePhysical);
-    For I := 0 To DocCount - 1 Do
-    Begin
-        If LimitHit Then Break;
-        Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Begin Inc(Skipped); Continue; End;
-
-        For J := 0 To Doc.DM_ComponentCount - 1 Do
+    Named := TStringList.Create;
+    Named.Sorted := True;
+    Named.Duplicates := dupIgnore;
+    Listed := TStringList.Create;
+    Listed.Sorted := True;
+    Listed.Duplicates := dupIgnore;
+    Try
+        GetCompiledDocs(Project, DocCount, UsePhysical);
+        For Pass := 1 To 2 Do
         Begin
-            If LimitHit Then Break;
-            Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Begin Inc(Skipped); Continue; End;
-
-            CompDesig := Comp.DM_PhysicalDesignator;
-            If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
-
-            For K := 0 To Comp.DM_PinCount - 1 Do
+            For I := 0 To DocCount - 1 Do
             Begin
-                Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Begin Inc(Skipped); Continue; End;
-
-                NetName := Pin.DM_FlattenedNetName;
-                If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
-                If Count >= Limit Then
+                If LimitHit Then Break;
+                Doc := GetCompiledDoc(Project, I, UsePhysical);
+                If Doc = Nil Then
                 Begin
-                    LimitHit := True;
-                    Break;
+                    If Pass = 2 Then Inc(Skipped);
+                    Continue;
                 End;
 
-                If Not First Then Data := Data + ',';
-                First := False;
+                For J := 0 To Doc.DM_ComponentCount - 1 Do
+                Begin
+                    If LimitHit Then Break;
+                    Comp := Doc.DM_Components(J);
+                    If Comp = Nil Then
+                    Begin
+                        If Pass = 2 Then Inc(Skipped);
+                        Continue;
+                    End;
 
-                Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
-                Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
-                Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
-                Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
-                Inc(Count);
+                    CompDesig := Comp.DM_PhysicalDesignator;
+                    If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
+
+                    For K := 0 To Comp.DM_PinCount - 1 Do
+                    Begin
+                        Pin := Comp.DM_Pins(K);
+                        If Pin = Nil Then
+                        Begin
+                            If Pass = 2 Then Inc(Skipped);
+                            Continue;
+                        End;
+
+                        NetName := Pin.DM_FlattenedNetName;
+                        Key := CompDesig + '|' + Pin.DM_PinNumber;
+                        If Pass = 1 Then
+                        Begin
+                            If IsNamedNet(NetName) Then Named.Add(Key);
+                            Continue;
+                        End;
+
+                        { Once per pin, from a copy naming its net when one does. }
+                        If (Listed.IndexOf(Key) >= 0)
+                            Or ((Not IsNamedNet(NetName)) And (Named.IndexOf(Key) >= 0)) Then
+                        Begin
+                            Inc(Repeats);
+                            Continue;
+                        End;
+                        If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
+                        If Count >= Limit Then
+                        Begin
+                            LimitHit := True;
+                            Break;
+                        End;
+                        Listed.Add(Key);
+
+                        If Not First Then Data := Data + ',';
+                        First := False;
+
+                        Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
+                        Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
+                        Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
+                        Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
+                        Inc(Count);
+                    End;
+                End;
             End;
         End;
+    Finally
+        Named.Free;
+        Listed.Free;
     End;
 
     Data := Data + ']';
@@ -1213,11 +1268,12 @@ Begin
         + ',"count":' + IntToStr(Count)
         + ',"limit":' + IntToStr(Limit)
         + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"repeats_skipped":' + IntToStr(Repeats)
         + ',"skipped_nil":' + IntToStr(Skipped) + '}');
 End;
 
 {..............................................................................}
-{ BOM export from compiled project                                           }
+{ BOM export from compiled project                                          }
 {..............................................................................}
 
 Function Proj_GetBOM(Params : String; RequestId : String) : String;
@@ -1228,10 +1284,11 @@ Var
     Doc : IDocument;
     Comp : IComponent;
     Pin : IPin;
-    I, J, K, Count, Limit, DocCount, Skipped : Integer;
+    I, J, K, Count, Limit, DocCount, Skipped, Repeats : Integer;
     UsePhysical, LimitHit : Boolean;
     Data, CompDesig, CompComment, CompFP, CompLib, PinList : String;
     First, FirstPin : Boolean;
+    Listed : TStringList;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
@@ -1249,7 +1306,13 @@ Begin
     First := True;
     Count := 0;
     Skipped := 0;
+    Repeats := 0;
     LimitHit := False;
+    { A multi-part symbol on several sheets is a compiled component on each }
+    { of them under one designator: one BOM row, not one per sheet (#296). }
+    Listed := TStringList.Create;
+    Listed.Sorted := True;
+    Listed.Duplicates := dupIgnore;
 
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
@@ -1264,12 +1327,18 @@ Begin
             Comp := Doc.DM_Components(J);
             If Comp = Nil Then Begin Inc(Skipped); Continue; End;
 
+            CompDesig := Comp.DM_PhysicalDesignator;
+            If Listed.IndexOf(CompDesig) >= 0 Then
+            Begin
+                Inc(Repeats);
+                Continue;
+            End;
             If Count >= Limit Then
             Begin
                 LimitHit := True;
                 Break;
             End;
-            CompDesig := Comp.DM_PhysicalDesignator;
+            Listed.Add(CompDesig);
             CompComment := Comp.DM_Comment;
             CompFP := Comp.DM_Footprint;
             CompLib := Comp.DM_LibraryReference;
@@ -1299,11 +1368,13 @@ Begin
         End;
     End;
 
+    Listed.Free;
     Data := Data + ']';
     Result := BuildSuccessResponse(RequestId, '{"components":' + Data
         + ',"count":' + IntToStr(Count)
         + ',"limit":' + IntToStr(Limit)
         + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"repeats_skipped":' + IntToStr(Repeats)
         + ',"skipped_nil":' + IntToStr(Skipped) + '}');
 End;
 

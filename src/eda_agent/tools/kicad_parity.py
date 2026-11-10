@@ -340,6 +340,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "proj_net_color": "per-net colours have no call in KiCad 10.0's API",
     "lib_export_kicad_footprint": "converts Altium footprints to KiCad files",
     "lib_export_kicad_symbol": "converts Altium symbols to KiCad files",
+    "proj_convert_to_kicad": "converts an Altium project to a KiCad project",
     "lib_save_footprint_library": "library tools here write the file on each call",
     "obj_get_font_id": "Altium's font table",
     "obj_get_font_spec": "Altium's font table",
@@ -453,6 +454,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_make_paste_grid": "free pads: KiCad 10.0's API creates pads only inside footprints",
     # Altium-only schematic objects
     "sch_place_harness_connector": "Altium signal harnesses",
+    "sch_place_signal_harness": "Altium signal harnesses",
     "sch_get_constraint_groups": "Altium constraint groups",
     "sch_add_directive": "Altium schematic directives; KiCad uses net classes and rules",
     "sch_get_directives": "Altium schematic directives",

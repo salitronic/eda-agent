@@ -26,6 +26,7 @@ from .guidance import register_guidance_tools
 from .update import register_update_tools
 from .uiauto import register_uiauto_tools
 from .project import register_project_tools
+from .convert import register_convert_tools
 from .library import register_library_tools
 from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
@@ -199,6 +200,7 @@ def register_all_tools(mcp):
     register_uiauto_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)
+    register_convert_tools(mcp)
     register_library_tools(mcp)
     register_ipc_batch_tools(mcp)
     register_generic_tools(mcp)
@@ -400,6 +402,7 @@ __all__ = [
     "register_altium365_tools",
     "register_request_prompts",
     "register_project_tools",
+    "register_convert_tools",
     "register_library_tools",
     "register_ipc_batch_tools",
     "register_generic_tools",

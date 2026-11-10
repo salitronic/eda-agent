@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.09.14';
+    SCRIPT_VERSION = '2026.11.10.01';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -1453,6 +1453,125 @@ Begin
     End;
 End;
 
+Function LoadTextFile(SL : TStringList; FilePath : String) : Boolean;
+Var
+    Stream : THandleStream;
+    Attempt : Integer;
+    Handle : Integer;
+    Ok : Boolean;
+Begin
+    { Read every file through here, never SL.LoadFromFile. A sharing          }
+    { violation inside LoadFromFile's TFileStream arrived as a modal          }
+    { EFOpenError on Altium Designer 26.10.1.5 before the surrounding         }
+    { Try/Except ran, stalling the polling loop. FileOpen returns -1 on a     }
+    { sharing violation instead of raising, and once the handle is held       }
+    { LoadFromStream has no open left to fail. The lock is usually brief (a   }
+    { scanner touching a freshly written file), so retry for about 180 ms.    }
+    { False when the file is missing or stayed locked; SL is then empty.      }
+    Ok := False;
+    SL.Text := '';
+    If FileExists(FilePath) Then
+    Begin
+        Attempt := 0;
+        While Attempt < 12 Do
+        Begin
+            Inc(Attempt);
+            Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
+            If Handle <> -1 Then
+            Begin
+                Try
+                    Stream := THandleStream.Create(Handle);
+                    Try
+                        Try
+                            SL.LoadFromStream(Stream);
+                            Ok := True;
+                        Except
+                            Ok := False;
+                        End;
+                    Finally
+                        Stream.Free;
+                    End;
+                Finally
+                    FileClose(Handle);
+                End;
+            End;
+            If Ok Then Break;
+            Sleep(15);
+        End;
+    End;
+    Result := Ok;
+End;
+
+{ Whether a project's own file has something to write. Altium keeps no    }
+{ modified flag for a project that a script can read: after a sheet was   }
+{ renamed in the Projects panel, or a harness definition was added, the   }
+{ panel showed the project modified while its document read Modified      }
+{ false, and app_save_all left the file naming a sheet that no longer     }
+{ existed (#291, measured on AD 26.11). So every member with a file must  }
+{ be named by a [DocumentN] entry of the file on disk; a renamed sheet's  }
+{ new name, or an added document, is not. Entries are not checked the     }
+{ other way: Altium leaves sections of removed documents in the file, so  }
+{ a stale entry stays after any save. Members with no file (the project's }
+{ ActiveBOM.VirtualBOM) are not counted.                                  }
+Function ProjectFileNeedsSave(Project : IProject) : Boolean;
+Var
+    J, Eq : Integer;
+    ProjDoc : IServerDocument;
+    Doc : IDocument;
+    Path, Line, Entry : String;
+    Lines, Listed : TStringList;
+    InDocument : Boolean;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
+    If ProjDoc = Nil Then Exit;
+    Try Result := ProjDoc.Modified; Except End;
+    If Result Then Exit;
+    Lines := TStringList.Create;
+    Listed := TStringList.Create;
+    Try
+        Listed.Sorted := True;
+        Listed.Duplicates := dupIgnore;
+        If Not LoadTextFile(Lines, Path) Then Exit;
+        InDocument := False;
+        For J := 0 To Lines.Count - 1 Do
+        Begin
+            Line := Trim(Lines[J]);
+            If Copy(Line, 1, 1) = '[' Then
+            Begin
+                InDocument := UpperCase(Copy(Line, 1, 9)) = '[DOCUMENT';
+                Continue;
+            End;
+            If Not InDocument Then Continue;
+            If UpperCase(Copy(Line, 1, 13)) <> 'DOCUMENTPATH=' Then Continue;
+            Eq := Pos('=', Line);
+            Entry := Trim(Copy(Line, Eq + 1, Length(Line)));
+            If Entry <> '' Then Listed.Add(UpperCase(ExtractFileName(Entry)));
+        End;
+        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(J);
+            If Doc = Nil Then Continue;
+            Entry := '';
+            Try Entry := Doc.DM_FullPath; Except End;
+            If (Entry = '') Or (Not FileExists(Entry)) Then Continue;
+            If Listed.IndexOf(UpperCase(ExtractFileName(Entry))) < 0 Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        End;
+    Finally
+        Lines.Free;
+        Listed.Free;
+    End;
+End;
+
 Procedure SaveProjectMembers(Project : IProject);
 Var
     J : Integer;
@@ -1464,9 +1583,11 @@ Begin
     // The project file itself, when it's a real on-disk project
     Try
         ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
-        If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
+        If (ProjectServerDoc <> Nil) And ProjectFileNeedsSave(Project) Then
             If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
             Begin
+                SaveAttempts := SaveAttempts + 1;
+                Try ProjectServerDoc.SetModified(True); Except { CountDirtyInProject reports what stayed unsaved } End;
                 Try ProjectServerDoc.DoFileSave(''); Except { CountDirtyInProject reports what stayed unsaved } End;
             End;
     Except { CountDirtyInProject reports what stayed unsaved } End;
@@ -1500,6 +1621,9 @@ Begin
             Except End;
         End;
     End;
+    { The project file counts too: a still_dirty of 0 that missed it left }
+    { a project naming a file no longer on disk (#291).                   }
+    If ProjectFileNeedsSave(Project) Then Result := Result + 1;
 End;
 
 Function CountDirtyDocuments(Dummy : Integer): Integer;
@@ -1672,6 +1796,14 @@ Begin
                 Result := Result + Path;
             End;
         End;
+        { The project file is written by a save-all too, and measured. }
+        Path := '';
+        Try Path := Project.DM_ProjectFullPath; Except End;
+        If (Path <> '') And FileExists(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
     End;
 End;
 
@@ -1837,54 +1969,6 @@ End;
 { JSON Helper Functions                                                        }
 {..............................................................................}
 
-Function LoadTextFile(SL : TStringList; FilePath : String) : Boolean;
-Var
-    Stream : THandleStream;
-    Attempt : Integer;
-    Handle : Integer;
-    Ok : Boolean;
-Begin
-    { Read every file through here, never SL.LoadFromFile. A sharing          }
-    { violation inside LoadFromFile's TFileStream arrived as a modal          }
-    { EFOpenError on Altium Designer 26.10.1.5 before the surrounding         }
-    { Try/Except ran, stalling the polling loop. FileOpen returns -1 on a     }
-    { sharing violation instead of raising, and once the handle is held       }
-    { LoadFromStream has no open left to fail. The lock is usually brief (a   }
-    { scanner touching a freshly written file), so retry for about 180 ms.    }
-    { False when the file is missing or stayed locked; SL is then empty.      }
-    Ok := False;
-    SL.Text := '';
-    If FileExists(FilePath) Then
-    Begin
-        Attempt := 0;
-        While Attempt < 12 Do
-        Begin
-            Inc(Attempt);
-            Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
-            If Handle <> -1 Then
-            Begin
-                Try
-                    Stream := THandleStream.Create(Handle);
-                    Try
-                        Try
-                            SL.LoadFromStream(Stream);
-                            Ok := True;
-                        Except
-                            Ok := False;
-                        End;
-                    Finally
-                        Stream.Free;
-                    End;
-                Finally
-                    FileClose(Handle);
-                End;
-            End;
-            If Ok Then Break;
-            Sleep(15);
-        End;
-    End;
-    Result := Ok;
-End;
 
 Function ReadFileContent(FilePath : String) : String;
 Var

@@ -119,7 +119,6 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_audit_footprint_vs_datasheet", "lib_batch_rename", "lib_batch_set_params", "lib_create_3d_model",
     "lib_create_footprint",
     "lib_create_ic_symbol",
-    "lib_create_standard_footprint",
     "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components", "lib_get_pad_geometry",
     "lib_get_pin_list",

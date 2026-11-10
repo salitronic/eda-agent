@@ -34,7 +34,7 @@ NO_BULK = frozenset({
     "proj_sync_schematic", "proj_annotate", "pcb_autoroute",
     "pcb_autoroute_apply", "pcb_autoplace", "pcb_autoplace_apply",
     "pcb_repour_polygons", "pcb_save_copy_as", "pcb_build_from_project",
-    "sim_run", "sim_run_deck", "review_design",
+    "sim_run", "sim_run_deck", "review_design", "proj_convert_to_kicad",
 })
 
 #: Tools that take their list as their own argument and run it as one
@@ -146,7 +146,15 @@ def with_items(fn: Callable, name: str) -> Callable:
                                if not (k in required and v is None)},
                               defaults)
 
-    wrapper.__signature__ = sig.replace(parameters=[*advertised, items_param])
+    # A list of items always answers with a dict. A tool that answers a
+    # single call with a list (proj_list_documents) declared only the list,
+    # so the server refused every items reply as not a valid list.
+    returns = sig.return_annotation
+    if returns is not sig.empty and returns is not Any \
+            and typing.get_origin(returns) is not dict and returns is not dict:
+        returns = typing.Union[returns, dict[str, Any]]
+    wrapper.__signature__ = sig.replace(parameters=[*advertised, items_param],
+                                        return_annotation=returns)
     # inspect.signature follows __wrapped__ and would hide ``items``.
     del wrapper.__wrapped__
     # The tool as written, for anything that reads its real defaults.
@@ -218,5 +226,13 @@ def _item_result(result: Any) -> Any:
 
 
 def _failed(result: Any) -> bool:
-    return isinstance(result, dict) and (
-        result.get("ok") is False or result.get("success") is False)
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok") is False or result.get("success") is False:
+        return True
+    # A placer that placed nothing and failed something says so in counts:
+    # sch_place_components answered placed 0, failed 1 and was counted a
+    # success.
+    placed, failed = result.get("placed"), result.get("failed")
+    return (isinstance(placed, int) and isinstance(failed, int)
+            and placed == 0 and failed > 0)

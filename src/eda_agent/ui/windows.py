@@ -803,6 +803,23 @@ def enumerate_windows(pid: Optional[int] = None,
     return out
 
 
+def window_rect(hwnd: int) -> Optional[tuple]:
+    """``(left, top, right, bottom)`` of a window in screen pixels, or None.
+
+    A screenshot is the window at its real size, so its pixel (x, y) is
+    the screen point (left + x, top + y). Altium on a second monitor has
+    an origin far from (0, 0), and a position read off a screenshot and
+    clicked as it was landed on another application (#292).
+    """
+    _require()
+    try:
+        if not win32gui.IsWindow(hwnd):
+            return None
+        return tuple(win32gui.GetWindowRect(hwnd))
+    except Exception:                            # pragma: no cover - races
+        return None
+
+
 def capture(hwnd: int) -> Optional[Window]:
     """One window with its child controls read, or None if it is gone.
 

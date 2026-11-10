@@ -707,19 +707,27 @@ def _slot_rotation(p: dict[str, Any], units: str) -> Optional[float]:
     return 90.0 if ys > xs else 0.0
 
 
-def _tracks_payload(tracks: list[dict[str, Any]],
-                    units: str = "mil") -> tuple[str, int]:
+def _tracks_payload(tracks: list[dict[str, Any]], units: str = "mil",
+                    problems: list[str] | None = None) -> tuple[str, int]:
     """The ``tracks`` batch payload, and how many entries were dropped.
 
     Shared by lib_add_footprint_tracks and the package footprint tool so
     the two cannot format a track differently. A track missing an
-    endpoint is dropped and counted.
+    endpoint is dropped and counted. A track whose keepout cannot be
+    meant (see _keepout_restrictions) is dropped, counted, and its
+    reason added to ``problems`` when a list is given.
     """
     op_strs: list[str] = []
     skipped_invalid = 0
-    for t in tracks:
+    for i, t in enumerate(tracks):
         if not all(k in t for k in ("x1", "y1", "x2", "y2")):
             skipped_invalid += 1
+            continue
+        keep = _keepout_op(t)
+        if keep.startswith("!"):
+            skipped_invalid += 1
+            if problems is not None:
+                problems.append(f"track {i}: {keep[1:]}")
             continue
         fields = [
             f"x1={format_length(t.get('x1', 0))}",
@@ -729,7 +737,7 @@ def _tracks_payload(tracks: list[dict[str, Any]],
             f"width={format_length(t.get('width', length_in(units, 10)))}",
             f"layer={_payload_safe(t.get('layer', 'TopOverlay'))}",
         ]
-        op_strs.append(";".join(fields))
+        op_strs.append(";".join(fields) + keep)
     return "~~".join(op_strs), skipped_invalid
 
 
@@ -828,8 +836,59 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
         op = f"layer={_payload_safe(layer)};points={points}"
         if arcs:
             op += ";arcs=" + "/".join(arcs)
-        ops.append(op)
+        keep = _keepout_op(region)
+        if keep.startswith("!"):
+            problems.append(f"region {i}: {keep[1:]}")
+            continue
+        ops.append(op + keep)
     return "~~".join(ops), problems
+
+
+#: What a keepout track, arc, fill or region can keep out, in the words the
+#: lib_add_footprint_* tools take and lib_get_footprint_primitives reports:
+#: Altium's Keepout Restrictions (Copper, Track, Via, SMD Pad, TH Pad).
+KEEPOUT_RESTRICTIONS = ("copper", "track", "via", "smd_pad", "th_pad")
+
+
+def _keepout_restrictions(item: dict[str, Any]) -> list[str] | str:
+    """An item's keepout restrictions to send, ``[]`` for a plain one.
+
+    For a track, arc, fill or region. ``keepout`` true makes it a
+    keepout; ``keepout_for`` lists what
+    it keeps out, all five restrictions when it is left out. Restrictions
+    without ``keepout`` true, an unknown or empty restriction list, or a
+    ``keepout`` that is not a boolean are refused with the reason, never
+    sent as a plain region.
+    """
+    keep = item.get("keepout", False)
+    wanted = item.get("keepout_for")
+    if not isinstance(keep, bool):
+        return "keepout must be true or false"
+    if not keep:
+        if wanted:
+            return "keepout_for needs keepout true"
+        return []
+    if wanted is None:
+        return list(KEEPOUT_RESTRICTIONS)
+    if isinstance(wanted, str) or not isinstance(wanted, (list, tuple)):
+        return "keepout_for must be a list"
+    words = [str(w).strip().lower() for w in wanted]
+    unknown = [w for w in words if w not in KEEPOUT_RESTRICTIONS]
+    if unknown or not words:
+        return ("keepout_for must name one or more of "
+                + ", ".join(KEEPOUT_RESTRICTIONS))
+    # Altium's order, each once.
+    return [w for w in KEEPOUT_RESTRICTIONS if w in words]
+
+
+def _keepout_op(item: dict[str, Any]) -> str:
+    """The batch fields that make ``item`` a keepout: ``""`` for a plain
+    item, ``";keepout=1;keepout_for=..."`` for a keepout, or the reason
+    it is refused prefixed with ``"!"``."""
+    keep = _keepout_restrictions(item)
+    if isinstance(keep, str):
+        return "!" + keep
+    return f";keepout=1;keepout_for={','.join(keep)}" if keep else ""
 
 
 def _edge_arc(x1: float, y1: float, x2: float, y2: float,
@@ -912,7 +971,11 @@ def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
               f"y2={format_length(y2)}")
         if rotation:
             op += f";rotation={format_length(rotation)}"
-        ops.append(op)
+        keep = _keepout_op(fill)
+        if keep.startswith("!"):
+            problems.append(f"fill {i}: {keep[1:]}")
+            continue
+        ops.append(op + keep)
     return "~~".join(ops), problems
 
 
@@ -1797,6 +1860,25 @@ async def _show_one_part(bridge: Any, name: str) -> Optional[int]:
         return None
 
 
+async def _courtyard_layer(bridge) -> tuple[str, str]:
+    """The focused library's courtyard layer, by kind or name, and a note
+    when there is none and Mechanical1 is used."""
+    from ..design.landpattern.emit import LayerRoleError, resolve_altium_layers
+    try:
+        mech = await bridge.send_command_async("library.get_mech_layers", {})
+        # Only the courtyard is wanted here; the assembly role is named so
+        # its lookup cannot refuse the call.
+        layers = resolve_altium_layers((mech or {}).get("layers") or [],
+                                       assembly_layer="-")
+        return str(layers["courtyard"]["layer"]), ""
+    except LayerRoleError as e:
+        return "", (f"{e} The courtyard went on Mechanical1; pass "
+                    "courtyard_layer to choose.")
+    except Exception as e:  # noqa: BLE001 - the footprint is still made
+        return "", (f"the library's mechanical layers could not be read "
+                    f"({e}); the courtyard went on Mechanical1")
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -2564,6 +2646,7 @@ def register_library_tools(mcp):
         tab_w: float = 0.0,
         tab_h: float = 0.0,
         description: str = "",
+        courtyard_layer: str = "",
     ) -> dict[str, Any]:
         """Create a COMPLETE standard footprint in ONE call from the land
         dimensions you give (pads, silk outline, courtyard). For a package
@@ -2590,8 +2673,12 @@ def register_library_tools(mcp):
                 for quad it runs along each row.
             row_span: Centre-to-centre between rows (dual, quad), mils.
             shape: Pad shape (default "roundrect", corner_radius in %).
-            silk: Draw a TopOverlay body outline.
-            courtyard: Courtyard margin, mils (0 = none; Mechanical1).
+            silk: Draw the body outline on TopOverlay, cut clear of the
+                pads, with a pin 1 mark where the part needs one.
+            courtyard: Courtyard margin past pads, body and silk, mils
+                (0 = none).
+            courtyard_layer: Its layer; empty takes the library's
+                Courtyard Top layer, else Mechanical1.
             body_w, body_h: Body size for the silk (default pad extent).
             hole: Drill, mils; > 0 gives through-hole pads, pin 1 square.
             description: Footprint description.
@@ -2612,6 +2699,9 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": str(e)}
 
         bridge = get_bridge()
+        cy_layer, cy_note = courtyard_layer, ""
+        if courtyard > 0 and not cy_layer:
+            cy_layer, cy_note = await _courtyard_layer(bridge)
         created = await bridge.send_command_async(
             "library.create_footprint",
             {"name": name, "description": description},
@@ -2632,7 +2722,8 @@ def register_library_tools(mcp):
             "library.add_footprint_pads",
             {"pads": pads_payload, "footprint_name": name})
 
-        tracks = geom.all_tracks()
+        tracks = list(geom.silk_tracks) + [
+            {**t, "layer": cy_layer or t["layer"]} for t in geom.courtyard_tracks]
         tracks_res: dict[str, Any] = {}
         if tracks:
             # Unrounded, like the pads: round() moved every fractional mil,
@@ -2656,6 +2747,9 @@ def register_library_tools(mcp):
             "pin_count": pin_count,
             "pads": len(geom.pads),
             "tracks": len(tracks),
+            **({"courtyard_layer": cy_layer or "Mechanical1"}
+               if geom.courtyard_tracks else {}),
+            **({"courtyard_note": cy_note} if cy_note else {}),
             "width_mils": geom.width_mils,
             "height_mils": geom.height_mils,
             "create": created,
@@ -3692,19 +3786,22 @@ def register_library_tools(mcp):
         Args:
             tracks: ``{x1, y1, x2, y2, width (default 10), layer
                 (default "TopOverlay")}`` each; any layer name, e.g.
-                "Mechanical13" for an assembly outline.
+                "Mechanical13" for an assembly outline. ``keepout`` and
+                ``keepout_for`` as in lib_add_footprint_regions.
 
         ``footprint_name`` picks the footprint; empty uses the current
         one, and a name that cannot be made current is refused.
         ``units`` is "mil" (default) or "mm", kept exact.
 
         Returns:
-            Dict with added, failed, total counts.
+            Dict with added, failed, total counts, and keepouts,
+            keepout_failures, bad_keepouts as for regions.
         """
         refusal = _units_refusal(units)
         if refusal:
             return refusal
-        payload, skipped_invalid = _tracks_payload(tracks, units)
+        refused: list[str] = []
+        payload, skipped_invalid = _tracks_payload(tracks, units, refused)
         op_strs = [op for op in payload.split("~~") if op]
 
         if not op_strs:
@@ -3713,6 +3810,7 @@ def register_library_tools(mcp):
                 "added": 0,
                 "total": len(tracks),
                 "skipped_invalid": skipped_invalid,
+                **({"refused": refused} if refused else {}),
             }
 
         bridge = get_bridge()
@@ -3723,6 +3821,8 @@ def register_library_tools(mcp):
             "library.add_footprint_tracks", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
+        if isinstance(result, dict) and refused:
+            result["refused"] = refused
         return result
 
     @mcp.tool()
@@ -3745,7 +3845,13 @@ def register_library_tools(mcp):
                 A point ``[x, y, sweep]`` makes the edge to the next point
                 a true arc of ``sweep`` degrees, counterclockwise when
                 positive (a slot's round end is 180 or -180); other edges
-                are straight.
+                are straight. ``"keepout": true`` makes the region a
+                keepout on its own layer, and ``"keepout_for"`` lists
+                what it keeps out ("copper", "track", "via", "smd_pad",
+                "th_pad"; all five when left out). ``["copper"]`` on a
+                signal layer keeps pours off that layer alone while
+                tracks may cross; KeepOutLayer acts on every layer, and
+                a region there is always made a keepout.
             footprint_name: footprint to write into; empty uses the
                 current one, and a name that cannot be made current is
                 refused.
@@ -3754,7 +3860,9 @@ def register_library_tools(mcp):
         Returns:
             Dict with added, failed, bad_points, unknown_layers, total,
             and arc_edges: the arc edges the created regions read back
-            as holding. A region refused here before sending is listed
+            as holding; keepouts (made keepouts whose flags read back as
+            asked), keepout_failures and bad_keepouts. A region refused
+            here before sending is listed
             in ``refused`` with the reason.
         """
         refusal = _units_refusal(units)
@@ -3793,14 +3901,16 @@ def register_library_tools(mcp):
                 origin, with an optional ``"rotation"`` in degrees about
                 the fill's centre. The layer is REQUIRED: there is no
                 default, because a solid shape defaulted onto copper is a
-                short. A fill with no area is refused.
+                short. A fill with no area is refused. ``keepout`` and
+                ``keepout_for`` as in lib_add_footprint_regions.
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.
             units: "mil" (default) or "mm", for every corner, kept exact.
 
         Returns:
-            Dict with added, failed, bad_extent, unknown_layers, total. A
+            Dict with added, failed, bad_extent, unknown_layers, total,
+            keepouts, keepout_failures, bad_keepouts. A
             fill refused here before sending is listed in ``refused`` with
             the reason.
         """
@@ -3832,6 +3942,8 @@ def register_library_tools(mcp):
         layer: str = "TopOverlay",
         footprint_name: str = "",
         units: str = "mil",
+        keepout: bool = False,
+        keepout_for: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Add an arc to the current footprint.
 
@@ -3851,14 +3963,22 @@ def register_library_tools(mcp):
             units: "mil" (default) or "mm", for every length and
                 coordinate here, kept exact rather than rounded to
                 whole mils.
+            keepout, keepout_for: make the arc a keepout, as in
+                lib_add_footprint_regions.
 
         Returns:
-            Dictionary confirming arc addition
+            Dictionary confirming arc addition; for a keepout also
+            keepout_verified, keepout and keepout_for as read back.
         """
         bridge = get_bridge()
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        keep = _keepout_restrictions(
+            {"keepout": keepout, "keepout_for": keepout_for})
+        if isinstance(keep, str):
+            return {"success": False, "error": keep,
+                    "error_code": "BAD_KEEPOUT"}
         params: dict[str, Any] = {
             "x_center": format_length(x_center),
             "y_center": format_length(y_center),
@@ -3869,6 +3989,9 @@ def register_library_tools(mcp):
                 length_in(units, 10) if width is None else width),
             "layer": layer,
         }
+        if keep:
+            params["keepout"] = "1"
+            params["keepout_for"] = ",".join(keep)
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
@@ -8070,7 +8193,7 @@ def register_library_tools(mcp):
                 if key in lengths:
                     text = format_length(value)
                 elif key in numbers:
-                    text = repr(float(value))
+                    text = format_length(value)
                 elif key in flags:
                     text = "true" if value else "false"
                 else:
@@ -8128,8 +8251,10 @@ def register_library_tools(mcp):
             [{layer, layer_id, x1, y1, x2, y2, area and arc_edges
             (regions)}], texts
             [{text, layer, layer_id, x, y, size, rotation, x1, y1, x2,
-            y2}], vias [{x, y, diameter, hole}]}. A text's box is
-            Altium's cached one and can lag an edit made this session.
+            y2}], vias [{x, y, diameter, hole}]}. Tracks, arcs, regions
+            and fills also carry keepout, and keepout_for where the
+            restrictions act (a keepout, or KeepOutLayer). A text's box
+            is Altium's cached one and can lag an edit made this session.
         """
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "library_path": library_path}

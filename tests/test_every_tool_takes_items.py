@@ -120,6 +120,25 @@ def test_a_read_then_a_write_is_two_requests_for_any_count(wire):
     assert out["succeeded"] == 10
 
 
+def test_application_commands_go_one_request_per_item(wire):
+    # Altium refuses a bulk request for an application command, so every
+    # item of sch_reload_document failed (#295). Each goes on its own, in
+    # order, and the items after still gather.
+    async def reload(file_path: str) -> dict:
+        b = bridge_pkg.get_bridge()
+        await b.send_command_async("application.save_document",
+                                   {"file_path": file_path})
+        return await b.send_command_async("generic.compile", {"f": file_path})
+    tool = tool_bulk.with_items(reload, "sch_reload_one")
+
+    out = asyncio.run(tool(items=[{"file_path": p} for p in "ABC"]))
+
+    assert wire.requests[:3] == [("application.save_document", {"file_path": p})
+                                 for p in "ABC"]
+    assert [c for c, _ in wire.requests[3:]] == ["generic.compile"]
+    assert out["succeeded"] == 3 and out["altium_requests"] == 4
+
+
 def test_a_failed_item_stops_the_rest_and_says_which(monkeypatch):
     bridge = WireBridge(fail_on=lambda p: "off the board" if p.get("x") == 2 else None)
     monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: bridge)
@@ -299,3 +318,28 @@ def test_renames_by_index_run_one_by_one(monkeypatch, tmp_path):
     assert [c for c, _ in bridge.sent] == ["library.rename_component"] * 2
     assert bridge.sent[0][1]["component_index"] == 3
     assert out["succeeded"] == 2
+
+
+def test_a_tool_that_answers_with_a_list_may_answer_items_with_a_dict():
+    # proj_list_documents declared list[...]; its items reply is a dict and
+    # the server refused it ("Input should be a valid list").
+    import typing
+
+    async def listing(project_path: str = "") -> list[dict]:
+        """List."""
+        return []
+    tool = tool_bulk.with_items(listing, "proj_list_things")
+    returns = tool.__signature__.return_annotation
+    assert typing.get_origin(returns) is typing.Union
+    assert dict[str, typing.Any] in typing.get_args(returns)
+
+    async def as_dict(x: int = 0) -> dict:
+        """Dict."""
+        return {}
+    assert tool_bulk.with_items(as_dict, "obj_thing").__signature__.return_annotation is dict
+
+
+def test_an_item_that_placed_nothing_and_failed_counts_as_failed():
+    assert tool_bulk._failed({"placed": 0, "failed": 1, "total": 1})
+    assert not tool_bulk._failed({"placed": 1, "failed": 0, "total": 1})
+    assert not tool_bulk._failed({"placed": 2, "failed": 1, "total": 3})

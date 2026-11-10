@@ -32,6 +32,10 @@ _ITEM: contextvars.ContextVar = contextvars.ContextVar(
 #: time, so a very long one holds every other session up.
 MAX_ITEMS_PER_REQUEST = 200
 
+#: Commands Altium runs once per request and refuses as a bulk request
+#: (ProcessBulk in StatusForm.pas).
+UNBATCHED_PREFIXES = ("application.",)
+
 
 @dataclass
 class _Pending:
@@ -91,15 +95,19 @@ class Collector:
     async def _send(self, command: str, entries: list) -> None:
         self.requests_sent += 1
         timeout = max((e.timeout or 0) for e in entries) or None
-        if len(entries) == 1:
-            entry = entries[0]
-            try:
-                result = await self.bridge.send_command_direct(
-                    command, entry.params, timeout)
-            except Exception as exc:              # noqa: BLE001 - per item
-                _settle(entry.future, exc=exc)
-            else:
-                _settle(entry.future, result=result)
+        # Altium refuses items for an application command (a save, a
+        # close, an open act on one document each), so those go one
+        # request per item, in the items' order.
+        if len(entries) == 1 or command.startswith(UNBATCHED_PREFIXES):
+            self.requests_sent += len(entries) - 1
+            for entry in entries:
+                try:
+                    result = await self.bridge.send_command_direct(
+                        command, entry.params, entry.timeout or timeout)
+                except Exception as exc:          # noqa: BLE001 - per item
+                    _settle(entry.future, exc=exc)
+                else:
+                    _settle(entry.future, result=result)
             return
         try:
             outcomes = await self.bridge.send_bulk_async(

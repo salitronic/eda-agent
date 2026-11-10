@@ -90,6 +90,23 @@ def test_names_compare_without_overbars_slashes_or_case():
     assert norm("VDD_IO") == norm("VDDIO")
 
 
+def test_a_subscripted_name_printed_as_two_words_matches(tmp_path):
+    # #300: ST prints V_CC with a subscript, which the PDF text gives as
+    # "V CC"; the six subscripted STM6601 pins were refused.
+    pdf = tmp_path / "stm6601.pdf"
+    pdf.write_bytes(_pdf([["Pin description", "1 V CC Power supply input",
+                           "3 V REF Precise 1.5 V voltage reference",
+                           "4 PS HOLD PS HOLD input", "7 VCC LO Output for high",
+                           "8 PB OUT Status of PB push-button input"]]))
+    ok = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
+        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\VCCLO"),
+        ("8", "PB_OUT")))
+    assert ok["ok"], ok
+    wrong = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
+        ("1", "VREF"), ("3", "VCC"), ("7", "PBOUT")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "3", "7"]
+
+
 def _tool(monkeypatch, checks_off=""):
     from eda_agent import preferences
     from eda_agent.tools import library

@@ -34,8 +34,16 @@ not a placeholder. Seven families cover the bulk of parts:
 All lengths are mils. Pad centres are offsets from the footprint origin (0,0)
 at rotation 0, the middle of the pad grid (between the rows for dual, quad
 and tab, which puts a tab part's origin off its body). Pin 1 is at the top of
-the left column (dual, quad) or the left end of the row. No pin 1 mark is
-drawn: the silkscreen is the body or pad-extent rectangle only.
+the left column (dual, quad) or the left end of the row.
+
+The silkscreen is the body outline drawn just outside the body, with every
+piece that would come within ``SILK_CLEARANCE`` of a pad cut away and any
+piece too short to print dropped, so no ink lands on copper. Pin 1 is
+marked by a short line beyond pin 1, outside the body and the pads (dual
+parts other than SOT-23-3 and -5, sip, header); a quad or a BGA instead
+leaves its pin 1 corner open and marks the other three. A chip or a tab
+part cannot be placed the wrong way round and carries no mark. The
+courtyard encloses pads, body and silk, ``courtyard`` beyond them.
 
 ``pad_w`` / ``pad_h`` are the pad's X and Y size in every family but quad,
 so in ``dual`` and ``chip`` ``pad_w`` runs ACROSS the row (along the span)
@@ -68,6 +76,14 @@ class FootprintGeometry:
 _SILK_W = 6
 _CY_W = 4
 _CY_LAYER = "Mechanical1"
+#: Gap from a pad's copper to the edge of the ink, mils (0.2 mm): silk
+#: registration is coarse, and ink on a pad lifts the part.
+SILK_CLEARANCE = 8.0
+#: Shortest silk piece kept, mils (0.25 mm): shorter ones do not print.
+_SILK_MIN = 10.0
+#: Length of the pin 1 line when the pad gives it less, and of a corner
+#: mark's legs, mils.
+_MARK_LEN = 20.0
 
 
 def _rect_tracks(x1, y1, x2, y2, width, layer):
@@ -144,6 +160,15 @@ def generate_footprint(
                 f"leave a copper annular ring")
     if exposed_pad < 0:
         raise ValueError(f"exposed_pad must be >= 0 (got {exposed_pad})")
+    geom = _family(fam, family, pin_count, pitch, pad_w, pad_h, row_span,
+                   shape, silk, courtyard, body_w, body_h, hole, rows, cols,
+                   exposed_pad, skip, tab_w, tab_h)
+    return _dress(geom, fam, silk, courtyard, body_w, body_h)
+
+
+def _family(fam, family, pin_count, pitch, pad_w, pad_h, row_span, shape,
+            silk, courtyard, body_w, body_h, hole, rows, cols, exposed_pad,
+            skip, tab_w, tab_h) -> FootprintGeometry:
     if fam == "chip":
         return _chip(pad_w, pad_h, pitch, shape, silk, courtyard,
                      body_w, body_h, hole)
@@ -385,4 +410,157 @@ def _quad(n, pitch, pad_w, pad_h, row_span, shape, silk, courtyard,
     return _finish(pads, ext, ext, silk, courtyard, body_w, body_h)
 
 
-__all__ = ["FootprintGeometry", "generate_footprint"]
+def _pad_box(pad: dict, grow: float) -> tuple:
+    hx = float(pad["x_size"]) / 2 + grow
+    hy = float(pad["y_size"]) / 2 + grow
+    return (float(pad["x"]) - hx, float(pad["y"]) - hy,
+            float(pad["x"]) + hx, float(pad["y"]) + hy)
+
+
+def _clip(seg: dict, boxes: list) -> list:
+    """The pieces of an axis-aligned segment outside every box, each long
+    enough to print."""
+    x1, y1, x2, y2 = seg["x1"], seg["y1"], seg["x2"], seg["y2"]
+    horizontal = abs(y1 - y2) < 1e-9
+    if horizontal:
+        lo, hi, at = min(x1, x2), max(x1, x2), y1
+    else:
+        lo, hi, at = min(y1, y2), max(y1, y2), x1
+    pieces = [(lo, hi)]
+    for bx1, by1, bx2, by2 in boxes:
+        if horizontal and by1 < at < by2:
+            c1, c2 = bx1, bx2
+        elif not horizontal and bx1 < at < bx2:
+            c1, c2 = by1, by2
+        else:
+            continue
+        kept = []
+        for a, b in pieces:
+            if c2 <= a or c1 >= b:
+                kept.append((a, b))
+                continue
+            if c1 > a:
+                kept.append((a, c1))
+            if c2 < b:
+                kept.append((c2, b))
+        pieces = kept
+    out = []
+    for a, b in pieces:
+        if b - a < _SILK_MIN:
+            continue
+        if horizontal:
+            out.append({**seg, "x1": a, "y1": at, "x2": b, "y2": at})
+        else:
+            out.append({**seg, "x1": at, "y1": a, "x2": at, "y2": b})
+    return out
+
+
+def _corner_marks(hx: float, hy: float, skip_corner: tuple) -> list:
+    """L marks at the outline's corners, leaving out ``skip_corner``."""
+    leg = min(_MARK_LEN, hx, hy)
+    out = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            if (sx, sy) == skip_corner:
+                continue
+            cx, cy = sx * hx, sy * hy
+            out.append({"x1": cx, "y1": cy, "x2": cx - sx * leg, "y2": cy,
+                        "width": _SILK_W, "layer": "TopOverlay"})
+            out.append({"x1": cx, "y1": cy, "x2": cx, "y2": cy - sy * leg,
+                        "width": _SILK_W, "layer": "TopOverlay"})
+    return out
+
+
+def _needs_pin1_line(fam: str, pads: list) -> bool:
+    if fam == "dual":
+        return len(pads) not in (3, 5)
+    return fam in ("sip", "header") and len(pads) >= 2
+
+
+def _pin1_line(pads: list, hx: float, hy: float) -> list:
+    """A line beyond pin 1 along its row, past the pad and the body, as
+    long as the pin is wide: never under the body, never on copper."""
+    first = next((p for p in pads if str(p["designator"]) == "1"), None)
+    if first is None:
+        return []
+    xs = {round(float(p["x"]), 6) for p in pads}
+    ys = {round(float(p["y"]), 6) for p in pads}
+    along_y = len(ys) >= len(xs)
+    row = float(first["y"] if along_y else first["x"])
+    if abs(row) < 1e-9:
+        return []
+    sign = 1.0 if row > 0 else -1.0
+    half_pad = float(first["y_size" if along_y else "x_size"]) / 2
+    body_half = hy if along_y else hx
+    at = sign * max(abs(row) + half_pad + SILK_CLEARANCE + _SILK_W / 2,
+                    body_half + _SILK_W + SILK_CLEARANCE)
+    across = float(first["x"] if along_y else first["y"])
+    half_len = max(float(first["x_size" if along_y else "y_size"]),
+                   _MARK_LEN) / 2
+    a, b = across - half_len, across + half_len
+    if along_y:
+        return [{"x1": a, "y1": at, "x2": b, "y2": at, "width": _SILK_W,
+                 "layer": "TopOverlay"}]
+    return [{"x1": at, "y1": a, "x2": at, "y2": b, "width": _SILK_W,
+             "layer": "TopOverlay"}]
+
+
+def _dress(geom: FootprintGeometry, fam: str, silk: bool, courtyard: float,
+           body_w: float, body_h: float) -> FootprintGeometry:
+    """Silk kept off the pads with a pin 1 mark, and a courtyard round all."""
+    pads = list(geom.pads)
+    bw = body_w or geom.width_mils
+    bh = body_h or geom.height_mils
+    # The ink's centre line half a width outside the body, so none of it
+    # lies under the part.
+    hx = bw / 2 + _SILK_W / 2
+    hy = bh / 2 + _SILK_W / 2
+    silk_tracks: list[dict] = []
+    if silk:
+        boxes = [_pad_box(p, SILK_CLEARANCE + _SILK_W / 2) for p in pads]
+        if fam == "bga":
+            outline = _corner_marks(hx, hy, (-1, 1))
+        else:
+            outline = _rect_tracks(-hx, -hy, hx, hy, _SILK_W, "TopOverlay")
+        for seg in outline:
+            silk_tracks.extend(_clip(seg, boxes))
+        if fam == "dual":
+            # A leadless part's lands reach past its body, so the ends of
+            # the outline are cut to scraps. Then the ends go just past the
+            # pads instead, the whole body wide (#302).
+            ends = [t for t in silk_tracks if abs(t["y1"] - t["y2"]) < 1e-9]
+            if sum(abs(t["x2"] - t["x1"]) for t in ends) < 2 * hx:
+                hy = max([hy] + [abs(float(p["y"])) + float(p["y_size"]) / 2
+                                 + SILK_CLEARANCE + _SILK_W / 2 for p in pads])
+                silk_tracks = [t for t in silk_tracks if t not in ends]
+                for y in (-hy, hy):
+                    silk_tracks.extend(_clip(
+                        {"x1": -hx, "y1": y, "x2": hx, "y2": y,
+                         "width": _SILK_W, "layer": "TopOverlay"}, boxes))
+        if fam == "quad":
+            # Pin 1's corner (top left) open, the other three marked.
+            silk_tracks = [
+                t for t in silk_tracks
+                if not any(abs(x + hx) < 1e-6 and abs(y - hy) < 1e-6
+                           for x, y in ((t["x1"], t["y1"]), (t["x2"], t["y2"])))]
+        if _needs_pin1_line(fam, pads):
+            silk_tracks.extend(_pin1_line(pads, hx, hy))
+    cy_tracks: list[dict] = []
+    if courtyard > 0:
+        ex = max([geom.width_mils / 2, bw / 2]
+                 + [abs(float(p["x"])) + float(p["x_size"]) / 2 for p in pads]
+                 + [max(abs(t["x1"]), abs(t["x2"])) + _SILK_W / 2
+                    for t in silk_tracks])
+        ey = max([geom.height_mils / 2, bh / 2]
+                 + [abs(float(p["y"])) + float(p["y_size"]) / 2 for p in pads]
+                 + [max(abs(t["y1"]), abs(t["y2"])) + _SILK_W / 2
+                    for t in silk_tracks])
+        cy_tracks = _rect_tracks(-ex - courtyard, -ey - courtyard,
+                                 ex + courtyard, ey + courtyard, _CY_W, _CY_LAYER)
+    return FootprintGeometry(
+        pads=geom.pads, silk_tracks=tuple(silk_tracks),
+        courtyard_tracks=tuple(cy_tracks),
+        width_mils=geom.width_mils, height_mils=geom.height_mils)
+
+
+__all__ = ["FootprintGeometry", "SILK_CLEARANCE", "generate_footprint"]
