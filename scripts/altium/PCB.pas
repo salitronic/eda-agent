@@ -19095,6 +19095,27 @@ Begin
         + 'script; choose Add or Remove and confirm it in Altium."}');
 End;
 
+{ True when Angle reads the same as one of the angles in Rots (degrees, any  }
+{ multiple of 360 apart), to a hundredth of a degree.                        }
+Function RotationListed(Angle : Double; Rots : TStringList) : Boolean;
+Var
+    I : Integer;
+    D : Double;
+Begin
+    Result := False;
+    For I := 0 To Rots.Count - 1 Do
+    Begin
+        D := Angle - StrToFloatDef(Rots.Strings[I], 0);
+        While D < 0 Do D := D + 360;
+        While D >= 360 Do D := D - 360;
+        If (D < 0.01) Or (D > 359.99) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { PCB_AutoplaceSilkscreen - move component designators that are too close to  }
 { other silk, to a pad's mask opening, or off the board, onto the first of a  }
@@ -19110,7 +19131,11 @@ End;
 { read from the rule's Descriptor (GapMilsFromDescriptor). Refused when       }
 { neither gives one. A pad's mask opening is taken as its copper plus         }
 { mask_expansion_mils (default 4, Altium's default expansion).               }
-{ Params: designators (pipe list, optional), the three above.                }
+{ ROTATIONS (pipe list of degrees, optional) give the designators a reading  }
+{ direction: one not at a listed angle is turned even when clear, and each   }
+{ angle is tried in order, with the whole anchor ring, before the next. One  }
+{ no angle and anchor clears gets its angle and place back.                  }
+{ Params: designators (pipe list, optional), rotations, the three above.    }
 {..............................................................................}
 Function PCB_AutoplaceSilkscreen(Params : String; RequestId : String) : String;
 Var
@@ -19128,12 +19153,45 @@ Var
     SilkMils, MaskMils, ExpMils, RuleMils : Double;
     SilkSrc, MaskSrc, DesStr, CompName, PlacedList, UnplacedList, S : String;
     Ok, WasOnline : Boolean;
+    Rots : TStringList;
+    R, PipePos, Turned : Integer;
+    OrigRot : Double;
+    Remaining, Item : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
+    End;
+
+    { The reading directions, checked before anything moves. }
+    Rots := TStringList.Create;
+    Remaining := ExtractJsonValue(Params, 'rotations');
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Item := Trim(Copy(Remaining, 1, PipePos - 1));
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Item := Trim(Remaining);
+            Remaining := '';
+        End;
+        If Item <> '' Then
+        Begin
+            If Not IsFloatStr(Item) Then
+            Begin
+                Rots.Free;
+                Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+                    'rotations are angles in degrees: ' + Item);
+                Exit;
+            End;
+            Rots.Add(Item);
+        End;
     End;
 
     SilkMils := -1;
@@ -19209,6 +19267,7 @@ Begin
     End;
     If (SilkMils < 0) Or (MaskMils < 0) Then
     Begin
+        Rots.Free;
         Result := BuildErrorResponse(RequestId, 'NO_CLEARANCE',
             'No clearance to keep: this board has no enabled, readable Silk To Silk '
             + 'or Silk To Solder Mask rule for the one not given. Pass '
@@ -19250,6 +19309,7 @@ Begin
     AlreadyClear := 0;
     Unplaced := 0;
     Hidden := 0;
+    Turned := 0;
     PlacedList := '';
     UnplacedList := '';
     WasOnline := True;
@@ -19275,7 +19335,8 @@ Begin
             End;
             CompName := '';
             Try CompName := Slk.Text; Except End;
-            If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+            If ((Rots.Count = 0) Or RotationListed(Slk.Rotation, Rots))
+                And Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
             Begin
                 Inc(AlreadyClear);
                 Continue;
@@ -19284,18 +19345,33 @@ Begin
             OrigAuto := Comp.NameAutoPosition;
             OrigX := Slk.XLocation;
             OrigY := Slk.YLocation;
+            OrigRot := Slk.Rotation;
             Ok := False;
-            For K := 0 To 7 Do
+            { Without rotations the ring runs once at the designator's own }
+            { angle; with them, once per angle, in the order given.        }
+            R := 0;
+            While (Not Ok) And ((R = 0) Or (R < Rots.Count)) Do
             Begin
-                Comp.BeginModify;
-                Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
-                Comp.EndModify;
-                If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                If Rots.Count > 0 Then
                 Begin
-                    Ok := True;
-                    Break;
+                    Comp.BeginModify;
+                    Try Slk.Rotation := StrToFloatDef(Rots.Strings[R], 0); Except { the clearance check below reads where it is } End;
+                    Comp.EndModify;
                 End;
+                For K := 0 To 7 Do
+                Begin
+                    Comp.BeginModify;
+                    Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
+                    Comp.EndModify;
+                    If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                    Begin
+                        Ok := True;
+                        Break;
+                    End;
+                End;
+                Inc(R);
             End;
+            If Ok And (Abs(Slk.Rotation - OrigRot) > 0.01) Then Inc(Turned);
 
             If Ok Then
             Begin
@@ -19306,6 +19382,10 @@ Begin
             Else
             Begin
                 Comp.BeginModify;
+                If Abs(Slk.Rotation - OrigRot) > 0.01 Then
+                Begin
+                    Try Slk.Rotation := OrigRot; Except NoteWriteFailed('designator rotation back'); End;
+                End;
                 Try Comp.ChangeNameAutoposition(OrigAuto); Except End;
                 If (Slk.XLocation <> OrigX) Or (Slk.YLocation <> OrigY) Then
                     Slk.MoveToXY(OrigX, OrigY);
@@ -19318,12 +19398,14 @@ Begin
     Finally
         PcbEndEdit(0);
         Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except NoteWriteFailed('restore Online DRC (it may be left off)'); End;
+        Rots.Free;
     End;
 
     If Placed + Unplaced > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":' + BoolToJsonStr(Unplaced = 0) + ','
         + '"placed":' + IntToStr(Placed) + ','
+        + '"turned":' + IntToStr(Turned) + ','
         + '"already_clear":' + IntToStr(AlreadyClear) + ','
         + '"unplaced":' + IntToStr(Unplaced) + ','
         + '"hidden":' + IntToStr(Hidden) + ','

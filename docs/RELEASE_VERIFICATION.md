@@ -1,4 +1,4 @@
-# Release verification: 2026.11.10.02
+# Release verification: 2026.11.11.01
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.10.02`, `version_match` =
+Expect `altium_script_version` = `2026.11.11.01`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -1501,7 +1501,10 @@ exercised are `BoardOutline.SetState_XSizeYSize` and
    `already_clear`; DRC still shows none. Move one designator onto a
    neighbour's outline by hand: the call moves only that one, or lists it
    in `unplaced_designators` and leaves it where you put it. The reply
-   names the rules its clearances came from.
+   names the rules its clearances came from. With `rotations=[0, 90]`
+   a vertical designator that is clear at 90 is left alone, one at 45 is
+   turned to 0 or 90 (counted in `turned`), and one nothing clears keeps
+   its own angle and place.
 7. **app_click_menu checks what it clicked.** `app_click_menu
    menu_path="Tools|Update From PCB Libraries"` (no ellipsis) either
    opens the update wizard or fails naming the item it found; it never

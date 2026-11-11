@@ -3927,6 +3927,7 @@ def register_pcb_tools(mcp):
         mask_clearance_mils: float | None = None,
         mask_expansion_mils: float = 4,
         designators: list[str] | None = None,
+        rotations: list[float] | None = None,
     ) -> dict[str, Any]:
         """Move designators that break silk clearance to a clear position.
 
@@ -3948,12 +3949,19 @@ def register_pcb_tools(mcp):
             mask_expansion_mils: How far a pad's mask opening extends past
                 its copper (default 4, Altium's default).
             designators: Only these components. ``None`` means all.
+            rotations: Reading directions in board degrees, tried in
+                order (``[0, 90]``: horizontal, else vertical). A
+                designator at none of them is turned even when clear;
+                each angle gets the whole anchor ring before the next.
+                One that nothing clears keeps its own angle and place.
+                Different parts, different directions: ``items``.
 
         Refused with NO_CLEARANCE, moving nothing, when a clearance is
         neither given nor readable from an enabled rule.
 
         Returns:
-            ``placed``, ``already_clear``, ``unplaced``, ``hidden``,
+            ``placed``, ``turned`` (placed at a new angle),
+            ``already_clear``, ``unplaced``, ``hidden``,
             ``total``, the placed and unplaced designators, and each
             clearance used with its source (``argument`` or the rule's
             name). ``skipped`` is ``unplaced + hidden``.
@@ -3973,6 +3981,13 @@ def register_pcb_tools(mcp):
                 return {"ok": False,
                         "reason": f"a designator cannot contain |: {bad[0]}"}
             params["designators"] = "|".join(str(d) for d in designators)
+        if rotations:
+            try:
+                params["rotations"] = "|".join(format_length(float(r))
+                                               for r in rotations)
+            except (TypeError, ValueError):
+                return {"ok": False,
+                        "reason": "rotations are angles in degrees"}
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.autoplace_silkscreen", params)
 

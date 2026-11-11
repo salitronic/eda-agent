@@ -41,7 +41,7 @@ def test_a_clear_designator_is_left_alone_and_a_blocked_one_restored():
     first_check = body.index("SilkBlocked(")
     first_move = body.index("ChangeNameAutoposition(SilkAnchorForIndex")
     assert first_check < first_move, "a designator is moved before it is checked"
-    assert re.search(r"If Not SilkBlocked\([^)]*\) Then\s*Begin\s*Inc\(AlreadyClear\);\s*Continue;",
+    assert re.search(r"And Not SilkBlocked\([^)]*\) Then\s*Begin\s*Inc\(AlreadyClear\);\s*Continue;",
                      body), "an already clear designator must be skipped untouched"
     # No anchor cleared: back to the original autoposition and location.
     assert re.search(r"OrigAuto\s*:=\s*Comp\.NameAutoPosition", body)
@@ -147,3 +147,70 @@ def test_the_production_descriptor_parser_reads_every_unit(tmp_path):
     exe = tmp_path / ("descriptors.exe" if os.name == "nt" else "descriptors")
     ran = subprocess.run([str(exe)], capture_output=True, text=True)
     assert ran.returncode == 0, f"case {ran.returncode} failed: {cases[ran.returncode - 1]}"
+
+
+def test_reading_directions_turn_a_designator_and_put_it_back_when_nothing_clears():
+    body = _routine(_code("PCB.pas"), "PCB_AutoplaceSilkscreen")
+    # Clear but at an angle not listed: still handled, so it gets turned.
+    assert re.search(r"If \(\(Rots\.Count = 0\) Or RotationListed\(Slk\.Rotation, Rots\)\)\s*"
+                     r"And Not SilkBlocked", body)
+    # Each angle is set before the anchor ring runs at it.
+    turn = body.index("Slk.Rotation := StrToFloatDef(Rots.Strings[R], 0)")
+    assert turn < body.index("ChangeNameAutoposition(SilkAnchorForIndex(K))")
+    # Nothing cleared: its own angle back before its own anchor.
+    restore = body.index("Slk.Rotation := OrigRot")
+    assert restore < body.index("ChangeNameAutoposition(OrigAuto)")
+    assert '"turned":' in body and "Rots.Free" in body
+
+
+def test_an_angle_is_matched_whatever_turn_it_is_written_as():
+    body = _routine(_code("PCB.pas"), "RotationListed")
+    assert "D := D + 360" in body and "D := D - 360" in body
+    assert "D > 359.99" in body
+
+
+@pytest.mark.parametrize("rotations, sent", [
+    ([0, 90], "0|90"), ([270.0], "270"), (None, None), ([], None)])
+def test_rotations_are_sent_as_a_pipe_list(monkeypatch, rotations, sent):
+    import asyncio
+
+    calls = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            calls.append(dict(params or {}))
+            return {"success": True}
+
+    monkeypatch.setattr(pcb_module, "get_bridge", lambda: _Bridge())
+    captured = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+    pcb_module.register_pcb_tools(_Mcp())
+    asyncio.run(captured["pcb_autoplace_silkscreen"](
+        silk_clearance_mils=4, mask_clearance_mils=2, rotations=rotations))
+    assert calls[0].get("rotations") == sent
+
+
+def test_a_rotation_that_is_not_a_number_is_refused_unsent(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(pcb_module, "get_bridge",
+                        lambda: (_ for _ in ()).throw(AssertionError("sent")))
+    captured = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+    pcb_module.register_pcb_tools(_Mcp())
+    out = asyncio.run(captured["pcb_autoplace_silkscreen"](rotations=["up"]))
+    assert out["ok"] is False and "degrees" in out["reason"]
