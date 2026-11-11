@@ -142,6 +142,7 @@ FOLDED_BATCH: dict[str, str] = {
     "obj_batch_create": "obj_create",
     "obj_batch_delete": "obj_delete",
     "lib_batch_rename": "lib_rename_component",
+    "lib_set_pad_geometry": "lib_set_pad_properties",
 }
 
 #: Members of every family tool built so far, fold name -> {kind: tool}.

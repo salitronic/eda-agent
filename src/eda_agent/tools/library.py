@@ -18,6 +18,7 @@ from ..library_db import (
     dblib_path_refusal, is_dblib_path, redact_connection_text, redact_reply,
     search_hit_as_result,
 )
+from .bulk import bulk_items_by
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
@@ -490,6 +491,18 @@ def _payload_safe(value: object) -> str:
     different output depending on which tool sent it.
     """
     return payload_safe(value)
+
+
+#: What ``lib_set_pad_properties`` passes on when it names its pad by
+#: id: the id, its position guard and every field the id writer takes.
+_PAD_CALL_FIELDS = (
+    "footprint_name", "library_path", "units", "id", "x_mm", "y_mm",
+    "x_size", "y_size", "bottom_x_size", "bottom_y_size", "shape",
+    "corner_radius_pct", "stack_mode", "rotation", "hole_type", "hole_size",
+    "hole_width", "hole_rotation", "plated", "paste_expansion",
+    "paste_manual", "mask_expansion", "mask_bottom_expansion",
+    "mask_separate", "mask_manual", "mask_from_hole_edge",
+    "paste_top_enabled", "x", "y", "new_name")
 
 
 def _units_refusal(units: str) -> dict[str, Any] | None:
@@ -7939,7 +7952,7 @@ def register_library_tools(mcp):
             selected is whether the pad is selected in the editor (what
             lib_set_pad_properties selected=True acts on); mode is the
             stack mode, 0 simple, 1 top-middle-bottom, 2 full stack.
-            id names the pad for lib_set_pad_geometry (stable while the
+            id names the pad for lib_set_pad_properties (stable while the
             library is open). x/y is the pad origin, copper_x/y the copper centre (differs
             on a custom pad). hole_rotation is relative to the pad.
             mask_expansion_mm is the top side when mask_separate, else
@@ -7953,11 +7966,56 @@ def register_library_tools(mcp):
             {"footprint_name": footprint_name, "library_path": library_path},
         )
 
+    async def _pad_rows_by_id(items: list, shared: dict):
+        """Items that name their pads by ``id`` go to the id writer as
+        one call: every row checked first, one walk, all or nothing.
+        Items by ``pad_name`` / ``selected`` return None and run one
+        by one as before."""
+        if not isinstance(items, list) or not items \
+                or not all(isinstance(i, dict) for i in items):
+            return None
+        by_id = [bool(str({**shared, **i}.get("id") or "").strip())
+                 for i in items]
+        if not any(by_id):
+            return None
+        if not all(by_id):
+            return {"success": False,
+                    "error": "give every item an id, or none: pads named "
+                             "by id are written together, all or nothing"}
+        calls = [{k: v for k, v in {**shared, **i}.items() if v is not None}
+                 for i in items]
+        for key in ("footprint_name", "library_path", "units"):
+            if len({str(c.get(key, "")) for c in calls}) > 1:
+                return {"success": False,
+                        "error": f"items by id write one footprint in one "
+                                 f"call; {key} differs between items"}
+        first = calls[0]
+        if not first.get("footprint_name"):
+            return {"success": False, "error": "footprint_name is required"}
+        rows = []
+        for c in calls:
+            if c.get("pad_name") or c.get("selected"):
+                return {"success": False,
+                        "error": "an item names its pad by id, or by "
+                                 "pad_name / selected, not both"}
+            rows.append({k: v for k, v in c.items()
+                         if k not in ("footprint_name", "library_path", "units",
+                                      "pad_name", "selected")
+                         and not (k == "new_name" and v == "")})
+        return await lib_set_pad_geometry(
+            footprint_name=first["footprint_name"], rows=rows,
+            library_path=first.get("library_path", ""),
+            units=first.get("units", "mil"))
+
     @mcp.tool()
+    @bulk_items_by(_pad_rows_by_id)
     async def lib_set_pad_properties(
         footprint_name: str,
         pad_name: str = "",
         selected: bool = False,
+        id: str = "",
+        x_mm: Optional[float] = None,
+        y_mm: Optional[float] = None,
         library_path: str = "",
         units: str = "mil",
         x_size: Optional[float] = None,
@@ -7985,76 +8043,79 @@ def register_library_tools(mcp):
         y: Optional[float] = None,
         new_name: str = "",
     ) -> dict[str, Any]:
-        """Change existing pads in a PcbLib footprint: every pad named
-        ``pad_name``, or with ``selected=True`` every pad selected in the
-        editor, only the fields given, each read back. A written
-        expansion is made manual, without which Altium ignores it;
-        ``mask_manual`` / ``paste_manual`` False hands one back to the
-        design rule. On a per-layer pad stack ``x_size`` / ``y_size`` are
-        the top size (``note``); ``stack_mode`` and the bottom size
-        change the rest.
+        """Change existing pads in a PcbLib footprint, only the fields
+        given, each read back. Pick pads by ``pad_name`` (every pad of
+        that name), ``selected=True`` (the editor's selection) or ``id``
+        (from ``lib_get_pad_geometry``).
+
+        Many pads, different values: ``items``, one dict per pad. Items
+        that all carry ``id`` are ONE walk, every item checked first and
+        one bad item refusing the call, so a renumbering (3 -> 5,
+        5 -> 7) needs no temporary names (about 6 s for 200 pads).
+
+        A written expansion is made manual (Altium ignores it otherwise);
+        ``mask_manual`` / ``paste_manual`` False hands it back to the
+        rule. On a per-layer stack ``x_size`` / ``y_size`` are the top
+        size (``note``). Undo takes back one pad at a time.
 
         Args:
             footprint_name: The footprint holding the pad.
-            pad_name: The pad's designator. Names need not be unique (an
-                SMD pad "1" beside a thru-hole "1"): use ``selected``
-                to say which.
-            selected: Change the pads selected in the editor instead of
-                those named ``pad_name``.
-            library_path: Optional .PcbLib path; defaults to the focused
-                library.
-            units: "mil" (default) or "mm", for every length here.
-            x_size, y_size: Copper size (the top size on a stacked pad).
-            bottom_x_size, bottom_y_size: Bottom copper size; makes a
-                simple pad top-middle-bottom.
+            pad_name: The designator; names need not be unique, so
+                ``selected`` or ``id`` say which.
+            selected: The pads selected in the editor.
+            id: The pad's id (stable while the library is open).
+            x_mm, y_mm: With ``id``, the position the read gave; a pad
+                moved since refuses the call.
+            library_path: .PcbLib path; default the focused library.
+            units: "mil" (default) or "mm", for every length.
+            x_size, y_size: Copper size (top size on a stacked pad).
+            bottom_x_size, bottom_y_size: Bottom size; makes the pad
+                top-middle-bottom.
             shape: "round", "rectangular", "octagonal" or "roundrect".
-            corner_radius_pct: Rounded-rectangle corner, 0 to 100, as a
-                percentage of half the shorter side (how Altium stores
-                it); 25 when ``shape`` is roundrect and this is not given.
-            stack_mode: "simple" (the top size serves every layer) or
-                "top-middle-bottom", written before the sizes.
-            rotation: Pad rotation in degrees.
+            corner_radius_pct: Roundrect corner, 0 to 100 % of half the
+                shorter side; 25 when roundrect and not given.
+            stack_mode: "simple" or "top-middle-bottom", written first.
+            rotation: Degrees.
             hole_type: "round", "square" or "slot", written before the
-                hole sizes, so a slot can be made round again.
-            hole_size: Hole diameter, 0 for a surface-mount pad.
-            hole_width: Slot length; makes the hole a slot (so it is
-                refused beside ``hole_type`` round or square).
-            hole_rotation: Slot rotation relative to the pad, degrees.
+                hole sizes.
+            hole_size: Diameter, 0 for surface mount.
+            hole_width: Slot length; makes a slot.
+            hole_rotation: Slot rotation relative to the pad.
             plated: Whether the hole is plated.
-            paste_expansion: Paste expansion.
-            paste_manual: True keeps the paste value as written; False
-                hands the paste back to the design rule.
-            mask_expansion: Mask expansion, both sides unless
-                ``mask_bottom_expansion`` is also given.
-            mask_bottom_expansion: Bottom mask expansion; unlinks sides.
-            mask_separate: Link (False) or unlink (True) the mask sides
-                (the bottom value takes effect once unlinked).
-            mask_manual: As ``paste_manual``, for the solder mask.
-            mask_from_hole_edge: Measure the mask from the drill edge,
-                not the copper (mechanical holes and slots).
-            paste_top_enabled: Switch the top paste opening on or off
-                (not its size). It holds only on a manual paste expansion,
-                so a rule-driven one is made manual first (``note``).
-                Before Altium Designer 25 the flag does not exist.
-            x, y: Move the pad, from the footprint origin. One pad only:
-                when several match, the first moves and the rest fail.
-            new_name: Renumber the pad (its designator).
+            paste_expansion, mask_expansion: Expansions (mask: both
+                sides unless ``mask_bottom_expansion`` is given).
+            mask_bottom_expansion: Bottom mask; unlinks the sides.
+            paste_manual, mask_manual: True keeps the value written,
+                False hands it to the rule.
+            mask_separate: Unlink (True) or link the mask sides.
+            mask_from_hole_edge: Measure the mask from the drill edge.
+            paste_top_enabled: The top paste opening on or off; holds
+                only on a manual paste expansion (made manual first).
+                Not before Altium Designer 25.
+            x, y: Move the pad from the footprint origin; one pad only.
+            new_name: Renumber the pad.
 
         Returns:
-            ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
-            ``pads`` as read back (top and bottom size, shape,
-            ``corner_radius_pct``, ``stack_mode``, rotation, hole, slot,
-            plating, expansions and their state, ``mask_separate``,
-            ``mask_from_hole_edge``, ``paste_top_enabled``,
-            ``all_writes_ran``).
+            ``pads_changed``, ``pads_with_a_failed_write``, ``note`` and
+            ``pads`` as read back (sizes, shape, corner, stack, rotation,
+            hole, plating, expansions and their state, flags,
+            ``all_writes_ran``); by id also ``rows`` and ``repeats``.
         """
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        if id.strip():
+            given = locals()
+            return await _pad_rows_by_id(
+                [{k: given[k] for k in _PAD_CALL_FIELDS}], {})
         if not pad_name and not selected:
             return {"success": False,
-                    "error": "give pad_name, or selected=True for the "
-                             "pads selected in the editor"}
+                    "error": "give pad_name, selected=True for the pads "
+                             "selected in the editor, or id"}
+        if x_mm is not None or y_mm is not None:
+            return {"success": False,
+                    "error": "x_mm / y_mm guard a pad named by id; to move "
+                             "a pad give x / y"}
         if hole_type is not None and hole_type not in ("round", "square", "slot"):
             return {"success": False,
                     "error": "hole_type must be round, square or slot"}
@@ -8147,9 +8208,9 @@ def register_library_tools(mcp):
         gave them guard a row: a pad that has moved refuses the call.
         Every row is checked before anything is written. Pads are
         matched by id, never by name, so renumbering (3 -> 5, 5 -> 7)
-        needs no temporary names. About 6 s for 200 pads, against
-        ~0.2 s per ``lib_set_pad_properties`` call. In a library Undo
-        takes back one pad at a time.
+        needs no temporary names. About 6 s for 200 pads. The same
+        writer runs for ``lib_set_pad_properties`` given ``items`` that
+        carry ``id``. In a library Undo takes back one pad at a time.
 
         Args:
             footprint_name: The footprint holding the pads.

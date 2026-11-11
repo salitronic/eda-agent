@@ -141,10 +141,16 @@ def with_items(fn: Callable, name: str) -> Callable:
                 if hint and isinstance(result, dict):
                     result["_hint_bulk"] = hint
             return result
-        return await run_bulk(fn, name, items,
-                              {k: v for k, v in kwargs.items()
-                               if not (k in required and v is None)},
-                              defaults)
+        shared = {k: v for k, v in kwargs.items()
+                  if not (k in required and v is None)}
+        # A tool can write some lists as one call of its own; it answers
+        # None for a list it leaves to the item-by-item run.
+        by_list = getattr(fn, "bulk_items", None)
+        if by_list is not None:
+            reply = await by_list(items, shared)
+            if reply is not None:
+                return reply
+        return await run_bulk(fn, name, items, shared, defaults)
 
     # A list of items always answers with a dict. A tool that answers a
     # single call with a list (proj_list_documents) declared only the list,
@@ -160,6 +166,18 @@ def with_items(fn: Callable, name: str) -> Callable:
     # The tool as written, for anything that reads its real defaults.
     wrapper.single = fn
     return wrapper
+
+
+def bulk_items_by(handler: Callable) -> Callable:
+    """Give a tool its own writer for some lists of items.
+
+    ``handler(items, shared)`` answers the whole call, or None to run the
+    items one by one as usual. Put it under ``@mcp.tool()``.
+    """
+    def deco(fn: Callable) -> Callable:
+        fn.bulk_items = handler
+        return fn
+    return deco
 
 
 def single(fn: Callable) -> Callable:

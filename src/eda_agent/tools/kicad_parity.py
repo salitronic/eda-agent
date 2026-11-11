@@ -554,7 +554,6 @@ GAPS: dict[str, str] = {
     "lib_set_footprint_height": "KiCad has no footprint height field; a property could hold it",
     "lib_set_model_name": "model path is set with kicad_lib_set_footprint_properties",
     "lib_set_pad_properties": "pad edits in library files not written",
-    "lib_set_pad_geometry": "pad edits in library files not written",
     "lib_set_pin_owner_part": "moving a pin between units not written",
     "lib_set_symbol_parts": "unit count change not written",
     "lib_split_pin_functions": "not written",
