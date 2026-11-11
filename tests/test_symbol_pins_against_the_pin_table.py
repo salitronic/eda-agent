@@ -191,3 +191,63 @@ def test_pins_into_a_symbol_just_made_are_checked_too(monkeypatch, sheet):
     # Another symbol made current: its pins are edits, not a new build.
     asyncio.run(tools["lib_set_current_component"](component_name="OLD"))
     assert asyncio.run(tools["lib_add_pins"](pins=_pins(("9", "X"))))["success"]
+
+
+def test_a_name_wrapped_over_lines_of_its_cell_passes_with_its_number(tmp_path):
+    # A ball map prints long names wrapped in their cells, the pieces on
+    # lines of their own and the number after them (or before them).
+    pdf = tmp_path / "soc.pdf"
+    pdf.write_bytes(_pdf([["Pin Number Order Information", "Pin Name Pin Pin Name Pin",
+                           "VSS_183 T27",
+                           "MIPI_CSI1_CLK1N AM32 I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/",
+                           "SPI0_CS1_M0/GPIO0_B7_d",
+                           "T28",
+                           "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UA",
+                           "RT6_RX_M1/GPIO1_A0_d",
+                           "A24 VSS_36 D24",
+                           "15 MOSI/SDA SPI MOSI",
+                           "16 MISO/",
+                           "PWRCRTL3",
+                           "SPI MISO. PWRCRTL3 control"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(
+        ("T28", "I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/SPI0_CS1_M0/GPIO0_B7_d"),
+        ("A24", "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UART6_RX_M1/GPIO1_A0_d"),
+        ("D24", "VSS_36"), ("T27", "VSS_183"), ("16", "MISO/PWRCRTL3")))
+    assert ok["ok"], ok
+    # The number has to touch the name: a neighbouring row's wrapped name
+    # does not pass for another pin, nor the other way round.
+    wrong = check_pin_table(ds, _pins(
+        ("AM32", "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UART6_RX_M1/GPIO1_A0_d"),
+        ("T27", "I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/SPI0_CS1_M0/GPIO0_B7_d"),
+        ("15", "MISO/PWRCRTL3")))
+    assert [m["pin"] for m in wrong["missing"]] == ["AM32", "T27", "15"]
+
+
+def test_a_name_split_by_a_page_break_reads_on_past_the_running_heads(tmp_path):
+    head = ["SoC Datasheet Rev 1.1", "Pin Name Pin Pin Name Pin"]
+    foot = ["Acme Technology Co.,Ltd"]
+    pdf = tmp_path / "soc.pdf"
+    pdf.write_bytes(_pdf([
+        [*head, "Pin Number Order", "VSS_1 A1", "I2S1_SDI0_M1/GPU_AVS/PERSTN_M0/G", "P30", *foot],
+        [*head, "PIO0_C5_u", "VSS_2 A2", *foot],
+        [*head, "VSS_3 A3", *foot]]))
+    out = check_pin_table({"path": str(pdf), "page": "1-3"}, _pins(
+        ("P30", "I2S1_SDI0_M1/GPU_AVS/PERSTN_M0/GPIO0_C5_u"), ("A2", "VSS_2")))
+    assert out["ok"], out
+
+
+def test_the_exposed_pad_the_table_lists_without_a_number_passes_once(tmp_path):
+    pdf = tmp_path / "pmic.pdf"
+    pdf.write_bytes(_pdf([["Pin Description", "67 SW8 Switching node", "68 SW9 Switching node",
+                           "Exposed  ePAD Ground"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    for name in ("EPAD", "EP", "GND", "Ground"):
+        out = check_pin_table(ds, _pins(("68", "SW9"), ("69", name)))
+        assert out["ok"], (name, out)
+        assert out["found"] == 2
+    # A number the table prints is that pin's, never the pad's; and only
+    # one pin is taken for the pad.
+    assert not check_pin_table(ds, _pins(("68", "EPAD")))["ok"]
+    two = check_pin_table(ds, _pins(("69", "EPAD"), ("70", "EP")))
+    assert [m["pin"] for m in two["missing"]] == ["70"]

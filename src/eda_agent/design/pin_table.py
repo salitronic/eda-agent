@@ -65,6 +65,129 @@ def _name_in(name: str, line: str) -> bool:
     return False
 
 
+#: How many lines a name wrapped in its table cell may run over.
+_WRAP_LINES = 4
+
+#: Names an exposed pad is given in a symbol, compared as norm() gives them.
+_PAD_NAMES = {"EP", "EPAD", "PAD", "EXPOSEDPAD", "THERMALPAD", "TAB", "SLUG"}
+#: Ground pin names, for an exposed pad the table calls ground.
+_GROUND_NAMES = {"GND", "GROUND", "VSS", "AGND", "PGND", "DGND", "EPGND"}
+#: A table row for the exposed pad, which tables print without a number.
+_PAD_ROW = re.compile(r"\b(exposed|thermal|e-?pad|power ?pad|die ?pad|slug)\b", re.I)
+
+
+def _tokens(lines: list[str]) -> list[tuple[str, str, int]]:
+    """Every word of the table, in reading order: (as printed, as compared,
+    line index)."""
+    out = []
+    for i, line in enumerate(lines):
+        for raw in _SPLIT.split(line):
+            if raw:
+                out.append((raw, norm(raw), i))
+    return out
+
+
+def _wrapped_hit(number: str, name: str, tokens: list[tuple[str, str, int]],
+                 lines: list[str]) -> Optional[str]:
+    """The rows of a name wrapped over lines of its cell, when its number
+    is the word just before or just after it.
+
+    A long name breaks in its cell, often mid-word ("UA" / "RT6_RX_M1"),
+    and the PDF text gives each piece its own line, the number on the
+    line after the last piece (or before the first). The pieces are read
+    as one name; the number must touch it, so a neighbouring row's name
+    in the same few lines never passes for this pin's.
+
+    A page break can split the cell: the name's last piece then comes
+    after the row's own line, the one that starts with the number. That
+    line is stepped over, and the number counts as touching the name.
+    """
+    want = norm(name)
+    if not want or not number:
+        return None
+    num = number.upper()
+    # Printed with or without the N an active-low name may carry.
+    targets = (want, "N" + want) + ((want[1:],) if want.startswith("N") and len(want) > 1 else ())
+    for start, (_raw, first, line0) in enumerate(tokens):
+        if not first or not any(t.startswith(first) for t in targets):
+            continue
+        got, end, matched, straddled = "", start, False, False
+        while end < len(tokens) and tokens[end][2] - line0 < _WRAP_LINES + 1:
+            raw, piece, line = tokens[end]
+            if raw.upper() == num and not straddled and got \
+                    and (end == 0 or tokens[end - 1][2] != line):
+                # The row's own line, between two pieces of its name.
+                straddled = True
+                while end < len(tokens) and tokens[end][2] == line:
+                    end += 1
+                continue
+            got += piece
+            if got in targets:
+                matched = True
+                break
+            if not any(t.startswith(got) for t in targets):
+                break
+            end += 1
+        if not matched or tokens[end][2] == line0:
+            continue                       # none, or on one line: the plain check's
+        before = tokens[start - 1][0] if start else ""
+        after = tokens[end + 1][0] if end + 1 < len(tokens) else ""
+        if straddled or num in (before.upper(), after.upper()):
+            return " / ".join(lines[line0:tokens[end][2] + 1])[:120]
+    return None
+
+
+def _running_heads(pages: dict[int, list[str]]) -> set[str]:
+    """Lines a page break puts between a table's rows: a header or footer
+    repeated near the top or bottom of most pages, and each page's own
+    number."""
+    if len(pages) < 2:
+        return set()
+    seen: dict[str, int] = {}
+    for lines in pages.values():
+        for ln in set(lines[:3] + lines[-3:]):
+            seen[ln] = seen.get(ln, 0) + 1
+    return {ln for ln, n in seen.items() if n >= max(2, len(pages) // 2)}
+
+
+def _without_page_breaks(pages: dict[int, list[str]]) -> list[str]:
+    """The pages' lines in order, without their running headers, footers
+    and page numbers, so a row split by a page break reads on."""
+    heads = _running_heads(pages)
+    out = []
+    for number in sorted(pages):
+        lines = pages[number]
+        edge = set(range(3)) | set(range(len(lines) - 3, len(lines)))
+        out.extend(ln for i, ln in enumerate(lines)
+                   if not (i in edge and (ln in heads or ln == str(number))))
+    return out
+
+
+def _as_exposed_pad(number: str, name: str, pad_rows: list[str], lines: list[str],
+                    found: list[dict[str, Any]]) -> Optional[str]:
+    """The exposed pad's row, when this pin is it: the table prints the pad
+    without a number, the pin's number is nowhere in the table, its name
+    is the pad's (as the row prints it, or EP, EPAD, PAD...), and no other
+    pin has been taken for the pad."""
+    if not pad_rows or any(f.get("exposed_pad") for f in found):
+        return None
+    if number and any(_number_in(number, ln) for ln in lines):
+        return None
+    want = norm(name)
+    for row in pad_rows:
+        if want in _PAD_NAMES or _name_in(name, row):
+            return row
+        # "Exposed pad: ground" is the GND pin by any of its usual names.
+        if want in _GROUND_NAMES and re.search(r"\b(ground|gnd|vss)\b", row, re.I):
+            return row
+    return None
+
+
+def _exposed_pad_rows(lines: list[str]) -> list[str]:
+    """Rows for the exposed pad that print no pin number."""
+    return [ln for ln in lines if _PAD_ROW.search(ln) and not _ANY_NUMBER.search(ln)]
+
+
 def pins_from(groups: Iterable[Any]) -> list[dict[str, Any]]:
     """Every pin dict in lists of pins (``None`` rows skipped)."""
     out: list[dict[str, Any]] = []
@@ -107,7 +230,10 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
 
     ``datasheet`` is ``{path, page}``; with no page, the pages carrying a
     pin-table heading are read. A pin passes when one line, or two lines
-    together, print both its number and its name.
+    together, print both its number and its name; when its name runs
+    wrapped over a few lines of its cell with the number touching it; or,
+    for one pin, when it is the exposed pad the table lists without a
+    number (``exposed_pad`` in its entry of ``found``).
     """
     if not isinstance(datasheet, dict) or not datasheet.get("path"):
         return {"ok": False, "reason": (
@@ -129,7 +255,7 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
     lines_by_page, problem = _page_lines(path, pages)
     if problem:
         return {"ok": False, "reason": problem}
-    lines = [ln for n in sorted(lines_by_page) for ln in lines_by_page[n]]
+    lines = _without_page_breaks(lines_by_page)
     if not lines:
         return {"ok": False, "pages": sorted(pages), "reason": (
             "the pin table pages have no text to read (the table is a "
@@ -139,14 +265,23 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
     # its own joins the next, so one row's number never meets the next name.
     pairs = [*lines, *(f"{a} {b}" for a, b in zip(lines, lines[1:])
                        if not _ANY_NUMBER.search(a))]
+    tokens = _tokens(lines)
+    pad_rows = _exposed_pad_rows(lines)
     found, missing = [], []
     for pin in pins:
         number = str(pin.get("designator", "")).strip()
         name = str(pin.get("name", "")).strip()
         hit = next((ln for ln in pairs
                     if number and _number_in(number, ln) and _name_in(name, ln)), None)
+        if hit is None:
+            hit = _wrapped_hit(number, name, tokens, lines)
         if hit:
             found.append({"pin": number, "name": name, "row": hit[:120]})
+            continue
+        pad = _as_exposed_pad(number, name, pad_rows, lines, found)
+        if pad:
+            found.append({"pin": number, "name": name, "row": pad[:120],
+                          "exposed_pad": True})
             continue
         rows = [ln[:120] for ln in lines if number and _number_in(number, ln)][:3]
         missing.append({"pin": number, "name": name, "rows_with_number": rows})
