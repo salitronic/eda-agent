@@ -62,6 +62,17 @@ SEQUENTIAL_TOOLS = frozenset({
     "lib_create_passive_symbol",
 })
 
+#: Arguments that say which document an item acts on. A tool that brings
+#: its document forward and then sends its commands has them run on
+#: whatever is in front: gathered, every item's focus ran first and every
+#: command then went to the last document focused (a pin list read from
+#: two libraries in one call found nothing in either). Items that name
+#: different documents run one after another.
+DOCUMENT_ARGS = frozenset({
+    "library_path", "project_path", "board_path", "document_path",
+    "sheet_path", "sheet", "sheet_name", "schlib_path", "pcblib_path",
+})
+
 ITEMS_DESCRIPTION = (
     "Several at once: a list of this tool's arguments, one dict per item. "
     "Altium runs them as one edit and one undo step. Other arguments given "
@@ -201,7 +212,7 @@ async def run_bulk(fn: Callable, name: str, items: list, shared: dict,
             continue
         calls.append(functools.partial(_call_item, fn, {**common, **item}))
 
-    if name.startswith(SEQUENTIAL_PREFIXES) or name in SEQUENTIAL_TOOLS:
+    if name.startswith(SEQUENTIAL_PREFIXES) or name in SEQUENTIAL_TOOLS             or _several_documents(items, common):
         results = []
         for call in calls:
             try:
@@ -221,6 +232,16 @@ async def run_bulk(fn: Callable, name: str, items: list, shared: dict,
     if requests is not None:
         reply["altium_requests"] = requests
     return reply
+
+
+def _several_documents(items: list, common: dict) -> bool:
+    """Whether the items name more than one document between them."""
+    for key in DOCUMENT_ARGS:
+        named = {str({**common, **i}.get(key) or "").strip().lower()
+                 for i in items if isinstance(i, dict)}
+        if len(named) > 1:
+            return True
+    return False
 
 
 async def _call_item(fn: Callable, args: dict) -> Any:

@@ -188,3 +188,48 @@ def test_a_part_symbol_whose_pins_are_elsewhere_is_not_ok(schlib):
         name="R", parts=[{"left_pins": _pins(2, "R"), "right_pins": []},
                          {"left_pins": _pins(1, "RR"), "right_pins": []}]))
     assert out["ok"] is False and out["pins_verified"] is False
+
+
+class _TwoLibraries(_SchLib):
+    """Two SchLibs; a pin list is read from the one in front."""
+
+    def __init__(self):
+        super().__init__()
+        self.front = ""
+        self.libs = {r"C:\lib\A.SchLib": {"CAP": ["1", "2"]},
+                     r"C:\lib\B.SchLib": {"DIODE": ["A", "K"]}}
+
+    def _one(self, command, p):
+        self.order.append(command)
+        if command == "application.set_active_document":
+            self.front = p["file_path"]
+            return {"success": True}
+        if command == "library.get_pin_list":
+            pins = self.libs.get(self.front, {}).get(p["component_name"])
+            if pins is None:
+                raise ab.AltiumError("COMPONENT_NOT_FOUND")
+            return {"component": p["component_name"], "count": len(pins),
+                    "pins": [{"designator": d} for d in pins]}
+        return {"success": True}
+
+
+def test_items_from_different_libraries_each_read_their_own(monkeypatch):
+    """Gathered, both libraries were focused before either read ran, so
+    each read went to the last one and found nothing."""
+    lib = _TwoLibraries()
+    monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: lib)
+    monkeypatch.setattr(lib_tools, "get_bridge", lambda: lib)
+    tools = _tools()
+    out = asyncio.run(tools["lib_get_pin_list"](items=[
+        {"component_name": "CAP", "library_path": r"C:\lib\A.SchLib"},
+        {"component_name": "DIODE", "library_path": r"C:\lib\B.SchLib"}]))
+    assert out["failed"] == 0, out
+    assert [i["count"] for i in out["items"]] == [2, 2]
+
+
+def test_items_name_several_documents_by_any_document_argument():
+    several = tool_bulk._several_documents
+    assert several([{"library_path": "a"}, {"library_path": "b"}], {})
+    assert several([{"sheet_path": "a"}, {}], {"sheet_path": "b"})
+    assert not several([{"library_path": "a"}, {"library_path": "A"}], {})
+    assert not several([{"output_path": "a"}, {"output_path": "b"}], {})
