@@ -347,6 +347,9 @@ _CATEGORY_BY_NAME = {
     # Updates eda-agent itself, on every backend: about the tool surface,
     # like tool_catalog, rather than about any one EDA tool.
     "server_update": "meta",
+    # The session's length unit: how every tool reads and writes, not
+    # any one EDA tool's work.
+    "length_units": "meta",
     # The family tool for the audits; its members keep the audit_ prefix.
     "audit": "audit",
 }

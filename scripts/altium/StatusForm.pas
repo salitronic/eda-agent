@@ -554,6 +554,10 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'The unit the AI gives and reads lengths in: coordinates, widths, '
+        + 'clearances, thicknesses. Each AI session starts in this unit and '
+        + 'may change its own; every reply says which unit it is in.';
+    SetTip(lbl_CfgUnits, Tip);  SetTip(opt_UnitsMil, Tip);  SetTip(opt_UnitsMm, Tip);
     Tip := 'What happens to a dialog a tool opens, such as the Engineering '
         + 'Change Order or the Teardrops options. Automatic: the AI answers '
         + 'it as the tool was asked, then reads the result back. Manual: the '
@@ -822,6 +826,7 @@ Begin
     OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
     OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
     OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(opt_UnitsMil);  OwnPanelColours(opt_UnitsMm);
     OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
     OwnPanelColours(sep_Cfg3);
     OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
@@ -1024,6 +1029,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_UnitsMil, LengthUnits <> 'mm');
+        PaintOption(opt_UnitsMm, LengthUnits = 'mm');
+        If LengthUnits = 'mm' Then
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in millimetres.'
+        Else
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in mils.';
         PaintOption(opt_EcoAuto, DialogMode <> 'manual');
         PaintOption(opt_EcoManual, DialogMode = 'manual');
         If DialogMode = 'manual' Then
@@ -1554,6 +1567,7 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'length_units' Then LengthUnits := Choice
         Else If Setting = 'dialogs' Then DialogMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
@@ -1596,6 +1610,12 @@ Begin ChooseAgentSetting('keep_in_view', 'off'); End;
 
 Procedure opt_ViewOnClick(Sender : TObject);
 Begin ChooseAgentSetting('keep_in_view', 'on'); End;
+
+Procedure opt_UnitsMilClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mil'); End;
+
+Procedure opt_UnitsMmClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mm'); End;
 
 { A check switched on or off on the Config tab, stored at once. }
 Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);

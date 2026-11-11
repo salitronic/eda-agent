@@ -40,7 +40,8 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, DialogMode, ChecksOff, WorkspaceDir : String;
+    UiAutomationMode, KeepInViewMode, LengthUnits, DialogMode, ChecksOff,
+    WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
 var P, Q : Integer;
@@ -132,7 +133,8 @@ def test_python_reads_the_same_file(tmp_path):
     assert preferences.preferences(tmp_path) == {
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
-        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto"}
+        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
+        "length_units": "mil"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -152,6 +154,7 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_FmtSiUnitClick", "opt_EditsAllowedClick",
                     "opt_EditsReadOnlyClick", "opt_AutoOnClick", "opt_AutoOffClick",
                     "opt_ViewOffClick", "opt_ViewOnClick",
+                    "opt_UnitsMilClick", "opt_UnitsMmClick",
                     "opt_DeleteAllowedClick", "opt_DeleteRefusedClick",
                     "opt_CloseAllowedClick", "opt_CloseRefusedClick",
                     "opt_EcoAutoClick", "opt_EcoManualClick"):
@@ -169,6 +172,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("AutoOff", "'ui_automation', 'off'"),
                          ("ViewOff", "'keep_in_view', 'off'"),
                          ("ViewOn", "'keep_in_view', 'on'"),
+                         ("UnitsMil", "'length_units', 'mil'"),
+                         ("UnitsMm", "'length_units', 'mm'"),
                          ("DeleteAllowed", "'deleting', 'allowed'"),
                          ("DeleteRefused", "'deleting', 'refused'"),
                          ("CloseAllowed", "'closing', 'allowed'"),
@@ -440,3 +445,14 @@ def test_tool_guide_answers_a_user_who_insists():
     recipe = next(r for r in guidance._RECIPES if "go ahead anyway" in r["task"])
     assert recipe["note"] == preferences.checks_guide()
     assert "lib_set_pad_properties" in [name for name, _ in recipe["avoid"]]
+
+
+def test_the_length_unit_is_kept_and_defaults_to_mils(tmp_path):
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(LengthUnits);",
+        "  LengthUnits := 'mm'; StorePreferences(0);",
+        "  LengthUnits := ''; LoadPreferences(0); WriteLn(LengthUnits);",
+    ])
+    assert out == ["mil", "mm"]
+    # The file the panel writes is the one the Python side reads.
+    assert preferences.preferences(tmp_path)["length_units"] == "mm"

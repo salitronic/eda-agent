@@ -22,7 +22,9 @@ dialogs and keystrokes (default ``on``). ``keep_in_view`` is ``on`` to fit
 the board or sheet in view after each edit (default ``off``).
 ``dialogs`` is ``manual`` to leave the dialogs tools open (the change order,
 the Teardrops options) for the user (default ``auto``: the tool answers
-them). ``checks_off`` names the checks switched off, comma separated
+them). ``length_units`` is the unit a new AI session gives and reads
+lengths in, ``mil`` (the default) or ``mm``; each session may change its
+own (lengths.py). ``checks_off`` names the checks switched off, comma separated
 (see :data:`CHECKS`; default none: every check runs). Each of the others
 also has an environment variable in the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
@@ -49,6 +51,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "ui_automation": ("on", "off"),
     "keep_in_view": ("off", "on"),
     "dialogs": ("auto", "manual"),
+    "length_units": ("mil", "mm"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}

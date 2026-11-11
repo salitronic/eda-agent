@@ -47,7 +47,7 @@ def test_items_by_id_are_one_call_to_the_id_writer(bridge):
     out = _call(footprint_name="F", items=[
         {"id": "A1", "new_name": "5", "x_mm": 1.0, "y_mm": 2.0},
         {"id": "A2", "new_name": "7"}])
-    assert out == {"success": True}
+    assert out == {"success": True, "length_units": "mil"}
     assert len(bridge.sent) == 1
     command, params = bridge.sent[0]
     assert command == "library.set_pad_geometry"

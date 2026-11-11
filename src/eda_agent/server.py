@@ -228,16 +228,18 @@ _UI_AUTOMATION_PARAGRAPHS = {
 }
 
 
-#: The units sentence. KiCad's tools take millimetres, as its files and API
-#: do, and every distance argument names its unit.
-_UNITS = {
-    "altium": "Coordinates are in mils throughout.\n",
-    "easyeda": "Coordinates are in mils throughout.\n",
-    "kicad": ("Coordinates are in millimetres on KiCad, as in its files: every\n"
-              "distance argument says so (x_mm, width_mm).\n"),
-    "both": ("Coordinates are in mils, except on the kicad_ tools, which take\n"
-             "millimetres and say so in each argument (x_mm, width_mm).\n"),
-}
+#: The length rule, the same on every backend (lengths.py).
+_UNITS = (
+    "LENGTHS IN MILS OR MM. Each session works in one unit, mil or mm:\n"
+    "length_units reads or sets it; a new session starts in the unit\n"
+    "chosen on the Config tab (mil unless changed). A length whose name\n"
+    "has no unit (x, width, hole_size) is in the session's unit, in\n"
+    "arguments and in replies, whatever its description says. A name with\n"
+    "a unit always means it: thickness_mils is mils, and thickness_mm may\n"
+    "be given in its place. Replies rename such keys to the session's\n"
+    "unit and say length_units. One call can use the other unit by giving\n"
+    "length_units beside its arguments.\n"
+)
 
 
 def build_server_instructions(
@@ -297,7 +299,7 @@ def build_server_instructions(
         "\n"
         + ui
         + engine + items
-        + _UNITS.get((backend or DEFAULT_BACKEND).strip().lower(), _UNITS["altium"])
+        + _UNITS
         + "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
         "the user what is new and ask; call server_update(apply=True) only\n"
@@ -362,6 +364,120 @@ def add_update_notice(result, news):
     return (out, structured) if isinstance(result, tuple) else out
 
 
+def _tool_params(server, name: str) -> Optional[set]:
+    """The argument names ``name`` takes, or None for an unknown tool."""
+    import inspect
+    fn = None
+    try:
+        tool = server._tool_manager.get_tool(name)
+        fn = tool.fn if tool is not None else None
+    except Exception:  # noqa: BLE001
+        fn = None
+    if fn is None:
+        spec = (getattr(server, "hidden", {}) or {}).get(name)
+        fn = getattr(spec, "fn", None)
+    if fn is None:
+        return None
+    try:
+        return set(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lengths_in(server, name: str, arguments: dict):
+    """The call's arguments as the tool takes them, and how to read its
+    reply: ``(arguments, plan)``. A tool run through another (tool_invoke,
+    a family tool, a list of items) is converted as itself."""
+    from . import lengths
+    from .tools.folds import FOLDS, _BUILT
+    arguments, unit = lengths.call_unit(arguments)
+
+    def one(tool: str, args: dict) -> dict:
+        params = _tool_params(server, tool)
+        if params is None or not isinstance(args, dict):
+            return args
+        bad = lengths.unknown_unit_names(args, params)
+        if bad:
+            raise ValueError(f"{tool} takes no {', '.join(bad)}")
+        return lengths.args_in(tool, args, unit, params)
+
+    if name == "tool_invoke" and isinstance(arguments.get("arguments"), dict):
+        inner = str(arguments.get("name") or "")
+        if inner in _BUILT:
+            converted, plan = _lengths_in(server, inner, arguments["arguments"])
+            return {**arguments, "arguments": converted}, ("invoke", unit, inner, plan)
+        args = one(inner, arguments["arguments"])
+        return {**arguments, "arguments": args}, ("invoke", unit, inner, ("tool", unit, inner, args))
+    if name in _BUILT:
+        key = FOLDS[name].key
+
+        def member(call: dict):
+            tool = _BUILT[name].get(str(call.get(key) or "").strip())
+            if tool is None or not isinstance(call.get("args"), dict):
+                return call, ("tool", unit, "", {})
+            args = one(tool, call["args"])
+            return {**call, "args": args}, ("tool", unit, tool, args)
+
+        if isinstance(arguments.get("items"), list):
+            done = [member(c) if isinstance(c, dict) else (c, ("tool", unit, "", {}))
+                    for c in arguments["items"]]
+            return ({**arguments, "items": [c for c, _ in done]},
+                    ("items", unit, [p for _, p in done]))
+        call, plan = member(arguments)
+        return call, plan
+    args = one(name, arguments)
+    return args, ("tool", unit, name, args)
+
+
+def _reply_lengths(body, plan):
+    from . import lengths
+    kind, unit = plan[0], plan[1]
+    if kind == "tool":
+        tool, args = plan[2], plan[3]
+        if not tool:
+            return {**body, lengths.OVERRIDE: unit} if isinstance(body, dict) else body
+        return lengths.reply_in(tool, body, unit, args)
+    if kind == "invoke":
+        if isinstance(body, dict) and "result" in body:
+            return {**body, "result": _reply_lengths(body["result"], plan[3]),
+                    lengths.OVERRIDE: unit}
+        return body
+    if kind == "items":
+        if isinstance(body, dict) and isinstance(body.get("items"), list):
+            items = [_reply_lengths(r, p) if i < len(plan[2]) else r
+                     for i, (r, p) in enumerate(zip(body["items"], plan[2]))]
+            return {**body, "items": items, lengths.OVERRIDE: unit}
+        return body
+    return body
+
+
+def _lengths_out(result, plan):
+    """The tool's result with its lengths in the call's unit: the
+    structured copy and the JSON text copy alike."""
+    import json
+    blocks, structured = (result if isinstance(result, tuple) else (result, None))
+    if isinstance(structured, dict):
+        if set(structured) == {"result"}:
+            structured = {"result": _reply_lengths(structured["result"], plan)}
+        else:
+            structured = _reply_lengths(structured, plan)
+    if isinstance(blocks, list):
+        out = []
+        for block in blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text[:1] in ("{", "["):
+                try:
+                    body = json.loads(text)
+                except ValueError:
+                    body = None
+                if body is not None:
+                    block = block.model_copy(update={
+                        "text": json.dumps(_reply_lengths(body, plan), ensure_ascii=False)})
+            out.append(block)
+        blocks = out
+    return (blocks, structured) if isinstance(result, tuple) else blocks
+
+
 class _CompactFastMCP(FastMCP):
     """FastMCP whose tool results carry compact JSON text, and the news of
     a newer eda-agent on the first reply after it is found; requests are
@@ -388,11 +504,25 @@ class _CompactFastMCP(FastMCP):
 
     async def call_tool(self, name, arguments):
         logger.info("Tool call: %s", name)
+        # Lengths are given and returned in the session's unit; the tools
+        # work in their own (lengths.py). Only the outermost call converts:
+        # tool_invoke and the family tools call others through here.
+        from . import lengths
+        if lengths.inside():
+            plan = None
+        else:
+            arguments, plan = _lengths_in(self, name, arguments or {})
         # Its commands to Altium take one turn together (Main.pas
         # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
-        with tool_call(name):
-            result = await super().call_tool(name, arguments)
+        token = lengths.enter()
+        try:
+            with tool_call(name):
+                result = await super().call_tool(name, arguments)
+        finally:
+            lengths.leave(token)
+        if plan is not None:
+            result = _lengths_out(result, plan)
         try:
             from . import updates
             news = updates.notice_once()

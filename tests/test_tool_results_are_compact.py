@@ -50,9 +50,11 @@ def test_a_dict_result_is_compact_and_the_same_data():
     unstructured, structured = _call("as_dict")
     text = unstructured[0].text
     assert "\n" not in text and ": " not in text
-    assert json.loads(text) == PAYLOAD
+    # Every reply says the unit its lengths are in (lengths.py).
+    said = {**PAYLOAD, "length_units": "mil"}
+    assert json.loads(text) == said
     assert "µC°" in text            # not escaped to µ
-    assert structured == PAYLOAD               # the structured copy is untouched
+    assert structured == said               # the same data in both copies
 
 
 def test_the_compact_text_is_shorter_than_what_fastmcp_wrote():

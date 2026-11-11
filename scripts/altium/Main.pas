@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.11.02';
+    SCRIPT_VERSION = '2026.11.11.03';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -166,6 +166,9 @@ Var
     ClosingMode : String;
     UiAutomationMode : String;
     KeepInViewMode : String;
+    { LengthUnits, 'mil' or 'mm': the unit a new AI session reads and    }
+    { writes lengths in (the Python side converts). Default mil.         }
+    LengthUnits : String;
     { DialogMode 'auto' lets a tool answer the dialog it opens (the      }
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
@@ -2810,6 +2813,7 @@ Begin
     ClosingMode := 'allowed';
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
+    LengthUnits := 'mil';
     DialogMode := 'auto';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
@@ -2825,6 +2829,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+    If LowerCase(ExtractJsonValue(Content, 'length_units')) = 'mm' Then LengthUnits := 'mm';
     ChecksOff := LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
@@ -2835,6 +2840,7 @@ Begin
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
         + '","keep_in_view":"' + KeepInViewMode
+        + '","length_units":"' + LengthUnits
         + '","dialogs":"' + DialogMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
