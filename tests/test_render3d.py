@@ -173,7 +173,7 @@ def _scene():
 def test_the_scene_has_two_faces_an_edge_and_a_barrel():
     scene = _scene()
     arrays = scene.mesh.arrays()
-    assert len(scene.textures) == 2
+    assert len(scene.textures) == 3                  # top, bottom, edge
     mats = set(arrays["material_ids"].tolist())
     assert {0, 1, 2, 3} <= mats                          # top, bottom, edge, plated wall
     z = arrays["positions"][:, 2]
@@ -237,3 +237,98 @@ def test_a_track_through_a_pour_keeps_its_copper():
     lift = tuple(_at(pic, 500, 600)[0][:3])                 # mask over the pour
     assert tuple(_at(pic, 500, 500)[0][:3]) == lift          # the track: copper too
     assert tuple(_at(pic, 500, 512)[0][:3]) == B.MASKS["green"]   # its clearance
+
+
+def test_the_edge_shows_the_stack_layer_by_layer():
+    stack = {"layers": [
+        {"copper_thickness_mils": 1.4, "dielectric_type": "PrePreg", "dielectric_height_mils": 8},
+        {"copper_thickness_mils": 0.6, "dielectric_type": "Core", "dielectric_height_mils": 42},
+        {"copper_thickness_mils": 0.6, "dielectric_type": "PrePreg", "dielectric_height_mils": 8},
+        {"copper_thickness_mils": 1.4, "dielectric_type": "none", "dielectric_height_mils": 0}]}
+    bands = B._stack_bands(stack, 1.6)
+    assert [k for k, _, _ in bands] == ["copper", "prepreg", "copper", "core",
+                                        "copper", "prepreg", "copper"]
+    assert bands[0][1] == pytest.approx(0) and bands[-1][2] == pytest.approx(1.6)
+    w, h, rgba, params = B._edge_texture(50.0, 1.6, stack, B.Look())
+    pic = np.frombuffer(rgba, np.uint8).reshape(h, w, 4).astype(int)
+    rows = pic[..., :3].mean(axis=(1, 2))
+    # Rows run bottom up: the mask's lip at both faces is green, not laminate.
+    for r in (0, h - 1):
+        g = pic[r, :, :3].mean(axis=0)
+        assert g[1] > g[0] + 20
+    # A plane's seam of resin is darker than the core's glass around it.
+    plane = bands[4]
+    seam = int((plane[1] + plane[2]) / 2 / 1.6 * h)
+    core = int((bands[3][1] + bands[3][2]) / 2 / 1.6 * h)
+    assert rows[seam] < rows[core]
+
+
+def test_the_tool_asks_for_a_backdrop_before_reading_the_board(monkeypatch):
+    import asyncio
+
+    from eda_agent.render3d.backdrops import BACKDROPS
+    from eda_agent.tools import render as tool
+
+    monkeypatch.setattr(tool, "get_bridge", lambda: (_ for _ in ()).throw(AssertionError))
+    captured = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+    tool.register_render_tools(_Mcp())
+    out = asyncio.run(captured["pcb_render_3d"]())
+    assert out["ok"] is False and out["needs_choice"] == "background"
+    # Every backdrop the renderer has is offered, and nothing it lacks.
+    named = {k for k in out["choices"] if k[0] not in "#<"} - {"transparent"}
+    assert named == set(BACKDROPS)
+
+
+def test_a_plated_hole_has_a_copper_barrel_and_an_unplated_one_bare_laminate():
+    pth = {"x": 300, "y": 500, "x_size": 70, "y_size": 70, "shape": "Round",
+           "hole_size": 40, "layer": "MultiLayer", "plated": True}
+    npth = dict(pth, x=700, x_size=40, y_size=40, plated=False)
+    scene = B.build(_geom(pads=[pth, npth]), {}, [], B.Look(), px_per_mm=8, supersample=1)
+    arrays = scene.mesh.arrays()
+    walls = {}
+    for tri, m in zip(arrays["indices"], arrays["material_ids"]):
+        x = arrays["positions"][tri, 0].mean()
+        if m in (3, 4):
+            walls.setdefault(int(m), []).append(x)
+    # Board x 300 mils sits left of the centre, 700 right of it.
+    assert walls[3] and max(walls[3]) < 0                 # plated: copper wall
+    assert walls[4] and min(walls[4]) > 0                 # unplated: laminate wall
+    pic = _picture(_geom(pads=[pth, npth]), look=B.Look(mask_expansion_mils=20))
+    assert tuple(_at(pic, 300 + 30, 500)[0][:3]) == B.FINISHES["enig"][0]   # plated ring
+    assert tuple(_at(pic, 700 + 30, 500)[0][:3]) == B.LAMINATE               # no copper
+
+
+def test_a_joint_follows_an_oblong_pad_round_a_slot():
+    pad = {"x": 500, "y": 500, "x_size": 120, "y_size": 50, "shape": "Round",
+           "hole_size": 25, "hole_width": 90, "hole_type": "Slot", "hole_rotation": 0,
+           "rotation": 0, "layer": "MultiLayer", "plated": True, "comp": "J1"}
+    geom = _geom(pads=[pad], components=[{"des": "J1", "x": 500, "y": 500,
+                                          "layer": "TopLayer"}])
+    mesh = B.Mesh()
+    k = 0.0254
+    assert B.solder_joints(mesh, geom, frozenset({"J1"}), lambda x, y: (x * k, y * k),
+                           1.6, 5) == 1
+    xs = [p[0] / k for p in mesh.pos]
+    ys = [p[1] / k for p in mesh.pos]
+    assert max(xs) - min(xs) > 110 and max(ys) - min(ys) < 55      # oblong, as the pad
+    # Unplated, the same hole takes no solder.
+    assert B.solder_joints(B.Mesh(), _geom(pads=[dict(pad, plated=False)],
+                                           components=geom["components"]),
+                           frozenset({"J1"}), lambda x, y: (x * k, y * k), 1.6, 5) == 0
+
+
+def test_the_other_side_is_the_board_turned_over_not_mirrored():
+    arrays = {"positions": np.array([[1, 2, 0], [1, 2, 1.6]], "<f4"),
+              "normals": np.array([[0, 0, -1], [0, 1, 0]], "<f4")}
+    out = E._turned_over(arrays, 1.6)
+    # The bottom face comes up; x keeps its sense, so text reads as it should.
+    assert np.allclose(out["positions"], [[1, -2, 1.6], [1, -2, 0]])
+    assert out["normals"].tolist() == [[0, 0, 1], [0, -1, 0]]

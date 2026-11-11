@@ -10,13 +10,15 @@ side picture; other views need the tracer and say so.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
 
-from .backdrops import BACKDROPS, Backdrop, texture as backdrop_texture, vignette
+from .backdrops import (BACKDROPS, IMAGE_SUFFIXES, Backdrop, image_backdrop,
+                        texture as backdrop_texture, vignette)
 from .board import BoardScene, _lin
 
 QUALITY = {"draft": (16, 3), "normal": (64, 4), "high": (256, 6)}
@@ -47,11 +49,11 @@ class View:
     #: Orthographic for straight top / bottom views, perspective otherwise.
     ortho: bool = False
     #: Depth of field: 0 all sharp, 1 a macro lens's at a close-up.
-    depth_of_field: float = 0.5
+    depth_of_field: float = 0.15
 
 
 def view_for(name: str, azimuth: Optional[float], elevation: Optional[float],
-             zoom: float, depth_of_field: float = 0.5) -> View:
+             zoom: float, depth_of_field: float = 0.15) -> View:
     az, el = VIEWS.get(name, VIEWS["iso"])
     if azimuth is not None:
         az = float(azimuth)
@@ -131,7 +133,7 @@ def _floor(scene: BoardScene, materials: list, textures: list, mesh_arrays: dict
     pos = np.array([(-k, -k, z), (k, -k, z), (k, k, z), (-k, k, z)], "<f4")
     base = len(mesh_arrays["positions"])
     mat = {"base": backdrop.base, "roughness": backdrop.roughness, "coat": backdrop.coat}
-    tex = backdrop_texture(backdrop.name, round(2 * k))
+    tex = backdrop_texture(backdrop, round(2 * k))
     if tex is not None:
         textures.append(tex)
         mat.update(texture=len(textures) - 1, bump=backdrop.bump)
@@ -147,6 +149,19 @@ def _floor(scene: BoardScene, materials: list, textures: list, mesh_arrays: dict
     }
 
 
+def _turned_over(arrays: dict, thick: float) -> dict:
+    """The scene turned half a turn about the x axis, the board's bottom
+    face up: y and z reverse, so nothing is mirrored."""
+    out = dict(arrays)
+    pos = arrays["positions"].copy()
+    pos[:, 1] = -pos[:, 1]
+    pos[:, 2] = thick - pos[:, 2]
+    nrm = arrays["normals"].copy()
+    nrm[:, 1:] = -nrm[:, 1:]
+    out["positions"], out["normals"] = pos.astype("<f4"), nrm.astype("<f4")
+    return out
+
+
 def _join(a: dict, b: dict) -> dict:
     base = len(a["positions"])
     return {
@@ -158,9 +173,20 @@ def _join(a: dict, b: dict) -> dict:
     }
 
 
-def background_settings(background: str) -> tuple[dict[str, Any], Optional[Backdrop]]:
-    """Tracer settings for a background, and the surface to lay, if any."""
-    b = (background or "studio").strip().lower()
+def background_settings(background: str, backdrop_width_mm: float = 300.0
+                        ) -> tuple[dict[str, Any], Optional[Backdrop]]:
+    """Tracer settings for a background, and the surface to lay, if any:
+    a named backdrop, a photo's path, transparent or a colour."""
+    raw = (background or "studio").strip().strip('"')
+    if raw.lower().endswith(IMAGE_SUFFIXES):
+        if not os.path.isfile(raw):
+            raise ValueError(f"no backdrop image at {raw}")
+        if backdrop_width_mm <= 0:
+            raise ValueError("backdrop_width_mm, the width the photo shows, must be above 0")
+        floor = image_backdrop(raw, backdrop_width_mm)
+        zen, hor, gnd = floor.sky
+        return {"background": 0, "sky_zenith": zen, "sky_horizon": hor, "sky_ground": gnd}, floor
+    b = raw.lower()
     if b == "transparent":
         return {"background": 1}, None
     if b in BACKDROPS:
@@ -170,15 +196,17 @@ def background_settings(background: str) -> tuple[dict[str, Any], Optional[Backd
     if b.startswith("#") and len(b) == 7:
         rgb = tuple(int(b[i:i + 2], 16) for i in (1, 3, 5))
         return {"background": 2, "background_color": _lin(rgb)}, None
-    raise ValueError(f"background is {', '.join(BACKDROPS)}, transparent or a colour like #202428")
+    raise ValueError(f"background is {', '.join(BACKDROPS)}, transparent, a colour like "
+                     "#202428, or the path of a photo of a surface")
 
 
 def render(scene: BoardScene, view: View, width: int, height: int, quality: str,
-           background: str, seed: int = 1, denoise: bool = True) -> tuple[Image.Image, dict[str, Any]]:
+           background: str, seed: int = 1, denoise: bool = True,
+           backdrop_width_mm: float = 300.0) -> tuple[Image.Image, dict[str, Any]]:
     """The picture, and how it was made."""
     if quality not in QUALITY:
         raise ValueError(f"quality is one of {', '.join(QUALITY)}")
-    bg, floor = background_settings(background)
+    bg, floor = background_settings(background, backdrop_width_mm)
     if view.ortho and bg.get("background") == 0 and floor is not None and floor.name == "studio":
         # Straight down or up there is no floor or horizon to show.
         bg = {"background": 2, "background_color": _lin(STUDIO_GREY)}
@@ -200,7 +228,11 @@ def render(scene: BoardScene, view: View, width: int, height: int, quality: str,
                                   len(materials))
         arrays = _join(arrays, extra)
         materials += extra_mats
-    # Seen from below there is nothing to rest on in the picture.
+    if floor is not None and view.elevation < 0 and not view.ortho:
+        # The other side is photographed as people do: the board turned
+        # over (half a turn about x, not a mirror) and laid on the surface.
+        arrays, view = _turned_over(arrays, scene.thickness_mm), View(
+            180.0 - view.azimuth, -view.elevation, view.zoom, view.ortho, view.depth_of_field)
     if floor is not None and view.elevation > 0 and not (view.ortho and floor.name == "studio"):
         arrays = _floor(scene, materials, textures, arrays, floor)
     settings = {

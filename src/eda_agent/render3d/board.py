@@ -31,7 +31,7 @@ from ..units import MM_PER_MIL
 
 #: Solder mask colours, sRGB, as fabs sell them.
 MASKS = {
-    "green": (10, 70, 32), "black": (12, 12, 14), "blue": (8, 32, 92),
+    "green": (6, 80, 44), "black": (12, 12, 14), "blue": (8, 32, 92),
     "red": (118, 12, 14), "white": (222, 222, 218), "purple": (50, 18, 70),
     "yellow": (196, 156, 10), "matte_black": (16, 16, 18), "matte_green": (18, 70, 34),
 }
@@ -48,11 +48,13 @@ MASK_TRANSLUCENCY = {"green": 0.32, "blue": 0.3, "red": 0.3, "purple": 0.3, "yel
                      "white": 0.08, "black": 0.04, "matte_black": 0.03, "matte_green": 0.35}
 SILKS = {"white": (238, 238, 232), "black": (20, 20, 20), "yellow": (230, 200, 40)}
 #: Reflowed solder: sRGB, roughness.
-SOLDER = ((200, 202, 206), 0.14)
+SOLDER = ((222, 224, 228), 0.1)
+#: How far up the edge its corners are rounded towards the faces, mm.
+EDGE_ROUND_MM = 0.12
 #: Relief, mm: the full scale of the height map and what stands how high.
 RELIEF_MM = 0.08
 COPPER_MM, MASK_MM, INK_MM = 0.035, 0.02, 0.012
-LAMINATE = (176, 150, 92)
+LAMINATE = (196, 188, 150)
 EDGE = (178, 168, 132)
 
 
@@ -62,7 +64,7 @@ class Look:
     finish: str = "enig"
     silk: str = "white"
     #: Mask opening past a pad's copper, mils, when the pad does not say.
-    mask_expansion_mils: float = 4.0
+    mask_expansion_mils: float = 2.5
     #: Vias covered by mask (tented), as most boards are made.
     tent_vias: bool = True
 
@@ -234,6 +236,78 @@ def _pad_shape(cv: Canvas, p: dict[str, Any], grow: float = 0.0, fill: int = 255
     cv.polygon(_rotated_rect(x, y, w, h, rot), fill)
 
 
+def _stadium(cx: float, cy: float, length: float, width: float, angle_deg: float,
+             n: int = 24) -> list[tuple[float, float]]:
+    """A slot or oval outline: a stroke ``length`` long overall and
+    ``width`` wide, along angle_deg; a circle when length <= width."""
+    r = width / 2
+    half = max(0.0, (length - width) / 2)
+    a = math.radians(angle_deg)
+    ca, sa = math.cos(a), math.sin(a)
+    pts = []
+    for end, start in ((half, -90.0), (-half, 90.0)):
+        for i in range(n // 2 + 1):
+            t = math.radians(start + 180.0 * i / (n // 2))
+            lx, ly = end + r * math.cos(t), r * math.sin(t)
+            pts.append((cx + lx * ca - ly * sa, cy + lx * sa + ly * ca))
+    return pts
+
+
+def hole_outline(p: dict[str, Any]) -> list[tuple[float, float]]:
+    """A pad's drill as a closed outline in mils: round, or a slot."""
+    d = float(p.get("hole_size", 0) or 0)
+    width = float(p.get("hole_width", 0) or 0)
+    x, y = float(p.get("x", 0)), float(p.get("y", 0))
+    if str(p.get("hole_type", "")).lower().startswith("slot") and width > d:
+        ang = float(p.get("rotation", 0) or 0) + float(p.get("hole_rotation", 0) or 0)
+        return _stadium(x, y, width, d, ang)
+    return _stadium(x, y, d, d, 0.0)
+
+
+def pad_outline(p: dict[str, Any]) -> list[tuple[float, float]]:
+    """A pad's land as a closed outline in mils, by its shape."""
+    x, y = float(p.get("x", 0)), float(p.get("y", 0))
+    w, h = float(p.get("x_size", 0) or 0), float(p.get("y_size", 0) or 0)
+    rot = float(p.get("rotation", 0) or 0)
+    shape = str(p.get("shape", "")).lower()
+    c, s_ = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    turn = lambda pts: [(x + a * c - b * s_, y + a * s_ + b * c) for a, b in pts]
+    if "round" in shape and "rect" not in shape:
+        return _stadium(x, y, max(w, h), min(w, h), rot + (0 if w >= h else 90))
+    if "oct" in shape:
+        k = min(w, h) * 0.29
+        return turn([(-w / 2 + k, -h / 2), (w / 2 - k, -h / 2), (w / 2, -h / 2 + k),
+                     (w / 2, h / 2 - k), (w / 2 - k, h / 2), (-w / 2 + k, h / 2),
+                     (-w / 2, h / 2 - k), (-w / 2, -h / 2 + k)])
+    r = min(w, h) * 0.25 if "round" in shape else 0.0
+    pts = []
+    for cx_, cy_, a0 in ((w / 2 - r, -h / 2 + r, -90), (w / 2 - r, h / 2 - r, 0),
+                         (-w / 2 + r, h / 2 - r, 90), (-w / 2 + r, -h / 2 + r, 180)):
+        for i in range(7 if r else 1):
+            t = math.radians(a0 + 90 * i / 6) if r else 0.0
+            pts.append((cx_ + r * math.cos(t), cy_ + r * math.sin(t)) if r else
+                       (math.copysign(w / 2, cx_), math.copysign(h / 2, cy_)))
+    return turn(pts)
+
+
+def _reach(outline: list[tuple[float, float]], cx: float, cy: float, angle: float) -> float:
+    """How far a ray from (cx, cy) at ``angle`` runs to the outline."""
+    dx, dy = math.cos(angle), math.sin(angle)
+    best = 0.0
+    n = len(outline)
+    for i in range(n):
+        (ax, ay), (bx, by) = outline[i], outline[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        den = dx * ey - dy * ex
+        if abs(den) < 1e-12:
+            continue
+        t = ((ax - cx) * ey - (ay - cy) * ex) / den
+        u = ((ax - cx) * dy - (ay - cy) * dx) / den
+        if t > 0 and -1e-9 <= u <= 1 + 1e-9:
+            best = max(best, t)
+    return best
+
+
 def _hole(cv: Canvas, p: dict[str, Any], fill: int = 255) -> None:
     d = float(p.get("hole_size", 0) or 0)
     if d <= 0:
@@ -357,7 +431,7 @@ def side_picture(geom: dict[str, Any], pours: list[dict[str, Any]], side: str,
         _pad_shape(opening, p, grow=look.mask_expansion_mils)
     tinned = Canvas(x0, y0, w, h, px_per_mil)
     for p in pads:
-        if p.get("comp") in soldered:
+        if p.get("comp") in soldered and p.get("plated", True) is not False:
             _pad_shape(tinned, p)
     if not look.tent_vias:
         for v in geom.get("vias") or []:
@@ -515,7 +589,7 @@ def build(geom: dict[str, Any], stackup: dict[str, Any], pours: list[dict[str, A
     materials = [
         {"base": (0.8, 0.8, 0.8), "roughness": 0.5, "texture": 0, "bump": RELIEF_MM},  # top
         {"base": (0.8, 0.8, 0.8), "roughness": 0.5, "texture": 1, "bump": RELIEF_MM},  # bottom
-        {"base": _lin(EDGE), "roughness": 0.85},                             # edge
+        {"base": _lin(EDGE), "roughness": 0.8, "texture": 2, "bump": 0.012},  # edge
         {"base": _lin(FINISHES[look.finish][0]), "roughness": 0.3,
          "metallic": 1.0},                                                   # plated barrel
         {"base": _lin(LAMINATE), "roughness": 0.85},                         # unplated wall
@@ -531,9 +605,12 @@ def build(geom: dict[str, Any], stackup: dict[str, Any], pours: list[dict[str, A
     bot = [mesh.vertex((*at(x, y), 0.0), (0, 0, -1), uv) for (x, y), uv in zip(corners, uvs)]
     mesh.face(bot[0], bot[2], bot[1], 1)
     mesh.face(bot[0], bot[3], bot[2], 1)
-    # The edge: a wall along the outline, normals smoothed along arcs.
+    # The edge: a wall along the outline, its texture running along it.
     pts = outline
     n = len(pts)
+    perimeter = sum(math.dist(pts[i], pts[(i + 1) % n]) for i in range(n)) * MM_PER_MIL
+    textures.append(_edge_texture(perimeter, thick, stackup, look))
+    walked = 0.0
     area = sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
                for i in range(n))
     ccw = area > 0
@@ -544,12 +621,21 @@ def build(geom: dict[str, Any], stackup: dict[str, Any], pours: list[dict[str, A
         if length < 1e-9:
             continue
         nx, ny = (dy / length, -dx / length) if ccw else (-dy / length, dx / length)
-        a0 = mesh.vertex((*at(xa, ya), 0.0), (nx, ny, 0))
-        b0 = mesh.vertex((*at(xb, yb), 0.0), (nx, ny, 0))
-        b1 = mesh.vertex((*at(xb, yb), thick), (nx, ny, 0))
-        a1 = mesh.vertex((*at(xa, ya), thick), (nx, ny, 0))
-        mesh.face(a0, b0, b1, 2)
-        mesh.face(a0, b1, a1, 2)
+        ua = walked / perimeter
+        walked += length * MM_PER_MIL
+        ub = walked / perimeter
+        # The cutter and the mask round both corners a little: the wall
+        # turns towards each face over its last EDGE_ROUND_MM, which is
+        # what catches the light along a real board's edge.
+        r = min(EDGE_ROUND_MM, thick / 4)
+        tilt = 0.7071
+        rows = [(0.0, (nx * tilt, ny * tilt, -tilt)), (r, (nx, ny, 0.0)),
+                (thick - r, (nx, ny, 0.0)), (thick, (nx * tilt, ny * tilt, tilt))]
+        ring = [(mesh.vertex((*at(xa, ya), z), n, (ua, z / thick)),
+                 mesh.vertex((*at(xb, yb), z), n, (ub, z / thick))) for z, n in rows]
+        for (a0, b0), (a1, b1) in zip(ring, ring[1:]):
+            mesh.face(a0, b0, b1, 2)
+            mesh.face(a0, b1, a1, 2)
     # Hole walls: plated for vias and plated pads.
     holes = 0
     for p in list(geom.get("pads") or []) + [dict(v, plated=True) for v in geom.get("vias") or []]:
@@ -557,7 +643,7 @@ def build(geom: dict[str, Any], stackup: dict[str, Any], pours: list[dict[str, A
         if d <= 0:
             continue
         plated = p.get("plated", True) is not False
-        _barrel(mesh, *at(float(p["x"]), float(p["y"])), d * mm / 2, thick, 3 if plated else 4)
+        _barrel(mesh, [at(u, v) for u, v in hole_outline(p)], thick, 3 if plated else 4)
         holes += 1
     if soldered:
         joints = solder_joints(mesh, geom, soldered, at, thick, 5)
@@ -568,6 +654,127 @@ def build(geom: dict[str, Any], stackup: dict[str, Any], pours: list[dict[str, A
                       centre_mils=(cx, cy), notes=notes)
 
 
+def _stack_bands(stackup: dict[str, Any], thick: float) -> list[tuple[str, float, float]]:
+    """The board's layers from the bottom up: (kind, z0, z1) in mm, kind
+    copper, core, prepreg or mask, scaled to the board's thickness."""
+    layers = (stackup or {}).get("layers") or []
+    rows: list[tuple[str, float]] = []
+    for layer in layers:
+        try:
+            cu = float(layer.get("copper_thickness_mils") or 0) * MM_PER_MIL
+            de = float(layer.get("dielectric_height_mils") or 0) * MM_PER_MIL
+        except (TypeError, ValueError):
+            continue
+        if cu > 0:
+            rows.append(("copper", cu))
+        if de > 0:
+            kind = "core" if "core" in str(layer.get("dielectric_type", "")).lower() else "prepreg"
+            rows.append((kind, de))
+    if not rows:
+        rows = [("copper", 0.035), ("core", thick - 0.07), ("copper", 0.035)]
+    total = sum(h for _, h in rows) or thick
+    k = thick / total
+    bands, z = [], thick
+    for kind, h in rows:                       # the stack is listed top down
+        bands.append((kind, z - h * k, z))
+        z -= h * k
+    return sorted(bands, key=lambda b: b[1])
+
+
+def _edge_texture(length_mm: float, thick: float, stackup: dict[str, Any], look: Look,
+                  seed: int = 3) -> tuple[int, int, bytes, bytes]:
+    """The routed edge as the cutter leaves it: the laminate's glass weave
+    ply by ply in its resin, the resin-rich seams where copper is pulled
+    back, the solder mask's lip at both faces, and the router's marks."""
+    rng = np.random.default_rng(seed)
+    w = int(min(8192, max(256, length_mm * 24)))
+    h = int(min(512, max(64, thick * 140)))
+    u = (np.arange(w, dtype=np.float32) + 0.5) * (length_mm / w)            # mm along
+    z = (np.arange(h, dtype=np.float32) + 0.5) * (thick / h)                # mm up
+    Z, U = np.meshgrid(z, u, indexing="ij")
+    resin = np.array([158, 146, 104], np.float32)
+    glass = np.array([206, 198, 166], np.float32)
+    mix = np.full(Z.shape, 0.45, np.float32)              # share of glass seen
+    height = np.zeros(Z.shape, np.float32)
+    tint = np.zeros(Z.shape + (3,), np.float32)
+    for kind, z0, z1 in _stack_bands(stackup, thick):
+        inside = (Z >= z0) & (Z < z1)
+        if kind == "copper":
+            # Pulled back from the edge: a seam of resin where it would be.
+            mix[inside] = 0.0
+            height[inside] -= 0.6
+            # Pulled back, it still shows through the laminate as a
+            # brown shadow a few times its own thickness wide.
+            zc = (z0 + z1) / 2
+            shade = np.exp(-((Z - zc) / max(0.03, 2.5 * (z1 - z0))) ** 2)
+            tint -= shade[..., None] * np.array([34, 36, 30], np.float32)
+            continue
+        ply = 0.09 if kind == "core" else 0.06
+        plies = max(1, int(round((z1 - z0) / ply)))
+        pitch = (z1 - z0) / plies
+        for i in range(plies):
+            # Plies are pressed, not machined: each waves a little along
+            # the board and is a little thicker in places.
+            zc = (z0 + (i + 0.5) * pitch
+                  + pitch * 0.12 * np.sin(U / rng.uniform(6, 18) + rng.uniform(0, 6))
+                  + pitch * 0.06 * np.sin(U / rng.uniform(1.5, 3) + rng.uniform(0, 6)))
+            spread = pitch * 0.32 * (1 + 0.25 * np.sin(U / rng.uniform(4, 12) + rng.uniform(0, 6)))
+            across = np.exp(-((Z - zc) / spread) ** 2)
+            # Warp bundles cut across show as lenses, the fill as streaks;
+            # the two take turns along the weave.
+            phase = rng.uniform(0, 2 * np.pi)
+            period = rng.uniform(0.42, 0.55)
+            lens = 0.5 + 0.5 * np.cos(2 * np.pi * U / period + phase)
+            jitter = 0.15 * np.sin(2 * np.pi * U / rng.uniform(3, 9) + rng.uniform(0, 6))
+            strength = (0.8 if kind == "core" else 0.5) * across * (0.75 + 0.25 * lens + jitter)
+            mix = np.where(inside, np.maximum(mix * (1 - across * 0.6), strength), mix)
+            height += inside * across * lens * 0.5
+        if kind == "prepreg":
+            tint[inside] += (4, 2, -10)                    # more resin: yellower
+    # The router: fine marks across the cut, and a scuffed, fibrous face.
+    marks = rng.standard_normal(w).astype(np.float32)
+    marks = np.convolve(marks, np.ones(3) / 3, mode="same")
+    marks = (marks / (marks.std() or 1.0))[None, :] * np.ones((h, 1), np.float32)
+    fuzz = rng.standard_normal(Z.shape).astype(np.float32)
+    drift = np.repeat(np.repeat(rng.standard_normal((max(2, h // 24), max(2, w // 60))),
+                                24, 0), 60, 1)[:h, :w].astype(np.float32)
+    drift = np.pad(drift, ((0, max(0, h - drift.shape[0])), (0, max(0, w - drift.shape[1]))), "edge")
+    # The odd resin-rich pocket where the weave opened up.
+    pockets = np.zeros(Z.shape, np.float32)
+    for _ in range(int(length_mm / 3)):
+        cu_, cz = rng.uniform(0, length_mm), rng.uniform(0, thick)
+        pockets += np.exp(-(((U - cu_) / rng.uniform(0.15, 0.5)) ** 2
+                            + ((Z - cz) / rng.uniform(0.02, 0.05)) ** 2))
+    mix = np.clip(mix + 0.05 * fuzz + 0.04 * drift - 0.5 * np.clip(pockets, 0, 1), 0, 1)
+    # Resin and glass are never even along a board: broad lighter and
+    # darker reaches, seen from afar.
+    reach = np.interp(u, np.linspace(0, length_mm, max(4, int(length_mm / 3))),
+                      rng.normal(0, 1, max(4, int(length_mm / 3))))
+    reach = np.convolve(reach, np.ones(9) / 9, mode="same").astype(np.float32)[None, :]
+    rgb = resin[None, None, :] * (1 - mix[..., None]) + glass[None, None, :] * mix[..., None]
+    rgb = rgb * (1 + 0.012 * marks[..., None] + 0.02 * fuzz[..., None]
+                 + 0.07 * reach[..., None]) + tint
+    # Glass fibres the cutter left standing: pale specks.
+    specks = rng.uniform(size=Z.shape) > 0.996
+    rgb[specks] = rgb[specks] * 0.4 + 0.6 * np.array([236, 234, 222], np.float32)
+    height += 0.08 * marks + 0.15 * fuzz
+    # The mask's lip: it runs round the corner a little at both faces.
+    mask = np.array(MASKS[look.mask], np.float32)
+    lip = 0.05 * (1 + 0.4 * np.abs(np.sin(U / rng.uniform(4, 9))))
+    for at_top in (True, False):
+        d = (thick - Z) if at_top else Z
+        cover = np.clip((lip - d) / 0.008 + 0.5, 0, 1)[..., None]
+        rgb = rgb * (1 - cover) + mask[None, None, :] * cover
+        height += cover[..., 0] * 0.8
+    rgba = np.dstack([np.clip(rgb, 0, 255), np.full((h, w), 255.0)]).astype(np.uint8)
+    params = np.zeros((h, w, 4), np.uint8)
+    params[..., 0] = 200                                   # rough cut
+    params[..., 2] = np.clip(np.where(height > 0.75, 120, 0), 0, 255)
+    hs = height - height.min()
+    params[..., 3] = np.clip(hs / (hs.max() or 1.0) * 255, 0, 255).astype(np.uint8)
+    return w, h, np.ascontiguousarray(rgba).tobytes(), np.ascontiguousarray(params).tobytes()
+
+
 def _lin(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
     def f(c):
         c /= 255.0
@@ -575,15 +782,25 @@ def _lin(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
     return tuple(f(float(c)) for c in rgb)
 
 
-def _barrel(mesh: Mesh, x: float, y: float, r: float, thick: float, material: int) -> None:
-    """The inside wall of a drilled hole, facing in."""
-    segs = max(8, min(24, int(r * 40)))
+def _barrel(mesh: Mesh, outline: list[tuple[float, float]], thick: float,
+            material: int) -> None:
+    """The inside wall of a drilled hole or slot along its outline (mm),
+    facing in."""
+    n = len(outline)
+    cx = sum(p[0] for p in outline) / n
+    cy = sum(p[1] for p in outline) / n
     ring = []
-    for i in range(segs + 1):
-        a = 2 * math.pi * i / segs
-        c, s = math.cos(a), math.sin(a)
-        ring.append((mesh.vertex((x + r * c, y + r * s, 0.0), (-c, -s, 0)),
-                     mesh.vertex((x + r * c, y + r * s, thick), (-c, -s, 0))))
+    for i in range(n + 1):
+        x, y = outline[i % n]
+        px, py = outline[(i - 1) % n]
+        qx, qy = outline[(i + 1) % n]
+        tx, ty = qx - px, qy - py
+        nx, ny = -ty, tx
+        if nx * (cx - x) + ny * (cy - y) < 0:
+            nx, ny = -nx, -ny
+        k = math.hypot(nx, ny) or 1.0
+        ring.append((mesh.vertex((x, y, 0.0), (nx / k, ny / k, 0)),
+                     mesh.vertex((x, y, thick), (nx / k, ny / k, 0))))
     for (a0, a1), (b0, b1) in zip(ring, ring[1:]):
         mesh.face(a0, b1, b0, material)
         mesh.face(a0, a1, b1, material)
@@ -618,7 +835,7 @@ def _grid_mesh(mesh: Mesh, pts: np.ndarray, up: float, material: int) -> None:
 
 
 def solder_joints(mesh: Mesh, geom: dict[str, Any], soldered: frozenset, at, thick: float,
-                  material: int, n: int = 12) -> int:
+                  material: int, n: int = 16) -> int:
     """Reflowed solder on every pad of a fitted part, as it wets a joint:
     a smooth meniscus climbing from the pad's outer edge towards the
     part's terminal on surface pads, a cone round the pin on through-hole
@@ -643,17 +860,24 @@ def solder_joints(mesh: Mesh, geom: dict[str, Any], soldered: frozenset, at, thi
         layer = p.get("layer")
         hole = float(p.get("hole_size", 0) or 0)
         if layer == "MultiLayer" and hole > 0:
+            if p.get("plated", True) is False:
+                continue                       # an unplated hole takes no solder
             comp_side = centres.get(des, (0, 0, "TopLayer"))[2]
-            r_in, r_out = hole / 2 * 1.05, max(w, h) / 2 * 0.97
-            if r_out <= r_in:
+            # From the drill's edge out to the land's, whatever their shapes:
+            # an oblong pad round a slot gets an oblong joint.
+            land, drill = pad_outline(p), hole_outline(p)
+            ang = np.linspace(0.0, 2 * math.pi, 4 * n + 1)
+            r_in = np.array([_reach(drill, x, y, a) for a in ang]) * 1.03
+            r_out = np.array([_reach(land, x, y, a) for a in ang]) * 0.97
+            if not (r_out > r_in).all():
                 continue
             rad = np.linspace(0.0, 1.0, n)
-            ang = np.linspace(0.0, 2 * math.pi, 2 * n + 1)
             R, T = np.meshgrid(rad, ang)
-            rr = r_in + (r_out - r_in) * R
+            rr = r_in[:, None] + (r_out - r_in)[:, None] * R
+            ring_w = float(np.median(r_out - r_in))
             for z0, up, scale in ((thick, 1.0, 0.35 if comp_side == "TopLayer" else 1.0),
                                   (0.0, -1.0, 0.35 if comp_side == "BottomLayer" else 1.0)):
-                height = min(0.45, (r_out - r_in) * mm * 0.9) * scale
+                height = min(0.45, ring_w * mm * 0.9) * scale
                 zz = height * (1 - R) ** 2
                 xy = np.array([at(u, v) for u, v in zip((x + rr * np.cos(T)).ravel(),
                                                         (y + rr * np.sin(T)).ravel())])
@@ -670,11 +894,15 @@ def solder_joints(mesh: Mesh, geom: dict[str, Any], soldered: frozenset, at, thi
         dx, dy = cx - x, cy - y
         lx, ly = dx * c + dy * s_, -dx * s_ + dy * c
         hw, hh = w / 2 * 0.98, h / 2 * 0.98
-        tall = min(0.2, 0.3 * min(w, h) * mm)
+        # Reflowed solder covers the whole land in a thin rounded pillow,
+        # and climbs the part's terminal in a concave fillet.
+        tall = min(0.35, 0.45 * min(w, h) * mm)
+        pillow = min(0.05, 0.12 * min(w, h) * mm)
+        rim = np.sqrt(np.clip((1 - np.maximum(np.abs(A), np.abs(B))) / 0.12, 0, 1))
         if abs(lx) / hw < 0.3 and abs(ly) / hh < 0.3:
             # A pad under the part's middle (a thermal pad): a low dome.
             edge = 1 - np.maximum(np.abs(A), np.abs(B)) ** 6
-            zz = 0.25 * tall * np.sqrt(np.clip(edge, 0, 1))
+            zz = pillow * rim + 0.15 * tall * np.sqrt(np.clip(edge, 0, 1))
         else:
             # s runs from the pad's outer edge (0) to its inner edge (1).
             if abs(lx) / hw >= abs(ly) / hh:
@@ -682,10 +910,10 @@ def solder_joints(mesh: Mesh, geom: dict[str, Any], soldered: frozenset, at, thi
             else:
                 along, across, sign = B, A, math.copysign(1.0, ly)
             sv = (1 + along * sign) / 2
-            rise = np.clip(sv / 0.7, 0, 1) ** 1.7
+            rise = np.clip(sv / 0.75, 0, 1) ** 2
             inner = np.where(sv > 0.85, 1 - ((sv - 0.85) / 0.15) ** 2, 1.0)
             side = np.sqrt(np.clip(1 - np.abs(across) ** 6, 0, 1))
-            zz = tall * rise * np.clip(inner, 0, 1) * side
+            zz = pillow * rim + tall * rise * np.clip(inner, 0, 1) * side
         a_, b_ = (_square_to_disc(A, B) if round_ else (A, B))
         lxp, lyp = a_ * hw, b_ * hh
         wx = x + lxp * c - lyp * s_

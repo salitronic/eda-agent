@@ -3,9 +3,11 @@
 """What the board rests on: a surface texture and the room around it.
 
 studio: a seamless white sweep. charcoal: the dark grey fibre mat of a
-photo bench, lit from above and falling off at the edges. desk: a
-lacquered wood worktop. Each surface is a texture made here, with its
-relief in the parameter map's alpha, as the board's is.
+photo bench, lit from above and falling off at the edges. desk: an
+oak-melamine office worktop. esd_mat: the blue-grey anti-static mat of
+an electronics bench. black: matte black, as black velvet or paper. Or a photo of any surface, laid at its real size
+(image_backdrop). Each surface is a texture with its relief in the
+parameter map's alpha, as the board's is.
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ class Backdrop:
     base: tuple = (0.78, 0.78, 0.77)
     roughness: float = 0.9
     coat: float = 0.0
+    #: A photo of the surface, and how wide the area it shows is, mm.
+    image: str = ""
+    image_mm: float = 0.0
 
 
 BACKDROPS = {
@@ -40,7 +45,19 @@ BACKDROPS = {
                          0.06, 0.35, roughness=0.92),
     "desk": Backdrop("desk", ((0.30, 0.29, 0.27), (0.24, 0.23, 0.21), (0.10, 0.09, 0.08)),
                      0.01, 0.15, roughness=0.5, coat=0.3),
+    "esd_mat": Backdrop("esd_mat", ((0.20, 0.21, 0.22), (0.17, 0.17, 0.17), (0.06, 0.06, 0.06)),
+                        0.02, 0.25, roughness=0.85),
+    "black": Backdrop("black", ((0.10, 0.10, 0.11), (0.06, 0.06, 0.06), (0.02, 0.02, 0.02)),
+                      0.0, 0.3, base=(0.006, 0.006, 0.007), roughness=0.95),
 }
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def image_backdrop(path: str, width_mm: float) -> Backdrop:
+    """A user's photo of a surface as the backdrop: ``width_mm`` is how
+    wide the area it shows is, so its grain comes out at its real size."""
+    return Backdrop("image", ((0.24, 0.24, 0.24), (0.22, 0.22, 0.22), (0.08, 0.08, 0.08)),
+                    0.004, 0.15, roughness=0.6, coat=0.15, image=path, image_mm=float(width_mm))
 
 
 def _soften(a: np.ndarray) -> np.ndarray:
@@ -108,6 +125,34 @@ def _charcoal(n: int, size_mm: float, rng) -> tuple[np.ndarray, np.ndarray]:
     return rgb, height
 
 
+def _esd_mat(n: int, size_mm: float, rng) -> tuple[np.ndarray, np.ndarray]:
+    """An anti-static bench mat: blue-grey vinyl with a fine pebbled
+    surface and the scuffs of use."""
+    pebble = _soften(rng.standard_normal((n, n)).astype(np.float32))
+    pebble /= float(pebble.std()) or 1.0
+    scuffs = _fbm((n, n), (max(2, int(size_mm / 25)), max(2, int(size_mm / 25))), rng, 4)
+    tone = 1.0 + 0.03 * pebble + 0.05 * scuffs
+    base = np.array([74, 98, 116], np.float32)
+    rgb = base[None, None, :] * tone[..., None]
+    return rgb, 128 + 50 * pebble + 10 * scuffs
+
+
+def _photo(n: int, size_mm: float, b: "Backdrop") -> tuple[np.ndarray, np.ndarray]:
+    """The user's photo tiled over the surface at its real size, every
+    other tile mirrored so no seam shows; its relief from its shading."""
+    img = Image.open(b.image).convert("RGB")
+    tile_px = max(8, int(round(n * b.image_mm / size_mm)))
+    img = img.resize((tile_px, max(8, int(round(tile_px * img.height / img.width)))),
+                     Image.LANCZOS)
+    t = np.asarray(img, np.float32)
+    row = np.concatenate([t, t[:, ::-1]], axis=1)
+    block = np.concatenate([row, row[::-1]], axis=0)
+    reps = (n // block.shape[0] + 1, n // block.shape[1] + 1, 1)
+    rgb = np.tile(block, reps)[:n, :n]
+    lum = rgb.mean(axis=2)
+    return rgb, 128 + 0.6 * (lum - lum.mean())
+
+
 def _desk(n: int, size_mm: float, rng) -> tuple[np.ndarray, np.ndarray]:
     """An office worktop: oak-grain melamine in a grey beige. Its grain
     is many short, thin, dark pore dashes lying along the grain in loose
@@ -163,16 +208,18 @@ def _desk(n: int, size_mm: float, rng) -> tuple[np.ndarray, np.ndarray]:
 
 
 @lru_cache(maxsize=4)
-def texture(name: str, size_mm: float, n: int = 4096) -> Optional[tuple[int, int, bytes, bytes]]:
+def texture(b: Backdrop, size_mm: float, n: int = 4096) -> Optional[tuple[int, int, bytes, bytes]]:
     """The surface as a texture (w, h, rgba, params), or None if plain."""
-    b = BACKDROPS[name]
-    make = {"charcoal": _charcoal, "desk": _desk}.get(name)
-    if make is None:
-        return None
     rng = np.random.default_rng(7)
-    # The grain is drawn at its real size; a desk's pores are finer than
-    # the felt's clumps, so it is laid out over a larger span per texel.
-    rgb, height = make(n, size_mm * GRAIN_SCALE.get(name, 1.0), rng)
+    if b.image:
+        rgb, height = _photo(n, size_mm, b)
+    else:
+        make = {"charcoal": _charcoal, "desk": _desk, "esd_mat": _esd_mat}.get(b.name)
+        if make is None:
+            return None
+        # The grain is drawn at its real size; a desk's pores are finer
+        # than the felt's clumps, so it is laid out over a larger span.
+        rgb, height = make(n, size_mm * GRAIN_SCALE.get(b.name, 1.0), rng)
     rgba = np.dstack([np.clip(rgb, 0, 255), np.full((n, n), 255.0)]).astype(np.uint8)
     params = np.zeros((n, n, 4), np.uint8)
     params[..., 0] = round(b.roughness * 255)

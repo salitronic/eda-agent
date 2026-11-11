@@ -17251,7 +17251,7 @@ Var
     RegionsJson, CompsJson : String;
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
-    LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
+    LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr, PlatedStr : String;
     BR : TCoordRect;
     I, K, PtCount, EL, EB, ER, ET : Integer;
     Seg : TPolySegment;
@@ -17398,6 +17398,11 @@ Begin
                 Try
                     If Pad.Component <> Nil Then TextStr := Pad.Component.Name.Text;
                 Except End;
+                { Plating: a picture draws a plated barrel or bare laminate. }
+                PlatedStr := 'true';
+                Try
+                    PlatedStr := BoolToJsonStr(Pad.Plated);
+                Except End;
                 If NumPads > 0 Then PadsJson := PadsJson + ',';
                 PadsJson := PadsJson +
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Pad.X)) +
@@ -17409,6 +17414,7 @@ Begin
                     ',"hole_type":"' + EscapeJsonString(HoleStr) + '"' +
                     ',"hole_width":' + FloatToJsonStr(CoordToMilsF(Pad.HoleWidth)) +
                     ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation) +
+                    ',"plated":' + PlatedStr +
                     ',"rotation":' + FloatToJsonStr(Pad.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name":"' + EscapeJsonString(PadName) + '"' +

@@ -46,6 +46,19 @@ def _renders_dir() -> Path:
     return d
 
 
+#: What pcb_render_3d offers when no backdrop was chosen.
+BACKDROP_CHOICES = {
+    "studio": "a seamless white studio sweep",
+    "charcoal": "the dark grey fibre mat of a photo bench, lit from above",
+    "desk": "an office worktop in grey-beige oak melamine",
+    "esd_mat": "the blue-grey anti-static mat of an electronics bench",
+    "black": "matte black, as black velvet or paper",
+    "<path of an image>": "the user's own photo of a surface, with backdrop_width_mm",
+    "transparent": "no background, for placing the board on a page",
+    "#rrggbb": "a flat colour of the user's choosing",
+}
+
+
 def register_render_tools(mcp):
     """Register rendering tools with the MCP server."""
 
@@ -190,13 +203,19 @@ def register_render_tools(mcp):
         mask_color: str = "green",
         finish: str = "enig",
         silk_color: str = "white",
-        background: str = "studio",
+        background: str = "",
+        backdrop_width_mm: float = 300.0,
         show_components: bool = True,
-        depth_of_field: float = 0.5,
+        depth_of_field: float = 0.15,
     ) -> dict[str, Any]:
         """A photographic picture of the active board, raytraced: solder
         mask over raised copper, finish, silkscreen, drills, edges, the
         parts with their solder joints, studio light, shadows and a lens.
+
+        This is eda-agent's 3D picture; flat 2D pictures of the board
+        are pcb_render_png and pcb_render_svg. Ask the user which backdrop
+        they want before the first render: called without ``background``
+        it reads nothing and returns ``choices`` to put to them.
 
         Read-only. The parts come from Altium's STEP export of the board,
         written to the renders folder and read with CadQuery's kernel
@@ -217,11 +236,17 @@ def register_render_tools(mcp):
                 matte_black or matte_green.
             finish: enig, hasl, osp or bare.
             silk_color: white, black or yellow.
-            background: studio (a white sweep), charcoal (the dark fibre
-                mat of a photo bench), desk (a wood worktop), transparent,
-                or a colour like "#202428".
+            background: The backdrop, the user's choice: studio (a white
+                sweep), charcoal (the dark fibre mat of a photo bench),
+                desk (an oak-melamine worktop), esd_mat (a blue-grey bench
+                mat), black (matte), transparent, a colour like
+                "#202428", or the path of the user's own photo of a
+                surface, seen from above.
+            backdrop_width_mm: How wide the area in that photo is, so it
+                is laid at its real size.
             show_components: Draw the fitted parts and their solder.
-            depth_of_field: 0 all sharp; 0.5 (default) and up blur what
+            depth_of_field: 0 all sharp; 0.15 (default) as a phone
+                camera sees a board, and up to 2 blur what
                 is nearer or farther than the board's middle, more as
                 ``zoom`` comes closer, as a macro lens does.
 
@@ -247,8 +272,12 @@ def register_render_tools(mcp):
             return {"ok": False, "reason": "width and height are 16 to 8000 pixels"}
         if not 0 <= depth_of_field <= 2:
             return {"ok": False, "reason": "depth_of_field is 0 to 2"}
+        if not background.strip():
+            return {"ok": False, "needs_choice": "background", "choices": BACKDROP_CHOICES,
+                    "reason": "ask the user which backdrop they want, then call again "
+                              "with background set to their choice"}
         try:
-            render3d.engine.background_settings(background)
+            render3d.engine.background_settings(background, backdrop_width_mm)
         except ValueError as e:
             return {"ok": False, "reason": str(e)}
         started = time.monotonic()
@@ -280,7 +309,7 @@ def register_render_tools(mcp):
             scene.parts = parts
             img, info = render3d.render(
                 scene, render3d.view_for(view, azimuth, elevation, zoom, depth_of_field),
-                width, height, quality, background)
+                width, height, quality, background, backdrop_width_mm=backdrop_width_mm)
             return scene, img, info
 
         try:
