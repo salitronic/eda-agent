@@ -332,3 +332,14 @@ def test_the_other_side_is_the_board_turned_over_not_mirrored():
     # The bottom face comes up; x keeps its sense, so text reads as it should.
     assert np.allclose(out["positions"], [[1, -2, 1.6], [1, -2, 0]])
     assert out["normals"].tolist() == [[0, 0, 1], [0, -1, 0]]
+
+
+def test_the_review_names_parts_without_a_model_and_placeholder_models():
+    from eda_agent.render3d import parts as P
+
+    z = np.zeros((0, 3))
+    mesh = P.PartsMesh(z, z, np.zeros((0, 3), np.int64), [], np.zeros(0, np.int64), {},
+                       ["U1", "R1"], [(14, 4000, 4), (1, 12, 1)])
+    out = P.model_findings(mesh, ["U1", "R1", "J1"])
+    assert out == {"parts_without_a_model": ["J1"], "placeholder_models": ["R1"]}
+    assert P.model_findings(None, ["U1"])["parts_without_a_model"] == ["U1"]

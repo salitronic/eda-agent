@@ -46,6 +46,21 @@ def _renders_dir() -> Path:
     return d
 
 
+#: What pcb_render_3d's picture is judged against, as a photo of the
+#: assembled board would be.
+REALISM_CHECKS = [
+    "every pad under a fitted part is covered in bright solder with a fillet up its "
+    "terminal; only unfitted pads show gold or copper finish",
+    "the solder mask reads as the board's real colour and gloss, not too bright or dull",
+    "traces show through the mask lighter than the clearance around them",
+    "plated holes have copper barrels, unplated ones bare laminate",
+    "the edge reads as laminate: plies, the mask lip, rounded corners",
+    "each part looks like the real part: body colour, markings, leads, lens or window",
+    "silkscreen is crisp and legible",
+    "light, shadows and backdrop look like a photo, not CAD",
+]
+
+
 #: What pcb_render_3d offers when no backdrop was chosen.
 BACKDROP_CHOICES = {
     "studio": "a seamless white studio sweep",
@@ -252,8 +267,12 @@ def register_render_tools(mcp):
 
         Returns:
             ``ok``, ``path``, ``renderer``, ``seconds``, ``board_mm``,
-            ``thickness_mm``, ``parts`` (how many were drawn) and
-            ``notes``.
+            ``thickness_mm``, ``parts`` (how many were drawn), ``notes``,
+            and for the review: ``realism_checks``, ``models``
+            (``parts_without_a_model``, ``placeholder_models``) and
+            ``next_step``. Look at the picture against the checks and
+            propose what would make it more real; ask the user before
+            changing any 3D model.
         """
         import asyncio
         import time
@@ -326,6 +345,14 @@ def register_render_tools(mcp):
             "thickness_mm": round(scene.thickness_mm, 3),
             "parts": len(scene.parts.designators) if scene.parts is not None else 0,
             "notes": notes + scene.notes + ([info["note"]] if info.get("note") else []),
+            "realism_checks": REALISM_CHECKS,
+            "models": render3d.parts.model_findings(
+                scene.parts, [c.get("des") for c in geometry.get("components") or []])
+            if show_components else {},
+            "next_step": (f"Read {target} and judge it against realism_checks as a photo "
+                          "of the assembled board. Propose what would make it more real: "
+                          "render options, and better 3D models for the parts in models. "
+                          "Ask the user before changing any 3D model."),
         }
 
     async def _export_parts(bridge) -> tuple[Optional[Path], str]:

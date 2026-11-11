@@ -49,6 +49,8 @@ class PartsMesh:
     groups: np.ndarray               # (m,) index into material_keys
     materials: dict[str, dict[str, Any]]
     designators: list[str] = field(default_factory=list)
+    #: Per designator, in the same order: solids, triangles, materials.
+    part_stats: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 def available() -> bool:
@@ -95,7 +97,7 @@ def cache_path(step: Path, deflection: float = 0.01) -> Path:
     with open(step, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    h.update(f"{deflection}:v2".encode())
+    h.update(f"{deflection}:v3".encode())
     return step.with_name(step.stem + f".{h.hexdigest()[:16]}.mesh.npz")
 
 
@@ -109,14 +111,16 @@ def load(step_path: str, deflection_mm: float = 0.01, skip: tuple[str, ...] = ("
         keys = [str(k) for k in z["keys"]]
         mats = {k: _material_from_row(row) for k, row in zip(keys, z["mats"])}
         return PartsMesh(z["positions"], z["normals"], z["indices"], keys, z["groups"], mats,
-                         [str(d) for d in z["designators"]])
+                         [str(d) for d in z["designators"]],
+                         [tuple(int(v) for v in row) for row in z["stats"]])
     mesh = _convert(step, deflection_mm, skip)
     if cpath:
         rows = np.array([_material_row(mesh.materials[k]) for k in mesh.material_keys], "<f4")
         np.savez_compressed(cpath, positions=mesh.positions, normals=mesh.normals,
                             indices=mesh.indices, groups=mesh.groups,
                             keys=np.array(mesh.material_keys), mats=rows,
-                            designators=np.array(mesh.designators))
+                            designators=np.array(mesh.designators),
+                            stats=np.array(mesh.part_stats, np.int64).reshape(-1, 3))
     return mesh
 
 
@@ -240,7 +244,10 @@ def _convert(step: Path, deflection: float, skip: tuple[str, ...]) -> PartsMesh:
         trsf = loc.Transformation()
         rot = np.array([[trsf.Value(r, c) for c in (1, 2, 3)] for r in (1, 2, 3)])
         move = np.array([trsf.Value(r, 4) for r in (1, 2, 3)])
+        tally[0] += 1
         for p, q, t, k in faces_of(lab, role, col):
+            tally[1] += len(t)
+            tally[2].add(k)
             pos.append(p @ rot.T + move)
             nrm.append(q @ rot.T)
             idx.append(t + count[0])
@@ -262,6 +269,9 @@ def _convert(step: Path, deflection: float, skip: tuple[str, ...]) -> PartsMesh:
             st.GetReferredShape_s(ref, target)
             walk(target, loc.Multiplied(st.GetLocation_s(ref)), own_role, colour(lab=ref) or own)
 
+    # Solids, triangles and materials of the part being walked.
+    tally: list = [0, 0, set()]
+    stats: list[tuple[int, int, int]] = []
     roots = TDF_LabelSequence()
     st.GetFreeShapes(roots)
     for r in range(1, roots.Length() + 1):
@@ -278,18 +288,34 @@ def _convert(step: Path, deflection: float, skip: tuple[str, ...]) -> PartsMesh:
             if part in skip:
                 continue
             designators.append(part)
+            tally[:] = [0, 0, set()]
             walk(target, st.GetLocation_s(ref), "", None)
+            stats.append((tally[0], tally[1], len(tally[2])))
 
     if not pos:
         empty = np.zeros((0, 3))
         return PartsMesh(empty, empty, np.zeros((0, 3), np.int64), [], np.zeros(0, np.int64), {},
-                         designators)
+                         designators, stats)
     positions = np.vstack(pos).astype("<f4")
     normals = np.vstack(nrm)
     lengths = np.linalg.norm(normals, axis=1, keepdims=True)
     normals = (normals / np.where(lengths > 0, lengths, 1)).astype("<f4")
     return PartsMesh(positions, normals, np.vstack(idx).astype("<u4"), keys,
-                     np.concatenate(grp), mats, designators)
+                     np.concatenate(grp), mats, designators, stats)
+
+
+def model_findings(mesh: Optional[PartsMesh], fitted: list[str]) -> dict[str, Any]:
+    """What about the parts' 3D models holds a picture back: fitted parts
+    with no model in the export, and models that are placeholders (one or
+    two solids in one material, as an extruded body or a plain box is)."""
+    have = set(mesh.designators) if mesh is not None else set()
+    missing = sorted(d for d in fitted if d and d not in have)
+    plain = []
+    if mesh is not None:
+        for des, (solids, _tris, mats) in zip(mesh.designators, mesh.part_stats):
+            if solids <= 2 and mats <= 1:
+                plain.append(des)
+    return {"parts_without_a_model": missing, "placeholder_models": sorted(plain)}
 
 
 def triangle_count(mesh: PartsMesh) -> int:
