@@ -332,6 +332,10 @@ def _close_dir_watcher(handle) -> None:
         pass
 
 
+#: Set by Claude Code in every process it starts; one per Claude process.
+CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
+
+
 def _claude_session_tag() -> str:
     """Eight hex digits naming the Claude session this server runs under.
 
@@ -339,13 +343,22 @@ def _claude_session_tag() -> str:
     the two-tool surface), and the reload proxy restarts its child, so a
     random tag per process gave one session several. Altium then refused
     a session's own write as another session's (measured 2026-11-05: a
-    repour through one server, the DRC after it through the other). The
-    tag is made from the nearest Claude process above this one, its pid
-    and start time, so every server of a session shares it. Random when
-    no Claude process is found (a script, a test).
+    repour through one server, the DRC after it through the other).
+
+    The tag is made from CLAUDE_CODE_MESSAGING_SOCKET, which Claude Code
+    gives every process it starts and which names its own process: the
+    servers, and anything its shell starts, inherit it however they were
+    launched. Walking up to the Claude process missed a server started by
+    a script whose launcher had exited (the chain of parents ends there),
+    and Altium refused that session's writes as another's. Without the
+    variable (another client), the nearest Claude process above this one,
+    its pid and start time; random when there is none (a script, a test).
     """
+    import hashlib
+    socket = os.environ.get(CLAUDE_SOCKET_ENV, "").strip()
+    if socket:
+        return hashlib.sha1(f"socket:{socket}".encode()).hexdigest()[:8]
     try:
-        import hashlib
         import psutil
         for parent in psutil.Process().parents():
             name = parent.name().lower()

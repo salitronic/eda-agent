@@ -175,6 +175,7 @@ class _Proc:
 
 def _tag_under(monkeypatch, chain):
     import psutil
+    monkeypatch.delenv(ab.CLAUDE_SOCKET_ENV, raising=False)
     monkeypatch.setattr(psutil, "Process", lambda: _Proc(1, "python.exe", parents=chain))
     return ab._claude_session_tag()
 
@@ -189,6 +190,25 @@ def test_every_server_of_one_claude_session_shares_its_tag(monkeypatch):
     other = _tag_under(monkeypatch, [_Proc(5, "eda-agent.exe"), _Proc(600, "claude.exe")])
     assert full == proxied != other
     assert re.fullmatch(r"[0-9a-f]{8}", full)
+
+
+def test_a_server_whose_launcher_exited_keeps_its_sessions_tag(monkeypatch):
+    """A server started by a script, the script's launcher gone: the walk
+    up the parents never reaches Claude, and the session's own writes were
+    refused as another session's. The variable Claude Code passes down
+    names the session wherever the server sits."""
+    import psutil
+    monkeypatch.setattr(psutil, "Process", lambda: _Proc(1, "python.exe",
+                                                         parents=[_Proc(7, "bash.exe")]))
+    monkeypatch.setenv(ab.CLAUDE_SOCKET_ENV, r"\\.\pipe\LOCAL\cc-msg-1")
+    orphan = ab._claude_session_tag()
+    monkeypatch.setattr(psutil, "Process", lambda: _Proc(1, "python.exe", parents=[
+        _Proc(2, "eda-agent.exe"), _Proc(500, "claude.exe")]))
+    attached = ab._claude_session_tag()
+    monkeypatch.setenv(ab.CLAUDE_SOCKET_ENV, r"\\.\pipe\LOCAL\cc-msg-2")
+    other = ab._claude_session_tag()
+    assert orphan == attached != other
+    assert re.fullmatch(r"[0-9a-f]{8}", orphan)
 
 
 def test_a_server_outside_claude_gets_its_own_tag(monkeypatch):

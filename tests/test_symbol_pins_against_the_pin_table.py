@@ -198,29 +198,29 @@ def test_a_name_wrapped_over_lines_of_its_cell_passes_with_its_number(tmp_path):
     # lines of their own and the number after them (or before them).
     pdf = tmp_path / "soc.pdf"
     pdf.write_bytes(_pdf([["Pin Number Order Information", "Pin Name Pin Pin Name Pin",
-                           "VSS_183 T27",
-                           "MIPI_CSI1_CLK1N AM32 I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/",
-                           "SPI0_CS1_M0/GPIO0_B7_d",
+                           "VSS_18 T27",
+                           "CAM_CLKN AM32 AUD_FS_A/PWM2_B/BUS_TX_C/",
+                           "SER_CS1_D/IO_P7_d",
                            "T28",
-                           "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UA",
-                           "RT6_RX_M1/GPIO1_A0_d",
-                           "A24 VSS_36 D24",
+                           "LINK_REQN_B/TWI_SDA_C/UA",
+                           "RT3_RX_A/IO_Q0_d",
+                           "A24 VSS_3X D24",
                            "15 MOSI/SDA SPI MOSI",
                            "16 MISO/",
-                           "PWRCRTL3",
-                           "SPI MISO. PWRCRTL3 control"]]))
+                           "PWRCTL2",
+                           "SPI MISO. PWRCTL2 control"]]))
     ds = {"path": str(pdf), "page": "1"}
     ok = check_pin_table(ds, _pins(
-        ("T28", "I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/SPI0_CS1_M0/GPIO0_B7_d"),
-        ("A24", "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UART6_RX_M1/GPIO1_A0_d"),
-        ("D24", "VSS_36"), ("T27", "VSS_183"), ("16", "MISO/PWRCRTL3")))
+        ("T28", "AUD_FS_A/PWM2_B/BUS_TX_C/SER_CS1_D/IO_P7_d"),
+        ("A24", "LINK_REQN_B/TWI_SDA_C/UART3_RX_A/IO_Q0_d"),
+        ("D24", "VSS_3X"), ("T27", "VSS_18"), ("16", "MISO/PWRCTL2")))
     assert ok["ok"], ok
     # The number has to touch the name: a neighbouring row's wrapped name
     # does not pass for another pin, nor the other way round.
     wrong = check_pin_table(ds, _pins(
-        ("AM32", "PCIE30X1_1_CLKREQN_M2/I2C2_SDA_M4/UART6_RX_M1/GPIO1_A0_d"),
-        ("T27", "I2S1_LRCK_M1/PWM0_M0/CAN0_TX_M0/SPI0_CS1_M0/GPIO0_B7_d"),
-        ("15", "MISO/PWRCRTL3")))
+        ("AM32", "LINK_REQN_B/TWI_SDA_C/UART3_RX_A/IO_Q0_d"),
+        ("T27", "AUD_FS_A/PWM2_B/BUS_TX_C/SER_CS1_D/IO_P7_d"),
+        ("15", "MISO/PWRCTL2")))
     assert [m["pin"] for m in wrong["missing"]] == ["AM32", "T27", "15"]
 
 
@@ -229,11 +229,11 @@ def test_a_name_split_by_a_page_break_reads_on_past_the_running_heads(tmp_path):
     foot = ["Acme Technology Co.,Ltd"]
     pdf = tmp_path / "soc.pdf"
     pdf.write_bytes(_pdf([
-        [*head, "Pin Number Order", "VSS_1 A1", "I2S1_SDI0_M1/GPU_AVS/PERSTN_M0/G", "P30", *foot],
-        [*head, "PIO0_C5_u", "VSS_2 A2", *foot],
+        [*head, "Pin Number Order", "VSS_1 A1", "AUD_DIN_A/CORE_AVS/RSTN_B/I", "P30", *foot],
+        [*head, "O_R5_u", "VSS_2 A2", *foot],
         [*head, "VSS_3 A3", *foot]]))
     out = check_pin_table({"path": str(pdf), "page": "1-3"}, _pins(
-        ("P30", "I2S1_SDI0_M1/GPU_AVS/PERSTN_M0/GPIO0_C5_u"), ("A2", "VSS_2")))
+        ("P30", "AUD_DIN_A/CORE_AVS/RSTN_B/IO_R5_u"), ("A2", "VSS_2")))
     assert out["ok"], out
 
 
