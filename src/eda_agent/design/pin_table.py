@@ -28,8 +28,15 @@ _DROP = re.compile(r"[\\#/~!_\s̅‾*']")
 _SPLIT = re.compile(r"[\s,;()\[\]|]+")
 #: Words a subscripted name can be printed as: V, CC, LO for V_CC_LO.
 _SUBSCRIPT_WORDS = 3
-#: A pin number or ball name standing alone: 7, 12, A1, AB12.
-_ANY_NUMBER = re.compile(r"(?<![A-Za-z0-9.])[A-Z]{0,2}\d{1,3}(?![A-Za-z0-9.])")
+#: What may follow a pin number: not a letter or digit, and a period only
+#: as list numbering ("1. VIO"), never as a decimal point ("1.8 V").
+_AFTER_NUMBER = r"(?![A-Za-z0-9]|\.\d)"
+#: A pin number or ball name standing alone: 7, 12, A1, AB12, "1.".
+_ANY_NUMBER = re.compile(r"(?<![A-Za-z0-9.])[A-Z]{0,2}\d{1,3}" + _AFTER_NUMBER)
+
+
+#: A line that is a pin number or ball name and nothing else.
+_ONLY_NUMBER = re.compile(r"\s*[A-Z]{0,2}\d{1,3}\s*\.?\s*")
 
 
 #: Pins read from a library being imported (EasyEDA, KiCad), by the id the
@@ -43,7 +50,7 @@ def norm(name: str) -> str:
 
 
 def _number_in(number: str, line: str) -> bool:
-    return re.search(rf"(?<![A-Za-z0-9.]){re.escape(number)}(?![A-Za-z0-9.])",
+    return re.search(rf"(?<![A-Za-z0-9.]){re.escape(number)}{_AFTER_NUMBER}",
                      line, re.I) is not None
 
 
@@ -114,7 +121,7 @@ def _wrapped_hit(number: str, name: str, tokens: list[tuple[str, str, int]],
         got, end, matched, straddled = "", start, False, False
         while end < len(tokens) and tokens[end][2] - line0 < _WRAP_LINES + 1:
             raw, piece, line = tokens[end]
-            if raw.upper() == num and not straddled and got \
+            if raw.rstrip(".").upper() == num and not straddled and got \
                     and (end == 0 or tokens[end - 1][2] != line):
                 # The row's own line, between two pieces of its name.
                 straddled = True
@@ -132,7 +139,7 @@ def _wrapped_hit(number: str, name: str, tokens: list[tuple[str, str, int]],
             continue                       # none, or on one line: the plain check's
         before = tokens[start - 1][0] if start else ""
         after = tokens[end + 1][0] if end + 1 < len(tokens) else ""
-        if straddled or num in (before.upper(), after.upper()):
+        if straddled or num in (before.rstrip(".").upper(), after.rstrip(".").upper()):
             return " / ".join(lines[line0:tokens[end][2] + 1])[:120]
     return None
 
@@ -263,15 +270,26 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
             "not build the symbol another way")}
     # A row wrapped onto the next line: only a line that prints no number of
     # its own joins the next, so one row's number never meets the next name.
-    pairs = [*lines, *(f"{a} {b}" for a, b in zip(lines, lines[1:])
-                       if not _ANY_NUMBER.search(a))]
+    wrapped = [f"{a} {b}" for a, b in zip(lines, lines[1:]) if not _ANY_NUMBER.search(a)]
+    # A package drawing labels a pin as its number alone, the name on the
+    # line after. A number labelled so is read with its label and never
+    # with the wrapped rows: joined the other way, each name in such a
+    # drawing would meet the next pin's number.
+    labels: dict[str, list[str]] = {}
+    for a, b in zip(lines, lines[1:]):
+        # One pin's name: a word, or two for a subscript ("V BAT"); a
+        # grid's column number over a row of names is not a label.
+        if _ONLY_NUMBER.fullmatch(a) and not b.strip().isdigit() and len(b.split()) <= 2:
+            labels.setdefault(a.strip().rstrip(".").strip().upper(), []).append(f"{a} {b}")
     tokens = _tokens(lines)
-    pad_rows = _exposed_pad_rows(lines)
+    pad_rows = _exposed_pad_rows([*lines, *wrapped])
     found, missing = [], []
     for pin in pins:
         number = str(pin.get("designator", "")).strip()
         name = str(pin.get("name", "")).strip()
-        hit = next((ln for ln in pairs
+        label = labels.get(number.upper())
+        rows = [*lines, *label] if label else [*lines, *wrapped]
+        hit = next((ln for ln in rows
                     if number and _number_in(number, ln) and _name_in(name, ln)), None)
         if hit is None:
             hit = _wrapped_hit(number, name, tokens, lines)

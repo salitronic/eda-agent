@@ -251,3 +251,36 @@ def test_the_exposed_pad_the_table_lists_without_a_number_passes_once(tmp_path):
     assert not check_pin_table(ds, _pins(("68", "EPAD")))["ok"]
     two = check_pin_table(ds, _pins(("69", "EPAD"), ("70", "EP")))
     assert [m["pin"] for m in two["missing"]] == ["70"]
+
+
+def test_pins_numbered_as_a_list_round_a_drawing_pass(tmp_path):
+    # Pins printed as "1. VIN" round the package drawing, two to a line,
+    # a subscripted name split in two; "1.8 V" is a voltage, not pin 1.
+    pdf = tmp_path / "rtc.pdf"
+    pdf.write_bytes(_pdf([["Terminal connections", "1. VIN", "6. V BKP",
+                           "2. CLK 5. VREG", "3. DAT 4 . GND",
+                           "Supply 1.8 V to 5.5 V"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(("1", "VIN"), ("2", "CLK"), ("3", "DAT"),
+                                   ("4", "GND"), ("5", "VREG"), ("6", "VBKP")))
+    assert ok["ok"], ok
+    wrong = check_pin_table(ds, _pins(("1", "VBKP"), ("6", "VIN")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "6"]
+
+
+def test_a_drawing_that_labels_each_pin_number_then_name_passes(tmp_path):
+    # A package drawing gives each pin its number alone and its name on the
+    # next line; a ball map's column number sits over a row of names; the
+    # exposed pad is a note without a number.
+    pdf = tmp_path / "ctl.pdf"
+    pdf.write_bytes(_pdf([["Pin Assignment", "Pin Map", "1",
+                           "LA2 VIN VDD", "1 2 3",
+                           "2", "VIN", "1", "LA2", "3", "VDD", "4", "IRQ_N",
+                           "5", "LB1", "Connect to GND for", "Thermal"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(("1", "LA2"), ("2", "VIN"), ("3", "VDD"),
+                                   ("4", "IRQ_N"), ("5", "LB1"), ("6", "GND")))
+    assert ok["ok"], ok
+    # Read name-then-number, every name here would meet the next number.
+    wrong = check_pin_table(ds, _pins(("1", "VIN"), ("2", "VDD"), ("3", "IRQ_N")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "2", "3"]
