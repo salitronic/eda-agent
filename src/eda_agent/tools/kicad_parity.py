@@ -167,6 +167,7 @@ COVERED: dict[str, str] = {
     "pcb_special_strings": "kicad_get_text_variables",
     "pcb_render_svg": "kicad_export_pcb",
     "pcb_render_png": "kicad_render_3d",
+    "pcb_render_3d": "kicad_render_3d",
     "pcb_export_coordinates": "kicad_export_pos",
     "pcb_export_component_3d": "kicad_export_step",
     "pcb_gerber_options": "kicad_export_gerbers",

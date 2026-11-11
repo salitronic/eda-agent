@@ -178,6 +178,167 @@ def register_render_tools(mcp):
         }
 
     @mcp.tool()
+    async def pcb_render_3d(
+        view: str = "iso",
+        output_path: str = "",
+        width: int = 1600,
+        height: int = 1000,
+        quality: str = "normal",
+        azimuth: Optional[float] = None,
+        elevation: Optional[float] = None,
+        zoom: float = 1.0,
+        mask_color: str = "green",
+        finish: str = "enig",
+        silk_color: str = "white",
+        background: str = "studio",
+        show_components: bool = True,
+        depth_of_field: float = 0.5,
+    ) -> dict[str, Any]:
+        """A photographic picture of the active board, raytraced: solder
+        mask over raised copper, finish, silkscreen, drills, edges, the
+        parts with their solder joints, studio light, shadows and a lens.
+
+        Read-only. The parts come from Altium's STEP export of the board,
+        written to the renders folder and read with CadQuery's kernel
+        (``pip install eda-agent[models3d]``). Angled views need the path
+        tracer (``pip install eda-agent[render3d]``); top and bottom work
+        without it, flat-shaded.
+
+        Args:
+            view: top, bottom, iso, iso_back, iso_bottom, front, back,
+                left or right.
+            output_path: PNG path; default the workspace renders folder.
+            width, height: Pixels.
+            quality: draft (fast), normal or high (smooth shadows).
+            azimuth, elevation: Degrees, overriding the view's camera:
+                azimuth 0 looks along +Y, elevation 90 straight down.
+            zoom: Above 1 frames closer.
+            mask_color: green, black, blue, red, white, purple, yellow,
+                matte_black or matte_green.
+            finish: enig, hasl, osp or bare.
+            silk_color: white, black or yellow.
+            background: studio (a white sweep), charcoal (the dark fibre
+                mat of a photo bench), desk (a wood worktop), transparent,
+                or a colour like "#202428".
+            show_components: Draw the fitted parts and their solder.
+            depth_of_field: 0 all sharp; 0.5 (default) and up blur what
+                is nearer or farther than the board's middle, more as
+                ``zoom`` comes closer, as a macro lens does.
+
+        Returns:
+            ``ok``, ``path``, ``renderer``, ``seconds``, ``board_mm``,
+            ``thickness_mm``, ``parts`` (how many were drawn) and
+            ``notes``.
+        """
+        import asyncio
+        import time
+
+        from .. import render3d
+
+        look = render3d.Look(mask=mask_color, finish=finish, silk=silk_color)
+        problem = look.problem()
+        if problem:
+            return {"ok": False, "reason": problem}
+        if quality not in render3d.QUALITY:
+            return {"ok": False, "reason": f"quality is one of {', '.join(render3d.QUALITY)}"}
+        if view not in render3d.VIEWS:
+            return {"ok": False, "reason": f"view is one of {', '.join(render3d.VIEWS)}"}
+        if not (16 <= width <= 8000 and 16 <= height <= 8000):
+            return {"ok": False, "reason": "width and height are 16 to 8000 pixels"}
+        if not 0 <= depth_of_field <= 2:
+            return {"ok": False, "reason": "depth_of_field is 0 to 2"}
+        try:
+            render3d.engine.background_settings(background)
+        except ValueError as e:
+            return {"ok": False, "reason": str(e)}
+        started = time.monotonic()
+        bridge = get_bridge()
+        geometry = await bridge.send_command_async("generic.get_pcb_geometry", {}, timeout=180.0)
+        if not isinstance(geometry, dict) or not geometry.get("outline"):
+            return {"ok": False, "reason": "the active board gave no outline"}
+        stackup = await bridge.send_command_async("pcb.get_layer_stackup", {}, timeout=60.0)
+        polygons = await bridge.send_command_async("pcb.get_polygons", {}, timeout=60.0)
+        pours = []
+        for p in (polygons or {}).get("polygons") or []:
+            if p.get("layer") in ("TopLayer", "BottomLayer") and p.get("poured"):
+                pours.append(await bridge.send_command_async(
+                    "pcb.pour_copper", {"index": str(p["index"])}, timeout=120.0))
+        notes: list[str] = []
+        step_path: Optional[Path] = None
+        if show_components:
+            step_path, why = await _export_parts(bridge)
+            if why:
+                notes.append(why)
+
+        def work():
+            parts = None
+            if step_path is not None:
+                parts = render3d.parts.load(str(step_path))
+                _prune_part_caches(step_path)
+            scene = render3d.build(geometry, stackup, pours, look,
+                                   soldered=parts.designators if parts else ())
+            scene.parts = parts
+            img, info = render3d.render(
+                scene, render3d.view_for(view, azimuth, elevation, zoom, depth_of_field),
+                width, height, quality, background)
+            return scene, img, info
+
+        try:
+            scene, img, info = await asyncio.to_thread(work)
+        except (RuntimeError, ValueError) as e:
+            return {"ok": False, "reason": str(e)}
+        target = Path(output_path) if output_path else _renders_dir() / f"board_{view}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        img.save(target)
+        return {
+            "ok": True, "path": str(target), **info,
+            "seconds": round(time.monotonic() - started, 1),
+            "board_mm": [round(v, 2) for v in scene.size_mm],
+            "thickness_mm": round(scene.thickness_mm, 3),
+            "parts": len(scene.parts.designators) if scene.parts is not None else 0,
+            "notes": notes + scene.notes + ([info["note"]] if info.get("note") else []),
+        }
+
+    async def _export_parts(bridge) -> tuple[Optional[Path], str]:
+        """The board's parts as STEP, from Altium's exporter, or why not."""
+        from .. import render3d
+        from ..bridge.exceptions import AltiumError
+
+        if not render3d.parts.available():
+            return None, "parts not drawn: reading the STEP needs pip install eda-agent[models3d]"
+        front = await bridge.send_command_async(
+            "application.get_active_document", {"front": "true"})
+        if not str((front or {}).get("file_path") or "").lower().endswith(".pcbdoc"):
+            return None, "parts not drawn: the document in front is not a board"
+        target = _renders_dir() / "parts" / "board.step"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            try:
+                target.unlink()
+            except OSError as e:
+                return None, f"parts not drawn: the last export could not be replaced: {e}"
+        try:
+            api = await bridge.send_command_async(
+                "project.export_step_api", {"output_path": str(target)}, timeout=600.0) or {}
+        except AltiumError as e:
+            return None, f"parts not drawn: the STEP export failed: {e}"
+        if not api.get("generated") or not target.exists():
+            return None, f"parts not drawn: the STEP export wrote nothing ({api.get('reason') or 'no file'})"
+        return target, ""
+
+    def _prune_part_caches(step_path: Path) -> None:
+        """Keep only the cache of the board just exported."""
+        from .. import render3d
+
+        keep = render3d.parts.cache_path(step_path).name
+        for old in step_path.parent.glob(step_path.stem + ".*.mesh.npz"):
+            if old.name != keep:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+
+    @mcp.tool()
     async def design_visual_review(
         target: str = "auto",
         output_path: Optional[str] = None,

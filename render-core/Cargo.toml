@@ -1,0 +1,26 @@
+[package]
+name = "eda-agent-render"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Path-tracing core for eda-agent's board renders"
+repository = "https://github.com/salitronic/eda-agent"
+publish = false
+
+[lib]
+name = "eda_agent_render"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"], optional = true }
+rayon = "1.10"
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
