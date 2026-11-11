@@ -502,7 +502,7 @@ _PAD_CALL_FIELDS = (
     "hole_width", "hole_rotation", "plated", "paste_expansion",
     "paste_manual", "mask_expansion", "mask_bottom_expansion",
     "mask_separate", "mask_manual", "mask_from_hole_edge",
-    "paste_top_enabled", "x", "y", "new_name")
+    "paste_top_enabled", "x", "y", "new_name", "clear_name")
 
 
 def _units_refusal(units: str) -> dict[str, Any] | None:
@@ -8042,6 +8042,7 @@ def register_library_tools(mcp):
         x: Optional[float] = None,
         y: Optional[float] = None,
         new_name: str = "",
+        clear_name: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint, only the fields
         given, each read back. Pick pads by ``pad_name`` (every pad of
@@ -8094,6 +8095,9 @@ def register_library_tools(mcp):
                 Not before Altium Designer 25.
             x, y: Move the pad from the footprint origin; one pad only.
             new_name: Renumber the pad.
+            clear_name: True leaves the pad without a name: a pad the part
+                does not use (an unused ball of a standard BGA), which
+                lib_link_footprint leaves out of its pin and pad check.
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note`` and
@@ -8139,6 +8143,10 @@ def register_library_tools(mcp):
             return {"success": False,
                     "error": "paste_manual=False hands the paste to the rule; "
                              "a paste value with it would be ignored"}
+        if clear_name and new_name.strip():
+            return {"success": False,
+                    "error": "clear_name leaves the pad without a name, new_name "
+                             "gives it one: give one of them"}
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "pad_name": pad_name,
                                   "library_path": library_path}
@@ -8159,6 +8167,8 @@ def register_library_tools(mcp):
                 params[key] = format_length(value)
         if new_name.strip():
             params["new_name"] = new_name.strip()
+        if clear_name:
+            params["clear_name"] = "true"
         for key, value in (("rotation", rotation),
                            ("hole_rotation", hole_rotation)):
             if value is not None:
@@ -8204,7 +8214,7 @@ def register_library_tools(mcp):
         paste_expansion, paste_manual, mask_expansion,
         mask_bottom_expansion, mask_separate, mask_manual,
         mask_from_hole_edge, paste_top_enabled, x, y (a move, from the
-        footprint origin) and new_name. ``x_mm`` / ``y_mm`` as the read
+        footprint origin), new_name and clear_name (True: no name). ``x_mm`` / ``y_mm`` as the read
         gave them guard a row: a pad that has moved refuses the call.
         Every row is checked before anything is written. Pads are
         matched by id, never by name, so renumbering (3 -> 5, 5 -> 7)
@@ -8236,7 +8246,7 @@ def register_library_tools(mcp):
         numbers = {"rotation", "hole_rotation", "corner_radius_pct",
                    "x_mm", "y_mm"}
         flags = {"plated", "paste_manual", "mask_separate", "mask_manual",
-                 "mask_from_hole_edge", "paste_top_enabled"}
+                 "mask_from_hole_edge", "paste_top_enabled", "clear_name"}
         words = {"id", "shape", "stack_mode", "hole_type", "new_name"}
         known = lengths | numbers | flags | words
         ops = []

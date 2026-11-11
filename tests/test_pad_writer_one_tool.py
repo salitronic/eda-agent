@@ -111,3 +111,34 @@ def test_every_field_the_id_writer_takes_can_be_given_by_id():
     assert "rows" in inspect.signature(single(fn)).parameters
     expected = props - {"pad_name", "selected", "items"}
     assert expected == set(library._PAD_CALL_FIELDS)
+
+
+def test_a_pad_name_can_be_cleared_by_name_or_by_id(bridge):
+    # The unused balls of a standard BGA footprint carry no name, so the
+    # pin to pad comparison leaves them out.
+    _call(footprint_name="F", pad_name="NC", clear_name=True)
+    command, params = bridge.sent[0]
+    assert command == "library.set_pad_properties"
+    assert params["pad_name"] == "NC" and params["clear_name"] == "true"
+    _call(footprint_name="F", items=[{"id": "A1", "clear_name": True},
+                                     {"id": "A2", "clear_name": True}])
+    command, params = bridge.sent[1]
+    assert command == "library.set_pad_geometry"
+    assert params["rows"] == "id=A1;clear_name=true~~id=A2;clear_name=true"
+
+
+def test_clearing_and_renaming_one_pad_together_is_refused(bridge):
+    out = _call(footprint_name="F", pad_name="NC", clear_name=True, new_name="5")
+    assert out["success"] is False and "one of them" in out["error"]
+    assert not bridge.sent
+
+
+def test_the_script_clears_the_name_and_refuses_it_with_a_new_name():
+    from pathlib import Path
+    from tests.pascal_source import functions, strip_comments
+    code = functions(strip_comments((Path(__file__).resolve().parents[1]
+                                     / "scripts" / "altium" / "Library.pas")
+                                    .read_text(encoding="utf-8", errors="replace")))
+    assert "PadArg(Src, IsOp, 'clear_name')" in code["ApplyPadEdit"]
+    assert "Pad.Name := '';" in code["ApplyPadEdit"]
+    assert "'clear_name'" in code["PadEditProblem"]

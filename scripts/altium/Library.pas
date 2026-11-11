@@ -13165,6 +13165,14 @@ Begin
         Result := ('x and y are numbers from the footprint origin; nothing was changed');
         Exit;
     End;
+    If (LowerCase(PadArg(Src, IsOp, 'clear_name')) = 'true')
+        And (Trim(PadArg(Src, IsOp, 'new_name')) <> '') Then
+    Begin
+        Code := 'BAD_PARAM';
+        Result := ('clear_name leaves the pad without a name, new_name gives it '
+            + 'one: give one of them; nothing was changed');
+        Exit;
+    End;
     MaskManualStr := LowerCase(PadArg(Src, IsOp, 'mask_manual'));
     PasteManualStr := LowerCase(PadArg(Src, IsOp, 'paste_manual'));
     If (MaskManualStr = 'false') And ((PadArg(Src, IsOp, 'mask_expansion') <> '')
@@ -13297,6 +13305,15 @@ Begin
         Try
             Pad.Name := NewName;
             If Pad.Name <> NewName Then Ok := False;
+        Except Ok := False; End;
+    End;
+    { No name: a pad the part does not use, such as an unused ball of a   }
+    { standard BGA, which the pin to pad comparison leaves out.           }
+    If LowerCase(PadArg(Src, IsOp, 'clear_name')) = 'true' Then
+    Begin
+        Try
+            Pad.Name := '';
+            If Pad.Name <> '' Then Ok := False;
         Except Ok := False; End;
     End;
     If HoleTypeStr <> '' Then
