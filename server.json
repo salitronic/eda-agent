@@ -3,7 +3,7 @@
   "name": "io.github.salitronic/eda-agent",
   "title": "eda-agent",
   "description": "Drive a live Altium Designer session: schematic, PCB and library tools. KiCad and EasyEDA too.",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "websiteUrl": "https://github.com/salitronic/eda-agent",
   "repository": {
     "url": "https://github.com/salitronic/eda-agent",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "eda-agent",
-      "version": "0.8.1",
+      "version": "0.8.2",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
