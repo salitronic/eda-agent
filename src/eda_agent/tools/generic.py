@@ -378,6 +378,22 @@ async def _send_rule_aware(tool: str, object_types: list[str],
     return await logged_rule_edit(get_bridge(), tool, params, run)
 
 
+def _hex_to_bgr(colour: str) -> Optional[int]:
+    """"#RRGGBB" as Altium's packed blue-green-red integer; None if malformed."""
+    hexpart = colour.strip().lstrip("#")
+    if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+        return None
+    r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+    return r_ | (g_ << 8) | (b_ << 16)
+
+
+def _bgr_to_hex(bgr: Any) -> Any:
+    """Altium's packed blue-green-red integer as "#RRGGBB"; else unchanged."""
+    if not isinstance(bgr, int) or isinstance(bgr, bool) or not 0 <= bgr <= 0xFFFFFF:
+        return bgr
+    return "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF)
+
+
 def _cursor_to_view_centre() -> bool:
     """Put Altium's 3D cursor on the middle of its view, where the 2D fit
     put the footprint. True when the view was found and told.
@@ -3894,12 +3910,20 @@ def register_generic_tools(mcp):
         text: str,
         align: str = "left",
         font_id: int = 0,
+        fill: str = "",
+        border_color: str = "",
+        text_color: str = "",
+        show_border: Optional[bool] = None,
+        text_margin: Optional[float] = None,
+        word_wrap: Optional[bool] = None,
+        clip_to_rect: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
         text. A newline, or a typed ``\\n``, becomes Altium's own line
-        break.
+        break. The style is set before the frame is placed, so a table of
+        filled cells needs no search and restyle afterwards.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
@@ -3907,23 +3931,51 @@ def register_generic_tools(mcp):
             align: Horizontal alignment "left", "center", or "right".
             font_id: The frame's font. 0 takes the font the sheet's text
                 frames already use, else its net labels' font.
+            fill: "#RRGGBB" fills the frame with that colour; empty leaves
+                it unfilled.
+            border_color, text_color: "#RRGGBB"; empty keeps the default.
+            show_border, word_wrap, clip_to_rect: None keeps the default
+                (all three on).
+            text_margin: Gap between border and text in mils; None keeps
+                the default.
 
         Returns:
-            The placement: the frame's corners and the ``font_id`` it got.
+            The placement: the frame's corners, the ``font_id`` it got and
+            ``style`` read back off the frame (colours as "#RRGGBB").
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.place_text_frame",
-            {
-                "x1": _mils(x1),
-                "y1": _mils(y1),
-                "x2": _mils(x2),
-                "y2": _mils(y2),
-                "text": text,
-                "align": align,
-                "font_id": str(int(font_id)),
-            },
-        )
+        params: dict[str, Any] = {
+            "x1": _mils(x1),
+            "y1": _mils(y1),
+            "x2": _mils(x2),
+            "y2": _mils(y2),
+            "text": text,
+            "align": align,
+            "font_id": str(int(font_id)),
+        }
+        for key, value in (("area_color", fill), ("color", border_color),
+                           ("text_color", text_color)):
+            if value.strip():
+                bgr = _hex_to_bgr(value)
+                if bgr is None:
+                    return {"ok": False, "reason": f"{value!r} is not #RRGGBB"}
+                params[key] = str(bgr)
+        for key, flag in (("show_border", show_border), ("word_wrap", word_wrap),
+                          ("clip_to_rect", clip_to_rect)):
+            if flag is not None:
+                params[key] = "true" if flag else "false"
+        if text_margin is not None:
+            if text_margin < 0:
+                return {"ok": False, "reason": "text_margin is 0 or more"}
+            params["text_margin"] = _mils(text_margin)
+        reply = await get_bridge().send_command_async(
+            "generic.place_text_frame", params)
+        style = reply.get("style") if isinstance(reply, dict) else None
+        if isinstance(style, dict):
+            for key in ("area_color", "color", "text_color"):
+                if key in style:
+                    style[key + "_bgr"] = style[key]
+                    style[key] = _bgr_to_hex(style[key])
+        return reply
 
     @mcp.tool()
     async def sch_generate_toc(
