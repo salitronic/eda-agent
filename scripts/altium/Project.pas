@@ -6873,16 +6873,19 @@ Begin
         SchEndEdit(SchDoc, 'Edit');
     End;
 
-    { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
-      does SetModified + DoFileSave. WorkspaceManager:SaveAll doesn't
-      reach non-active sheets in our tests, so we don't rely on it. }
+    { THE SHEET IS ONLY MARKED, NOT WRITTEN (issue #326)  . MarkDocDirtyByPath }
+    { sets the modified flag and nothing more, as every write here does; a  }
+    { save at a checkpoint (app_save_all, proj_save) writes the sheet. This  }
+    { reply used to say "saved":true: measured on AD 25.8.1, an added, an    }
+    { updated and an existing Title parameter were all gone after closing  }
+    { the project without a save.                                          }
     MarkDocDirtyByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"action":"' + Action + '"' +
-        ',"saved":true' +
+        ',"saved":false,"pending_save":true' +
         ',"file_path":"' + EscapeJsonString(FilePath) +
         '","name":"' + EscapeJsonString(ParamName) +
         '","value":"' + EscapeJsonString(ParamValue) + '"}');
