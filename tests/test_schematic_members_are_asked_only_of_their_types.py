@@ -7,7 +7,7 @@ that have it.
 DelphiScript resolves a member on the object at run time. Asked of an
 object whose interface lacks it, the engine raises "Undeclared identifier"
 in a modal no Try catches, and the polling loop stops (issues #253, #267,
-#328). GetSchProperty and SetSchProperty read and wrote LineWidth, Style,
+#328, #330). GetSchProperty and SetSchProperty read and wrote LineWidth, Style,
 IOType, Alignment, Electrical, Width, PinLength, LibReference,
 SourceLibraryName, DesignItemId, ComponentDescription, CurrentPartID and
 PartCount on the base ISch_GraphicalObject with no type check, so a query

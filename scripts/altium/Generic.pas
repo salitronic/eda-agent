@@ -703,7 +703,8 @@ End;
 { The members below live on one interface each, not on the base             }
 { ISch_GraphicalObject. Asked of an object that lacks one, each raises        }
 { "Undeclared identifier" in a modal no Try catches and the polling loop      }
-{ stops: the same fault as IsSolid (issue #253) and XSize (issue #267).       }
+{ stops: the same fault as IsSolid (issue #253) and XSize (issue #267),      }
+{ here for the members those did not cover (issue #330).                       }
 { ALLOWLISTS, each holding every type this unit already reads or writes the  }
 { member on through a typed local, plus the types Altium builds on those     }
 { interfaces. Anything else answers unreadable / not written.                }
