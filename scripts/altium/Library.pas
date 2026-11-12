@@ -2391,10 +2391,11 @@ Begin
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
-{ The solder mask a new footprint via can be born with: optional fields on  }
-{ one add_footprint_vias op. Flags are true / false; expansions are lengths  }
-{ in the units of the call (negative allowed). Without them a via is created as   }
-{ before, and a farm then needed one set_via_properties call per via.        }
+{ The solder mask a new footprint via can be born with (issue #338):        }
+{ optional fields on one add_footprint_vias op. Flags are true / false;     }
+{ expansions are lengths in the units of the call (negative allowed).      }
+{ Without them a via is created as before, and a farm then needed one      }
+{ set_via_properties call per via.                                         }
 Function ViaMaskFieldsGiven(Op : String) : Boolean;
 Begin
     Result := (GetBatchField(Op, 'tenting_top') <> '')
@@ -2516,7 +2517,7 @@ End;
 { hole_size default as there). One PreProcess / PostProcess, one settle by   }
 { the dispatcher. A via whose hole is not inside its diameter is refused and }
 { counted in bad_size; a field that is not a number in bad_number.           }
-{ Optional mask fields per op (ViaMaskFieldsGiven): tenting_top,             }
+{ Optional mask fields per op (issue #338): tenting_top,                    }
 { tenting_bottom, mask_from_hole_edge, mask_separate (true / false),         }
 { mask_expansion, mask_bottom_expansion -- written as the via is made and    }
 { read back (ApplyViaMaskOp); masked counts the vias that took them all,     }

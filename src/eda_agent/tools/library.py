@@ -992,7 +992,7 @@ def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return "~~".join(ops), problems
 
 
-# Optional solder mask fields a via may be created with.
+# Optional solder mask fields a via may be created with (issue #338).
 _VIA_MASK_FLAGS = ("tenting_top", "tenting_bottom", "mask_from_hole_edge",
                    "mask_separate")
 _VIA_MASK_LENGTHS = ("mask_expansion", "mask_bottom_expansion")
