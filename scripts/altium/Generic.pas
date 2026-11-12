@@ -9678,7 +9678,17 @@ End;
 {         parameters 'Name=Value|Name=Value' (optional: a bare blanket);    }
 {         directive_x, directive_y (default: the first vertex, on the edge, }
 {         where Altium reads a blanket's directive from);                   }
-{         line_style (integer), collapsed (true/false).                      }
+{         line_style (integer), collapsed (true/false);                    }
+{         color, area_color (Altium's BGR integers). Without them the      }
+{         blanket takes the user's own blanket defaults (Preferences >     }
+{         Schematic > Defaults), as one drawn in the editor does:          }
+{         eCreate_Default gave a black border and an OPAQUE BLACK fill     }
+{         that hid every wire and label it enclosed (issue #317). A       }
+{         new object is drawn above what is already on the sheet and no    }
+{         scripted call reorders a sheet, so the fill is always written    }
+{         transparent. MEASURED on AD 25.8.1: an opaque blanket fill reads }
+{         back opaque, but is transparent after save and reopen, so an     }
+{         opaque one is not offered.                                       }
 Function Gen_PlaceBlanket(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
@@ -9686,10 +9696,13 @@ Var
     ParamSet : ISch_ParameterSet;
     Xs, Ys : TStringList;
     VertStr, ParamList, StyleStr, CollStr, DxStr, DyStr, DirJson : String;
+    ColorStr, AreaStr : String;
     DX, DY : Double;
     I : Integer;
 Begin
     VertStr := ExtractJsonValue(Params, 'vertices');
+    ColorStr := ExtractJsonValue(Params, 'color');
+    AreaStr := ExtractJsonValue(Params, 'area_color');
     ParamList := ExtractJsonValue(Params, 'parameters');
     StyleStr := ExtractJsonValue(Params, 'line_style');
     CollStr := LowerCase(ExtractJsonValue(Params, 'collapsed'));
@@ -9726,6 +9739,13 @@ Begin
                 'directive_x and directive_y must be numbers in mils. Nothing was placed.');
             Exit;
         End;
+        If ((ColorStr <> '') And (Not IsIntStr(ColorStr))) Or ((AreaStr <> '') And (Not IsIntStr(AreaStr))) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+                'color and area_color must be Altium colour integers (BGR, e.g. 255 = red). '
+                + 'Nothing was placed.');
+            Exit;
+        End;
 
         DX := StrToFloatDef(Xs[0], 0);
         DY := StrToFloatDef(Ys[0], 0);
@@ -9745,7 +9765,8 @@ Begin
             End;
         End;
 
-        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_Default);
+        { The user's blanket defaults, as the editor's Place > Blanket. }
+        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_GlobalCopy);
         If Blanket = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create blanket');
@@ -9763,6 +9784,15 @@ Begin
         Begin
             Try Blanket.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('Blanket.Collapsed'); End;
         End;
+        If ColorStr <> '' Then
+        Begin
+            Try Blanket.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Blanket.Color'); End;
+        End;
+        If AreaStr <> '' Then
+        Begin
+            Try Blanket.AreaColor := StrToIntDef(AreaStr, 0); Except NoteWriteFailed('Blanket.AreaColor'); End;
+        End;
+        Try Blanket.Transparent := True; Except NoteWriteFailed('Blanket.Transparent'); End;
 
         SchBeginEdit(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(Blanket);
@@ -9781,6 +9811,10 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{"placed":true,"vertices_count":' + IntToStr(Blanket.VerticesCount)
             + ',"vertices":"' + GetSchVertexProperty(Blanket, 'Vertices') + '"'
+            + ',"color":' + IntToStr(Blanket.Color)
+            + ',"area_color":' + IntToStr(Blanket.AreaColor)
+            + ',"transparent":' + BoolToJsonStr(Blanket.Transparent)
+            + ',"line_style":' + IntToStr(Blanket.LineStyle)
             + ',"directive":' + DirJson + '}');
     Finally
         Ys.Free;
