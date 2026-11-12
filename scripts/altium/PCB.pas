@@ -2639,6 +2639,10 @@ Var
     Count : Integer;
     HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
     BodyJson : String;
+    BodyMode, BodyList, HeightJson : String;
+    WantList : Boolean;
+    MaxOverall, BodyCount : Integer;
+    ParamMils, MaxMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -2646,6 +2650,18 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+
+    { body_heights: max (default) = the tallest 3D body per part; all = also }
+    { every body. Either way height_mils is guarded (ComponentGuardedHeight). }
+    BodyMode := LowerCase(Trim(ExtractJsonValue(Params, 'body_heights')));
+    If BodyMode = '' Then BodyMode := 'max';
+    If (BodyMode <> 'max') And (BodyMode <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_BODY_HEIGHTS',
+            'body_heights must be max or all, got "' + BodyMode + '"');
+        Exit;
+    End;
+    WantList := BodyMode = 'all';
 
     JsonItems := '';
     First := True;
@@ -2667,7 +2683,25 @@ Begin
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
         Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
-        Try HeightMils := CoordToMilsF(Comp.Height); Except HeightMils := 0; End;
+        Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
+        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount);
+        MaxMils := CoordToMilsF(MaxOverall);
+        If BodyCount > 0 Then
+        Begin
+            HeightMils := MaxMils;
+            HeightJson := '"height_source":"3d_bodies",'
+                + '"max_body_height_mils":' + FloatToJsonStr(MaxMils) + ','
+                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ',';
+        End
+        Else
+        Begin
+            HeightMils := ParamMils;
+            HeightJson := '"height_source":"component",'
+                + '"max_body_height_mils":null,"height_mismatch":false,';
+        End;
+        HeightJson := HeightJson + '"component_height_mils":' + FloatToJsonStr(ParamMils) + ','
+            + '"body_count":' + IntToStr(BodyCount) + ',';
+        If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
 
         { Bounding rectangle for collision/placement planning. Returns the    }
         { current axis-aligned bounding box in mils, accounting for the      }
@@ -2703,6 +2737,7 @@ Begin
             + '"footprint":"' + EscapeJsonString(Footprint) + '",'
             + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
             + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
+            + HeightJson
             + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
             + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '}'
