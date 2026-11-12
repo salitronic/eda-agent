@@ -6873,7 +6873,7 @@ Begin
         SchEndEdit(SchDoc, 'Edit');
     End;
 
-    { THE SHEET IS ONLY MARKED, NOT WRITTEN (issue #326)  . MarkDocDirtyByPath }
+    { THE SHEET IS ONLY MARKED, NOT WRITTEN (issue #326). MarkDocDirtyByPath   }
     { sets the modified flag and nothing more, as every write here does; a  }
     { save at a checkpoint (app_save_all, proj_save) writes the sheet. This  }
     { reply used to say "saved":true: measured on AD 25.8.1, an added, an    }
