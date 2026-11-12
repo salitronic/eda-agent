@@ -3240,6 +3240,8 @@ def register_generic_tools(mcp):
         directive_y: float | None = None,
         line_style: int | None = None,
         collapsed: bool | None = None,
+        color: int | None = None,
+        area_color: int | None = None,
     ) -> dict[str, Any]:
         """Place a blanket on the active schematic: a polygon whose directive
         applies to every net it encloses (a net class, a differential pair,
@@ -3254,12 +3256,17 @@ def register_generic_tools(mcp):
                 Altium reads a blanket's directive from.
             line_style: Outline style, as Altium's integer.
             collapsed: Draw the blanket collapsed.
+            color, area_color: Border and fill, Altium's BGR integers;
+                omitted, the user's blanket defaults. The fill is always
+                see-through: the blanket is drawn above what it encloses,
+                and Altium keeps no opaque blanket fill on save.
 
         Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
         Coverage: sch_get_blankets after a compile.
 
         Returns:
-            ``vertices`` and the ``directive`` read back.
+            ``vertices``, ``color``, ``area_color``, ``transparent``,
+            ``line_style`` and the ``directive`` read back.
         """
         if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
             return {"success": False, "error": {
@@ -3285,6 +3292,10 @@ def register_generic_tools(mcp):
             args["line_style"] = str(int(line_style))
         if collapsed is not None:
             args["collapsed"] = "true" if collapsed else "false"
+        if color is not None:
+            args["color"] = str(int(color))
+        if area_color is not None:
+            args["area_color"] = str(int(area_color))
         bridge = get_bridge()
         return await bridge.send_command_async("generic.place_blanket", args)
 
