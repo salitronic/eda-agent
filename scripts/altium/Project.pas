@@ -936,6 +936,11 @@ End;
 {                                                                             }
 { Both paths are now followed by a re-read of DM_Parameters, and the reply    }
 { carries what was READ, not what was asked for.                              }
+{                                                                             }
+{ The PROJECT FILE is what is saved. Adding a parameter does not mark the     }
+{ project modified, so saving only modified documents left it in memory and  }
+{ out of the .PrjPcb (AD 25.8.1), and wrote every other modified document of }
+{ the project, which nobody asked for.                                        }
 Function Proj_SetParameter(Params : String; RequestId : String) : String;
 Var
     ProjectPath, ParamName, ParamValue, ReadBack : String;
@@ -943,7 +948,7 @@ Var
     Project : IProject;
     Param : IParameter;
     I : Integer;
-    Found, Verified : Boolean;
+    Found, Verified, FileSaved : Boolean;
 Begin
     ParamName := ExtractJsonValue(Params, 'name');
     ParamValue := ExtractJsonValue(Params, 'value');
@@ -999,8 +1004,8 @@ Begin
         Project.DM_EndUpdate;
     End;
 
-    { Persist, then READ IT BACK. }
-    SaveProjectMembers(Project);
+    { Persist the project file, then READ IT BACK. }
+    FileSaved := SaveProjectFile(Project);
 
     Verified := False;
     ReadBack := '';
@@ -1020,6 +1025,7 @@ Begin
             '{"success":true,"name":"' + EscapeJsonString(ParamName)
             + '","value":"' + EscapeJsonString(ReadBack)
             + '","created":' + BoolToJsonStr(Not Found)
+            + ',"project_file_saved":' + BoolToJsonStr(FileSaved)
             + ',"verified":true,"project_path":"'
             + EscapeJsonString(ProjectPath) + '"}')
     Else

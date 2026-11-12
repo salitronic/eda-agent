@@ -783,7 +783,8 @@ def register_project_tools(mcp):
     async def proj_set_parameter(
         name: str, value: str, project_path: Optional[str] = None
     ) -> dict[str, Any]:
-        """Set a project-level parameter.
+        """Set a project-level parameter, new or existing, and write the
+        project file (only that file).
 
         Args:
             name: Parameter name
