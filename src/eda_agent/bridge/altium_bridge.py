@@ -1556,7 +1556,7 @@ class AltiumBridge:
         When that caller has gone (exited, timed out, or a client without
         this recovery), nothing pressed OK, and every other session's call
         failed on the box until a person closed it. Measured 2026-11-11 on
-        proj_set_parameter.
+        proj_set_parameter (#311).
 
         Only while THIS call's request is still queued (the loop is not
         running it) and no one holds the recovery marker. The crashed call

@@ -990,7 +990,7 @@ Begin
             If Param.DM_Name = ParamName Then
             Begin
                 { DM_Value is a getter: assigning it stopped the script with }
-                { a blank "Error" box no Try/Except catches (AD 25.8.1).    }
+                { a blank "Error" box no Try/Except catches (#310).        }
                 { DM_SetValue is the setter, as Prj-Parameters.pas uses it.  }
                 Param.DM_SetValue(ParamValue);
                 Found := True;
