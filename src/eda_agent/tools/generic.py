@@ -425,6 +425,70 @@ def _cursor_to_view_centre() -> bool:
     return True
 
 
+# Altium joins a Rule parameter's fields with U+00A6, written here as an
+# escape so the source stays ASCII.
+RULE_FIELD_SEPARATOR = "\u00a6"
+
+
+def directive_parameter_fields(
+    parameter_list: list[dict[str, Any]] | None,
+    name: str | None,
+) -> tuple[dict[str, str], str]:
+    """The request fields for a directive's parameters given as a list
+    (#315): ``param_count`` and ``param_name_<i>``, ``param_value_<i>``,
+    ``param_hidden_<i>``, plus ``set_name``. Indexed fields carry a value
+    that holds '=' or '|' and a name that repeats. Returns (fields, error);
+    on an error the fields are empty and nothing is to be sent."""
+    fields: dict[str, str] = {}
+    if name is not None:
+        name = str(name).strip()
+        if not name:
+            return {}, "name, when given, must not be empty"
+        fields["set_name"] = name
+    if parameter_list is None:
+        return fields, ""
+    if not isinstance(parameter_list, list) or not parameter_list:
+        return {}, "parameter_list must be a non-empty list"
+    if len(parameter_list) > 64:
+        return {}, "parameter_list holds at most 64 parameters"
+    for i, item in enumerate(parameter_list):
+        if not isinstance(item, dict):
+            return {}, f"parameter_list[{i}] must be an object"
+        rule = item.get("rule")
+        pname = str(item.get("name", "Rule" if rule is not None else "")).strip()
+        if not pname:
+            return {}, f"parameter_list[{i}] needs a name"
+        if rule is not None:
+            if "value" in item:
+                return {}, f"parameter_list[{i}]: give value or rule, not both"
+            if not isinstance(rule, dict) or not rule:
+                return {}, f"parameter_list[{i}].rule must be a non-empty object"
+            keys = [str(k).strip().upper() for k in rule]
+            if "RULEKIND" not in keys:
+                return {}, (f"parameter_list[{i}].rule needs RULEKIND, e.g. "
+                            "Length, MatchedLengths, Clearance or SupplyNets")
+            if len(set(keys)) != len(keys):
+                return {}, f"parameter_list[{i}].rule names a field twice"
+            parts = []
+            for key, (_, val) in zip(keys, rule.items()):
+                val = str(val)
+                if not key or any(c in key for c in "=" + RULE_FIELD_SEPARATOR) \
+                        or RULE_FIELD_SEPARATOR in val:
+                    return {}, (f"parameter_list[{i}].rule {key!r}: a field name "
+                                "must be non-empty without '=', and neither may "
+                                "hold U+00A6, which separates the fields")
+                parts.append(f"{key}={val}")
+            value = RULE_FIELD_SEPARATOR.join(parts)
+        else:
+            value = str(item.get("value", ""))
+        fields[f"param_name_{i}"] = pname
+        fields[f"param_value_{i}"] = value
+        if item.get("hidden"):
+            fields[f"param_hidden_{i}"] = "true"
+    fields["param_count"] = str(len(parameter_list))
+    return fields, ""
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -3180,6 +3244,8 @@ def register_generic_tools(mcp):
         parameters: dict[str, str] | None = None,
         style: int | None = None,
         orientation: int | None = None,
+        parameter_list: list[dict[str, Any]] | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         """Place a directive ON a wire of the active schematic; its
         parameters (e.g. NetClass=PWR) go to that net. For an area, use
@@ -3191,22 +3257,37 @@ def register_generic_tools(mcp):
             parameters: Several, e.g. {"NetClass": "PWR", "Width": "20"}.
             style: Altium's Style integer.
             orientation: Quarter turns, 0 to 3.
+            parameter_list: Instead of parameters: [{"name", "value",
+                "hidden"}, ...] in order; names may repeat, values may
+                hold '=' and '|'. {"rule": {"RULEKIND": "Length", ...}}
+                instead of a value makes a Rule parameter.
+            name: The directive's own name (default: its first parameter's).
 
         Returns:
-            The ``directive`` read back.
+            The ``directive`` read back, each parameter with ``hidden``.
         """
+        fields, error = directive_parameter_fields(parameter_list, name)
+        if error:
+            return {"ok": False, "reason": error}
         params = dict(parameters or {})
+        if parameter_list is not None and (params or param_name):
+            return {"ok": False, "reason": "give parameter_list or "
+                    "param_name / parameters, not both"}
         if not params and param_name:
             params = {param_name: param_value}
-        if not params or any(not k or any(c in f"{k}{v}" for c in "|=")
-                             for k, v in params.items()):
-            return {"ok": False, "reason": "give param_name or parameters; a "
-                    "name is non-empty and neither may contain '|' or '='"}
+        if parameter_list is None and (
+                not params or any(not k or any(c in f"{k}{v}" for c in "|=")
+                                  for k, v in params.items())):
+            return {"ok": False, "reason": "give param_name, parameters or "
+                    "parameter_list; in param_name / parameters a name is "
+                    "non-empty and neither may contain '|' or '=' (use "
+                    "parameter_list for those, and for a Rule)"}
         if orientation is not None and orientation not in (0, 1, 2, 3):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
         args = {"x": str(x), "y": str(y), "param_name": param_name,
                 "param_value": param_value,
-                "parameters": "|".join(f"{k}={v}" for k, v in params.items())}
+                "parameters": "|".join(f"{k}={v}" for k, v in params.items()),
+                **fields}
         if style is not None:
             args["style"] = str(int(style))
         if orientation is not None:
@@ -3225,7 +3306,7 @@ def register_generic_tools(mcp):
             Dictionary with ``directives`` array, each entry has
             ``name``, ``x``, ``y``, ``owner`` ("sheet", or "blanket" for
             one held inside a blanket) and a ``parameters`` list of
-            ``{name, value}`` objects, plus ``count`` and
+            ``{name, value, hidden}`` objects, plus ``count`` and
             ``in_blankets``.
         """
         bridge = get_bridge()
@@ -3240,6 +3321,8 @@ def register_generic_tools(mcp):
         directive_y: float | None = None,
         line_style: int | None = None,
         collapsed: bool | None = None,
+        parameter_list: list[dict[str, Any]] | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         """Place a blanket on the active schematic: a polygon whose directive
         applies to every net it encloses (a net class, a differential pair,
@@ -3249,6 +3332,11 @@ def register_generic_tools(mcp):
             vertices: Outline as [[x, y], ...] in mils, at least 3 points.
             parameters: The directive's parameters, e.g. {"NetClass": "PWR"}.
                 Omit for a bare blanket.
+            parameter_list: Instead of parameters: [{"name", "value",
+                "hidden"}, ...] in order; names may repeat, values may
+                hold '=' and '|'. {"rule": {"RULEKIND": "Length", ...}}
+                instead of a value makes a Rule parameter.
+            name: The directive's own name (default: its first parameter's).
             directive_x, directive_y: Where the directive sits, in mils.
                 Default: the first vertex, on the outline, which is where
                 Altium reads a blanket's directive from.
@@ -3266,16 +3354,27 @@ def register_generic_tools(mcp):
                 "code": "INVALID_PARAMS",
                 "message": "vertices must be at least 3 [x, y] points in mils. "
                            "Nothing was placed."}}
-        for name, value in (parameters or {}).items():
-            if not name or any(c in f"{name}{value}" for c in "|="):
+        fields, error = directive_parameter_fields(parameter_list, name)
+        if not error and parameter_list is not None and parameters:
+            error = "give parameter_list or parameters, not both"
+        if not error and name is not None and not parameters and parameter_list is None:
+            error = "name needs parameters or parameter_list"
+        if error:
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"{error}. Nothing was placed."}}
+        for pname, value in (parameters or {}).items():
+            if not pname or any(c in f"{pname}{value}" for c in "|="):
                 return {"success": False, "error": {
                     "code": "INVALID_PARAMS",
-                    "message": f"parameter {name!r}={value!r}: a name must be "
-                               "non-empty, and neither may contain '|' or '='. "
+                    "message": f"parameter {pname!r}={value!r}: a name must be "
+                               "non-empty, and neither may contain '|' or '=' "
+                               "(use parameter_list for those, and for a Rule). "
                                "Nothing was placed."}}
         args: dict[str, Any] = {
             "vertices": ",".join(f"{float(x):g},{float(y):g}" for x, y in vertices),
             "parameters": "|".join(f"{k}={v}" for k, v in (parameters or {}).items()),
+            **fields,
         }
         if directive_x is not None:
             args["directive_x"] = f"{float(directive_x):g}"

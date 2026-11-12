@@ -9387,6 +9387,93 @@ Begin
     If Added > 0 Then Result := PSet;
 End;
 
+{ A new parameter set from the request (#315). With param_count the         }
+{ parameters come as indexed fields param_name_<i>, param_value_<i> and     }
+{ param_hidden_<i> (i from 0), so a value may hold '=' and '|' (a Rule      }
+{ parameter's value is KEY=VALUE fields joined by U+00A6) and a name may    }
+{ repeat (two ClassName, two Rule). Without it, ParamList as before.        }
+{ set_name names the set; default the first parameter's name. Nil when no  }
+{ parameter was made; Problem then says why.                                }
+Function NewParamSetFrom(X : Double; Y : Double; Params : String;
+    ParamList : String; Var Problem : String) : ISch_ParameterSet;
+Var
+    PSet : ISch_ParameterSet;
+    Param : ISch_Parameter;
+    CountStr, PName, PValue, SetName : String;
+    I, N : Integer;
+Begin
+    Result := Nil;
+    Problem := '';
+    CountStr := ExtractJsonValue(Params, 'param_count');
+    SetName := ExtractJsonValue(Params, 'set_name');
+    If CountStr = '' Then
+    Begin
+        PSet := NewParamSet(X, Y, ParamList);
+        If PSet = Nil Then
+        Begin
+            Problem := 'parameters must be Name=Value pairs joined by |';
+            Exit;
+        End;
+    End
+    Else
+    Begin
+        If Not IsIntStr(CountStr) Then
+        Begin
+            Problem := 'param_count must be a whole number';
+            Exit;
+        End;
+        N := StrToIntDef(CountStr, 0);
+        If (N < 1) Or (N > 64) Then
+        Begin
+            Problem := 'param_count must be 1 to 64';
+            Exit;
+        End;
+        For I := 0 To N - 1 Do
+        Begin
+            If Trim(ExtractJsonValue(Params, 'param_name_' + IntToStr(I))) = '' Then
+            Begin
+                Problem := 'param_name_' + IntToStr(I) + ' is missing or empty';
+                Exit;
+            End;
+        End;
+        PSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+        If PSet = Nil Then
+        Begin
+            Problem := 'Altium did not create the parameter set';
+            Exit;
+        End;
+        PSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
+        For I := 0 To N - 1 Do
+        Begin
+            PName := Trim(ExtractJsonValue(Params, 'param_name_' + IntToStr(I)));
+            PValue := ExtractJsonValue(Params, 'param_value_' + IntToStr(I));
+            Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+            If Param = Nil Then
+            Begin
+                Problem := 'Altium did not create parameter ' + PName;
+                Exit;
+            End;
+            Param.Name := PName;
+            Param.Text := PValue;
+            If LowerCase(ExtractJsonValue(Params, 'param_hidden_' + IntToStr(I))) = 'true' Then
+            Begin
+                Try Param.IsHidden := True; Except NoteWriteFailed('directive parameter IsHidden'); End;
+            End;
+            PSet.AddSchObject(Param);
+            SchRegisterObject(PSet, Param);
+            If I = 0 Then
+            Begin
+                Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
+            End;
+        End;
+    End;
+    If SetName <> '' Then
+    Begin
+        Try PSet.Name := SetName; Except NoteWriteFailed('directive Name'); End;
+    End;
+    Result := PSet;
+End;
+
 { One parameter set as JSON: name, place, the parameters it carries, and   }
 { where it was found ("sheet", or "blanket" for one held inside a blanket). }
 Function ParamSetJson(ParamSet : ISch_BasicContainer; Owner : String) : String;
@@ -9394,7 +9481,7 @@ Var
     Iter : ISch_Iterator;
     Param : ISch_BasicContainer;
     ChildJson, PName, PValue, DirName : String;
-    FirstChild : Boolean;
+    FirstChild, PHidden : Boolean;
     X, Y : Double;
     Style, Orient : Integer;
 Begin
@@ -9412,13 +9499,15 @@ Begin
         Param := Iter.FirstSchObject;
         While Param <> Nil Do
         Begin
-            PName := ''; PValue := '';
+            PName := ''; PValue := ''; PHidden := False;
             Try PName := Param.Name; Except End;
             Try PValue := Param.Text; Except End;
+            Try PHidden := Param.IsHidden; Except End;
             If Not FirstChild Then ChildJson := ChildJson + ',';
             FirstChild := False;
             ChildJson := ChildJson + '{"name":"' + EscapeJsonString(PName)
-                + '","value":"' + EscapeJsonString(PValue) + '"}';
+                + '","value":"' + EscapeJsonString(PValue) + '",'
+                + '"hidden":' + BoolToJsonStr(PHidden) + '}';
             Param := Iter.NextSchObject;
         End;
         ParamSet.SchIterator_Destroy(Iter);
@@ -9442,7 +9531,7 @@ End;
 Function Gen_PlaceDirective(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
-    ParamName, ParamValue, ParamList, StyleStr, OrientStr : String;
+    ParamName, ParamValue, ParamList, StyleStr, OrientStr, Problem : String;
     SchDoc : ISch_Document;
     ParamSet : ISch_ParameterSet;
 Begin
@@ -9455,7 +9544,7 @@ Begin
     OrientStr := ExtractJsonValue(Params, 'orientation');
     If (ParamList = '') And (ParamName <> '') Then ParamList := ParamName + '=' + ParamValue;
 
-    If ParamList = '' Then
+    If (ParamList = '') And (ExtractJsonValue(Params, 'param_count') = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name or parameters required');
         Exit;
@@ -9479,11 +9568,11 @@ Begin
       parameters applied to the wire/net at its location; each carries
       one ISch_Parameter. ISch_Parameter alone would render as
       free-standing text and not act as a directive. }
-    ParamSet := NewParamSet(X, Y, ParamList);
+    ParamSet := NewParamSetFrom(X, Y, Params, ParamList, Problem);
     If ParamSet = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
-            'parameters must be Name=Value pairs joined by |; got "'
+            EscapeJsonString(Problem) + '; got "'
             + EscapeJsonString(ParamList) + '". Nothing was placed.');
         Exit;
     End;
@@ -9685,7 +9774,7 @@ Var
     Blanket : ISch_GraphicalObject;
     ParamSet : ISch_ParameterSet;
     Xs, Ys : TStringList;
-    VertStr, ParamList, StyleStr, CollStr, DxStr, DyStr, DirJson : String;
+    VertStr, ParamList, StyleStr, CollStr, DxStr, DyStr, DirJson, Problem : String;
     DX, DY : Double;
     I : Integer;
 Begin
@@ -9732,13 +9821,13 @@ Begin
         If DxStr <> '' Then DX := StrToFloatDef(DxStr, DX);
         If DyStr <> '' Then DY := StrToFloatDef(DyStr, DY);
         ParamSet := Nil;
-        If Trim(ParamList) <> '' Then
+        If (Trim(ParamList) <> '') Or (ExtractJsonValue(Params, 'param_count') <> '') Then
         Begin
-            ParamSet := NewParamSet(DX, DY, ParamList);
+            ParamSet := NewParamSetFrom(DX, DY, Params, ParamList, Problem);
             If ParamSet = Nil Then
             Begin
                 Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
-                    'parameters must be Name=Value pairs joined by |, e.g. '
+                    EscapeJsonString(Problem) + ', e.g. '
                     + '"NetClass=PWR" or "DifferentialPair=USB"; got "'
                     + EscapeJsonString(ParamList) + '". Nothing was placed.');
                 Exit;
