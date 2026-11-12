@@ -21430,6 +21430,18 @@ Begin
         Exit;
     End;
 
+    { Part 1 when not asked, and the part written BEFORE the component     }
+    { joins the sheet, as the .SchLib placer does (#322): left alone, the   }
+    { loader's own pick lands, and on a two-part symbol that was part 2.    }
+    If PartId < 1 Then PartId := 1;
+    PartCount := 0;
+    Try PartCount := Comp.PartCount; Except End;
+    If (PartCount = 0) Or (PartId <= PartCount) Then
+    Begin
+        Try Comp.SetState_CurrentPartID(PartId); Except { written and checked again on the sheet below } End;
+        Try Comp.CurrentPartID := PartId; Except { written and checked again on the sheet below } End;
+    End;
+
     SchBeginEdit(SchDoc, '');
     Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
     Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
@@ -21442,16 +21454,17 @@ Begin
     Begin
         Try Comp.Designator.Text := DesigStr; Except NoteWriteFailed('component Designator'); End;
     End;
-    { Which part of a multi-part component to place, the same two writers }
-    { the generic CurrentPartID setter uses; read back below.             }
-    PartCount := 0;
-    Try PartCount := Comp.PartCount; Except End;
-    If (PartId > 0) And ((PartCount = 0) Or (PartId <= PartCount)) Then
+    SchRegisterObject(SchDoc, Comp);
+    { Again on the sheet, inside the modify bracket: the write above decides }
+    { what lands, this one is what the compiler sees (SetSchPartId in       }
+    { Generic.pas, which builds after this unit). Read back below.          }
+    If (PartCount = 0) Or (PartId <= PartCount) Then
     Begin
+        SchBeginModify(Comp);
         Try Comp.SetState_CurrentPartID(PartId); Except { read back below } End;
         Try Comp.CurrentPartID := PartId; Except { read back below } End;
+        SchEndModify(Comp);
     End;
-    SchRegisterObject(SchDoc, Comp);
     SchEndEdit(SchDoc, 'Edit');
     MarkDocDirtyByPath(SchDoc.DocumentName);
 
@@ -21479,8 +21492,11 @@ Begin
         + ',"rotation":' + IntToStr(Rotation)
         + ',"part_id":' + IntToStr(PartBack)
         + ',"part_count":' + IntToStr(PartCount)
-        + ',"part_id_applied":' + BoolToJsonStr((PartId = 0) Or (PartBack = PartId))
+        + ',"part_id_applied":' + BoolToJsonStr(PartBack = PartId)
         + ',"designator":"' + EscapeJsonString(DesigStr) + '"';
+    { On the sheet, but not as the part asked for: said, never silent. }
+    If PartBack <> PartId Then
+        Result := Result + ',"reason":"PART_REFUSED","part_id_asked":' + IntToStr(PartId);
 End;
 
 { Lib_PlaceDbLibComponent - place one DbLib row on a schematic sheet.         }
