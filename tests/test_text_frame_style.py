@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""A text frame can be placed already styled.
+"""A text frame can be placed already styled (issue #332).
 
 generic.place_text_frame always made an unfilled frame with the default
 border colour and margin. Drawing a table of filled cells meant placing

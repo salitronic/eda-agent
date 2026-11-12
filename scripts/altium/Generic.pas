@@ -17935,7 +17935,7 @@ End;
 { frame's default, so older callers see no change): area_color (fill; makes  }
 { the frame solid), color (border), text_color (packed BGR integers),        }
 { show_border, word_wrap, clip_to_rect (true/false), text_margin (mils).     }
-{ The reply reads every one of them back off the placed frame.              }
+{ The reply reads every one of them back off the placed frame (#332).       }
 {..............................................................................}
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
