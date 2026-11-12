@@ -700,6 +700,91 @@ Begin
     Result := (Obj.ObjectId = eSheetSymbol) Or (Obj.ObjectId = eHarnessConnector);
 End;
 
+{ The members below live on one interface each, not on the base             }
+{ ISch_GraphicalObject. Asked of an object that lacks one, each raises        }
+{ "Undeclared identifier" in a modal no Try catches and the polling loop      }
+{ stops: the same fault as IsSolid (issue #253) and XSize (issue #267).       }
+{ ALLOWLISTS, each holding every type this unit already reads or writes the  }
+{ member on through a typed local, plus the types Altium builds on those     }
+{ interfaces. Anything else answers unreadable / not written.                }
+
+{ A part's identity and parts: ISch_Component. The harness component is one: }
+{ the harness placer writes its LibReference, SourceLibraryName and          }
+{ ComponentDescription.                                                       }
+Function SchObjectIsPart(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eHarnessComponent);
+End;
+
+{ Electrical and PinLength: ISch_Pin. The harness placer writes both on a    }
+{ harness pin.                                                                }
+Function SchObjectIsPinLike(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = eHarnessPin);
+End;
+
+{ IOType: a port's and a sheet entry's direction (the port and sheet entry   }
+{ placers write it).                                                          }
+Function SchObjectHasIOType(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry);
+End;
+
+{ Alignment: a port's text, and a text frame's (a note is a text frame).     }
+Function SchObjectHasAlignment(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote);
+End;
+
+{ Style: a port's axis, a power object's symbol, a directive's look, and a   }
+{ sheet entry's (legacy) arrow style. A cross-sheet connector is a power     }
+{ object to Altium.                                                           }
+Function SchObjectHasStyle(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = ePowerObject)
+        Or (Obj.ObjectId = eCrossSheetConnector) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eParameterSet);
+End;
+
+{ Width: a port's length along its axis.                                     }
+Function SchObjectHasWidth(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := Obj.ObjectId = ePort;
+End;
+
+{ LineWidth: the drawn shapes and the wiring built on lines and polylines,  }
+{ the sheet symbol and harness connector outlines, and a text frame's        }
+{ border. A pin, a label or a port has none.                                  }
+Function SchObjectHasLineWidth(Obj : ISch_GraphicalObject) : Boolean;
+Var
+    Id : Integer;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Id := Obj.ObjectId;
+    Result := (Id = eLine) Or (Id = ePolyline) Or (Id = ePolygon)
+        Or (Id = eRectangle) Or (Id = eRoundRectangle) Or (Id = eArc)
+        Or (Id = eEllipticalArc) Or (Id = eEllipse) Or (Id = eBezier)
+        Or (Id = eWire) Or (Id = eBus) Or (Id = eBusEntry)
+        Or (Id = eSignalHarness) Or (Id = eHarnessWire)
+        Or (Id = eBlanket) Or (Id = eCompileMask) Or (Id = eImage)
+        Or (Id = eSheetSymbol) Or (Id = eHarnessConnector)
+        Or (Id = eTextFrame) Or (Id = eNote);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2409,9 +2494,15 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'LibReference'       Then Result := Obj.LibReference
-        Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
-        Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
+        Else If (PropName = 'LibReference') Or (PropName = 'SourceLibraryName')
+             Or (PropName = 'DesignItemId') Then
+        Begin
+            If Not SchObjectIsPart(Obj) Then
+                NotePropertyDiag('unreadable', PropName)
+            Else If PropName = 'LibReference' Then Result := Obj.LibReference
+            Else If PropName = 'SourceLibraryName' Then Result := Obj.SourceLibraryName
+            Else Result := Obj.DesignItemId;
+        End
 
         { A managed (Workspace) part's identity, read only. It has no
           library path; LibIdentifierKind and LibraryIdentifier are what
@@ -2502,7 +2593,13 @@ Begin
         // A pin's own description (issue #75), not the component's.
         Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
             Result := ReadSchPinProp(Obj, 'Description')
-        Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
+        Else If PropName = 'ComponentDescription' Then
+        Begin
+            If SchObjectIsPart(Obj) Then
+                Result := Obj.ComponentDescription
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
         { What a No-ERC marker suppresses. Guarded on the type: these names  }
         { exist only on ISch_NoERC, and an undeclared one halts the loop.   }
@@ -2513,13 +2610,23 @@ Begin
             Result := ReadNoErcProp(Obj, PropName)
         Else If PropName = 'CurrentPartID' Then
         Begin
-            Comp := Obj;
-            Try Result := IntToStr(Comp.CurrentPartID); Except Result := ''; End;
+            If SchObjectIsPart(Obj) Then
+            Begin
+                Comp := Obj;
+                Try Result := IntToStr(Comp.CurrentPartID); Except Result := ''; End;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
         Else If PropName = 'PartCount' Then
         Begin
-            Comp := Obj;
-            Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+            If SchObjectIsPart(Obj) Then
+            Begin
+                Comp := Obj;
+                Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // Sub-object string properties (compound interfaces, typed cast required).
@@ -2589,10 +2696,34 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
-        Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
-        Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
-        Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
+        Else If PropName = 'LineWidth' Then
+        Begin
+            If SchObjectHasLineWidth(Obj) Then
+                Result := IntToStr(Obj.LineWidth)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If PropName = 'Style' Then
+        Begin
+            If SchObjectHasStyle(Obj) Then
+                Result := IntToStr(Obj.Style)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If PropName = 'IOType' Then
+        Begin
+            If SchObjectHasIOType(Obj) Then
+                Result := IntToStr(Obj.IOType)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If PropName = 'Alignment' Then
+        Begin
+            If SchObjectHasAlignment(Obj) Then
+                Result := IntToStr(Obj.Alignment)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { NAME, NOT ORDINAL, so reading and writing use one spelling.
           This returned the raw enum while obj_modify takes a name and
           lib_get_pin_list reports one, so a caller that read a pin and
@@ -2600,7 +2731,13 @@ Begin
           as 'input'. ElectricalOrdinal accepts both, so no writer breaks;
           only the reader changes, and it now agrees with lib_get_pin_list.
           Reported GH #11, 2026-09-22. }
-        Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
+        Else If PropName = 'Electrical' Then
+        Begin
+            If SchObjectIsPinLike(Obj) Then
+                Result := PinElectricalToStr(Obj.Electrical)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { Pin swapping groups (GetState_SwapId*), read through a              }
         { pin-typed local: the declared type decides the dispatch.            }
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
@@ -2726,8 +2863,20 @@ Begin
         End
 
         // Coord properties (returned in mils)
-        Else If PropName = 'Width'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
-        Else If PropName = 'PinLength'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
+        Else If PropName = 'Width' Then
+        Begin
+            If SchObjectHasWidth(Obj) Then
+                Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If PropName = 'PinLength' Then
+        Begin
+            If SchObjectIsPinLike(Obj) Then
+                Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
 
         // ConnectionX / ConnectionY: the pin's ELECTRICAL end, i.e. the
         // point a wire or net label must sit on to attach. Pin.Location is
@@ -3132,13 +3281,21 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'LibReference'       Then Obj.LibReference := Value
+        Else If PropName = 'LibReference' Then
+        Begin
+            If SchObjectIsPart(Obj) Then Obj.LibReference := Value
+            Else Matched := False;
+        End
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
         // but had no write case, so obj_modify / batch_modify silently no-oped
         // (recorded only as an "unknown property"). Clearing it to '' is the
         // canonical way to detach a part from a stale source-library binding.
-        Else If PropName = 'SourceLibraryName'  Then Obj.SourceLibraryName := Value
+        Else If PropName = 'SourceLibraryName' Then
+        Begin
+            If SchObjectIsPart(Obj) Then Obj.SourceLibraryName := Value
+            Else Matched := False;
+        End
         // DesignItemId is the library ITEM the placed part re-matches
         // against ("Design Item ID" in the UI). It is a component
         // PROPERTY, not a parameter: stamping a parameter named
@@ -3146,7 +3303,11 @@ Begin
         // write case here obj_modify silently no-oped while reporting
         // matched. A stale DesignItemId after a library re-link is what
         // produces the <Not Found> state in the Properties panel.
-        Else If PropName = 'DesignItemId'       Then Obj.DesignItemId := Value
+        Else If PropName = 'DesignItemId' Then
+        Begin
+            If SchObjectIsPart(Obj) Then Obj.DesignItemId := Value
+            Else Matched := False;
+        End
         // `Description` is the natural name (matches get_component_info /
         // BOM column / lib_set_component_description); `ComponentDescription`
         // is what ISch_Component actually exposes -- both accepted.
@@ -3181,6 +3342,8 @@ Begin
             WroteOK := False;
             Try WroteOK := (Comp.UniqueId = Value); Except End;
         End
+        Else If (PropName = 'CurrentPartID') And (Not SchObjectIsPart(Obj)) Then
+            Matched := False
         Else If PropName = 'CurrentPartID' Then
         Begin
             Comp := Obj;
@@ -3196,6 +3359,8 @@ Begin
             WriteNoErcProp(Obj, PropName, Value);
             WroteOK := (LowerCase(ReadNoErcProp(Obj, PropName)) = LowerCase(Value));
         End
+        Else If (PropName = 'PartCount') And (Not SchObjectIsPart(Obj)) Then
+            Matched := False
         Else If PropName = 'PartCount' Then
         Begin
             { LoadComponentFromLibrary can stamp a PLACED component with a
@@ -3378,10 +3543,16 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
+        Else If PropName = 'LineWidth' Then
+        Begin
+            If SchObjectHasLineWidth(Obj) Then Obj.LineWidth := StrToIntDef(Value, 1)
+            Else Matched := False;
+        End
         Else If PropName = 'Style'       Then
         Begin
-            If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
+            If Not SchObjectHasStyle(Obj) Then
+                Matched := False
+            Else If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
             Begin
                 WroteOK := False;
                 NoteNextStep('Not written: a port''s Style is only its axis, 0 '
@@ -3391,9 +3562,21 @@ Begin
             Else
                 Obj.Style := StrToIntDef(Value, 0);
         End
-        Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
-        Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
-        Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
+        Else If PropName = 'IOType' Then
+        Begin
+            If SchObjectHasIOType(Obj) Then Obj.IOType := StrToIntDef(Value, 0)
+            Else Matched := False;
+        End
+        Else If PropName = 'Alignment' Then
+        Begin
+            If SchObjectHasAlignment(Obj) Then Obj.Alignment := StrToIntDef(Value, 0)
+            Else Matched := False;
+        End
+        Else If PropName = 'Electrical' Then
+        Begin
+            If SchObjectIsPinLike(Obj) Then Obj.Electrical := ElectricalOrdinal(Value)
+            Else Matched := False;
+        End
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
                 (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
         Begin
@@ -3436,8 +3619,16 @@ Begin
         Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
 
         // Coord properties (expected in mils)
-        Else If PropName = 'Width'       Then Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
+        Else If PropName = 'Width' Then
+        Begin
+            If SchObjectHasWidth(Obj) Then Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0))
+            Else Matched := False;
+        End
+        Else If PropName = 'PinLength' Then
+        Begin
+            If SchObjectIsPinLike(Obj) Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
+            Else Matched := False;
+        End
         Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
         Begin
             If Not SchObjectHasSize(Obj) Then
