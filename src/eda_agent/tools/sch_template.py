@@ -147,27 +147,39 @@ def _part_problems(template: Any) -> list[str]:
 
 
 async def _symbol_pins(bridge, parts: list[dict]) -> tuple[dict, list[str]]:
-    """Each part's pins on the sheet, read from its library symbol."""
+    """Each part's pins on the sheet, read from its library symbol: each
+    library is brought forward once and all its symbols read together."""
+    from .library import read_pin_lists
+
     cache: dict[tuple[str, str], list[dict]] = {}
     problems: list[str] = []
+    by_library: dict[str, list[str]] = {}
     for p in parts:
-        key = (str(p.get("library_path", "")).strip(), str(p["lib_reference"]).strip())
-        if key in cache:
-            continue
-        lib, ref = key
+        lib = str(p.get("library_path", "")).strip()
+        ref = str(p["lib_reference"]).strip()
+        refs = by_library.setdefault(lib, [])
+        if ref not in refs:
+            refs.append(ref)
+    # The library in front first, before any other is brought forward.
+    for lib in sorted(by_library, key=lambda name: name != ""):
+        refs = by_library[lib]
         if lib:
             focus = await _focus(bridge, lib)
             if _failed(focus):
                 problems.append(f"could not open {lib}: {focus.get('error')}")
-                cache[key] = []
+                for ref in refs:
+                    cache[(lib, ref)] = []
                 continue
-        reply = await _send(bridge, "library.get_pin_list", {"component_name": ref})
-        pins = reply.get("pins") if isinstance(reply, dict) else None
-        if not isinstance(pins, list):
-            problems.append(f"no pins read for {ref}"
-                            + ("" if lib else " (give library_path)") + f": {reply}")
-            pins = []
-        cache[key] = pins
+        replies = await read_pin_lists(bridge, refs)
+        for ref in refs:
+            reply = replies.get(ref)
+            pins = reply.get("pins") if isinstance(reply, dict) else None
+            if not isinstance(pins, list):
+                problems.append(f"no pins read for {ref}"
+                                + ("" if lib else " (give library_path)")
+                                + f": {reply}")
+                pins = []
+            cache[(lib, ref)] = pins
     out: dict[str, list] = {}
     for p in parts:
         key = (str(p.get("library_path", "")).strip(), str(p["lib_reference"]).strip())

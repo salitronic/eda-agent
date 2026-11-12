@@ -1134,6 +1134,79 @@ def _safe_filename(name: str, fallback: str = "part") -> str:
     return safe_filename(name, fallback)
 
 
+#: Symbols asked for in one pin-list request. An IC runs to hundreds of
+#: pins, so a whole library in one reply would grow without bound.
+PIN_LIST_CHUNK = 25
+
+
+async def read_pin_lists(bridge, names: list[str]) -> dict[str, dict]:
+    """The pins of several symbols of the library in front, in one request
+    per PIN_LIST_CHUNK of them.
+
+    Each name maps to what a single read answers ({"count", "component",
+    "pins"}) or to {"success": False, "error": ...}. A name holding the
+    list's separator, and every name when Altium's scripts predate the
+    list read, is read on its own.
+    """
+    from ..bridge.exceptions import AltiumError
+
+    async def one(name: str) -> dict:
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_pin_list", {"component_name": name})
+        except AltiumError as exc:
+            return {"success": False, "error": str(exc)}
+        return reply if isinstance(reply, dict) else {
+            "success": False, "error": f"unexpected reply: {reply!r}"}
+
+    wanted = list(dict.fromkeys(n for n in names if n))
+    out: dict[str, dict] = {}
+    listed = [n for n in wanted if "|" not in n]
+    for start in range(0, len(listed), PIN_LIST_CHUNK):
+        chunk = listed[start:start + PIN_LIST_CHUNK]
+        if len(chunk) == 1:
+            out[chunk[0]] = await one(chunk[0])
+            continue
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_pin_list", {"component_names": "|".join(chunk)})
+        except AltiumError as exc:
+            for n in chunk:
+                out[n] = {"success": False, "error": str(exc)}
+            continue
+        entries = reply.get("components") if isinstance(reply, dict) else None
+        if not isinstance(entries, list) or len(entries) != len(chunk):
+            for n in chunk:                      # scripts without the list read
+                out[n] = await one(n)
+            continue
+        for n, entry in zip(chunk, entries):
+            if not isinstance(entry, dict) or entry.get("error"):
+                err = entry.get("error") if isinstance(entry, dict) else entry
+                out[n] = {"success": False, "error": str(err)}
+            else:
+                out[n] = entry
+    for n in wanted:
+        if n not in out:
+            out[n] = await one(n)
+    return out
+
+
+def _pin_list_reply(result: Any, output_path: str, inline_limit: int) -> Any:
+    """A pin-list read as lib_get_pin_list answers it: spilled to a file
+    when long, and tagged with the datasheet reminder."""
+    if not isinstance(result, dict) or result.get("success") is False:
+        return result
+    comp = str(result.get("component") or "").strip()
+    pins = result.get("pins")
+    if isinstance(pins, list) and (
+            output_path or (inline_limit and len(pins) > inline_limit)):
+        result = _spill_pin_list(result, pins, comp, output_path)
+    explicit = ([{"manufacturer": "", "part_number": comp, "designators": ""}]
+                if comp else [])
+    return tag_response(result, explicit_parts=explicit,
+                        context="lib_get_pin_list")
+
+
 def _spill_pin_list(result, pins, comp, output_path):
     """Write the full pin array to JSON and summarise what is left.
 
@@ -5868,7 +5941,53 @@ def register_library_tools(mcp):
         )
         return result
 
+    async def _pin_lists_by_library(items, shared):
+        """A list of named symbols, read one library at a time: each
+        library is brought forward once and all of its symbols are read in
+        one request. None leaves anything else to the item-by-item run."""
+        allowed = {"component_name", "library_path", "output_path",
+                   "inline_limit"}
+        merged = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                return None
+            m = {**shared, **item}
+            if set(m) - allowed or not str(m.get("component_name") or "").strip() \
+                    or not isinstance(m.get("inline_limit", 150), int):
+                return None
+            merged.append(m)
+        if len(merged) < 2:
+            return None
+        groups: dict[str, list[int]] = {}
+        for i, m in enumerate(merged):
+            groups.setdefault(str(m.get("library_path") or "").strip(), []).append(i)
+        # The library in front first, before any other is brought forward.
+        order = sorted(groups, key=lambda lib: lib != "")
+        bridge = get_bridge()
+        out: list[Any] = [None] * len(merged)
+        for lib in order:
+            idx = groups[lib]
+            if lib:
+                problem = await _open_document(bridge, lib)
+                if problem:
+                    for i in idx:
+                        out[i] = {"success": False, "error": problem}
+                    continue
+            replies = await read_pin_lists(
+                bridge, [str(merged[i]["component_name"]).strip() for i in idx])
+            for i in idx:
+                m = merged[i]
+                out[i] = _pin_list_reply(
+                    dict(replies[str(m["component_name"]).strip()]),
+                    str(m.get("output_path") or ""), m.get("inline_limit", 150))
+        failed = sum(1 for r in out
+                     if isinstance(r, dict) and r.get("success") is False)
+        return {"bulk": True, "count": len(merged),
+                "succeeded": len(merged) - failed, "failed": failed,
+                "libraries": len(groups), "items": out}
+
     @mcp.tool()
+    @bulk_items_by(_pin_lists_by_library)
     async def lib_get_pin_list(
         component_name: str = "",
         output_path: str = "",
@@ -5911,22 +6030,7 @@ def register_library_tools(mcp):
         result = await bridge.send_command_async(
             "library.get_pin_list", params
         )
-        if isinstance(result, dict):
-            comp = str(result.get("component") or "").strip()
-            pins = result.get("pins")
-            if isinstance(pins, list) and (
-                output_path or (inline_limit and len(pins) > inline_limit)
-            ):
-                result = _spill_pin_list(result, pins, comp, output_path)
-            explicit = (
-                [{"manufacturer": "", "part_number": comp, "designators": ""}]
-                if comp
-                else []
-            )
-            return tag_response(
-                result, explicit_parts=explicit, context="lib_get_pin_list"
-            )
-        return result
+        return _pin_list_reply(result, output_path, inline_limit)
 
     @mcp.tool()
     async def lib_set_pin_owner_part(
