@@ -164,9 +164,11 @@ def test_a_box_the_handler_survives_is_answered_and_reported(rig):
     assert ab._CALL.answered_box["screenshots"], "the caller must see the box"
 
 
-def test_a_request_not_yet_taken_is_never_recovered(rig):
-    """Another session's crash is not this call's to clear."""
+def test_a_request_not_yet_taken_leaves_the_crashed_call_its_box(rig):
+    """Another session's crash is left to that session while it can still
+    answer it (ORPHAN_GRACE_S); test_orphaned_script_crash covers after."""
     bridge, ws, state, mp = rig
+    mp.setattr(script_crash, "ORPHAN_GRACE_S", 60.0)
     mp.setattr(bridge, "_dialog_probe", lambda: _probe(_box()))
     (ws / f"request_{REQ}.json").write_text("{}", encoding="utf-8")
 

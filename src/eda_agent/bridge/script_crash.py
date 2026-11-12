@@ -315,6 +315,80 @@ def recover(workspace_dir, pid: int, command: str, request_id: str,
     return outcome
 
 
+#: How long another session's call leaves a script error box to the call
+#: that crashed. That call probes for dialogs every half second and claims
+#: the recovery marker at once, so a box still up and unclaimed after this
+#: has no one left to answer it.
+ORPHAN_GRACE_S = 5.0
+
+
+def halted_request(workspace_dir) -> str:
+    """The id of the request a halted handler left behind, or "".
+
+    The loop writes progress_<id>.json before a handler runs and removes
+    it after the reply, so a halted handler leaves one with no request
+    (taken) and no response file. The newest such marker is the one.
+    """
+    folder = Path(workspace_dir)
+    best, best_time = "", -1.0
+    try:
+        markers = list(folder.glob("progress_*.json"))
+    except OSError:
+        return ""
+    for marker in markers:
+        rid = marker.stem[len("progress_"):]
+        if ((folder / f"request_{rid}.json").exists()
+                or (folder / f"response_{rid}.json").exists()):
+            continue
+        try:
+            stamp = marker.stat().st_mtime
+        except OSError:
+            continue
+        if stamp > best_time:
+            best, best_time = rid, stamp
+    return best
+
+
+def claim_marker(marker: Path, reason: str) -> bool:
+    """Create the recovery marker, only if no one else holds it.
+
+    Exclusive, so two sessions that see the same box press OK once.
+    """
+    try:
+        with open(marker, "x", encoding="utf-8") as handle:
+            handle.write(json.dumps({"reason": reason, "started": time.time()}))
+        return True
+    except OSError:
+        return False
+
+
+def recover_orphan(workspace_dir, pid: int, dialog: dict,
+                   on_restarted: Callable[[], None]) -> dict:
+    """Clear a script error box whose crashed call is no longer waiting.
+
+    MEASURED 2026-11-11 (proj_set_parameter on an existing parameter): the
+    caller that crashed the script had gone, so nothing pressed OK, and
+    every other session's call failed on the box until a person closed it.
+    The crash is recovered exactly as its own caller would have: screenshot,
+    OK, a crash record, the loop restarted in the background.
+    """
+    rid = halted_request(workspace_dir)
+    response = Path(workspace_dir) / f"response_{rid}.json" if rid else None
+
+    def reply_came(seconds: float) -> bool:
+        if response is None:
+            return False
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if response.exists():
+                return True
+            time.sleep(0.1)
+        return response.exists()
+
+    return recover(workspace_dir, pid, "an earlier call", rid or "unknown",
+                   dialog, reply_came, on_restarted=on_restarted)
+
+
 def _write_record(record: Path, outcome: dict) -> None:
     try:
         record.write_text(json.dumps(outcome, indent=2, default=str),
