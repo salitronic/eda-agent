@@ -2391,6 +2391,123 @@ Begin
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
+{ The solder mask a new footprint via can be born with: optional fields on  }
+{ one add_footprint_vias op. Flags are true / false; expansions are lengths  }
+{ in the units of the call (negative allowed). Without them a via is created as   }
+{ before, and a farm then needed one set_via_properties call per via.        }
+Function ViaMaskFieldsGiven(Op : String) : Boolean;
+Begin
+    Result := (GetBatchField(Op, 'tenting_top') <> '')
+        Or (GetBatchField(Op, 'tenting_bottom') <> '')
+        Or (GetBatchField(Op, 'mask_from_hole_edge') <> '')
+        Or (GetBatchField(Op, 'mask_separate') <> '')
+        Or (GetBatchField(Op, 'mask_expansion') <> '')
+        Or (GetBatchField(Op, 'mask_bottom_expansion') <> '');
+End;
+
+{ True when a mask field of the op is not what it may hold: a flag other than }
+{ true / false, an expansion that is not a number. Such an op is refused     }
+{ whole, so no via is left half made.                                        }
+Function ViaMaskOpBad(Op : String) : Boolean;
+Var
+    F : String;
+Begin
+    Result := False;
+    F := LowerCase(GetBatchField(Op, 'tenting_top'));
+    If (F <> '') And (F <> 'true') And (F <> 'false') Then Result := True;
+    F := LowerCase(GetBatchField(Op, 'tenting_bottom'));
+    If (F <> '') And (F <> 'true') And (F <> 'false') Then Result := True;
+    F := LowerCase(GetBatchField(Op, 'mask_from_hole_edge'));
+    If (F <> '') And (F <> 'true') And (F <> 'false') Then Result := True;
+    F := LowerCase(GetBatchField(Op, 'mask_separate'));
+    If (F <> '') And (F <> 'true') And (F <> 'false') Then Result := True;
+    F := GetBatchField(Op, 'mask_expansion');
+    If (F <> '') And (Not IsFloatStr(F)) Then Result := True;
+    F := GetBatchField(Op, 'mask_bottom_expansion');
+    If (F <> '') And (Not IsFloatStr(F)) Then Result := True;
+End;
+
+{ Writes the mask fields of the op to a via just added, in the order               }
+{ set_via_properties uses (issue #84): mask from the hole edge, then the pad  }
+{ cache -- manual, both expansions (the bottom follows the top unless given), }
+{ the link -- then tenting, which is kept only on a manual mask. Every field  }
+{ is read back; the result is the number that did not take.                   }
+Function ApplyViaMaskOp(Via : IPCB_Via; Op : String; UnitsStr : String) : Integer;
+Var
+    ViaPad : IPCB_Pad;
+    Cache : TPadCache;
+    TentTop, TentBot, Edge, Sep, Mask, MaskBot : String;
+    Tol, Want : TCoord;
+    Fails : Integer;
+Begin
+    Fails := 0;
+    Tol := 100;
+    TentTop := LowerCase(GetBatchField(Op, 'tenting_top'));
+    TentBot := LowerCase(GetBatchField(Op, 'tenting_bottom'));
+    Edge := LowerCase(GetBatchField(Op, 'mask_from_hole_edge'));
+    Sep := LowerCase(GetBatchField(Op, 'mask_separate'));
+    Mask := GetBatchField(Op, 'mask_expansion');
+    MaskBot := GetBatchField(Op, 'mask_bottom_expansion');
+    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+    If Edge <> '' Then
+    Begin
+        Try
+            Via.SolderMaskExpansionFromHoleEdge := (Edge = 'true');
+            If Via.SolderMaskExpansionFromHoleEdge <> (Edge = 'true') Then Inc(Fails);
+        Except Inc(Fails); End;
+    End;
+    If (Mask <> '') Or (MaskBot <> '') Or (Sep <> '') Or (TentTop <> '') Or (TentBot <> '') Then
+    Begin
+        Try
+            ViaPad := Via;
+            Cache := ViaPad.GetState_Cache;
+            Cache.SolderMaskExpansionValid := eCacheManual;
+            If Mask <> '' Then
+            Begin
+                Cache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(Mask, 0), UnitsStr);
+                If MaskBot = '' Then
+                    Cache.SolderMaskBottomExpansion := Cache.SolderMaskExpansion;
+            End;
+            If MaskBot <> '' Then
+                Cache.SolderMaskBottomExpansion := CoordFromUnits(StrToFloatDef(MaskBot, 0), UnitsStr);
+            If Sep <> '' Then
+                Cache.UseSeparateExpansions := (Sep = 'true');
+            ViaPad.SetState_Cache := Cache;
+            Cache := ViaPad.GetState_Cache;
+            If Cache.SolderMaskExpansionValid <> eCacheManual Then Inc(Fails);
+            If Mask <> '' Then
+            Begin
+                Want := CoordFromUnits(StrToFloatDef(Mask, 0), UnitsStr);
+                If Abs(Cache.SolderMaskExpansion - Want) > Tol Then Inc(Fails);
+                If (MaskBot = '') And (Abs(Cache.SolderMaskBottomExpansion - Want) > Tol) Then Inc(Fails);
+            End;
+            If MaskBot <> '' Then
+            Begin
+                Want := CoordFromUnits(StrToFloatDef(MaskBot, 0), UnitsStr);
+                If Abs(Cache.SolderMaskBottomExpansion - Want) > Tol Then Inc(Fails);
+            End;
+            If Sep <> '' Then
+                If Cache.UseSeparateExpansions <> (Sep = 'true') Then Inc(Fails);
+        Except Inc(Fails); End;
+    End;
+    If TentTop <> '' Then
+    Begin
+        Try
+            Via.SetState_IsTenting_Top(TentTop = 'true');
+            If Via.GetState_IsTenting_Top <> (TentTop = 'true') Then Inc(Fails);
+        Except Inc(Fails); End;
+    End;
+    If TentBot <> '' Then
+    Begin
+        Try
+            Via.SetState_IsTenting_Bottom(TentBot = 'true');
+            If Via.GetState_IsTenting_Bottom <> (TentBot = 'true') Then Inc(Fails);
+        Except Inc(Fails); End;
+    End;
+    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+    Result := Fails;
+End;
+
 { Lib_AddFootprintVias - many through-stack vias in one call (issue #108):    }
 { a via grid under an exposed pad is 9 to 50 of them, and one call each was  }
 { that many round trips and settles, with a failure halfway leaving half a   }
@@ -2399,6 +2516,12 @@ End;
 { hole_size default as there). One PreProcess / PostProcess, one settle by   }
 { the dispatcher. A via whose hole is not inside its diameter is refused and }
 { counted in bad_size; a field that is not a number in bad_number.           }
+{ Optional mask fields per op (ViaMaskFieldsGiven): tenting_top,             }
+{ tenting_bottom, mask_from_hole_edge, mask_separate (true / false),         }
+{ mask_expansion, mask_bottom_expansion -- written as the via is made and    }
+{ read back (ApplyViaMaskOp); masked counts the vias that took them all,     }
+{ property_failures the fields that did not. A bad mask field refuses the op }
+{ like a bad number, so no via is left half made.                            }
 Function Lib_AddFootprintVias(Params : String; RequestId : String) : String;
 Var
     UnitsStr, TargetProblem, LibPath, ViasStr, Remaining, Op, F : String;
@@ -2406,7 +2529,7 @@ Var
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Via : IPCB_Via;
-    Total, Added, Failed, BadSize, BadNumber : Integer;
+    Total, Added, Failed, BadSize, BadNumber, Masked, PropFailed, Fails : Integer;
     NumbersOk : Boolean;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
@@ -2451,6 +2574,8 @@ Begin
     Failed := 0;
     BadSize := 0;
     BadNumber := 0;
+    Masked := 0;
+    PropFailed := 0;
     Remaining := ViasStr;
     PcbBeginEdit(0);
     Try
@@ -2464,6 +2589,7 @@ Begin
             If (F <> '') And (Not IsFloatStr(F)) Then NumbersOk := False;
             F := GetBatchField(Op, 'hole_size');
             If (F <> '') And (Not IsFloatStr(F)) Then NumbersOk := False;
+            If ViaMaskOpBad(Op) Then NumbersOk := False;
             If Not NumbersOk Then
             Begin
                 Inc(BadNumber);
@@ -2481,7 +2607,17 @@ Begin
                 Continue;
             End;
             Via := AddLibVia(PcbLib, Footprint, X, Y, Size, HoleSize, UnitsStr);
-            If Via = Nil Then Inc(Failed) Else Inc(Added);
+            If Via = Nil Then Inc(Failed)
+            Else
+            Begin
+                Inc(Added);
+                If ViaMaskFieldsGiven(Op) Then
+                Begin
+                    Fails := ApplyViaMaskOp(Via, Op, UnitsStr);
+                    If Fails = 0 Then Inc(Masked)
+                    Else PropFailed := PropFailed + Fails;
+                End;
+            End;
         End;
     Finally
         PcbEndEdit(0);
@@ -2491,6 +2627,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
         + ',"bad_size":' + IntToStr(BadSize) + ',"bad_number":' + IntToStr(BadNumber)
+        + ',"masked":' + IntToStr(Masked)
+        + ',"property_failures":' + IntToStr(PropFailed)
         + ',"total":' + IntToStr(Total) + '}');
 End;
 
