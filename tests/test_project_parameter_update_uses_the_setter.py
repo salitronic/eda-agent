@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""Changing an existing project parameter goes through DM_SetValue.
+"""Changing an existing project parameter goes through DM_SetValue, and
+setting one writes the project file.
 
 MEASURED on AD 25.8.1: proj_set_parameter on a parameter the project
 already had stopped the script at ``Param.DM_Value := ParamValue``. DM_Value
@@ -11,6 +12,12 @@ stopped and the box blocked every session until a person pressed OK.
 DM_SetValue is the setter (an independent Prj-Parameters.pas script uses
 it). The DM_ interfaces expose getters and Set methods, never writable
 properties, so no DM_ member is assigned anywhere in the bridge.
+
+Also measured: a NEW parameter read back fine but was not in the .PrjPcb.
+Adding a parameter does not mark the project modified, and the handler
+saved only modified documents, so the project file was skipped while every
+other modified document of the project was written. SaveProjectFile saves
+that file alone.
 """
 from __future__ import annotations
 
@@ -45,3 +52,15 @@ def test_no_dm_member_is_assigned_anywhere():
     assert not found, ("a DM_ member is assigned; the DM_ interfaces have no "
                        "writable properties, use its DM_Set... method: "
                        + "; ".join(found))
+
+
+def test_the_project_file_itself_is_saved():
+    body = _set_parameter()
+    assert "FileSaved := SaveProjectFile(Project);" in body
+    assert "SaveProjectMembers" not in body, (
+        "setting a project parameter must not save the project's other documents")
+
+
+def test_the_reply_says_whether_the_file_was_written():
+    body = _set_parameter()
+    assert "',\"project_file_saved\":' + BoolToJsonStr(FileSaved)" in body
