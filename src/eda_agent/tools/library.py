@@ -3243,7 +3243,8 @@ def register_library_tools(mcp):
                 through-hole (MultiLayer); a hole-less one is SMD on
                 ``layer``.
             shape: "round", "rectangular", "octagonal" or "roundrect".
-                An oval is "round" with x_size != y_size.
+                An oval is "round" with x_size != y_size. Another word
+                (e.g. "rectangle") is refused and no pad is added.
             layer: SMD pad layer ("TopLayer"/"BottomLayer").
             rotation: Pad rotation in degrees
             corner_radius: roundrect corner radius, % (Altium's unit).
@@ -3754,7 +3755,8 @@ def register_library_tools(mcp):
                 - x_size, y_size (default 60 mil)
                 - hole_size (default 0 = SMD; drilled pads are MultiLayer)
                 - shape: round, rectangular (default), octagonal or
-                  roundrect; oval is round with unequal sizes
+                  roundrect; oval is round with unequal sizes. Another
+                  word refuses the whole call, no pad added
                 - corner_radius: roundrect corner in % (default 25), or
                   corner_radius_length as a length
                 - rotation: degrees
