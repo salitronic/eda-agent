@@ -4,7 +4,7 @@
 """A DbLib placement puts down part 1 of a multi-part symbol unless asked.
 
 Without part_id the loader's own pick landed: on a two-part symbol that
-was part 2, and the reply said nothing (#322). The DbLib placer now
+was part 2, and the reply said nothing. The DbLib placer now
 takes the part as the .SchLib placer does: part 1 when not given,
 written before the component reaches the sheet, written again on the
 sheet inside the modify bracket, read back, and named PART_REFUSED

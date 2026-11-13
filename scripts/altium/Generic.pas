@@ -2485,8 +2485,7 @@ Begin
                 Have := True;
             End
             { A text frame's (and a note's) far corner sets its size, the  }
-            { same member Gen_PlaceTextFrame writes through ISch_TextFrame  }
-            { (issue #334).                                                 }
+            { same member Gen_PlaceTextFrame writes through ISch_TextFrame. }
             Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
             Begin
                 FrameObj := Obj;

@@ -6927,12 +6927,11 @@ Begin
         SchEndEdit(SchDoc, 'Edit');
     End;
 
-    { THE SHEET IS ONLY MARKED, NOT WRITTEN (issue #326)  . MarkDocDirtyByPath }
-    { sets the modified flag and nothing more, as every write here does; a  }
-    { save at a checkpoint (app_save_all, proj_save) writes the sheet. This  }
-    { reply used to say "saved":true: measured on AD 25.8.1, an added, an    }
-    { updated and an existing Title parameter were all gone after closing  }
-    { the project without a save.                                          }
+    { THE SHEET IS ONLY MARKED, NOT WRITTEN. MarkDocDirtyByPath sets the    }
+    { modified flag and nothing more, as every write here does; a save at a }
+    { checkpoint (app_save_all, proj_save) writes the sheet. Measured on AD }
+    { 25.8.1: a parameter written here and never saved is gone once the     }
+    { project closes, so the reply says the save is still to come.          }
     MarkDocDirtyByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 

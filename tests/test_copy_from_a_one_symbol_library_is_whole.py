@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""library.copy_component copies the only symbol of a library whole (#320).
+"""library.copy_component copies the only symbol of a library whole.
 
-The #249 fix takes the source off screen before Replicate by showing another
+The copy takes the source off screen before Replicate by showing another
 symbol, because the part on screen is held by the library and Replicate
 copies the component's own children only. A library holding ONE symbol, as
 every vendor download does, had nothing else to show and its copy came out
@@ -58,7 +58,7 @@ def test_the_holder_is_dropped_when_the_editor_does_not_show_it():
 
 
 def test_the_holder_never_becomes_the_remembered_symbol():
-    # Later add_symbol_* calls write into the remembered symbol (#247).
+    # Later add_symbol_* calls write into the remembered symbol.
     fn = _fns()["ShowLibHolder"]
     assert "RememberLibComponent" not in fn
     assert "Holder.LibReference := HolderName;" in fn.split("AddSchComponent(Holder);", 1)[1]

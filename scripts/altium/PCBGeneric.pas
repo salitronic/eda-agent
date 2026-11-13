@@ -506,7 +506,7 @@ Begin
         { The texts are read back: Altium keeps its own diameter sign as   }
         { the prefix of a radial- or linear-diameter dimension and takes    }
         { the assignment without a word, so an unread write was reported    }
-        { as made (#356). A value it did not keep is refused.               }
+        { as made. A value it did not keep is refused.                      }
         Else If PropName = 'TextFormat' Then
         Begin
             Dim.TextFormat := Value;

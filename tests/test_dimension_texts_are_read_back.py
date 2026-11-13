@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""A dimension's text written through the generic layer is read back (#356).
+"""A dimension's text written through the generic layer is read back.
 
 Altium keeps its own diameter sign as the prefix of a radial- or
 linear-diameter dimension: the assignment is taken without a word and the

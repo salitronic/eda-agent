@@ -3,7 +3,6 @@
 # Copyright (c) 2026 Vincent Himpe
 """A handler that only marks a document may not reply that it saved it.
 
-Issue #326.
 
 project.set_document_parameter wrote the sheet parameter, called
 MarkDocDirtyByPath, and replied "saved":true; proj_set_document_parameter

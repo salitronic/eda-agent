@@ -93,7 +93,7 @@ def test_the_mask_is_written_in_the_measured_order_and_read_back():
     top = body.index("Via.SetState_IsTenting_Top(")
     bot = body.index("Via.SetState_IsTenting_Bottom(")
     # hole edge before the value whose meaning it changes; tenting last,
-    # on a mask the cache has already made manual (#84)
+    # on a mask the cache has already made manual
     assert edge < cache < top < bot
     assert body.index("Cache.SolderMaskExpansionValid := eCacheManual;") < cache
     # the bottom follows the top unless it has a value of its own

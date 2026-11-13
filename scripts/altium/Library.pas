@@ -2461,7 +2461,7 @@ Begin
 End;
 
 { Writes the mask fields of the op to a via just added, in the order               }
-{ set_via_properties uses (issue #84): mask from the hole edge, then the pad  }
+{ set_via_properties uses: mask from the hole edge, then the pad             }
 { cache -- manual, both expansions (the bottom follows the top unless given), }
 { the link -- then tenting, which is kept only on a manual mask. Every field  }
 { is read back; the result is the number that did not take.                   }
@@ -8406,12 +8406,12 @@ Begin
 End;
 
 { ShowLibHolder - add an empty symbol to SchLib and show it, so the symbol  }
-{ that was on screen gets its shown part back from the library (issue #320). }
+{ that was on screen gets its shown part back from the library.              }
 { Nil when the holder could not be added or the editor did not take it.    }
 {                                                                            }
 { For a library with no other symbol to show. While a symbol is shown, the  }
 { objects of its part on screen are held by the LIBRARY, not the component, }
-{ and Replicate copies the component's own children only (#249). A vendor  }
+{ and Replicate copies the component's own children only. A vendor         }
 { download holds a single symbol, so its copy came out with no pins at all. }
 { The holder is never remembered as the last created symbol and is removed }
 { again by DropLibHolder; nothing here saves the library.                  }
@@ -8616,7 +8616,7 @@ Begin
     { was empty, 11 of 14 pins; with another symbol shown the copy was      }
     { whole. The pin check above loads a source by SHOWING it, so this     }
     { comes after it. A library with no other symbol gets an empty holder  }
-    { symbol to show instead, removed again after Replicate (issue #320).  }
+    { symbol to show instead, removed again after Replicate.               }
     SourceShown := False;
     Holder := Nil;
     UsedHolder := False;
@@ -21791,7 +21791,7 @@ Begin
     End;
 
     { Part 1 when not asked, and the part written BEFORE the component     }
-    { joins the sheet, as the .SchLib placer does (#322): left alone, the   }
+    { joins the sheet, as the .SchLib placer does: left alone, the          }
     { loader's own pick lands, and on a two-part symbol that was part 2.    }
     If PartId < 1 Then PartId := 1;
     PartCount := 0;
