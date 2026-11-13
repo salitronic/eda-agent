@@ -3745,10 +3745,14 @@ def register_project_tools(mcp):
         designator: str,
         project_path: Optional[str] = None,
         force_recompile: bool = False,
+        pins: Optional[list[str]] = None,
+        connected_only: bool = False,
     ) -> dict[str, Any]:
         """Get pin-to-net connectivity for a specific component.
 
-        Compiles the project; every pin with number, name, net and type.
+        Compiles the project; every pin with number, name and net. A
+        multi-part component placed across sheets is read from all of
+        them (``sheets``).
 
         Args:
             designator: Component designator (e.g., "U1", "R8")
@@ -3756,14 +3760,17 @@ def register_project_tools(mcp):
             force_recompile: SaveAll + invalidate cache + recompile
                 before reading. Use when you need a guaranteed-fresh
                 netlist.
+            pins: Only these pins, by number or name; ``pins_left_out``
+                counts the rest.
+            connected_only: Leave out pins on no net ("" or "?").
 
         Pin names come from the symbol and can be wrong: check a pin's
         function against the manufacturer datasheet before relying on it
         (see `_datasheet_guidance`).
 
         Returns:
-            Dict with designator, comment, sheet, pin_count, pins[],
-            plus `_datasheet_guidance` + `_datasheet_parts`.
+            Dict with designator, comment, sheet, sheets, pin_count,
+            pins[], plus `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}
@@ -3776,6 +3783,7 @@ def register_project_tools(mcp):
             # asked for fresh data got the cached compile instead.
             params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_connectivity", params)
+        _trim_pins(result, pins, connected_only)
         hint = BulkHintTracker.record_and_hint("proj_get_connectivity")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -3791,17 +3799,39 @@ def register_project_tools(mcp):
             )
         return result
 
+    def _trim_pins(entry: Any, pins: Optional[list[str]], connected_only: bool) -> None:
+        """Keep the pins asked for (number or name, case ignored) and, with
+        connected_only, only those on a net; the count left out is said."""
+        if not isinstance(entry, dict) or not isinstance(entry.get("pins"), list):
+            return
+        if not pins and not connected_only:
+            return
+        want = {str(p).strip().lower() for p in (pins or []) if str(p).strip()}
+        kept = []
+        for p in entry["pins"]:
+            if want and str(p.get("pin_number", "")).lower() not in want \
+                    and str(p.get("pin_name", "")).lower() not in want:
+                continue
+            if connected_only and str(p.get("net") or "") in ("", "?"):
+                continue
+            kept.append(p)
+        entry["pins_left_out"] = len(entry["pins"]) - len(kept)
+        entry["pins"] = kept
+
     @mcp.tool()
     async def proj_get_connectivity_many(
         designators: list[str],
         project_path: Optional[str] = None,
         force_recompile: bool = False,
+        pins: Optional[list[str]] = None,
+        connected_only: bool = False,
     ) -> dict[str, Any]:
         """Pin-net connectivity for MANY components in ONE round-trip.
 
         One compile for the whole list (a list of one for a single part).
         Pin names come from the symbol and can be wrong: check pin
-        functions in the datasheet.
+        functions in the datasheet. A multi-part component placed across
+        sheets is read from all of them (``sheets``).
 
         Args:
             designators: List of component designators.
@@ -3809,6 +3839,9 @@ def register_project_tools(mcp):
             force_recompile: SaveAll + invalidate cache + recompile
                 before reading. Use when you need a guaranteed-fresh
                 netlist.
+            pins: Only these pins (number or name) of each component;
+                ``pins_left_out`` counts the rest.
+            connected_only: Leave out pins on no net ("" or "?").
 
         Returns:
             Dict with components[], matched, requested, not_found[],
@@ -3832,6 +3865,8 @@ def register_project_tools(mcp):
         )
         if isinstance(result, dict):
             comps = result.get("components") or []
+            for c in comps:
+                _trim_pins(c, pins, connected_only)
             explicit = []
             seen_keys: set[tuple[str, str]] = set()
             for c in comps:

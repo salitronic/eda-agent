@@ -6494,6 +6494,130 @@ Begin
 End;
 
 {..............................................................................}
+{ ConnectivityEntries - the pin / net records of every designator in Wanted,  }
+{ comma-separated, each as Proj_GetConnectivity returns one; the designators  }
+{ found are added to Matched. A multi-part component placed across several    }
+{ sheets is one component per sheet in the compiled model, and each answers  }
+{ a net only for the pins of its own part ("?" for the rest). So a pin's net  }
+{ is taken from whichever sheet resolved it, and "sheets" lists them all.     }
+{ Three passes: the sheets of each designator; the nets of those on more     }
+{ than one; then each written from its first sheet.                          }
+{..............................................................................}
+Function ConnectivityEntries(Project : IProject; Wanted : TStringList;
+    Matched : TStringList) : String;
+Var
+    Doc : IDocument;
+    Comp : IComponent;
+    Pin : IPin;
+    I, J, K, DocCount, Seen : Integer;
+    UsePhysical, FirstPin, Multi : Boolean;
+    Counts, SheetsBy, Nets : TStringList;
+    Desig, Sheet, PinNum, Net, Other, PinList, Entry : String;
+Begin
+    Result := '';
+    Counts := TStringList.Create;
+    SheetsBy := TStringList.Create;
+    Nets := TStringList.Create;
+    Try
+        GetCompiledDocs(Project, DocCount, UsePhysical);
+        For I := 0 To DocCount - 1 Do
+        Begin
+            Doc := GetCompiledDoc(Project, I, UsePhysical);
+            If Doc = Nil Then Continue;
+            Sheet := '"' + EscapeJsonString(Doc.DM_FileName) + '"';
+            For J := 0 To Doc.DM_ComponentCount - 1 Do
+            Begin
+                Comp := Doc.DM_Components(J);
+                If Comp = Nil Then Continue;
+                Desig := Comp.DM_PhysicalDesignator;
+                If Wanted.IndexOf(Desig) < 0 Then Continue;
+                Seen := StrToIntDef(Counts.Values[Desig], 0);
+                Counts.Values[Desig] := IntToStr(Seen + 1);
+                If Pos(Sheet, SheetsBy.Values[Desig]) = 0 Then
+                Begin
+                    If SheetsBy.Values[Desig] = '' Then SheetsBy.Values[Desig] := Sheet
+                    Else SheetsBy.Values[Desig] := SheetsBy.Values[Desig] + ',' + Sheet;
+                End;
+            End;
+        End;
+
+        For I := 0 To DocCount - 1 Do
+        Begin
+            Doc := GetCompiledDoc(Project, I, UsePhysical);
+            If Doc = Nil Then Continue;
+            For J := 0 To Doc.DM_ComponentCount - 1 Do
+            Begin
+                Comp := Doc.DM_Components(J);
+                If Comp = Nil Then Continue;
+                Desig := Comp.DM_PhysicalDesignator;
+                If StrToIntDef(Counts.Values[Desig], 0) < 2 Then Continue;
+                For K := 0 To Comp.DM_PinCount - 1 Do
+                Begin
+                    Pin := Comp.DM_Pins(K);
+                    If Pin = Nil Then Continue;
+                    PinNum := Pin.DM_PinNumber;
+                    Net := Pin.DM_FlattenedNetName;
+                    If (Net = '') Or (Net = '?') Or (Pos('=', PinNum) > 0) Then Continue;
+                    If Nets.Values[Desig + '|' + PinNum] = '' Then
+                        Nets.Values[Desig + '|' + PinNum] := Net;
+                End;
+            End;
+        End;
+
+        For I := 0 To DocCount - 1 Do
+        Begin
+            Doc := GetCompiledDoc(Project, I, UsePhysical);
+            If Doc = Nil Then Continue;
+            For J := 0 To Doc.DM_ComponentCount - 1 Do
+            Begin
+                Comp := Doc.DM_Components(J);
+                If Comp = Nil Then Continue;
+                Desig := Comp.DM_PhysicalDesignator;
+                If Wanted.IndexOf(Desig) < 0 Then Continue;
+                If Matched.IndexOf(Desig) >= 0 Then Continue;
+                Matched.Add(Desig);
+                Multi := StrToIntDef(Counts.Values[Desig], 0) > 1;
+
+                PinList := '';
+                FirstPin := True;
+                For K := 0 To Comp.DM_PinCount - 1 Do
+                Begin
+                    Pin := Comp.DM_Pins(K);
+                    If Pin = Nil Then Continue;
+                    PinNum := Pin.DM_PinNumber;
+                    Net := Pin.DM_FlattenedNetName;
+                    If Multi And ((Net = '') Or (Net = '?')) And (Pos('=', PinNum) = 0) Then
+                    Begin
+                        Other := Nets.Values[Desig + '|' + PinNum];
+                        If Other <> '' Then Net := Other;
+                    End;
+                    If Not FirstPin Then PinList := PinList + ',';
+                    FirstPin := False;
+                    { DM_ElectricalType is not a DM_ identifier (undeclared);   }
+                    { query_objects on ePin reads Electrical instead.          }
+                    PinList := PinList + '{"pin_number":"' + EscapeJsonString(PinNum) + '"'
+                        + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"'
+                        + ',"net":"' + EscapeJsonString(Net) + '"}';
+                End;
+
+                Entry := '{"designator":"' + EscapeJsonString(Desig) + '"'
+                    + ',"comment":"' + EscapeJsonString(Comp.DM_Comment) + '"'
+                    + ',"sheet":"' + EscapeJsonString(Doc.DM_FileName) + '"'
+                    + ',"sheets":[' + SheetsBy.Values[Desig] + ']'
+                    + ',"pin_count":' + IntToStr(Comp.DM_PinCount)
+                    + ',"pins":[' + PinList + ']}';
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + Entry;
+            End;
+        End;
+    Finally
+        Counts.Free;
+        SheetsBy.Free;
+        Nets.Free;
+    End;
+End;
+
+{..............................................................................}
 { Get connectivity info for a specific component (all pins + nets)            }
 { Params: designator, project_path (optional)                                 }
 {..............................................................................}
@@ -6503,13 +6627,8 @@ Var
     ProjectPath, Designator : String;
     Workspace : IWorkspace;
     Project : IProject;
-    Doc : IDocument;
-    Comp : IComponent;
-    Pin : IPin;
-    I, J, K, DocCount : Integer;
-    UsePhysical : Boolean;
-    Data, PinList : String;
-    FirstPin, Found : Boolean;
+    Wanted, Matched : TStringList;
+    Data : String;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Designator := ExtractJsonValue(Params, 'designator');
@@ -6525,53 +6644,19 @@ Begin
 
     ForceRecompileIfRequested(Project, Params);
     SmartCompile(Project);
-    Found := False;
 
-    GetCompiledDocs(Project, DocCount, UsePhysical);
-    For I := 0 To DocCount - 1 Do
-    Begin
-        If Found Then Break;
-        Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Continue;
-
-        For J := 0 To Doc.DM_ComponentCount - 1 Do
-        Begin
-            Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Continue;
-            If Comp.DM_PhysicalDesignator <> Designator Then Continue;
-
-            Found := True;
-
-            { Build pin-net connectivity list }
-            PinList := '';
-            FirstPin := True;
-            For K := 0 To Comp.DM_PinCount - 1 Do
-            Begin
-                Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Continue;
-                If Not FirstPin Then PinList := PinList + ',';
-                FirstPin := False;
-                PinList := PinList + '{"pin_number":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
-                PinList := PinList + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
-                PinList := PinList + ',"net":"' + EscapeJsonString(Pin.DM_FlattenedNetName) + '"';
-                { DM_ElectricalType does not exist as a DM_ identifier
-                  (compile-time undeclared). Omitting electrical type; the
-                  Sch-server side (via query_objects eSchPin) exposes
-                  Pin.Electrical if needed. }
-                PinList := PinList + '}';
-            End;
-
-            Data := '{"designator":"' + EscapeJsonString(Designator) + '"';
-            Data := Data + ',"comment":"' + EscapeJsonString(Comp.DM_Comment) + '"';
-            Data := Data + ',"sheet":"' + EscapeJsonString(Doc.DM_FileName) + '"';
-            Data := Data + ',"pin_count":' + IntToStr(Comp.DM_PinCount);
-            Data := Data + ',"pins":[' + PinList + ']}';
-            Result := BuildSuccessResponse(RequestId, Data);
-            Exit;
-        End;
+    Wanted := TStringList.Create;
+    Matched := TStringList.Create;
+    Try
+        Wanted.Add(Designator);
+        Data := ConnectivityEntries(Project, Wanted, Matched);
+    Finally
+        Wanted.Free;
+        Matched.Free;
     End;
-
-    If Not Found Then
+    If Data <> '' Then
+        Result := BuildSuccessResponse(RequestId, Data)
+    Else
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
 End;
 
@@ -6588,13 +6673,9 @@ Var
     ProjectPath, DesigStr, Remaining, ThisDesig : String;
     Workspace : IWorkspace;
     Project : IProject;
-    Doc : IDocument;
-    Comp : IComponent;
-    Pin : IPin;
-    I, J, K, DocCount, SepPos : Integer;
-    UsePhysical : Boolean;
-    Data, PinList, CompEntry, NotFoundJson : String;
-    FirstPin, FirstC, FirstNF : Boolean;
+    I, SepPos : Integer;
+    Data, NotFoundJson : String;
+    FirstNF : Boolean;
     Wanted, MatchedDesigs : TStringList;
     EnvelopeData, ResponseStr : String;
 Begin
@@ -6656,50 +6737,7 @@ Begin
         ForceRecompileIfRequested(Project, Params);
         SmartCompile(Project);
 
-        Data := '';
-        FirstC := True;
-
-        GetCompiledDocs(Project, DocCount, UsePhysical);
-        For I := 0 To DocCount - 1 Do
-        Begin
-            Doc := GetCompiledDoc(Project, I, UsePhysical);
-            If Doc = Nil Then Continue;
-
-            For J := 0 To Doc.DM_ComponentCount - 1 Do
-            Begin
-                Comp := Doc.DM_Components(J);
-                If Comp = Nil Then Continue;
-
-                ThisDesig := Comp.DM_PhysicalDesignator;
-                If Wanted.IndexOf(ThisDesig) < 0 Then Continue;
-                If MatchedDesigs.IndexOf(ThisDesig) >= 0 Then Continue;
-                MatchedDesigs.Add(ThisDesig);
-
-                PinList := '';
-                FirstPin := True;
-                For K := 0 To Comp.DM_PinCount - 1 Do
-                Begin
-                    Pin := Comp.DM_Pins(K);
-                    If Pin = Nil Then Continue;
-                    If Not FirstPin Then PinList := PinList + ',';
-                    FirstPin := False;
-                    PinList := PinList + '{"pin_number":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
-                    PinList := PinList + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
-                    PinList := PinList + ',"net":"' + EscapeJsonString(Pin.DM_FlattenedNetName) + '"';
-                    PinList := PinList + '}';
-                End;
-
-                CompEntry := '{"designator":"' + EscapeJsonString(ThisDesig) + '"';
-                CompEntry := CompEntry + ',"comment":"' + EscapeJsonString(Comp.DM_Comment) + '"';
-                CompEntry := CompEntry + ',"sheet":"' + EscapeJsonString(Doc.DM_FileName) + '"';
-                CompEntry := CompEntry + ',"pin_count":' + IntToStr(Comp.DM_PinCount);
-                CompEntry := CompEntry + ',"pins":[' + PinList + ']}';
-
-                If Not FirstC Then Data := Data + ',';
-                FirstC := False;
-                Data := Data + CompEntry;
-            End;
-        End;
+        Data := ConnectivityEntries(Project, Wanted, MatchedDesigs);
 
         NotFoundJson := '';
         FirstNF := True;
