@@ -145,10 +145,17 @@ async def sync_stack_manager(bridge: Any, dry_run: bool = False) -> dict[str, An
 
     Shared by pcb_sync_stack_manager and the tools that change the board's
     stack, which run it after a change: a board without the manager's copy,
-    or one already in step, reads in step and nothing is loaded.
+    or one already in step, reads in step and nothing is loaded. Where the
+    script refuses the manager (below AD 22) the sync is skipped and says
+    so: the board's own stack was written, and that write stands.
     """
-    lsm = await bridge.send_command_async(
-        "pcb.layer_stack_manager", {"include_model": "records"})
+    try:
+        lsm = await bridge.send_command_async(
+            "pcb.layer_stack_manager", {"include_model": "records"})
+    except AltiumCommandError as exc:
+        if getattr(exc, "code", "") != "UNSUPPORTED_VERSION":
+            raise
+        return {"skipped": True, "in_step": None, "reason": str(exc)}
     if not isinstance(lsm, dict) or "layers" not in lsm:
         return lsm
     physical = await bridge.send_command_async("pcb.physical_stack", {})
