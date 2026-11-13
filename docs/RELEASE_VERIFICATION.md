@@ -1,4 +1,4 @@
-# Release verification: 2026.11.13.2
+# Release verification: 2026.11.13.11
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.13.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.13.11`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4075,6 +4075,48 @@ With the scripts deployed, on scratch libraries:
    `fab="OSH Park"` and a 4 mil track on the board it is refused naming the
    track, the board it examined and OSH Park's quote; with
    `fab="JLCPCB"` it runs and the reply carries `fab_check`.
+
+## 78. Stacks, member gates, heights, connectivity and library reads
+
+Measured live on AD 26.11.1.5 with script 2026.11.13.11 unless marked.
+Scratch copies only, closed without saving.
+
+1. `pcb_layer_stack_manager` on a one-stack board: one call to the script,
+   no `stacks`. On a rigid-flex board (`stacks_count` 2): a second call
+   reads the model, `stacks` lists both with their own layers and spans,
+   and `drill_pairs` are the board's own (one pair, not a copy of the
+   first). `pcb_physical_stack` gives the same `stacks_count`.
+2. A stack write below AD 22 (not measured here): its `stack_manager`
+   sync answers `skipped` with the reason and the write stands.
+3. Schematic members: on a sheet with one object of each kind,
+   `obj_query` reads Style on a port, power port, cross-sheet connector
+   and probe, LineWidth on wires, notes, text frames and signal
+   harnesses, IOType / Alignment / Width on ports, part members on a
+   component and Electrical / PinLength on pins. IOType on a wire,
+   LineWidth on a pin or probe and Width on a net label answer blank,
+   `not_on_this_type` says why, and `app_ping` still answers after each.
+   `build.py` refuses to build when `scripts/altium/gen_sch_members.py
+   --check` fails.
+4. `pcb_get_components`: `height_mils` is the footprint's Height field and
+   `model_height_mils` the tallest 3D body (null without one), with
+   `height_mismatch`; `body_heights="all"` adds `bodies`. Generic
+   `Height` and `ModelHeight` on `eComponentObject` agree with them.
+5. `pcb_replicate_layout` on a channel whose parts sit on an inner layer
+   of a rigid-flex board finds its internal net and copies its routing.
+6. `proj_get_connectivity` / `_many` list `sheets`; `pins` and
+   `connected_only` trim the pins and say `pins_left_out`. A multi-part
+   component placed across sheets takes each pin's net from the sheet
+   its part is on (not measured here: needs such a project).
+7. `lib_extract_intlib` on an IntLib that would raise the Open
+   Integrated Library prompt: no prompt, and `sch_libs` / `pcb_libs` list
+   the sources extracted (in capitals, as FindFiles gives them).
+8. `sch_place_text_frame` with fill, border and text colours and a
+   margin reads them back in `style`; `C:\new\board` stays text with a
+   real newline beside it or with `typed_breaks=False`.
+9. A DbLib with `QuoteTableNames=0` sends its table names bare (FPC
+   tests; not measured against a database here).
+10. An unreadable pad shape in the board geometry reads `Unknown` and is
+    drawn as its whole box.
 
 ## Still open, and not blocking
 
