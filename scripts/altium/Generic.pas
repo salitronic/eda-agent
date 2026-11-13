@@ -17900,7 +17900,7 @@ Begin
     { that. The text arrives JSON-unescaped, so a break the caller meant is }
     { a real newline by now. A backslash followed by n is TEXT here (a path }
     { such as C:\new\board) and stays as sent: sch_place_text_frame turns a }
-    { typed backslash-n into a newline before it sends.                     }
+    { typed backslash-n into a newline before it sends (issue #342).        }
     TextStr := StringReplace(TextStr, #13 + #10, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #13, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #10, #13 + #10, MkSet(rfReplaceAll));
