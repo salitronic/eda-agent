@@ -3734,13 +3734,14 @@ def register_pcb_tools(mcp):
             box without the part's designator and comment) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
 
-            Heights, in mils above the part's own side of the board:
-            ``height_mils`` is the tallest 3D body (STEP or extruded) when
-            the part has one, else the footprint's Height parameter
-            (``height_source`` says which). ``component_height_mils`` is
-            that parameter as typed, ``max_body_height_mils`` the tallest
-            body (null without one), ``body_count``, and
-            ``height_mismatch`` true when the two differ.
+            Two heights, in mils above the part's own side of the board,
+            and neither is chosen for you: ``height_mils`` is the
+            footprint's Height field as entered in the library, and
+            ``model_height_mils`` the tallest 3D body (STEP or extruded;
+            null without one). ``height_mismatch`` is true when they
+            differ; ``body_count`` says how many bodies were read. Either
+            can be wrong for a given part: check the datasheet when it
+            matters.
 
         Args:
             body_heights: ``max`` (default) gives the tallest body per

@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""A placed component's height is its tallest 3D body.
+"""A placed component reports both its heights and chooses neither.
 
-pcb_get_components reported only the footprint's Height parameter, a
-number typed by hand that is often 0 or out of step with the model, and
-the bodies' heights were reachable only by querying every body and
-grouping them by part. Now every reader of a component's height takes
-the tallest body, STEP or extruded, when the part has one, and the
-parameter only when it has none; the parameter is still reported as
-typed, beside the source and a mismatch flag.
+pcb_get_components reported only the footprint's Height field, a number
+typed by hand that is often 0 or out of step with the model, and a body's
+height was reachable only by querying every body. Either number can be the
+wrong one for a part, so both are given: height_mils, the Height field as
+entered, and model_height_mils, the tallest 3D body (STEP or extruded),
+with a mismatch flag. The generic properties are Height and ModelHeight.
 """
 from __future__ import annotations
 
@@ -49,34 +48,39 @@ def test_step_and_extruded_bodies_are_told_apart():
     assert "Else If Kind = 1 Then Result := 'step'" in body
 
 
-def test_the_guard_prefers_bodies_over_the_parameter():
-    body = _generic()["ComponentGuardedHeight"]
-    bodies = body.index("If Count > 0 Then Result := MaxOverall")
-    assert bodies < body.index("Result := Comp.Height;")
+def test_the_model_height_is_the_tallest_body_or_nothing():
+    body = _generic()["ComponentModelHeightJson"]
+    assert "ComponentBodyScan(Comp, False, MaxOverall, Count);" in body
+    assert "If Count > 0 Then Result := FloatToJsonStr(CoordToMilsF(MaxOverall))" in body
+    assert "Else Result := '';" in body
+    assert "Comp.Height" not in body
 
 
-def test_the_generic_height_of_a_component_is_guarded():
+def test_the_generic_height_is_the_field_and_model_height_the_body():
     body = _generic()["GetPCBProperty"]
-    assert "ComponentGuardedHeight(Comp)" in body
-    raw = body.index("Else If PropName = 'ComponentHeight' Then")
-    assert "Comp.Height" in body[raw:raw + 200]
+    at = body.index("Else If PropName = 'Height' Then")
+    assert "Result := FloatToJsonStr(CoordToMilsF(Comp.Height));" in body[at:at + 500]
+    model = body.index("Else If PropName = 'ModelHeight' Then")
+    assert "ComponentModelHeightJson(Comp)" in body[model:model + 200]
 
 
-def test_component_height_is_advertised_and_a_length():
+def test_model_height_is_advertised_and_a_length():
     gen = _generic()
-    assert "ComponentHeight" in gen["KnownPCBPropertyList"]
-    assert "(PropName = 'ComponentHeight')" in gen["IsLengthProperty"]
+    assert "ModelHeight" in gen["KnownPCBPropertyList"]
+    assert "(PropName = 'ModelHeight')" in gen["IsLengthProperty"]
+    assert "ComponentHeight" not in _GENERIC.read_text(encoding="utf-8-sig")
 
 
-def test_get_components_reports_the_guarded_height():
+def test_get_components_reports_both_heights_and_picks_neither():
     body = load(_PCB)["PCB_GetComponents"]
     assert "ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount)" in body
-    guarded = body.index("If BodyCount > 0 Then")
-    assert body.index("HeightMils := MaxMils;") > guarded
-    for key in ('"height_source":"3d_bodies",', '"height_source":"component",',
-                '"component_height_mils":', '"body_count":', '"height_mismatch":',
-                '"max_body_height_mils":'):
+    assert "HeightMils := ParamMils;" in body
+    assert "HeightMils := MaxMils" not in body
+    for key in ('"model_height_mils":', '"model_height_mils":null', '"body_count":',
+                '"height_mismatch":'):
         assert key in body
+    for gone in ("height_source", "component_height_mils", "max_body_height_mils"):
+        assert gone not in body
     assert "If WantList Then HeightJson := HeightJson + '\"bodies\":['" in body
 
 

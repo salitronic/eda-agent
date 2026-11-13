@@ -1071,12 +1071,11 @@ Begin
     Else Obj.SetState_UnionIndex := UIndex;
 End;
 
-{ A PLACED COMPONENT'S HEIGHT IS ITS TALLEST 3D BODY. The component's own  }
-{ Height is the footprint's Height field, a parameter typed by hand that    }
-{ is often 0 or out of step with the model; a 0 silently passes the height }
-{ DRC. So a reader of a component's height takes the tallest body when the }
-{ part has one, STEP and extruded alike (cylinders and spheres too), and   }
-{ the parameter only when it has none (issue #323).                       }
+{ A PLACED COMPONENT HAS TWO HEIGHTS, and neither is chosen for the caller. }
+{ Height is the footprint's Height field, typed by hand (often 0, or out of }
+{ step with the model); ModelHeight is its tallest 3D body, STEP and       }
+{ extruded alike (cylinders and spheres too). Either can be the wrong one   }
+{ for a part, so both are reported.                                         }
 
 { T3DModelType of a body's model: 0 extruded, 1 STEP (measured), 2         }
 { cylinder, 3 sphere. Anything else is named by its number.                }
@@ -1144,19 +1143,14 @@ Begin
     End;
 End;
 
-{ The component's height as a reader should see it: its tallest body, or }
-{ the Height parameter when it has no body.                               }
-Function ComponentGuardedHeight(Comp : IPCB_Component) : Integer;
+{ The component's tallest 3D body in mils as JSON, '' when it has none.  }
+Function ComponentModelHeightJson(Comp : IPCB_Component) : String;
 Var
     MaxOverall, Count : Integer;
 Begin
     ComponentBodyScan(Comp, False, MaxOverall, Count);
-    If Count > 0 Then Result := MaxOverall
-    Else
-    Begin
-        Result := 0;
-        Try Result := Comp.Height; Except Result := 0; End;
-    End;
+    If Count > 0 Then Result := FloatToJsonStr(CoordToMilsF(MaxOverall))
+    Else Result := '';
 End;
 
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
@@ -1512,21 +1506,20 @@ Begin
         { A text's height and stroke width under the names a caller reaches  }
         { for (Altium's own are Size and Width), and whether it is a        }
         { component's designator or comment, so a filter can pick those out. }
-        { On a component Height is GUARDED: its tallest 3D body when it has }
-        { one, else its Height parameter; ComponentHeight is the parameter  }
-        { as typed.                                                          }
+        { On a component Height is the footprint's Height field and        }
+        { ModelHeight its tallest 3D body ('' with none): both, unchosen.  }
         Else If PropName = 'Height' Then
         Begin
             If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End
             Else If Oid = eComponentObject Then
             Begin
                 Comp := Obj;
-                Result := FloatToJsonStr(CoordToMilsF(ComponentGuardedHeight(Comp)));
+                Result := FloatToJsonStr(CoordToMilsF(Comp.Height));
             End;
         End
-        Else If PropName = 'ComponentHeight' Then
+        Else If PropName = 'ModelHeight' Then
         Begin
-            If Oid = eComponentObject Then Begin Comp := Obj; Result := FloatToJsonStr(CoordToMilsF(Comp.Height)); End;
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := ComponentModelHeightJson(Comp); End;
         End
         Else If PropName = 'StrokeWidth' Then
         Begin
@@ -1685,7 +1678,7 @@ Begin
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
-        (PropName = 'ComponentHeight') Or
+        (PropName = 'ModelHeight') Or
         (PropName = 'Size') Or (PropName = 'BotXSize') Or
         (PropName = 'BotYSize') Or (PropName = 'HoleWidth') Or
         (PropName = 'SizeTop') Or (PropName = 'SizeMid') Or
@@ -2510,7 +2503,7 @@ Begin
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
-        (PropName = 'ComponentHeight') Or
+        (PropName = 'ModelHeight') Or
         (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
         (PropName = 'IsComment') Or (PropName = 'UseTTFonts') Or
         (PropName = 'MirrorFlag') Or
@@ -2588,7 +2581,7 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
-        + 'StandoffHeight, OverallHeight, ComponentHeight, BodyOpacity3D, InComponent, Component, '
+        + 'StandoffHeight, OverallHeight, ModelHeight, BodyOpacity3D, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
         + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '

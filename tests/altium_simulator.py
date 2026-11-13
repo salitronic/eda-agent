@@ -1973,11 +1973,8 @@ class AltiumSimulator:
                     '"footprint":"' + _escape_json_string(c.footprint) + '",'
                     '"source_designator":"' + _escape_json_string(c.designator) + '",'
                     '"height_mils":' + str(c.height_mils) + ','
-                    # The simulated board carries no 3D bodies, so the
-                    # height is the component's own parameter.
-                    '"height_source":"component","max_body_height_mils":null,'
-                    '"height_mismatch":false,'
-                    '"component_height_mils":' + str(c.height_mils) + ','
+                    # The simulated board carries no 3D bodies.
+                    '"model_height_mils":null,"height_mismatch":false,'
                     '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
                     '"bbox":{"x1":' + str(x1) + ',"y1":' + str(y1) +
                     ',"x2":' + str(x2) + ',"y2":' + str(y2) +

@@ -2652,7 +2652,8 @@ Begin
     End;
 
     { body_heights: max (default) = the tallest 3D body per part; all = also }
-    { every body. Either way height_mils is guarded (ComponentGuardedHeight). }
+    { every body. height_mils stays the footprint's Height field and         }
+    { model_height_mils is the tallest body: both reported, neither chosen.  }
     BodyMode := LowerCase(Trim(ExtractJsonValue(Params, 'body_heights')));
     If BodyMode = '' Then BodyMode := 'max';
     If (BodyMode <> 'max') And (BodyMode <> 'all') Then
@@ -2686,21 +2687,13 @@ Begin
         Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
         BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount);
         MaxMils := CoordToMilsF(MaxOverall);
+        HeightMils := ParamMils;
         If BodyCount > 0 Then
-        Begin
-            HeightMils := MaxMils;
-            HeightJson := '"height_source":"3d_bodies",'
-                + '"max_body_height_mils":' + FloatToJsonStr(MaxMils) + ','
-                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ',';
-        End
+            HeightJson := '"model_height_mils":' + FloatToJsonStr(MaxMils) + ','
+                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ','
         Else
-        Begin
-            HeightMils := ParamMils;
-            HeightJson := '"height_source":"component",'
-                + '"max_body_height_mils":null,"height_mismatch":false,';
-        End;
-        HeightJson := HeightJson + '"component_height_mils":' + FloatToJsonStr(ParamMils) + ','
-            + '"body_count":' + IntToStr(BodyCount) + ',';
+            HeightJson := '"model_height_mils":null,"height_mismatch":false,';
+        HeightJson := HeightJson + '"body_count":' + IntToStr(BodyCount) + ',';
         If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
 
         { Bounding rectangle for collision/placement planning. Returns the    }
