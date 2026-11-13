@@ -17543,7 +17543,9 @@ Begin
             Else If Obj.ObjectId = ePadObject Then
             Begin
                 Pad := Obj;
-                ShapeStr := 'Round';
+                { A shape none of these names, or one that cannot be read, is   }
+                { Unknown, not Round: readers then draw the pad's whole box.   }
+                ShapeStr := 'Unknown';
                 Try
                     If Pad.TopShape = eRounded Then ShapeStr := 'Round'
                     Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
