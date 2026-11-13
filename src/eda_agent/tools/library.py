@@ -5144,13 +5144,13 @@ def register_library_tools(mcp):
             designator: Optional designator to stamp on the part.
             sheet_path: Optional .SchDoc path; default the active sheet.
             part_id: Which part of a multi-part component to place, from
-                1 (A). Left out, Altium's default part is placed.
+                1 (A); part 1 when left out.
 
         Returns:
             "placed", "library_path", "table", "key", "lib_reference",
             "database_table", "database_linked", "x", "y", "rotation",
             "part_id" (read back), "part_count", "part_id_applied",
-            "designator".
+            "designator"; "reason" PART_REFUSED when the part did not take.
         """
         refusal = dblib_path_refusal(library_path)
         if refusal:
@@ -5195,7 +5195,7 @@ def register_library_tools(mcp):
 
         Args:
             rows: ``{"key", "x", "y"}`` each, optionally ``rotation`` (0,
-                90, 180, 270), ``designator``, ``part_id`` (from 1), and
+                90, 180, 270), ``designator``, ``part_id`` (from 1, default 1), and
                 ``table`` or ``library_path`` where it is not the call's.
             library_path: The .DbLib of rows that name none.
             table: The table of rows that name none.
