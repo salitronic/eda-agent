@@ -44,8 +44,8 @@ def test_no_kinds_is_one_pass_over_every_kind_as_before():
     fallback = chain[chain.rindex("Else"):]
     for obj in _KINDS.values():
         assert obj in fallback
-    assert "If Passes.Count = 0 Then
-        If Not WantGrouped Then Passes.Add('all');" in section
+    assert ("If Passes.Count = 0 Then\n"
+            "        If Not WantGrouped Then Passes.Add('all');") in section
 
 
 def test_the_kinds_accepted_are_the_kinds_filtered():
