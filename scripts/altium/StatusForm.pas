@@ -1147,7 +1147,7 @@ Procedure ShowStatusForm(Dummy : Integer);
 Var
     NewLeft, NewTop : Integer;
     AvailL, AvailT, AvailW, AvailH : Integer;
-    Margin : Integer;
+    Margin, TaskbarH : Integer;
 Begin
     Try
         EnsureStatusBuffers(0);
@@ -1195,6 +1195,16 @@ Begin
         Except End;
         NewLeft := AvailL + AvailW - StatusForm.Width  - Margin;
         NewTop  := AvailT + AvailH - StatusForm.Height - Margin;
+        { An auto-hidden taskbar reserves no work area: the whole screen  }
+        { is reported, and the taskbar covers the window's foot when it   }
+        { slides up. The window then ends a taskbar's height above the    }
+        { screen's foot (48 px at 96 dpi on Windows 11), no margin more.  }
+        If AvailT + AvailH >= Screen.Height Then
+        Begin
+            TaskbarH := 48;
+            Try TaskbarH := (48 * Screen.PixelsPerInch) Div 96; Except End;
+            NewTop := AvailT + AvailH - StatusForm.Height - TaskbarH;
+        End;
         If NewLeft < AvailL Then NewLeft := AvailL;
         If NewTop  < AvailT Then NewTop  := AvailT;
         Try StatusForm.Left := NewLeft; Except End;
