@@ -557,6 +557,25 @@ Begin
         Or (Obj.ObjectId = eSheetSymbol);
 End;
 
+{ Justification belongs to ISch_Label and the types built on it. Asked of  }
+{ a text frame it raised "Undeclared identifier: Justification" on AD      }
+{ 25.8.1, a modal Try/Except cannot contain, and the polling loop stopped  }
+{ (issue #328). A text frame aligns its text with Alignment instead. An    }
+{ ALLOWLIST, as for IsSolid: the label, the net label (the batch placer    }
+{ writes its Justification), the parameter and designator, the sheet      }
+{ symbol's name and file name, and the power object and cross-sheet       }
+{ connector. Anything else answers unreadable / not written.               }
+Function SchObjectHasJustification(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eLabel) Or (Obj.ObjectId = eNetLabel)
+        Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
+        Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName)
+        Or (Obj.ObjectId = ePowerObject)
+        Or (Obj.ObjectId = eCrossSheetConnector);
+End;
+
 { Sheet symbol and sheet entry enums as the file spells them, both ways. A  }
 { name that is none of them answers -1, so the setter can refuse it rather  }
 { than write a default.                                                      }
@@ -2770,7 +2789,13 @@ Begin
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
-        Else If PropName = 'Justification' Then Result := IntToStr(Obj.Justification)
+        Else If PropName = 'Justification' Then
+        Begin
+            If SchObjectHasJustification(Obj) Then
+                Result := IntToStr(Obj.Justification)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { A SHEET ENTRY'S POSITION ON THE SYMBOL. Both read empty before,
           because neither had a case here, so a caller checking whether a
           placement took got nothing back and could not tell an unset
@@ -3596,7 +3621,13 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
+        Else If PropName = 'Justification' Then
+        Begin
+            If SchObjectHasJustification(Obj) Then
+                Obj.Justification := StrToIntDef(Value, 0)
+            Else
+                Matched := False;
+        End
 
         // Coord properties (expected in mils)
         Else If PropName = 'Width' Then
