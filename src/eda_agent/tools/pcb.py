@@ -1584,8 +1584,10 @@ def register_pcb_tools(mcp):
             object1: "U1.3" pad 3 of U1, or "<type>:<filter>" for a free
                 primitive in the generic filter grammar, e.g.
                 "track:Layer=TopLayer|X1=100|Y1=200|X2=300|Y2=200" or
-                "via:X=1200|Y=800". The filter must match exactly one
-                object. A whole component ("U1") or a net ("net:GND") is
+                "via:Net=GND|X=1200|Y=800". The filter must match exactly
+                one object. Net=, Component=, X1/Y1 or BoundsLeft/
+                BoundsBottom find it at once; X=/Y= alone check every
+                object of the type (seconds on a busy board). A whole component ("U1") or a net ("net:GND") is
                 refused: a distance needs one primitive.
             object2: The second object, in the same forms.
 
@@ -3308,7 +3310,9 @@ def register_pcb_tools(mcp):
 
         Args:
             x: X in mils, from the board origin.
-            y: Y in mils, from the board origin.
+            y: Y in mils, from the board origin. ``obj_query``,
+                ``pcb_get_vias`` and ``pcb_get_copper`` give ABSOLUTE
+                positions: subtract the board origin first.
 
         Returns:
             ``pours`` (``name``, ``net``, ``layer``), ``found`` and
@@ -4615,7 +4619,9 @@ def register_pcb_tools(mcp):
         via at each same-net single-layer (SMD) pad that is NOT on the target
         layer, since that pad can now only connect through a layer change.
         Multilayer (through-hole) pads need no via. This flattens a net's
-        routing onto one layer, so use it deliberately.
+        routing onto one layer, so use it deliberately. Tracks only (arcs
+        stay where they are), and every track of the net moves: those
+        inside footprints and a hatched pour's tracks too.
 
         Args:
             net_name: Net whose tracks move.
@@ -8107,11 +8113,16 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Get properties of currently selected objects on the active PCB.
 
+        Reads Altium's selection list, not the board: the quick way to
+        read what is selected (``obj_query`` with ``Selected=true`` checks
+        every object; ``pcb_get_copper(selected=True)`` gives geometry).
+
         Args:
-            properties: Comma-separated property names to return.
-                Available: ObjectId, X, Y, X1, Y1, X2, Y2, Layer, Net,
-                Width, Name, Rotation, HoleSize, TopXSize, TopYSize,
-                Size, Pattern, SourceDesignator, Text, Descriptor, Selected
+            properties: Comma-separated property names to return; any
+                name ``obj_query`` reads, e.g. ObjectId, X, Y, X1, Y1, X2,
+                Y2, Layer, Net, Width, Name, Rotation, HoleSize, TopXSize,
+                TopYSize, Size, Pattern, SourceDesignator, Text,
+                Descriptor, Selected. A misspelt name reads blank.
 
         Returns:
             Dictionary with "objects" array and "count"
@@ -8140,7 +8151,8 @@ def register_pcb_tools(mcp):
                 Mask: "TopPaste", "BottomPaste", "TopSolder", "BottomSolder"
                 Plane: "InternalPlane1"-"InternalPlane16"
                 Other: "DrillGuide", "DrillDrawing", "MultiLayer",
-                       "KeepOutLayer", "Mechanical1"-"Mechanical16"
+                       "KeepOutLayer", "Mechanical1" and up, or the
+                       board's own name for a layer
             visible: True to show, False to hide
 
         Returns:
@@ -8699,7 +8711,8 @@ def register_pcb_tools(mcp):
         """Place an arc on the active PCB.
 
         Creates a circular arc segment defined by center, radius, and
-        angular range.
+        angular range. For many arcs ``pcb_place_arcs`` takes the list
+        and resolves each layer and net once.
 
         Args:
             x_center: Arc center X position in mils
@@ -8921,7 +8934,7 @@ def register_pcb_tools(mcp):
             y: Text Y position in mils, as x.
             layer: PCB layer name (default "TopOverlay"). Common choices:
                 "TopOverlay", "BottomOverlay", "TopLayer", "BottomLayer",
-                "Mechanical1"-"Mechanical16"
+                "Mechanical1" and up, or the board's own layer name
             height: Text height in mils (default 60), decimals allowed
             rotation: Rotation angle in degrees (default 0); a justified
                 text turns about its justification point.
@@ -9268,10 +9281,12 @@ def register_pcb_tools(mcp):
         """Get the vias on the active PCB board.
 
         Returns via position, pad size, hole size, net assignment, and
-        start/end layer.
+        start/end layer. Positions are absolute (not from the board origin).
 
         Args:
             net: Only this net's vias (exact name). Empty is every via.
+                Every via is still looked at; ``obj_query("eViaObject",
+                ..., filter="Net=GND")`` reads only the net's own.
             offset, limit: Page a large board; limit 0 returns every match.
 
         Returns:
@@ -9329,7 +9344,8 @@ def register_pcb_tools(mcp):
 
         The opening is the hole plus ``expansion_mils``, written as a
         manual value on both sides (a linked via still stores the bottom
-        one) and read back into ``vias_verified``. A rule scoped
+        one) and read back into ``vias_verified``. Vias inside footprints
+        are written too (``pcb_set_via_tenting`` leaves them alone). A rule scoped
         ``IsVia`` also covers vias placed later:
         ``pcb_create_design_rule(rule_type="solder_mask_expansion",
         scope="IsVia", value=<mils>)``.
@@ -9706,7 +9722,10 @@ def register_pcb_tools(mcp):
 
         Returns pad shape, size, hole, thermal relief, and solder/paste
         mask expansion details. Provide at least one filter (net or
-        designator) to avoid returning all pads on the board.
+        designator) to avoid returning all pads on the board. AT MOST 500
+        pads come back, with nothing to say more were left, and every pad
+        is looked at: for one part ``pcb_get_component_pads``; for one net
+        ``obj_query("ePadObject", ..., filter="Net=GND")``.
 
         Args:
             net: Filter by net name (e.g., "GND", "VCC"). Optional.
@@ -9741,6 +9760,8 @@ def register_pcb_tools(mcp):
 
         Changes the width of every routed track segment assigned to
         the given net. Useful for adjusting power or signal trace widths.
+        Tracks only: arcs keep their width (``obj_modify`` on eArcObject
+        with ``Net=``). Footprint, pour and dimension tracks are left.
 
         Args:
             net_name: Name of the net whose tracks to modify (e.g., "VCC")
@@ -9785,6 +9806,9 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_get_polygons() -> dict[str, Any]:
         """Get all polygon pours on the active PCB with copper area.
+
+        Outlines with true arcs: ``pcb_get_copper(kinds="polygon")``; one
+        pour's poured copper: ``pcb_get_pour_copper``.
 
         Each row: ``index``, ``name``, ``net``, ``layer``,
         ``hatch_style``, ``pour_over``, ``poured`` (false when shelved),
@@ -10145,6 +10169,15 @@ def register_pcb_tools(mcp):
         ``pts`` (``[x, y]`` per vertex, ``[x, y, cx, cy, r, a1, a2]`` where
         the edge is an arc). Unlike the other tools, lengths here are in
         Altium's internal units: divide by ``coord_per_mil`` in the reply.
+        ``v`` is, per kind: track ``[x1, y1, x2, y2, width]``; arc ``[cx,
+        cy, r, a1, a2, width]``; via ``[x, y, size, hole]`` with ``low``,
+        ``high``, ``sizes`` per layer and its mask; fill ``[x1, y1, x2,
+        y2, rotation]``. ``in_polygon``, ``pour`` and ``pour_net`` name the
+        pour a piece was poured by.
+
+        The fast bulk board reader: one layer of one kind reads in a
+        second or two, where all copper of a busy board takes minutes.
+        Narrow it with kinds and layer; every page walks the board again.
 
         Args:
             kinds: Comma list of track, arc, via, region, fill, polygon;
@@ -10603,7 +10636,8 @@ def register_pcb_tools(mcp):
 
         Not part of any component. Use for fiducials, test points,
         mounting holes. Set hole_size=0 for surface-mount pads,
-        nonzero for through-hole.
+        nonzero for through-hole. For many pads ``pcb_place_pads``
+        takes the list and resolves each layer and net once.
 
         Args:
             x, y: Position in mils

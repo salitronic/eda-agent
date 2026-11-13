@@ -37,6 +37,28 @@ independent of tool names and are NOT changed by this convention.
 All `pcb_*`, `lib_*`, `audit_*`, and `design_*` tools already satisfy the
 convention and are left as-is. Well-formed `sch_*` tools are also kept.
 
+## Advertised since the rename
+
+The map below is the rename as it was made. Some of its new names are no
+longer advertised on their own; every one still runs by name through
+`tool_invoke`:
+
+- Families that differ by a mode are advertised as ONE tool taking `kind`
+  (or `action`, `how`) and that kind's arguments as `args`
+  (`tools/folds.py`):
+  `pcb_calc`, `audit`, `app_ui`, `app_menu` (`app_run_menu` is
+  `app_menu(how="run")`), `pcb_dimension`, `pcb_body` and
+  `app_checkpoints` (`app_checkpoint` is `app_checkpoints(action="make")`).
+  Their names carry no verb.
+- A single tool whose list twin takes the same fields is hidden behind the
+  twin: `pcb_place_via` behind `pcb_place_vias`, `proj_get_component_info`
+  behind `proj_get_component_info_many`, `proj_get_connectivity` behind
+  `proj_get_connectivity_many`, and the single footprint pad, track and via
+  writers behind their list tools.
+- The batch tools are the single tool's `items`: `obj_batch_modify`,
+  `obj_batch_create` and `obj_batch_delete` are `obj_modify`,
+  `obj_create` and `obj_delete` given `items`.
+
 ## Rename map
 
 ### application -> app_

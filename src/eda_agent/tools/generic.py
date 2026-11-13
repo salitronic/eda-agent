@@ -525,9 +525,13 @@ def register_generic_tools(mcp):
                 and the read-only "PourIndex,Poured"; nothing repours.
                 Lengths are decimal mils.
 
-                A board type returns EVERY primitive of that type;
-                filter "InComponent=false|InPolygon=false" for free
-                copper. Mechanical-layer tracks have no net.
+                A board type returns EVERY primitive of that type
+                ("InComponent=false|InPolygon=false": free copper).
+                Mechanical-layer tracks have no net. Each property asked
+                is read per object. On a board only an exact Net=,
+                Component= or BoundsLeft/BoundsBottom (X1/Y1) is indexed;
+                any other condition (X=, Y=) is checked on every object
+                (Layer=: one layer's).
             scope: "active_doc" (default); "project" (every sheet of the
                 focused project); "doc:PATH" or the bare path (that sheet,
                 no focus change); "project:PATH"; "lib_component:NAME" (a
@@ -539,16 +543,14 @@ def register_generic_tools(mcp):
                 property (length, angle, colour, ordinal) matches as a
                 number, '.' or ',' decimal: Location.Y=9000.0 meets 9000.
                 Text, names and designators match exactly.
-                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
-                (a value that is not a number matches no < > <= >=);
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
                 character, case ignored), "Net!~VCC*" excludes by one. A
-                PCB Layer (Layer1, Layer2) takes the internal name
-                ("Mechanical21") or the board's own name ("FluidGon"), in
-                any case; a ~ pattern meets either, and a name that is no
-                layer is refused. The same grammar holds for obj_modify,
-                obj_delete and obj_select.
-            limit: Maximum number of objects to return (0 = unlimited)
+                PCB Layer takes the internal name ("Mechanical21") or the
+                board's own, any case; ~ meets either; no layer: refused.
+                Same grammar in obj_modify, obj_delete, obj_select, obj_count.
+            limit: Most objects to return (0 = all); it also ends the
+                search early, and count is then the number returned.
 
         Returns:
             Dictionary with "objects" array and "count"
@@ -686,9 +688,9 @@ def register_generic_tools(mcp):
 
         When each object needs a DIFFERENT value (10 pins to 10 positions,
         distinct designators), give ``items``: a list of
-        {scope, object_type, filter, set} dicts, one per filter. They run in
-        ONE Altium transaction (one undo step); arguments given beside
-        ``items`` apply to every item. No rollback: items before a failure
+        {scope, object_type, filter, set} dicts, one per filter: ONE
+        request, but each item is its own search and edit (its own undo
+        step); arguments given beside ``items`` apply to every item. No rollback: items before a failure
         stay applied. After a designator list, check the netlist: duplicate
         designators merge nets silently (proj_annotate renumbers without
         duplicates). With items a value in ``set`` may hold ';' but no
@@ -767,9 +769,9 @@ def register_generic_tools(mcp):
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
-                selected for you).
+                selected for you). A board type ignores scope: it acts
+                on the active board.
             filter: Pipe-separated property=value conditions (AND logic)
-
             items: Several filter+set operations at once (see above).
 
         Returns:
@@ -909,16 +911,18 @@ def register_generic_tools(mcp):
         with an empty filter needs confirm_delete_all, or nothing is sent.
         Arguments given beside ``items`` apply to every item.
 
-        A PCB type deletes from the active board and also matches
-        footprint primitives and polygon hatching unless the filter says
-        "InComponent=false|InPolygon=false". To take up routing use
-        ``pcb_unroute``.
+        A PCB type deletes from the active board, whatever the scope (with
+        a library or sheet in front: the only open board, brought forward;
+        in a footprint use lib_delete_footprint_primitives). It also
+        matches footprint primitives and polygon hatching unless the
+        filter says "InComponent=false|InPolygon=false". To take up
+        routing use ``pcb_unroute``.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
             scope: "active_doc", "project", "doc:PATH", or
                 "lib_component:NAME" (a named symbol in the active SchLib).
-                A PCB type takes only "active_doc".
+                A PCB type ignores it (see above).
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
@@ -1052,7 +1056,11 @@ def register_generic_tools(mcp):
         """Select objects matching a filter on the active document.
 
         Sets the selection state on matching schematic or PCB objects for
-        visual highlighting. Use `obj_deselect_all` to clear.
+        visual highlighting. Use `obj_deselect_all` to clear. On a board
+        it ignores Altium's Selection Filter and searches twice (select,
+        then read back): an indexed filter (see `obj_query`) keeps that
+        quick. With a library or sheet in front a PCB type acts on the
+        only open board.
 
         Args:
             object_type: Altium object type (schematic or PCB)
@@ -1616,7 +1624,9 @@ def register_generic_tools(mcp):
                 "ObjectKind=Document|FileName=C:\\path\\to\\file.SchDoc"
 
         Returns:
-            Dictionary with execution result
+            Dictionary with execution result. Success means the process
+            was dispatched: Altium accepts an unknown process silently,
+            so read the design back to see what it did.
         """
         refusal = refuse_process(process_name)
         if refusal is not None:
@@ -2830,12 +2840,17 @@ def register_generic_tools(mcp):
         scope: str = "active_doc",
         filter: str = "",
     ) -> dict[str, Any]:
-        """Quick count of objects by type, faster than `obj_query` when you only need the count.
+        """Count objects of a type without reading their properties.
+
+        On a board with NO filter Altium's own counter answers at once;
+        with a filter it searches like `obj_query` (an indexed filter keeps
+        that quick, see there).
 
         Args:
             object_type: Altium object type constant (see `obj_query` for options)
             scope: "active_doc" (default), "project", or
                 "doc:C:\\path\\Sheet.SchDoc" for a specific loaded sheet.
+                A PCB type counts the active board whatever the scope.
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:

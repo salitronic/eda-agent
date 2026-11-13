@@ -47,10 +47,10 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 ## Features
 
 - **~600 tools on the default Altium backend** (600+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
-- **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `obj_run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
-- **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and the whole list is one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Typical wall-time savings: 10 to 100x on multi-item edits
+- **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `obj_run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation (`obj_create` makes schematic objects only). On a board, a filter on an exact `Net=`, `Component=`, `Layer=` or `BoundsLeft`/`BoundsBottom` goes straight to its objects; any other condition is checked on every object of the type
+- **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and up to 200 items are one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back; in a PcbLib each pad is its own undo step). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_place_arcs`, `pcb_place_pads`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. `obj_modify` with `items` sends one request, but each item is its own search and edit. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
-- **Design-lint sweep**: `design_lint_report` runs 31 audit checks in one IPC pass and returns a structured violation list - schematic-side (component-parameter visibility per class, power-port orientation, floating ports, multi-output / no-driver nets, duplicate designators, off-grid components) and PCB-side (DNP variant components, tented-via ratio, near-miss track endpoints, signal vias without nearby return via, via antennas, removed pad shapes, components outside outline, pads too close to board edge, invalid polygon regions, optional DRC). Each check is also exposed as a standalone `audit_*` MCP tool; the dashboard's Status → Health subtab has a one-click Lint panel that calls `/api/lint` and groups results by Schematic / PCB
+- **Design-lint sweep**: `design_lint_report` runs 31 audit checks in one IPC pass and returns a structured violation list - schematic-side (component-parameter visibility per class, power-port orientation, floating ports, multi-output / no-driver nets, duplicate designators, off-grid components) and PCB-side (DNP variant components, tented-via ratio, near-miss track endpoints, signal vias without nearby return via, via antennas, removed pad shapes, components outside outline, pads too close to board edge, invalid polygon regions, optional DRC). Each check is also reachable on its own as `audit(kind=...)`; the dashboard's Status → Health subtab has a one-click Lint panel that calls `/api/lint` and groups results by Schematic / PCB
 - **Canonical circuit blocks**: `design_add_circuit_block` folds a whole block into a `DesignPlan` in one call, allocating refdes, wiring every pin to the right net and tagging power / ground and roles. Twelve of them: `decoupling`, `pullup`, `pulldown`, `series_resistor`, `voltage_divider`, `rc_lowpass`, `rc_highpass`, `led_indicator`, `crystal`, `pi_filter`, `mosfet_low_side`, `mosfet_high_side`. Naming-agnostic: you supply the part identities, it owns only the wiring pattern. `design_list_circuit_blocks` returns each one's parameter contract, so the planner never guesses a parameter name
 - **Datasheet-first discipline**: every component-surfacing response (`pcb_get_components`, `proj_get_bom`, `proj_get_component_info_many`, `proj_find_component`, `lib_search`, `design_review_snapshot`, `sim_get_readiness`) carries a `_datasheet_guidance` block with per-part vendor search queries. `app_attach` / `app_ping` carry a `_system_reminder` on their first call and every 10th after it (`EDA_AGENT_REMINDER_EVERY` sets the interval), so every MCP client that connects sees the rule at session start and again later. LLM-fabricated datasheet values are forbidden; WebFetch/WebSearch are called out by name
 - **Sch <-> PCB netlist crossref**: `obj_crossref_net(net_name)` compares the schematic pin list against the PCB pad list for the same net. Catches ECO drift, stale post-fabrication routing, phantom nets from port/sheet-entry rename conflicts. `in_sync` flag + `sch_only` / `pcb_only` diff
@@ -245,7 +245,8 @@ Only families of tools that differ by a mode are advertised as one tool each:
 the calculators (`pcb_calc`), the audits (`audit`), the dimension and 3D body
 kinds, the menu runners, the dialog drivers and the checkpoints. Each takes a
 `kind` and that kind's arguments. Every member keeps its own name,
-description and schema, which `tool_catalog` returns and `tool_invoke` runs.
+description and schema; `tool_catalog` returns its summary line and schema,
+and `tool_invoke` runs it.
 Everything else keeps a tool of its own; collapsing whole areas into
 `pcb(action=...)` style entry points would lose the per-tool descriptions a
 model finds the right operation by.
@@ -362,7 +363,7 @@ That last one uses `pcb_get_rule_properties`, which returns the actual numeric g
 >
 > *"Move C1-C20 into this 200-mil grid layout pattern."*
 
-A list given to `obj_modify`, `pcb_move_components` or `sch_place_components` (or as `items` to any other tool) finishes the whole operation in one call and one undo step.
+A list given to `pcb_move_components` or `sch_place_components` (or as `items` to most other tools) finishes the whole operation in one call and one undo step. `obj_modify` with `items` is one call, but each item is its own search and its own edit.
 
 ## Known limitations
 
@@ -411,11 +412,9 @@ This is an ongoing reliability effort. Every identified crash is either fixed or
 
 A UNC path (`\\server\team\board.PrjPcb`) opens like any other with the current scripts. Scripts deployed before the fix drop one leading backslash, so the file is not found and the error names a path that looks almost right. Run `eda-agent install-scripts --force` to update them, or use a mapped drive letter (`Z:\team\board.PrjPcb`) in the meantime.
 
-### Text above Latin-1 becomes question marks
+### A few Altium fields hold only Latin-1 text
 
-Altium's DelphiScript strings are single-byte, so the bridge carries text as one byte per character. Any character above U+00FF is replaced with `?` on the way in, silently. Accented Latin, the micro sign, and the degree sign are all below that boundary and survive; the ohm sign and any CJK text do not, so `10Ω` arrives as `10?`.
-
-This shows up most often on imported parts: LCSC descriptions are frequently Chinese, and `lib_easyeda_import` passes the description straight through. If you need those fields readable, set them to a transliteration before importing, or edit them in Altium afterwards.
+Requests reach Altium as UTF-8, so the ohm sign and CJK text arrive intact (`10Ω` stays `10Ω`). A few of Altium's own stores keep one byte per character whatever is sent: an embedded data record's description (`pcb_embedded_data`) refuses characters above U+00FF rather than storing `?`.
 
 ### Altium tool buttons relying on internal scripting pause while the server is running
 

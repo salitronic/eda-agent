@@ -273,14 +273,23 @@ def build_server_instructions(
         "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
         "arguments, one dict per item, with arguments given beside it\n"
         "applying to all. Twenty arcs, ten pin renames or a column of net\n"
-        + ("labels are one call and one undo step in Altium, not twenty.\n"
-           "The reply gives each item's result in order and says which\n"
-           "failed; items run before a failure stay applied.\n"
+        + ("labels are one call and one undo step in Altium, not twenty\n"
+           "(up to 200 items a request). The reply gives each item's result\n"
+           "in order and says which failed; items run before a failure stay\n"
+           "applied. A tool named in the plural (pcb_place_arcs) takes its\n"
+           "list directly.\n"
            if altium else
            "labels are one call, not twenty. The reply lists each item's\n"
            "result in order.\n")
         + "A single call works as it always has.\n"
-        "\n")
+        "\n"
+        + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
+           "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
+           "goes straight to its objects; any other condition (X=, Y=, Name)\n"
+           "is checked on every object of the type, seconds on a busy board.\n"
+           "pcb_get_copper reads one layer's copper in bulk. tool_guide names\n"
+           "the quick route for a task.\n"
+           "\n" if altium else ""))
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -288,10 +297,18 @@ def build_server_instructions(
         "either, by the object type it is given (eTrackObject acts on the\n"
         "active board). A board tool aimed at a library does not always\n"
         "fail. It can resolve some other open board and report success for\n"
-        "work you never asked for.\n"
+        "work you never asked for."
+        + (" (pcb_layer_view, pcb_pad_relief and\n"
+           "pcb_renumber_pads also act on a .PcbLib in front.)"
+           if altium else "")
+        + "\n"
         "\n"
         f"Before concluding that this server cannot do something, {reach}\n"
-        "with what you are trying to do. It answers three separate things:\n"
+        "with what you are trying to do"
+        + (',\nand backend="altium" (without it the dead ends of the other EDA\n'
+           "backends come back too)"
+           if (backend or DEFAULT_BACKEND).strip().lower() == "altium" else "")
+        + ". It answers three separate things:\n"
         "the tool and what it needs first, the tool you were probably\n"
         "reaching for and why it acts on a different document, and the\n"
         "short list of things that are genuinely impossible with the\n"

@@ -2474,7 +2474,9 @@ def register_library_tools(mcp):
         "active_doc" on a symbol's pins, rectangles or parameters: those
         act on the current component, which reading one with
         ``lib_get_component_details`` does not change. (Scope
-        "lib_component:NAME" selects the symbol for you.)
+        "lib_component:NAME" selects the symbol for you.) It is also
+        the symbol ``lib_add_pins`` and the ``lib_add_symbol_*`` tools
+        then write into.
 
         Args:
             component_name: Component name (LibRef) in the active SchLib.
@@ -2500,10 +2502,15 @@ def register_library_tools(mcp):
         """Add MANY pins to the current symbol in ONE call (there is no
         single-pin variant).
 
-        The current symbol is the one created LAST: make a symbol and add
-        its pins before making the next. A batch of lib_create_symbol
-        followed by lib_add_pins puts every pin on the last symbol;
-        lib_create_ic_symbol makes the symbol and its pins together.
+        The current symbol is the one created, copied, renamed or made
+        current LAST in this library this session (lib_set_current_component,
+        or any "lib_component:NAME" scope, a read-only obj_query
+        included), else the one on screen; ``lib_get_pin_list()`` with no
+        name reads it. Make a symbol and add its pins before making the
+        next: a batch of lib_create_symbol followed by lib_add_pins puts
+        every pin on the last symbol. To add pins to an existing symbol,
+        lib_set_current_component first. lib_create_ic_symbol makes the
+        symbol and its pins together.
 
         Args:
             pins: List of pin dicts, each with:
@@ -3779,9 +3786,12 @@ def register_library_tools(mcp):
     async def lib_get_library_origin(library_path: str) -> dict[str, Any]:
         """Report where a PCB library's origin marker sits.
 
-        Read from the library's backing board, the same one footprint
-        coordinates are written against. The library must already be open
-        and focused in Altium.
+        Read from the library's backing board, in that board's absolute
+        mils. Footprint writers place from the footprint's own reference
+        point instead: for the origin in that frame read
+        ``editor_origin_*`` from ``lib_get_footprint_primitives`` (the
+        current footprint only). The library must already be open and
+        focused in Altium.
 
         Args:
             library_path: Full path to the open .PcbLib. It must be the
@@ -6059,14 +6069,16 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Get all pins of a library component.
 
-        Name the component: without ``component_name`` this reads
-        whatever the SchLib editor has selected. Pin names and types in
-        a symbol can be wrong; check them against the datasheet before
-        relying on them.
+        Name the component: without ``component_name`` this reads the
+        current symbol, the one ``lib_add_pins`` writes into (see there),
+        which need not be the one on screen. Pin names and types in a
+        symbol can be wrong; check them against the datasheet before
+        relying on them. With ``items`` the symbols of one library are
+        read 25 to a request.
 
         Args:
             component_name: library reference of the symbol to read.
-                Empty falls back to the editor's current component.
+                Empty reads the current symbol.
             output_path: write the full pin array here as JSON and
                 return a summary instead.
             inline_limit: above this many pins the array goes to a file
@@ -6115,7 +6127,7 @@ def register_library_tools(mcp):
             pin_designators: comma-separated pin numbers, e.g. "3,12".
             owner_part_id: 0 for Part Zero, or 1..part_count.
             component_name: library reference of the symbol to edit.
-                Empty falls back to the editor's current component.
+                Empty edits the current symbol (see ``lib_add_pins``).
 
         Returns:
             Dictionary with "component", "owner_part_id", the
@@ -6698,13 +6710,15 @@ def register_library_tools(mcp):
     async def lib_split_pin_functions() -> dict[str, Any]:
         """Split slash-delimited pin names into pin function lists.
 
-        For the current library symbol, parses each pin whose name is
-        `PRIMARY/ALT1/ALT2/...` into the pin's function list (the alternate-
-        function popup), leaving `PRIMARY` as the visible name. Pins without a
-        `/` are unchanged.
+        For the current library symbol (see ``lib_add_pins``), parses each
+        pin whose name is `PRIMARY/ALT1/ALT2/...` into the pin's function
+        list (the alternate-function popup). The pin's name is left as it
+        was: shorten it yourself if only `PRIMARY` should show. Pins
+        without a `/` are unchanged.
 
         Returns:
-            {"pins_processed": N}.
+            {"pins_processed": N}, every pin looked at, with or without
+            a `/`.
         """
         bridge = get_bridge()
         return await bridge.send_command_async("library.split_pin_functions", {})
@@ -7036,7 +7050,10 @@ def register_library_tools(mcp):
             library_path: The .PcbLib; default the focused document.
             include_pads: Allow pads to be removed.
             confirm: Required True; check first with
-                ``lib_probe_footprint``.
+                ``lib_get_footprint_primitives`` or
+                ``lib_count_layer_objects``. In a library of one
+                footprint a temporary ``EDA_AGENT_HOLD`` footprint is
+                made current for the delete and removed again.
             identifier: 3D bodies whose Identifier starts with this (one
                 prefix takes every suffix a tool wrote); implies
                 object_type "body". Bodies built by a tool can be taken
@@ -8230,7 +8247,9 @@ def register_library_tools(mcp):
         Many pads, different values: ``items``, one dict per pad. Items
         that all carry ``id`` are ONE walk, every item checked first and
         one bad item refusing the call, so a renumbering (3 -> 5,
-        5 -> 7) needs no temporary names (about 6 s for 200 pads).
+        5 -> 7) needs no temporary names (about 6 s for 200 pads). Many
+        pads, ONE value: select them with ONE broad set in
+        ``lib_select_footprint_primitives``, then ``selected=True``.
 
         A written expansion is made manual (Altium ignores it otherwise);
         ``mask_manual`` / ``paste_manual`` False hands it back to the
@@ -8532,10 +8551,14 @@ def register_library_tools(mcp):
         """Select primitives of one PcbLib footprint in the editor, for an
         editor command that acts on the selection (obj_run_process with
         PCB:CustomPadShape to merge a pad and a region into a custom pad,
-        PCB:Clear, ...). obj_select acts on a board, not a footprint.
+        or ``lib_set_pad_properties(selected=True)``). obj_select acts on a
+        board, not a footprint. To delete, ``lib_delete_footprint_primitives``
+        is far quicker than a selection and PCB:Clear.
 
         Several sets select together in one call; with ``clear=False`` a
-        later call adds to the selection. Pad names are not unique (an
+        later call adds to the selection. Every object is checked against
+        every set, so use ONE broad set (object_type + layer) for many
+        objects: a set per pad name costs more than writing each pad. Pad names are not unique (an
         SMD "12" and a thru-hole "12" can share a footprint), so narrow by
         layer or box and check the reply before running the command.
 
