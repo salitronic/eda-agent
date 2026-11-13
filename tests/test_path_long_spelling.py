@@ -80,7 +80,31 @@ def test_every_place_a_path_travels_is_expanded(short_dir):
     assert out["parts"][0]["library_path"] == want
     assert out["params"] == "ObjectKind=Document|FileName=" + want
     assert out["library"] == "PlainName"
-    assert out["note"] == doc
+    assert out["note"] == want
+
+
+def test_the_keys_main_pas_turns_round_get_backslashes():
+    # The same keys CanonicalPathValue in Main.pas covers.
+    out = one_spelling({"project_file": "C:/a/b.PrjPcb",
+                        "dest_library": "C:/a/b.SchLib",
+                        "destination": "C:/a/c.SchLib",
+                        "move_document": "C:/a/d.SchDoc"})
+    assert out["project_file"] == "C:\\a\\b.PrjPcb"
+    assert out["dest_library"] == "C:\\a\\b.SchLib"
+    assert out["destination"] == "C:\\a\\c.SchLib"
+    assert out["move_document"] == "C:/a/d.SchDoc"
+
+
+@windows_only
+def test_a_path_under_any_key_is_expanded(short_dir):
+    long_dir, short = short_dir
+    doc = short + "\\Sheet One.SchDoc"
+    out = one_spelling({"move_document": doc,
+                        "rows": [{"document": doc}],
+                        "title": "C~1 is not a path"})
+    assert out["move_document"] == long_dir + "\\Sheet One.SchDoc"
+    assert out["rows"][0]["document"] == long_dir + "\\Sheet One.SchDoc"
+    assert out["title"] == "C~1 is not a path"
 
 
 def test_a_path_without_a_tilde_is_never_looked_up(monkeypatch):
