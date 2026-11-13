@@ -121,9 +121,13 @@ def test_every_listed_name_is_one_the_scripts_read():
 
 
 REFERENCE = Path(__file__).resolve().parents[1] / "reference"
+#: Altium's own script reference. CI clones only the EasyEDA API reference
+#: into reference/, so the folder alone does not mean the scripts are there.
+ALTIUM_SCRIPTS = REFERENCE / "altium-scripting-reference"
 
 
-@pytest.mark.skipif(not REFERENCE.is_dir(), reason="reference/ is local only")
+@pytest.mark.skipif(not ALTIUM_SCRIPTS.is_dir(),
+                    reason="Altium's script reference is local only")
 def test_every_listed_name_is_in_altiums_own_scripts():
     words = set()
     for root, _dirs, files in os.walk(REFERENCE):
