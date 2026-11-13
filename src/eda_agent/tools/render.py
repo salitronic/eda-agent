@@ -304,7 +304,8 @@ def register_render_tools(mcp):
         geometry = await bridge.send_command_async("generic.get_pcb_geometry", {}, timeout=180.0)
         if not isinstance(geometry, dict) or not geometry.get("outline"):
             return {"ok": False, "reason": "the active board gave no outline"}
-        stackup = await bridge.send_command_async("pcb.get_layer_stackup", {}, timeout=60.0)
+        from ..bridge.stackup import layer_stackup
+        stackup = await layer_stackup(bridge, timeout=60.0)
         polygons = await bridge.send_command_async("pcb.get_polygons", {}, timeout=60.0)
         pours = []
         for p in (polygons or {}).get("polygons") or []:
