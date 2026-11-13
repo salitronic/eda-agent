@@ -2439,8 +2439,9 @@ Begin
         Else If PropName = 'ErrorString' Then Result := Obj.ErrorString
 
         // Coordinates (returned in mils). Corner is declared only on
-        // ISch_Rectangle and ISch_Line (ISch_RoundRectangle inherits from
-        // ISch_Rectangle), NOT on the base ISch_GraphicalObject. The
+        // ISch_Rectangle, ISch_Line and ISch_TextFrame (ISch_RoundRectangle
+        // inherits from ISch_Rectangle, a note is a text frame), NOT on the
+        // base ISch_GraphicalObject. The
         // DelphiScript compiler rejects any textual reference to
         // 'Obj.Corner' when Obj is typed ISch_GraphicalObject, regardless
         // of the assignment target. The only compile-safe path is to
@@ -2462,6 +2463,15 @@ Begin
             Begin
                 L := Obj;
                 Crn := L.Corner;
+                Have := True;
+            End
+            { A text frame's (and a note's) far corner sets its size, the  }
+            { same member Gen_PlaceTextFrame writes through ISch_TextFrame  }
+            { (issue #334).                                                 }
+            Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+            Begin
+                FrameObj := Obj;
+                Crn := FrameObj.Corner;
                 Have := True;
             End;
             If Have Then
@@ -3185,7 +3195,8 @@ Begin
             Else
                 Obj.Location := Loc;
         End
-        // Corner lives on ISch_Rectangle and ISch_Line only (not on the base
+        // Corner lives on ISch_Rectangle, ISch_Line and ISch_TextFrame (a
+        // note is a text frame) only (not on the base
         // ISch_GraphicalObject, the compiler rejects Obj.Corner regardless
         // of assignment target). Dispatch on ObjectId and narrow to a typed
         // local before touching Corner. See GetSchProperty for the read side.
@@ -3210,6 +3221,16 @@ Begin
                 Else
                     Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
                 L.Corner := Crn;
+            End
+            Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+            Begin
+                FrameObj := Obj;
+                Crn := FrameObj.Corner;
+                If PropName = 'Corner.X' Then
+                    Crn.X := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+                FrameObj.Corner := Crn;
             End;
         End
         // A round rectangle's corner radii, decimal mils, on that type only
