@@ -4049,7 +4049,8 @@ def register_project_tools(mcp):
         parameter object is created on the sheet.
 
         The sheet must be loaded (`proj_load_sheets`), else NOT_LOADED.
-        The write goes to disk at once; no `app_save_all` is needed.
+        The sheet is marked modified, not written: `app_save_all` or
+        `proj_save` writes it.
 
         Args:
             file_path: Full path to the schematic document (.SchDoc).
@@ -4059,9 +4060,8 @@ def register_project_tools(mcp):
             value: Parameter value
 
         Returns:
-            Dictionary with file_path, name, value, and dirty=true
-            (the in-memory flag; the disk write already happened, so no
-            `app_save_all` is needed for this parameter).
+            Dictionary with file_path, name, value, action (added /
+            updated), saved=false and pending_save=true.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
