@@ -3444,10 +3444,11 @@ Begin
         Else
         Begin
             { Classify every component net as touching the group, the outside,
-              or both. Internal = touches group, never the outside. }
+              or both. Internal = touches group, never the outside. Every   }
+            { layer: a rigid-flex board can place parts on an inner one.      }
             Iter := Board.BoardIterator_Create;
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(MkSet(eTopLayer, eBottomLayer));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Comp := Iter.FirstPCBObject;
             While Comp <> Nil Do
@@ -3729,7 +3730,7 @@ Begin
         Try
             Iter := Board.BoardIterator_Create;
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(MkSet(eTopLayer, eBottomLayer));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             PcbComp := Iter.FirstPCBObject;
             While PcbComp <> Nil Do
@@ -17131,7 +17132,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(MkSet(eTopLayer, eBottomLayer));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Comp := Iter.FirstPCBObject;
             While Comp <> Nil Do
