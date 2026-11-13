@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..preferences import if_the_user_insists
+from ..bridge.path_spelling import same_file
 from ..bridge.payload import payload_safe
 from ..fileio import pcblib_models
 from ..libimport import extract_cse_zip, inspect_cse_zip
@@ -1885,7 +1886,7 @@ async def _unfocused_pcblib(bridge: Any, library_path: str) -> str:
         active = await bridge.send_command_async("application.get_active_document", {})
         focused = str(active.get("file_path") or "") if isinstance(active, dict) else ""
         if focused.lower().endswith(".pcblib") and (
-                not library_path or focused.lower() == library_path.lower()):
+                not library_path or same_file(focused, library_path)):
             return ""
         if library_path:
             return library_path
@@ -9016,7 +9017,7 @@ def register_library_tools(mcp):
                 "library.get_mech_layers",
                 {"library_path": lib_path} if lib_path else {})
             mpath = str((reply or {}).get("library_path") or "")
-            if mpath and lib_path and mpath.lower() != lib_path.lower():
+            if mpath and lib_path and not same_file(mpath, lib_path):
                 notes.append(f"the mechanical layer kinds come from {mpath}, "
                              f"not {lib_path}; layers were matched by name only")
             else:
