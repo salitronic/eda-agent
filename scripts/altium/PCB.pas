@@ -3149,6 +3149,33 @@ End;
 
 
 {..............................................................................}
+{ ReplicateCopy - a copy of one routing primitive for pcb.replicate_layout.    }
+{ Only a POLYGON has ReplicateWithChildren (its pour comes with it); on a      }
+{ region, AD 25 raises "Undeclared identifier: ReplicateWithChildren" past any }
+{ Try and the script stops, so a region takes Replicate like the others.       }
+{..............................................................................}
+Function ReplicateCopy(Prim : IPCB_Primitive) : IPCB_Primitive;
+Begin
+    If Prim.ObjectId = ePolyObject Then
+        Result := Prim.ReplicateWithChildren
+    Else
+        Result := Prim.Replicate;
+End;
+
+{..............................................................................}
+{ PourOwnsPrim - True for copper a polygon poured (a region or track of its   }
+{ pour). Its polygon brings it along through ReplicateWithChildren, so a copy  }
+{ of its own would put the pour's copper on the board twice.                   }
+{..............................................................................}
+Function PourOwnsPrim(Prim : IPCB_Primitive) : Boolean;
+Begin
+    Result := False;
+    If Prim.ObjectId = ePolyObject Then Exit;
+    Try Result := Prim.InPolygon; Except Result := False; End;
+End;
+
+
+{..............................................................................}
 { PCB_ReplicateLayout - Replicate a source channel's ROUTING onto a matching   }
 { destination channel (true multi-channel layout reuse).                       }
 {                                                                              }
@@ -3466,18 +3493,15 @@ Begin
             While Prim <> Nil Do
             Begin
                 If (Prim.Net <> Nil)
-                   And (InternalNets.IndexOf(Prim.Net.Name) >= 0) Then
+                   And (InternalNets.IndexOf(Prim.Net.Name) >= 0)
+                   And (Not PourOwnsPrim(Prim)) Then
                 Begin
                     SrcNetName := Prim.Net.Name;
                     DstNetName := NetMap.Values[SrcNetName];
 
                     NewPrim := Nil;
                     Try
-                        If (Prim.ObjectId = ePolyObject)
-                           Or (Prim.ObjectId = eRegionObject) Then
-                            NewPrim := Prim.ReplicateWithChildren
-                        Else
-                            NewPrim := Prim.Replicate;
+                        NewPrim := ReplicateCopy(Prim);
                     Except
                         NewPrim := Nil;
                     End;
