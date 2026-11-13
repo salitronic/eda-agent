@@ -122,9 +122,10 @@ def _call(monkeypatch, **kw):
     return out, bridge.sent
 
 
-def test_no_model_sends_no_parameter(monkeypatch):
+def test_the_model_is_always_read_as_xml(monkeypatch):
+    # every stack of a rigid-flex board is read from it (#346)
     _, sent = _call(monkeypatch)
-    assert sent == [("pcb.layer_stack_manager", {})]
+    assert sent == [("pcb.layer_stack_manager", {"include_model": "xml"})]
 
 
 def test_model_formats_reach_the_script(monkeypatch):

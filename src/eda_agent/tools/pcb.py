@@ -14,6 +14,12 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from ..bridge import get_bridge
+from ..bridge.exceptions import AltiumCommandError
+from ..layout.stack_model import (
+    drill_pair_stacks,
+    impedance_by_stack,
+    read_stack_model,
+)
 from ..design import fab_library
 from ..placement import (
     BoardRegion,
@@ -104,6 +110,28 @@ def stack_manager_out_of_step(manager: dict[str, Any],
             out.append({"layer": name, "field": "layer",
                         "board": None, "stack_manager": m.get("type")})
     return out
+
+
+async def _stack_model(bridge: Any) -> tuple[Optional[dict[str, Any]], str]:
+    """Every layer stack of the board, from the Layer Stack Manager's model.
+
+    Returns the parsed model (layout.stack_model.read_stack_model) and the
+    raw XML, or None and why it could not be read (the manager is not
+    readable below AD 22, or the reply carried no model).
+    """
+    try:
+        reply = await bridge.send_command_async("pcb.layer_stack_manager",
+                                                {"include_model": "xml"})
+    except AltiumCommandError as exc:  # refused below AD 22
+        return None, str(exc)
+    xml = reply.get("model") if isinstance(reply, dict) else None
+    if not xml:
+        why = reply.get("error") or reply.get("message") if isinstance(reply, dict) else ""
+        return None, str(why or "the Layer Stack Manager returned no model")
+    try:
+        return read_stack_model(xml), xml
+    except (ValueError, SyntaxError) as exc:  # ET.ParseError is a SyntaxError
+        return None, "the Layer Stack Manager's model did not parse: %s" % exc
 
 
 #: The Layer Stack Manager's type ids for a core and a prepreg, and the
@@ -2820,7 +2848,10 @@ def register_pcb_tools(mcp):
             style: Set the stack style (Altium's number; read it first).
 
         Returns:
-            ``style``, ``total_thickness_mils`` and ``layers``.
+            ``style``, ``stacks_count``, ``total_thickness_mils`` and
+            ``layers``. The layers are the master stack's; a rigid-flex
+            board has one stack per kind of board region (``stacks_count``
+            more than 1), each listed by pcb_layer_stack_manager.
         """
         params: dict[str, Any] = {}
         if style is not None:
@@ -2860,12 +2891,20 @@ def register_pcb_tools(mcp):
                 its next apply writing back, the old values.
                 pcb_sync_stack_manager brings it back in step.
 
+        A rigid-flex board has one stack per kind of board region. The
+        top-level layers and spans are the first stack's; ``stacks`` gives
+        every stack with its own layers and spans, and ``branches`` which
+        stack each section of the board uses.
+
         Returns:
             ``layers`` (name, guid, type_id, type, material,
             thickness_mils, dielectric_constant, weight, enabled,
-            properties), ``property_names``, ``drill_pairs`` (name,
-            start_layer / stop_layer ids and their names, micro_via,
-            back_drill), ``stack`` (name, id, symmetric, flex),
+            properties), ``property_names``, ``drill_pairs`` (the board's
+            own pairs: name, start_layer / stop_layer ids and their names,
+            micro_via, back_drill, stacks), ``stacks`` (name, id, flex,
+            region, layers, via_spans, drill_spans), ``branches``
+            (name, sections: name, parent, stacks), ``stack`` (name, id,
+            symmetric, flex),
             ``stacks_count``, ``stackup_type``, ``roughness_model``,
             ``via_spans`` (name, type, start_layer, stop_layer),
             ``drill_spans``, ``impedance_profiles`` (name, impedance_ohm)
@@ -2876,11 +2915,26 @@ def register_pcb_tools(mcp):
         if model not in ("", "xml", "records"):
             return {"ok": False,
                     "reason": 'include_model is "", "xml" or "records"'}
-        params: dict[str, Any] = {}
-        if model:
-            params["include_model"] = model
+        # The model holds every stack (#346): it is always read as XML, and
+        # handed back only when it was asked for.
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.layer_stack_manager", params)
+        result = await bridge.send_command_async(
+            "pcb.layer_stack_manager", {"include_model": "records" if model == "records" else "xml"})
+        if isinstance(result, dict) and "layers" in result:
+            xml = result.pop("model", "") if model != "records" else ""
+            if model == "records":
+                stacks, xml = await _stack_model(bridge)
+            else:
+                try:
+                    stacks = read_stack_model(xml) if xml else None
+                except (ValueError, SyntaxError):
+                    stacks = None
+            if stacks is not None:
+                result["stacks"] = stacks["stacks"]
+                result["branches"] = stacks["branches"]
+                drill_pair_stacks(result.get("drill_pairs") or [], stacks["stacks"])
+            if model == "xml":
+                result["model"] = xml
         if compare and isinstance(result, dict) and "layers" in result:
             physical = await bridge.send_command_async("pcb.physical_stack", {})
             diff = stack_manager_out_of_step(result, physical)
@@ -7365,15 +7419,25 @@ def register_pcb_tools(mcp):
             ``profile_count``, ``read_errors`` (fields this build would
             not report) and ``profiles``: each with ``name``,
             ``target_ohms``, ``tolerance``, ``differential`` and
-            ``layers``: ``layer``, ``enabled``, ``trace_width_mils``,
-            ``diff_pair_gap_mils``,
+            ``layers``: ``layer``, ``stack`` (a rigid-flex board has one
+            stack per kind of board region, each with its own lines),
+            ``enabled``, ``trace_width_mils``, ``diff_pair_gap_mils``,
             ``calculated_impedance_ohms``, ``impedance_error``,
-            ``etch_factor``, ``propagation_speed``. A board with no
-            profiles returns an empty list. The reference layers above and
-            below are not readable from a script.
+            ``etch_factor``, ``propagation_speed``, ``line_type`` and the
+            ``top_reference`` / ``bottom_reference`` layers. A board with
+            no profiles returns an empty list. Stack names, line types and
+            references come from the Layer Stack Manager's model; when it
+            cannot be read (below AD 22) rows keep only ``stack_index``.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.get_impedance_profiles", {})
+        result = await bridge.send_command_async("pcb.get_impedance_profiles", {})
+        if isinstance(result, dict) and result.get("profiles"):
+            stacks, why = await _stack_model(bridge)
+            if stacks is None:
+                result["stacks_note"] = why
+            else:
+                impedance_by_stack(result["profiles"], stacks)
+        return result
 
     @mcp.tool()
     async def pcb_render_png(path: str, dpi: int = 300, side: str = "top",
