@@ -8388,6 +8388,83 @@ Begin
     Result := BuildSuccessResponse(RequestId, PinListJson(Component));
 End;
 
+{ DropLibHolder - remove the holder ShowLibHolder added and show Shown again, }
+{ so the library looks as it did. The source library is left marked as      }
+{ modified by the add and the remove; it is not saved.                      }
+Procedure DropLibHolder(SchLib : ISch_Lib; Holder, Shown : ISch_Component);
+Begin
+    If (SchLib = Nil) Or (Holder = Nil) Then Exit;
+    If Shown <> Nil Then
+    Begin
+        Try SchLib.CurrentSchComponent := Shown; Except { display only: the copy is already made } End;
+        Try Application.ProcessMessages; Except End;
+    End;
+    SchBeginEdit(SchLib, '');
+    Try SchLib.RemoveSchComponent(Holder); Except End;
+    SchEndEdit(SchLib, 'Edit');
+    Try SchLib.GraphicallyInvalidate; Except End;
+End;
+
+{ ShowLibHolder - add an empty symbol to SchLib and show it, so the symbol  }
+{ that was on screen gets its shown part back from the library (issue #320). }
+{ Nil when the holder could not be added or the editor did not take it.    }
+{                                                                            }
+{ For a library with no other symbol to show. While a symbol is shown, the  }
+{ objects of its part on screen are held by the LIBRARY, not the component, }
+{ and Replicate copies the component's own children only (#249). A vendor  }
+{ download holds a single symbol, so its copy came out with no pins at all. }
+{ The holder is never remembered as the last created symbol and is removed }
+{ again by DropLibHolder; nothing here saves the library.                  }
+Function ShowLibHolder(SchLib : ISch_Lib; Shown : ISch_Component) : ISch_Component;
+Var
+    Holder, OnScreen : ISch_Component;
+    HolderName : String;
+    N : Integer;
+Begin
+    Result := Nil;
+    If SchLib = Nil Then Exit;
+
+    HolderName := 'EDA_AGENT_HOLD';
+    N := 1;
+    While FindLibComponentInMemory(SchLib, HolderName) <> Nil Do
+    Begin
+        Inc(N);
+        HolderName := 'EDA_AGENT_HOLD_' + IntToStr(N);
+    End;
+
+    Holder := SchServer.SchObjectFactory(eSchComponent, eCreate_Default);
+    If Holder = Nil Then Exit;
+    Holder.CurrentPartID := 1;
+    Holder.DisplayMode := 0;
+    Holder.LibReference := HolderName;
+
+    SchBeginEdit(SchLib, '');
+    SchLib.AddSchComponent(Holder);
+    { AddSchComponent renames later additions to Component_<N>; see }
+    { Lib_CreateSymbol.                                              }
+    Holder.LibReference := HolderName;
+    SchEndEdit(SchLib, 'Edit');
+    Try
+        SchServer.RobotManager.SendMessage(
+            Nil, Nil, SCHM_PrimitiveRegistration,
+            Holder.I_ObjectAddress);
+    Except End;
+
+    { The editor acts on a selection when it processes its messages (see }
+    { ReachLibPartOne), so let it run before checking what is shown.     }
+    Try SchLib.CurrentSchComponent := Holder; Except { read back just below } End;
+    Try Application.ProcessMessages; Except End;
+
+    OnScreen := Nil;
+    Try OnScreen := SchLib.CurrentSchComponent; Except OnScreen := Nil; End;
+    If (OnScreen = Nil) Or (OnScreen.I_ObjectAddress <> Holder.I_ObjectAddress) Then
+    Begin
+        DropLibHolder(SchLib, Holder, Shown);
+        Exit;
+    End;
+    Result := Holder;
+End;
+
 {..............................................................................}
 { Duplicate a component within or BETWEEN schematic libraries.                }
 {                                                                              }
@@ -8454,7 +8531,8 @@ Var
     Doc : IDocument;
     SourceLib, DestLib : ISch_Lib;
     SourceComp, NewComp, Existing, Verify, Shown, OnScreen, TouchComp : ISch_Component;
-    Overwrite, SameLib, Overwrote, SourceShown : Boolean;
+    Holder : ISch_Component;
+    Overwrite, SameLib, Overwrote, SourceShown, UsedHolder : Boolean;
     OtherName, ShownNote, TouchText : String;
     SourcePins, CopyPins : Integer;
 Begin
@@ -8537,8 +8615,11 @@ Begin
     { AD 25.8.1, a 5-part symbol with part 3 on screen: the copy's part 3   }
     { was empty, 11 of 14 pins; with another symbol shown the copy was      }
     { whole. The pin check above loads a source by SHOWING it, so this     }
-    { comes after it. A library with no other symbol keeps the old path.    }
+    { comes after it. A library with no other symbol gets an empty holder  }
+    { symbol to show instead, removed again after Replicate (issue #320).  }
     SourceShown := False;
+    Holder := Nil;
+    UsedHolder := False;
     OnScreen := Nil;
     Try OnScreen := SourceLib.CurrentSchComponent; Except OnScreen := Nil; End;
     If OnScreen <> Nil Then
@@ -8551,10 +8632,22 @@ Begin
             If SelectLibComponentPart(OtherName, 0) <> Nil Then SourceShown := False;
         End;
     End;
+    If SourceShown Then
+    Begin
+        Holder := ShowLibHolder(SourceLib, SourceComp);
+        If Holder <> Nil Then
+        Begin
+            SourceShown := False;
+            UsedHolder := True;
+        End;
+    End;
 
     { Replicate while source is focused. The clone is free-floating until    }
     { AddSchComponent attaches it to the destination library.                 }
     NewComp := SourceComp.Replicate;
+    { The holder goes before anything else, so no exit below leaves it in }
+    { the source library.                                                  }
+    If Holder <> Nil Then DropLibHolder(SourceLib, Holder, SourceComp);
     If NewComp = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'COPY_FAILED',
@@ -8681,8 +8774,8 @@ Begin
         ShownNote := '';
         If SourceShown Then
             ShownNote := ' The source was the symbol on screen and the library '
-                + 'holds no other symbol to show instead, so its part on screen '
-                + 'was not copied.';
+                + 'holds no other symbol to show instead, and a temporary one '
+                + 'could not be shown, so its part on screen was not copied.';
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
                 JsonBool('success', False) + ',' +
@@ -8711,6 +8804,7 @@ Begin
         ',"same_library":' + BoolToJsonStr(SameLib) +
         ',"overwrote":' + BoolToJsonStr(Overwrote) +
         ',"pins":' + IntToStr(CopyPins) +
+        ',"source_holder":' + BoolToJsonStr(UsedHolder) +
         ',"verified":true}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
