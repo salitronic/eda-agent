@@ -94,11 +94,20 @@ def _path_key(low: str) -> bool:
             or low == "destination")
 
 
+def _long_only(value: Any) -> Any:
+    """An absolute path under any other key (move_document, document ...):
+    its short components expanded, its slashes left as given."""
+    if isinstance(value, str) and "~" in value and _ABSOLUTE.match(value):
+        return long_spelling(value)
+    return value
+
+
 def one_spelling(params: Any) -> Any:
     """A copy of ``params`` with every document path in one spelling, at any
     depth: a string under a key ending in "path", "library" or "_file" (or
     named "destination"), the strings of a list under a key ending in
-    "paths", and the FileName of a process string."""
+    "paths", and the FileName of a process string. An absolute path holding
+    a short 8.3 component is expanded under any key."""
     if isinstance(params, dict):
         out: dict = {}
         for key, value in params.items():
@@ -114,7 +123,7 @@ def one_spelling(params: Any) -> Any:
         return out
     if isinstance(params, list):
         return [one_spelling(v) for v in params]
-    return params
+    return _long_only(params)
 
 
 def same_file(a: str, b: str) -> bool:
