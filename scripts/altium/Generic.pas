@@ -17922,10 +17922,67 @@ Begin
         '{"success":true,"pins_modified":' + IntToStr(Count) + '}');
 End;
 
+{ A colour argument of place_text_frame: -1 when absent, -2 when it is not a }
+{ colour (Altium's packed blue-green-red, 0 .. 16777215). The text is       }
+{ checked character by character first: StrToIntDef raises on a number past }
+{ 32 bits instead of falling back to its default.                           }
+Function TextFrameColorArg(Params : String; Key : String) : Integer;
+Var
+    S : String;
+    I : Integer;
+Begin
+    S := Trim(ExtractJsonValue(Params, Key));
+    Result := -1;
+    If S = '' Then Exit;
+    Result := -2;
+    If Length(S) > 8 Then Exit;
+    For I := 1 To Length(S) Do
+        If (S[I] < '0') Or (S[I] > '9') Then Exit;
+    I := StrToIntDef(S, -2);
+    If (I < 0) Or (I > 16777215) Then Exit;
+    Result := I;
+End;
+
+{ A switch argument of place_text_frame: -1 absent, 0 false, 1 true, -2 not }
+{ a switch.                                                                 }
+Function TextFrameFlagArg(Params : String; Key : String) : Integer;
+Var
+    S : String;
+Begin
+    S := LowerCase(Trim(ExtractJsonValue(Params, Key)));
+    If S = '' Then Result := -1
+    Else If (S = 'true') Or (S = '1') Then Result := 1
+    Else If (S = 'false') Or (S = '0') Then Result := 0
+    Else Result := -2;
+End;
+
+{ The style of a placed text frame as JSON members, read off the frame, not }
+{ echoed from the request. A read that fails leaves its member out.         }
+Function TextFrameStyleJson(TF : ISch_TextFrame) : String;
+Var
+    Parts : String;
+Begin
+    Parts := '';
+    Try Parts := Parts + JsonBool('is_solid', TF.IsSolid) + ','; Except End;
+    Try Parts := Parts + JsonInt('area_color', TF.AreaColor) + ','; Except End;
+    Try Parts := Parts + JsonInt('color', TF.Color) + ','; Except End;
+    Try Parts := Parts + JsonInt('text_color', TF.TextColor) + ','; Except End;
+    Try Parts := Parts + JsonBool('show_border', TF.ShowBorder) + ','; Except End;
+    Try Parts := Parts + JsonBool('word_wrap', TF.WordWrap) + ','; Except End;
+    Try Parts := Parts + JsonBool('clip_to_rect', TF.ClipToRect) + ','; Except End;
+    Try Parts := Parts + JsonFloat('text_margin', CoordToMilsF(TF.TextMargin)) + ','; Except End;
+    Result := '"style":{' + Copy(Parts, 1, Length(Parts) - 1) + '}';
+End;
+
 {..............................................................................}
 { Gen_PlaceTextFrame - Place a multi-line schematic text frame (note block).  }
 { Params: x1,y1,x2,y2 (mils, the two rectangle corners), text (use \n for     }
 {         line breaks), align ("left"/"center"/"right", optional)             }
+{ Style, all optional, applied before the frame is registered (absent = the  }
+{ frame's default, so older callers see no change): area_color (fill; makes  }
+{ the frame solid), color (border), text_color (packed BGR integers),        }
+{ show_border, word_wrap, clip_to_rect (true/false), text_margin (mils).     }
+{ The reply reads every one of them back off the placed frame.              }
 {..............................................................................}
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
@@ -17934,8 +17991,11 @@ Var
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     TF : ISch_TextFrame;
-    TextStr, AlignStr : String;
+    TextStr, AlignStr, MarginStr : String;
     FontPick, FontRead : Integer;
+    WantFill, WantBorderColor, WantTextColor : Integer;
+    WantShowBorder, WantWrap, WantClip : Integer;
+    WantMargin : Double;
 Begin
     X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
@@ -17952,6 +18012,36 @@ Begin
     TextStr := StringReplace(TextStr, #10, #13 + #10, MkSet(rfReplaceAll));
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+
+    { The style is read and checked before anything is made: a bad value  }
+    { places nothing.                                                      }
+    WantFill := TextFrameColorArg(Params, 'area_color');
+    WantBorderColor := TextFrameColorArg(Params, 'color');
+    WantTextColor := TextFrameColorArg(Params, 'text_color');
+    WantShowBorder := TextFrameFlagArg(Params, 'show_border');
+    WantWrap := TextFrameFlagArg(Params, 'word_wrap');
+    WantClip := TextFrameFlagArg(Params, 'clip_to_rect');
+    MarginStr := Trim(ExtractJsonValue(Params, 'text_margin'));
+    WantMargin := -1;
+    If MarginStr <> '' Then WantMargin := StrToFloatDef(MarginStr, -2);
+    If (WantFill = -2) Or (WantBorderColor = -2) Or (WantTextColor = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_COLOR',
+            'area_color, color and text_color are packed BGR integers 0..16777215');
+        Exit;
+    End;
+    If (WantShowBorder = -2) Or (WantWrap = -2) Or (WantClip = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FLAG',
+            'show_border, word_wrap and clip_to_rect are true or false');
+        Exit;
+    End;
+    If (MarginStr <> '') And (WantMargin < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_MARGIN',
+            'text_margin is a length in mils, 0 or more');
+        Exit;
+    End;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -17985,6 +18075,25 @@ Begin
     Begin
         Try TF.FontId := FontPick; Except NoteWriteFailed('TextFrame.FontId'); End;
     End;
+    { The asked style, over the defaults above. A fill makes the frame     }
+    { solid: AreaColor alone draws nothing on an unfilled frame.           }
+    If WantFill >= 0 Then
+    Begin
+        Try TF.IsSolid := True; Except NoteWriteFailed('TextFrame.IsSolid'); End;
+        Try TF.AreaColor := WantFill; Except NoteWriteFailed('TextFrame.AreaColor'); End;
+    End;
+    If WantBorderColor >= 0 Then
+    Begin Try TF.Color := WantBorderColor; Except NoteWriteFailed('TextFrame.Color'); End; End;
+    If WantTextColor >= 0 Then
+    Begin Try TF.TextColor := WantTextColor; Except NoteWriteFailed('TextFrame.TextColor'); End; End;
+    If WantShowBorder >= 0 Then
+    Begin Try TF.ShowBorder := (WantShowBorder = 1); Except NoteWriteFailed('TextFrame.ShowBorder'); End; End;
+    If WantWrap >= 0 Then
+    Begin Try TF.WordWrap := (WantWrap = 1); Except NoteWriteFailed('TextFrame.WordWrap'); End; End;
+    If WantClip >= 0 Then
+    Begin Try TF.ClipToRect := (WantClip = 1); Except NoteWriteFailed('TextFrame.ClipToRect'); End; End;
+    If WantMargin >= 0 Then
+    Begin Try TF.TextMargin := MilsToCoordF(WantMargin); Except NoteWriteFailed('TextFrame.TextMargin'); End; End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
@@ -18005,7 +18114,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
-        + JsonInt('font_id', FontRead) + '}');
+        + JsonInt('font_id', FontRead) + ',' + TextFrameStyleJson(TF) + '}');
 End;
 
 {..............................................................................}

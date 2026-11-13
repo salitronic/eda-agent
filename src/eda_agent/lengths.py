@@ -147,6 +147,7 @@ ADDED: dict[str, frozenset[str]] = {
     "pcb_place_via": frozenset({"size"}),
     "pcb_place_via_array": frozenset({"size"}),
     "pcb_place_text": frozenset({"margin"}),
+    "sch_place_text_frame": frozenset({"text_margin"}),
     "pcb_set_grids": frozenset({"track", "via", "visible", "visible_big",
                                 "component_x", "component_y"}),
     "easyeda_add_text": frozenset({"font_size"}),
