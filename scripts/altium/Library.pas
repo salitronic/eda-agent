@@ -9943,23 +9943,32 @@ End;
 { Lib_ExtractIntLib - Extract .SchLib and .PcbLib sources from an .IntLib.   }
 {                                                                              }
 { An Altium .IntLib (integrated library) packages compiled symbol and        }
-{ footprint libraries together; the editor's "Extract Sources" command       }
-{ writes the underlying .SchLib + .PcbLib back to disk so they can be        }
-{ inspected or modified. This handler opens the .IntLib, runs the extract   }
-{ process, and then probes the conventional output locations (Altium drops  }
-{ them into a sibling folder named after the IntLib base name) to report    }
-{ which files were produced.                                                  }
+{ footprint libraries together. This handler writes the underlying sources  }
+{ back to disk, into a folder beside the .IntLib named after it, through    }
+{ IntegratedLibraryManager.ExtractSourcesToPath (the call Proj_LibraryLookup }
+{ uses), and then probes the conventional file names.                        }
+{                                                                              }
+{ It must NOT open the .IntLib as a document (WorkspaceManager:OpenObject):  }
+{ that raises the "Open Integrated Library" modal (Install / Extract /       }
+{ Import / Cancel), which no Try/Except catches and which blocks the polling }
+{ loop until a person answers it (issue #321). The library manager extracts }
+{ without asking.                                                             }
+{                                                                              }
+{ The sources keep the names they have INSIDE the .IntLib, which need not be }
+{ the name of the .IntLib itself (a vendor "X.IntLib" can hold              }
+{ "VENDOR_X.PcbLib"), so the Python tool lists extract_dir for what really  }
+{ appeared; the probes here only cover the matching-name case.              }
 {                                                                              }
 { Params:                                                                      }
 {   intlib_path (required) - path to the .IntLib file                       }
 {                                                                              }
-{ Returns: process_run, sch_lib_path/sch_lib_found, pcb_lib_path/found.     }
+{ Returns: extract_dir, extracted, problem, sch_lib_path/sch_lib_found,     }
+{ pcb_lib_path/pcb_lib_found.                                                 }
 Function Lib_ExtractIntLib(Params : String; RequestId : String) : String;
 Var
     IntLibPath, BaseName, ParentDir, ExtractDir : String;
-    SchLibPath, PcbLibPath : String;
+    SchLibPath, PcbLibPath, Problem : String;
     FoundSch, FoundPcb : Boolean;
-    Workspace : IWorkspace;
     RespJson : String;
 Begin
     IntLibPath := ExtractJsonValue(Params, 'intlib_path');
@@ -9976,32 +9985,33 @@ Begin
         Exit;
     End;
 
-    Workspace := GetWorkspace;
-    If Workspace = Nil Then
+    If IntegratedLibraryManager = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGER',
+            'IntegratedLibraryManager unavailable');
         Exit;
     End;
 
-    { Open the IntLib in Altium's integrated-library editor so the      }
-    { extract command has a current document to act on.                  }
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', IntLibPath);
-    RunProcess('WorkspaceManager:OpenObject');
-
-    { Run Altium's source-extraction. Try/Except won't catch a bad       }
-    { process name (DelphiScript can't), so we detect outcome by         }
-    { probing for the resulting files instead.                            }
-    ResetParameters;
-    AddStringParameter('FileName', IntLibPath);
-    RunProcess('IntegratedLibrary:ExtractSources');
-
-    { Where Altium writes the extracted files: a sibling folder named    }
-    { after the IntLib base name, containing <Base>.SchLib + .PcbLib.    }
+    { A sibling folder named after the IntLib base name, the place       }
+    { ResolveSchLibForLoad looks first.                                   }
     BaseName := ChangeFileExt(ExtractFileName(IntLibPath), '');
     ParentDir := ExtractFilePath(IntLibPath);
     ExtractDir := ParentDir + BaseName + '\';
+
+    Problem := '';
+    Try ForceDirectories(ExtractDir); Except End;
+    If Not DirectoryExists(ExtractDir) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_WRITABLE',
+            'Could not create the folder ' + ExtractDir);
+        Exit;
+    End;
+    Try
+        IntegratedLibraryManager.ExtractSourcesToPath(IntLibPath, ExtractDir);
+    Except
+        Problem := 'the library manager raised an error';
+    End;
+
     SchLibPath := ExtractDir + BaseName + '.SchLib';
     PcbLibPath := ExtractDir + BaseName + '.PcbLib';
     FoundSch := FileExists(SchLibPath);
@@ -10023,6 +10033,8 @@ Begin
     RespJson :=
         '{"intlib_path":"' + EscapeJsonString(IntLibPath) + '"' +
         ',"extract_dir":"' + EscapeJsonString(ExtractDir) + '"' +
+        ',"extracted":' + BoolToJsonStr(Problem = '') +
+        ',"problem":"' + EscapeJsonString(Problem) + '"' +
         ',"sch_lib_path":"' + EscapeJsonString(SchLibPath) + '"' +
         ',"sch_lib_found":' + BoolToJsonStr(FoundSch) +
         ',"pcb_lib_path":"' + EscapeJsonString(PcbLibPath) + '"' +
