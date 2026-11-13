@@ -42,6 +42,36 @@ _SCHLIB_CHECKS = (
 )
 
 
+def _extracted_sources(result: dict, intlib_path: str) -> dict:
+    """Point an extract_intlib reply at the sources that really appeared.
+
+    The sources keep the names they have inside the .IntLib, which need
+    not be the .IntLib's own name: a vendor ``X.IntLib`` can hold
+    ``VENDOR_X.PcbLib``. So list ``extract_dir`` for every .SchLib /
+    .PcbLib, prefer the one named after the .IntLib, and keep the
+    bridge's probe when the folder holds none.
+    """
+    folder = result.get("extract_dir") or ""
+    if not folder or not os.path.isdir(folder):
+        return result
+    base = Path(intlib_path).stem.lower()
+    for ext, key in ((".schlib", "sch"), (".pcblib", "pcb")):
+        found = sorted(str(Path(folder) / n) for n in os.listdir(folder)
+                       if n.lower().endswith(ext))
+        result[f"{key}_libs"] = found
+        if not found:
+            continue
+        named = [p for p in found if Path(p).stem.lower() == base]
+        result[f"{key}_lib_path"] = (named or found)[0]
+        result[f"{key}_lib_found"] = True
+    if not (result.get("sch_lib_found") or result.get("pcb_lib_found")):
+        result["ok"] = False
+        result["reason"] = (
+            "nothing was extracted into " + folder
+            + (": " + result["problem"] if result.get("problem") else ""))
+    return result
+
+
 def _file_locked(path: str) -> Optional[bool]:
     """Whether another process holds ``path`` against writing.
 
@@ -4152,19 +4182,20 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Extract .SchLib + .PcbLib sources from an .IntLib.
 
-        Runs Extract Sources and reports which files appeared (in a folder
-        named after the IntLib, or beside it). Pass the reported paths as
-        ``library_path`` to the other library tools.
+        Writes the sources into a folder beside the IntLib named after it,
+        without opening the IntLib (no "Open Integrated Library" prompt).
+        Pass the reported paths as ``library_path`` to the other library
+        tools.
 
         Args:
             intlib_path: Absolute path to the .IntLib file.
 
         Returns:
             Dict with ``intlib_path``, ``extract_dir``, ``sch_lib_path``,
-            ``sch_lib_found``, ``pcb_lib_path``, ``pcb_lib_found``. A
-            ``_found`` flag of False means that source did not appear (the
-            IntLib lacks it, the folder was not writable, or this build
-            names the command differently).
+            ``sch_lib_found``, ``pcb_lib_path``, ``pcb_lib_found``, and
+            ``sch_libs`` / ``pcb_libs`` listing every source extracted
+            (their names come from inside the IntLib). A ``_found`` flag
+            of False means that source did not appear.
         """
         if not intlib_path:
             return {"ok": False, "reason":
@@ -4175,6 +4206,8 @@ def register_library_tools(mcp):
             {"intlib_path": intlib_path},
             timeout=60.0,
         )
+        if isinstance(result, dict):
+            return _extracted_sources(result, intlib_path)
         return result or {}
 
     @mcp.tool()
