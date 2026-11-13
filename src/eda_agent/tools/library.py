@@ -1007,13 +1007,39 @@ def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return "~~".join(ops), problems
 
 
+# Optional solder mask fields a via may be created with.
+_VIA_MASK_FLAGS = ("tenting_top", "tenting_bottom", "mask_from_hole_edge",
+                   "mask_separate")
+_VIA_MASK_LENGTHS = ("mask_expansion", "mask_bottom_expansion")
+
+
+def _via_mask_fields(via: dict[str, Any]) -> str | None:
+    """The ``;key=value`` tail of a via's optional mask fields, or None
+    when one of them is not what it may hold (a flag must be a bool, an
+    expansion a number)."""
+    tail = ""
+    for key in _VIA_MASK_FLAGS:
+        if key in via:
+            if not isinstance(via[key], bool):
+                return None
+            tail += f";{key}={'true' if via[key] else 'false'}"
+    for key in _VIA_MASK_LENGTHS:
+        if key in via:
+            try:
+                tail += f";{key}={format_length(float(via[key]))}"
+            except (TypeError, ValueError):
+                return None
+    return tail
+
+
 def _vias_payload(vias: list[dict[str, Any]], size: float,
                   hole_size: float) -> tuple[str, list[str]]:
     """The ``vias`` batch payload for library.add_footprint_vias.
 
     Each via is ``{"x": .., "y": ..}`` with an optional ``size`` and
-    ``hole_size`` (the call's defaults otherwise). A via that is not
-    numeric, or whose hole is not inside its diameter, is named in the
+    ``hole_size`` (the call's defaults otherwise) and the optional mask
+    fields of _via_mask_fields. A via that is not numeric, whose hole is
+    not inside its diameter, or with a bad mask field is named in the
     problems and left out.
     """
     ops: list[str] = []
@@ -1032,8 +1058,15 @@ def _vias_payload(vias: list[dict[str, Any]], size: float,
         if not 0 < h < d:
             problems.append(f"via {i} needs 0 < hole_size < size")
             continue
+        mask = _via_mask_fields(via)
+        if mask is None:
+            problems.append(f"via {i}: tenting_* / mask_from_hole_edge / "
+                            "mask_separate take true or false, the "
+                            "expansions a number")
+            continue
         ops.append(f"x={format_length(x)};y={format_length(y)};"
-                   f"size={format_length(d)};hole_size={format_length(h)}")
+                   f"size={format_length(d)};hole_size={format_length(h)}"
+                   + mask)
     return "~~".join(ops), problems
 
 
@@ -3381,7 +3414,13 @@ def register_library_tools(mcp):
 
         Args:
             vias: list of ``{"x": .., "y": ..}``, each with an optional
-                ``size`` and ``hole_size`` overriding the defaults below.
+                ``size`` and ``hole_size`` overriding the defaults below,
+                and optionally its solder mask, set as it is made:
+                ``tenting_top`` / ``tenting_bottom`` /
+                ``mask_from_hole_edge`` / ``mask_separate`` (bool),
+                ``mask_expansion`` / ``mask_bottom_expansion`` (length;
+                the bottom follows the top unless given). Any of them
+                makes the mask manual.
             size: Via diameter for vias that give none (default 40 mil).
             hole_size: Drill for vias that give none (default 20 mil).
             footprint_name: footprint to write into; empty uses the
@@ -3392,8 +3431,9 @@ def register_library_tools(mcp):
 
         Returns:
             Dict with added, failed, bad_size (hole not inside the
-            diameter), bad_number, total; a via refused here before
-            sending is listed in ``refused`` with the reason.
+            diameter), bad_number, masked (vias whose mask fields all
+            read back), property_failures, total; a via refused here
+            before sending is listed in ``refused`` with the reason.
         """
         refusal = _units_refusal(units)
         if refusal:
