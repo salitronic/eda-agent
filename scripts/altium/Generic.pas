@@ -6207,8 +6207,6 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Net : IPCB_Net;
-    SchIter : ISch_Iterator;
-    Obj : ISch_GraphicalObject;
     Cleared : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -6250,34 +6248,16 @@ Begin
 
     If SchDoc <> Nil Then
     Begin
-        { Deselect all connective primitives on the active sheet.          }
-        SchBeginEdit(SchDoc, '');
-        Try
-            SchIter := SchDoc.SchIterator_Create;
-            Try
-                SchIter.AddFilter_ObjectSet(MkSet(eWire, eNetLabel, ePowerObject,
-                    ePort, ePin, eSheetEntry));
-                Obj := SchIter.FirstSchObject;
-                While Obj <> Nil Do
-                Begin
-                    Try
-                        If Obj.Selection Then
-                        Begin
-                            Obj.Selection := False;
-                            Cleared := Cleared + 1;
-                        End;
-                    Except NoteWriteFailed('deselect'); End;
-                    Obj := SchIter.NextSchObject;
-                End;
-            Finally
-                SchDoc.SchIterator_Destroy(SchIter);
-            End;
-        Finally
-            SchEndEdit(SchDoc, 'Edit');
-        End;
+        { A schematic net highlight is a selection (Gen_HighlightNet). Clear }
+        { it through the process, as Gen_DeselectAll does: reading or        }
+        { writing Selection object by object faults on sub-objects in a      }
+        { modal Try/Except cannot catch (see SchDeselectAllObjects), and     }
+        { pins and sheet entries are sub-objects. No count: counting would   }
+        { need that same read.                                               }
+        SchDeselectAllObjects(SchDoc);
         Try SchDoc.GraphicallyInvalidate; Except End;
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"context":"schematic","cleared":' + IntToStr(Cleared) + '}');
+            '{"success":true,"context":"schematic","deselected":"all"}');
         Exit;
     End;
 
