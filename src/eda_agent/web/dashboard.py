@@ -1014,6 +1014,18 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             entries = list(tailer.entries)
         return jsonify({"commands": _aggregate(entries)})
 
+    @app.route("/api/usage")
+    def usage_stats() -> Response:
+        """Estimated tokens and time per tool (diag/usage)."""
+        from flask import request
+        from eda_agent.diag import usage
+        try:
+            days = max(1, min(int(request.args.get("days", 7)), 90))
+            top = max(0, min(int(request.args.get("top", 12)), 500))
+        except ValueError:
+            days, top = 7, 12
+        return jsonify(usage.summary(days, where=workspace_dir / "usage", top=top))
+
     @app.route("/api/lint", methods=["GET", "POST"])
     def lint() -> Response:
         """Run the bundled design-lint sweep and return a consolidated report.
