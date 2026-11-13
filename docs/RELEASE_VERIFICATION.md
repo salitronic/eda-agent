@@ -1,4 +1,4 @@
-# Release verification: 2026.11.13.11
+# Release verification: 2026.11.13.12
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -252,6 +252,9 @@ works elsewhere cannot be an undeclared identifier:
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
 | 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
 | 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
+| 78, text frame style | `AreaColor`, `TextColor`, `TextMargin` on a new text frame | yes, `SetSchProperty` (obj_modify on placed frames) | low, display only; ran live on a scratch sheet, read back |
+| 79, frame corner and part | `Corner` on a text frame, `SetState_CurrentPartID` before a DbLib part joins the sheet | yes, `SetSchProperty` | low; the corner ran live on a scratch sheet and read back, the DbLib part was not measured here |
+| 79, dimension texts | `TextSuffix` on a dimension, read back after the write | yes, `PCBSetExtra` | low, display only; ran live on a scratch board, read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -427,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.13.11`, `version_match` =
+Expect `altium_script_version` = `2026.11.13.12`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4078,7 +4081,7 @@ With the scripts deployed, on scratch libraries:
 
 ## 78. Stacks, member gates, heights, connectivity and library reads
 
-Measured live on AD 26.11.1.5 with script 2026.11.13.11 unless marked.
+Measured live on AD 26.11.1.5 with this release's script unless marked.
 Scratch copies only, closed without saving.
 
 1. `pcb_layer_stack_manager` on a one-stack board: one call to the script,
@@ -4117,6 +4120,33 @@ Scratch copies only, closed without saving.
    tests; not measured against a database here).
 10. An unreadable pad shape in the board geometry reads `Unknown` and is
     drawn as its whole box.
+
+## 79. Pull requests of 2026-11-13
+
+Measured live on AD 26.11.1.5 with script 2026.11.13.12 on scratch copies,
+`app_ping` answering after every call, unless marked.
+
+1. Justification: a text frame answers blank (unreadable), a net label
+   reads it; both from the member table.
+2. A text frame's `Corner.X` / `Corner.Y` read and write (1500 to 1700
+   and read back).
+3. Filters compare numbers as numbers: `Location.Y=5000.0` finds a net
+   label at 5000; `Text=NL1.0` does not find `NL1`.
+4. A schematic rectangle's corners read; `obj_clear_highlights` on a
+   sheet answers `deselected: all`.
+5. `proj_set_document_parameter` answers `saved: false` and
+   `pending_save: true`.
+6. `lib_split_pin_functions` with a sheet in front is refused, naming
+   the library tool it is.
+7. `lib_copy_component` of the only symbol of a library copies all of
+   its pins (4 of 4).
+8. `lib_add_footprint_vias` with `mask_expansion` reports the via
+   `masked`.
+9. A dimension's `TextSuffix` written through `obj_modify` reads back;
+   a value Altium does not keep is refused (offline tests).
+10. Not measured here: a multi-part DbLib symbol placed as part 1 (no
+    DbLib), short paths sent in their long spelling (8.3 names are off on
+    this disk), Replicate of a region in `pcb_replicate_layout`.
 
 ## Still open, and not blocking
 
