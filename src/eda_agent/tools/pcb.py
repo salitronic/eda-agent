@@ -3719,7 +3719,7 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_components() -> dict[str, Any]:
+    async def pcb_get_components(body_heights: str = "max") -> dict[str, Any]:
         """Get all components from the active PCB with position and properties.
 
         DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`
@@ -3733,9 +3733,28 @@ def register_pcb_tools(mcp):
             rotation, layer, footprint, bbox, and bbox_no_name_comment: the
             box without the part's designator and comment) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
+
+            Heights, in mils above the part's own side of the board:
+            ``height_mils`` is the tallest 3D body (STEP or extruded) when
+            the part has one, else the footprint's Height parameter
+            (``height_source`` says which). ``component_height_mils`` is
+            that parameter as typed, ``max_body_height_mils`` the tallest
+            body (null without one), ``body_count``, and
+            ``height_mismatch`` true when the two differ.
+
+        Args:
+            body_heights: ``max`` (default) gives the tallest body per
+                part; ``all`` adds ``bodies``: identifier, kind (step,
+                extruded, cylinder, sphere), layer, standoff_mils,
+                overall_mils.
         """
+        mode = (body_heights or "max").strip().lower()
+        if mode not in ("max", "all"):
+            return {"ok": False,
+                    "reason": f"body_heights must be 'max' or 'all', got {body_heights!r}"}
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_components", {})
+        result = await bridge.send_command_async(
+            "pcb.get_components", {"body_heights": mode})
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()
