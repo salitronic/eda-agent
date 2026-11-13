@@ -1,0 +1,25 @@
+[package]
+name = "eda-agent-route"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Grid path search for eda-agent's board router"
+repository = "https://github.com/salitronic/eda-agent"
+publish = false
+
+[lib]
+name = "eda_agent_route"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"], optional = true }
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

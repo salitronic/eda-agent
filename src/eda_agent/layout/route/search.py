@@ -29,11 +29,19 @@ overestimates and the reduced weights stay non-negative. scipy's
 Dijkstra does not stop at a target, it settles everything under its
 limit, so on reduced costs the limit is the detour allowed beyond a
 straight line.
+
+The compiled search (the optional eda-agent-route wheel) takes the same
+region and costs, builds no graph and stops at the first target it
+settles. Its weights are computed with the same operations, so the path
+it finds costs exactly what scipy's would; where two paths cost the same
+it may take the other one. :func:`find_path` uses it when it is installed;
+EDA_AGENT_ROUTE_KERNEL=python keeps scipy.
 """
 
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -173,3 +181,57 @@ def shortest_path(graph: csr_matrix, sources: np.ndarray, targets: np.ndarray,
         path.append(n)
     path.reverse()
     return path
+
+
+KERNEL_ENV = "EDA_AGENT_ROUTE_KERNEL"
+#: The compiled search's interface this code was written against.
+KERNEL_API = 1
+KERNEL_HINT = "pip install eda-agent[route]"
+
+
+def compiled():
+    """The compiled search module, or None when it is not installed, is
+    for another interface, or EDA_AGENT_ROUTE_KERNEL=python."""
+    if os.environ.get(KERNEL_ENV, "").strip().lower() == "python":
+        return None
+    try:
+        import eda_agent_route
+    except ImportError:
+        return None
+    return eda_agent_route if getattr(eda_agent_route, "API", None) == KERNEL_API else None
+
+
+def kernel() -> str:
+    """Which search find_path runs: 'compiled' or 'scipy'."""
+    return "compiled" if compiled() is not None else "scipy"
+
+
+def find_path(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
+              move_factor: np.ndarray, pitch: float, potential: np.ndarray | None,
+              sources: np.ndarray, targets: np.ndarray,
+              limits: tuple[float, ...]) -> list[int] | None:
+    """The cheapest path from any source to any target, as graph node ids,
+    or None when none costs the last limit or less.
+
+    scipy settles every node under its limit, so it is tried at each limit
+    in turn, smallest first: a path found under a smaller limit is the
+    cheapest of all. The compiled search stops at the first target it
+    settles, so it runs once, at the last limit.
+    """
+    if len(sources) == 0 or len(targets) == 0:
+        return None
+    lib = compiled()
+    if lib is None:
+        graph = build_graph(win, cell_cost, via_cost, move_factor, pitch, potential)
+        for limit in limits:
+            path = shortest_path(graph, sources, targets, limit)
+            if path is not None:
+                return path
+        return None
+    f64 = lambda a: np.ascontiguousarray(a, dtype="<f8").tobytes()  # noqa: E731
+    i32 = lambda a: np.ascontiguousarray(a, dtype="<i4").tobytes()  # noqa: E731
+    i64 = lambda a: np.ascontiguousarray(a, dtype="<i8").tobytes()  # noqa: E731
+    return lib.shortest_path(
+        win.w, win.h, win.L, i32(win.cy), i32(win.cx), f64(cell_cost), f64(via_cost),
+        f64(move_factor), float(pitch), i64(sources), i64(targets), float(limits[-1]),
+        None if potential is None else f64(potential))
