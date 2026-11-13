@@ -5347,6 +5347,26 @@ End;
 { guarded, so a build missing one leaves that field at its default and the    }
 { rest of the answer stands; read_errors counts them.                         }
 {..............................................................................}
+{ BoardLayerStackCount - how many layer stacks the board has: one, or one per  }
+{ kind of board region on a rigid-flex board (#346). Read from the Layer      }
+{ Stack Manager's provider; below AD 22 its calls halt the script (see        }
+{ LayerStackManagerRefusal), so there the answer is 1.                        }
+Function BoardLayerStackCount(Board : IPCB_Board) : Integer;
+Var
+    LSM, LSP : Variant;
+    Code : Integer;
+Begin
+    Result := 1;
+    Code := AltiumVersionCode(0);
+    If (Code > 0) And (Code < 2200) Then Exit;
+    LSM := LayerStackManager;
+    { the provider is cached: dropped first so the count follows the board }
+    LSM.RemoveLayerStackProvider(Board);
+    LSP := GetLayerStackProvider(Board);
+    Result := LSP.GetLayerStacksCount;
+    If Result < 1 Then Result := 1;
+End;
+
 Function PCB_GetImpedanceProfiles(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -5355,7 +5375,7 @@ Var
     Trace : IPCB_TraceImpedance;
     Layer : IPCB_LayerObject_V7;
     Sub : IPCB_LayerStack;
-    PCount, I, Misses : Integer;
+    PCount, I, K, Misses, SubCount : Integer;
     Items, Traces, PName, LName : String;
     Target, Tol, Calc, Err, Etch, Speed : Double;
     IsDiff, Enabled : Boolean;
@@ -5385,6 +5405,7 @@ Begin
         Exit;
     End;
 
+    SubCount := BoardLayerStackCount(Board);
     Items := '';
     Misses := 0;
     For I := 0 To PCount - 1 Do
@@ -5407,47 +5428,54 @@ Begin
 
         { A trace record's own layer is a V7 layer handle a script cannot name }
         { ("Undeclared identifier: Name", AD 26.11), so the profile is asked  }
-        { for its record on each copper layer of the first stack instead.    }
+        { for its record on each copper layer, in every substack: a          }
+        { rigid-flex board has one stack per kind of board region, each with }
+        { its own lines (#346). A substack answers for every copper layer of }
+        { the board, its own or not; stack_index says which one a row is.    }
         Traces := '';
-        Sub := Nil;
-        Try Sub := Stack.GetState_Substacks(0); Except Sub := Nil; End;
-        Layer := Board.LayerStack_V7.FirstLayer;
-        While (Layer <> Nil) And (Sub <> Nil) Do
+        For K := 0 To SubCount - 1 Do
         Begin
-            Trace := Nil;
-            Try Trace := Profile.GetTraceImpedanceForLayer(Sub, Layer.LayerID); Except Trace := Nil; End;
-            If Trace <> Nil Then
+            Sub := Nil;
+            Try Sub := Stack.GetState_Substacks(K); Except Sub := Nil; End;
+            Layer := Board.LayerStack_V7.FirstLayer;
+            While (Layer <> Nil) And (Sub <> Nil) Do
             Begin
-                LName := Layer.Name;
-                Enabled := True;
-                Width := 0;
-                Gap := 0;
-                Calc := 0;
-                Err := 0;
-                Etch := 0;
-                Speed := 0;
-                Try Enabled := Trace.IsEnabled; Except Inc(Misses); End;
-                Try Width := Trace.TraceWidth; Except Inc(Misses); End;
-                Try Calc := Trace.CalculatedImpedance; Except Inc(Misses); End;
-                Try Err := Trace.ImpedanceError; Except Inc(Misses); End;
-                Try Etch := Trace.EtchFactor; Except Inc(Misses); End;
-                Try Speed := Trace.PropagationSpeed; Except Inc(Misses); End;
-                If IsDiff Then
+                Trace := Nil;
+                Try Trace := Profile.GetTraceImpedanceForLayer(Sub, Layer.LayerID); Except Trace := Nil; End;
+                If Trace <> Nil Then
                 Begin
-                    Try Gap := Trace.DiffPairGap; Except Inc(Misses); End;
+                    LName := Layer.Name;
+                    Enabled := True;
+                    Width := 0;
+                    Gap := 0;
+                    Calc := 0;
+                    Err := 0;
+                    Etch := 0;
+                    Speed := 0;
+                    Try Enabled := Trace.IsEnabled; Except Inc(Misses); End;
+                    Try Width := Trace.TraceWidth; Except Inc(Misses); End;
+                    Try Calc := Trace.CalculatedImpedance; Except Inc(Misses); End;
+                    Try Err := Trace.ImpedanceError; Except Inc(Misses); End;
+                    Try Etch := Trace.EtchFactor; Except Inc(Misses); End;
+                    Try Speed := Trace.PropagationSpeed; Except Inc(Misses); End;
+                    If IsDiff Then
+                    Begin
+                        Try Gap := Trace.DiffPairGap; Except Inc(Misses); End;
+                    End;
+                    If Traces <> '' Then Traces := Traces + ',';
+                    Traces := Traces + JsonObj(
+                        JsonStr('layer', LName) + ','
+                        + JsonInt('stack_index', K) + ','
+                        + JsonBool('enabled', Enabled) + ','
+                        + JsonFloat('trace_width_mils', CoordToMilsF(Width)) + ','
+                        + JsonFloat('diff_pair_gap_mils', CoordToMilsF(Gap)) + ','
+                        + JsonFloat('calculated_impedance_ohms', Calc) + ','
+                        + JsonFloat('impedance_error', Err) + ','
+                        + JsonFloat('etch_factor', Etch) + ','
+                        + JsonFloat('propagation_speed', Speed));
                 End;
-                If Traces <> '' Then Traces := Traces + ',';
-                Traces := Traces + JsonObj(
-                    JsonStr('layer', LName) + ','
-                    + JsonBool('enabled', Enabled) + ','
-                    + JsonFloat('trace_width_mils', CoordToMilsF(Width)) + ','
-                    + JsonFloat('diff_pair_gap_mils', CoordToMilsF(Gap)) + ','
-                    + JsonFloat('calculated_impedance_ohms', Calc) + ','
-                    + JsonFloat('impedance_error', Err) + ','
-                    + JsonFloat('etch_factor', Etch) + ','
-                    + JsonFloat('propagation_speed', Speed));
+                Layer := Board.LayerStack_V7.NextLayer(Layer);
             End;
-            Layer := Board.LayerStack_V7.NextLayer(Layer);
         End;
         If Items <> '' Then Items := Items + ',';
         Items := Items + JsonObj(
@@ -5461,6 +5489,7 @@ Begin
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('board', ExtractFileName(Board.FileName)) + ','
         + JsonInt('profile_count', PCount) + ','
+        + JsonInt('stack_count', SubCount) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('profiles', '[' + Items + ']')));
 End;
@@ -5815,8 +5844,10 @@ Begin
         Inc(Order);
         L := MLS.Next(eLayerClass_Physical, L);
     End;
+    { the master stack only; a rigid-flex board has more (#346) }
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonInt('style', MLS.LayerStackStyle) + ','
+        + JsonInt('stacks_count', BoardLayerStackCount(Board)) + ','
         + JsonBool('changed', Changed) + ','
         + JsonRaw('total_thickness_mils', FloatToJsonStr(CoordToMilsF(MaxTop - MinBot))) + ','
         + JsonRaw('layers', '[' + Items + ']')));
@@ -30569,8 +30600,10 @@ Var
     IPr : ILsmSdkImpedanceProfile;
     ByGuid, ById : TStringList;
     Model, Layers, Props, Names, Pairs, Spans, Drills, Profiles, Extra : String;
-    PropName, PropValue, LName, LGuid, SpanName : String;
-    I, J, LayerCount, PropCount, StartId, StopId : Integer;
+    PropName, PropValue, LName, LGuid, SpanName, PairName, LowName, HighName : String;
+    I, J, LayerCount, PropCount, StartId, StopId, Low, High : Integer;
+    Pair : IPCB_DrillLayerPair;
+    Micro, Back : Boolean;
 Begin
     Result := LayerStackManagerRefusal(RequestId);
     If Result <> '' Then Exit;
@@ -30641,22 +30674,51 @@ Begin
             Names := Names + '"' + EscapeJsonString(LSI.GetLayerProperty(I)) + '"';
         End;
 
-        { start / stop are the provider's layer ids; the name is added when  }
-        { one of the stack's layers carries that id.                         }
+        { The pairs are the board's own (Board.LayerPair): the default      }
+        { stack's list has the right count on a rigid-flex board but answers }
+        { its own first pair again for a pair of another stack (#347). Name, }
+        { micro via and back drill come from the stack's pair on the same    }
+        { two layers, when it has one. start / stop are the layer ids; the   }
+        { name is added when one of the stack's layers carries that id.     }
         Pairs := '';
-        For I := 0 To LSI.GetDrillPairCount - 1 Do
+        For I := 0 To Board.DrillLayerPairsCount - 1 Do
         Begin
-            DP := LSI.GetDrillPairInfo(I);
-            StartId := DP.GetState_StartLayerId;
-            StopId := DP.GetState_StopLayerId;
+            Pair := Nil;
+            Try Pair := Board.LayerPair[I]; Except Pair := Nil; End;
+            If Pair = Nil Then Continue;
+            Low := 0;
+            High := 0;
+            Back := False;
+            Try Low := Pair.LowLayer; Except End;
+            Try High := Pair.HighLayer; Except End;
+            Try Back := Pair.IsBackdrill; Except End;
+            PairName := '';
+            Micro := False;
+            For J := 0 To LSI.GetDrillPairCount - 1 Do
+            Begin
+                DP := LSI.GetDrillPairInfo(J);
+                StartId := DP.GetState_StartLayerId;
+                StopId := DP.GetState_StopLayerId;
+                If ((StartId = Low) And (StopId = High)) Or ((StartId = High) And (StopId = Low)) Then
+                Begin
+                    PairName := DP.GetState_Name;
+                    Micro := DP.GetState_IsMicroVia;
+                    Back := DP.GetState_IsBackDrill;
+                    Break;
+                End;
+            End;
+            LowName := ById.Values[IntToStr(Low)];
+            If LowName = '' Then LowName := LayerDisplayName(Low);
+            HighName := ById.Values[IntToStr(High)];
+            If HighName = '' Then HighName := LayerDisplayName(High);
             If Pairs <> '' Then Pairs := Pairs + ',';
-            Pairs := Pairs + '{' + JsonStr('name', DP.GetState_Name) + ','
-                + JsonInt('start_layer', StartId) + ','
-                + JsonStr('start_layer_name', ById.Values[IntToStr(StartId)]) + ','
-                + JsonInt('stop_layer', StopId) + ','
-                + JsonStr('stop_layer_name', ById.Values[IntToStr(StopId)]) + ','
-                + JsonBool('micro_via', DP.GetState_IsMicroVia) + ','
-                + JsonBool('back_drill', DP.GetState_IsBackDrill) + '}';
+            Pairs := Pairs + '{' + JsonStr('name', PairName) + ','
+                + JsonInt('start_layer', Low) + ','
+                + JsonStr('start_layer_name', LowName) + ','
+                + JsonInt('stop_layer', High) + ','
+                + JsonStr('stop_layer_name', HighName) + ','
+                + JsonBool('micro_via', Micro) + ','
+                + JsonBool('back_drill', Back) + '}';
         End;
 
         { The manager's own document: opened from the board, read, left.     }
