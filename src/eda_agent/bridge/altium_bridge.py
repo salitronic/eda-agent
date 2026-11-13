@@ -720,6 +720,55 @@ def next_session_doc(current: str, command: str, params: dict,
     return current
 
 
+#: Where each session's document is kept, one file per session tag, so a
+#: server that restarts (a reconnect, an update) and the session's other
+#: server carry on with the document the session had in front. Kept only in
+#: memory, a restarted server sent no document and its first command ran on
+#: whatever another session had in front.
+SESSION_DOCS_DIR = "session_documents"
+SESSION_DOC_STALE_SECONDS = 14 * 24 * 3600
+
+
+def _session_doc_path(workspace_dir) -> Path:
+    return Path(workspace_dir) / SESSION_DOCS_DIR / f"{_SESSION_TAG}.json"
+
+
+def read_session_doc(workspace_dir) -> tuple[str, float]:
+    """The session's kept document and the file's time ('' and 0.0 if none)."""
+    path = _session_doc_path(workspace_dir)
+    try:
+        at = path.stat().st_mtime
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "", 0.0
+    doc = data.get("document") if isinstance(data, dict) else None
+    return (doc if isinstance(doc, str) else ""), at
+
+
+def keep_session_doc(workspace_dir, doc: str) -> float:
+    """Keep ``doc`` as the session's document ('' forgets it); answers the
+    file's time. Never raises: losing it costs a restart its pin, no more."""
+    path = _session_doc_path(workspace_dir)
+    try:
+        if not doc:
+            path.unlink(missing_ok=True)
+            return 0.0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"document": doc}), encoding="utf-8")
+        replace_with_retry(tmp, path)
+        now = time.time()
+        for old in path.parent.glob("*.json"):
+            try:
+                if now - old.stat().st_mtime > SESSION_DOC_STALE_SECONDS:
+                    old.unlink()
+            except OSError:
+                pass
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 class AltiumBridge:
     """Handles communication with Altium Designer via file-based IPC.
 
@@ -765,12 +814,30 @@ class AltiumBridge:
         self._last_command: Optional[tuple] = None
         # The document this session last had in front, sent with every
         # command so Altium can put it back if another session moved the
-        # focus in between. Empty until the session's first command.
+        # focus in between. Read from the session's file (SESSION_DOCS_DIR)
+        # whenever that file changes, and written there when it changes.
         self._session_doc = ""
+        self._session_doc_at = -1.0
         # The script version Altium last reported (every ping carries it),
         # and when a reply last said this server is out of date.
         self._loop_script_version = ""
         self._outdated_noted_at = 0.0
+
+    def _load_session_doc(self) -> None:
+        """Take the session's document from its file when the file has
+        changed: after a restart, or when the session's other server moved
+        it. One stat per command when nothing changed."""
+        path = _session_doc_path(self.config.workspace_dir)
+        try:
+            at = path.stat().st_mtime
+        except OSError:
+            at = 0.0
+        if at == self._session_doc_at:
+            return
+        doc, at = read_session_doc(self.config.workspace_dir)
+        if at or self._session_doc_at < 0:
+            self._session_doc = doc
+        self._session_doc_at = at
 
     def _note_fault(self, workspace_dir, guidance: dict) -> None:
         """Persist a fault for the dashboard recovery banner (best-effort)."""
@@ -1748,6 +1815,8 @@ class AltiumBridge:
 
     def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
         """Execute a command synchronously (blocking)."""
+        if not _unpinned(command, params):
+            self._load_session_doc()
         request = CommandRequest(
             command=command, params=params,
             session_doc="" if _unpinned(command, params) else self._session_doc,
@@ -1784,8 +1853,10 @@ class AltiumBridge:
             )
 
         if not _unpinned(command, params):
-            self._session_doc = next_session_doc(
-                self._session_doc, command, params, response)
+            after = next_session_doc(self._session_doc, command, params, response)
+            if after != self._session_doc:
+                self._session_doc = after
+                self._session_doc_at = keep_session_doc(self.config.workspace_dir, after)
 
         shown = self._reshow_hidden_frame(command, request.id)
         answered = getattr(_CALL, "answered_box", None)
