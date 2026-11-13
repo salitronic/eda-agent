@@ -42,32 +42,16 @@ _SCHLIB_CHECKS = (
 )
 
 
-def _extracted_sources(result: dict, intlib_path: str) -> dict:
-    """Point an extract_intlib reply at the sources that really appeared.
+def _extracted_sources(result: dict) -> dict:
+    """An extract_intlib reply that found no source is a failure.
 
-    The sources keep the names they have inside the .IntLib, which need
-    not be the .IntLib's own name: a vendor ``X.IntLib`` can hold
-    ``VENDOR_X.PcbLib``. So list ``extract_dir`` for every .SchLib /
-    .PcbLib, prefer the one named after the .IntLib, and keep the
-    bridge's probe when the folder holds none.
+    The script lists the extract folder itself (sch_libs / pcb_libs); this
+    only turns "nothing appeared" into ok false with the reason.
     """
-    folder = result.get("extract_dir") or ""
-    if not folder or not os.path.isdir(folder):
-        return result
-    base = Path(intlib_path).stem.lower()
-    for ext, key in ((".schlib", "sch"), (".pcblib", "pcb")):
-        found = sorted(str(Path(folder) / n) for n in os.listdir(folder)
-                       if n.lower().endswith(ext))
-        result[f"{key}_libs"] = found
-        if not found:
-            continue
-        named = [p for p in found if Path(p).stem.lower() == base]
-        result[f"{key}_lib_path"] = (named or found)[0]
-        result[f"{key}_lib_found"] = True
     if not (result.get("sch_lib_found") or result.get("pcb_lib_found")):
         result["ok"] = False
         result["reason"] = (
-            "nothing was extracted into " + folder
+            "nothing was extracted into " + str(result.get("extract_dir") or "")
             + (": " + result["problem"] if result.get("problem") else ""))
     return result
 
@@ -4212,7 +4196,7 @@ def register_library_tools(mcp):
             timeout=60.0,
         )
         if isinstance(result, dict):
-            return _extracted_sources(result, intlib_path)
+            return _extracted_sources(result)
         return result or {}
 
     @mcp.tool()

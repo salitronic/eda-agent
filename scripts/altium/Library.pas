@@ -9951,23 +9951,65 @@ End;
 { It must NOT open the .IntLib as a document (WorkspaceManager:OpenObject):  }
 { that raises the "Open Integrated Library" modal (Install / Extract /       }
 { Import / Cancel), which no Try/Except catches and which blocks the polling }
-{ loop until a person answers it (issue #321). The library manager extracts }
-{ without asking.                                                             }
+{ loop until a person answers it. The library manager extracts without      }
+{ asking.                                                                     }
 {                                                                              }
 { The sources keep the names they have INSIDE the .IntLib, which need not be }
 { the name of the .IntLib itself (a vendor "X.IntLib" can hold              }
-{ "VENDOR_X.PcbLib"), so the Python tool lists extract_dir for what really  }
-{ appeared; the probes here only cover the matching-name case.              }
+{ "VENDOR_X.PcbLib"), so the folder is listed for what really appeared      }
+{ (ExtractedLibsJson): the one named after the .IntLib is preferred, else   }
+{ the first by name.                                                          }
 {                                                                              }
 { Params:                                                                      }
 {   intlib_path (required) - path to the .IntLib file                       }
 {                                                                              }
 { Returns: extract_dir, extracted, problem, sch_lib_path/sch_lib_found,     }
-{ pcb_lib_path/pcb_lib_found.                                                 }
+{ pcb_lib_path/pcb_lib_found, sch_libs/pcb_libs (every source extracted).   }
+
+{ The libraries matching Mask in Dir as a JSON array of paths, sorted by    }
+{ name. Chosen is the one named BaseName (case ignored), else the first,    }
+{ else ''. FindFiles answers in capitals; the folder keeps the spelling it  }
+{ was given and the file name stays as FindFiles gives it. Altium matches a }
+{ document's path without regard to case, so such a path opens the same    }
+{ document (measured, AD 26.11).                                            }
+Function ExtractedLibsJson(Dir, Mask, BaseName : String; Var Chosen : String) : String;
+Var
+    Files, Found : TStringList;
+    I : Integer;
+    P : String;
+Begin
+    Result := '';
+    Chosen := '';
+    Found := TStringList.Create;
+    Files := TStringList.Create;
+    Try
+        { FindFiles leaves its list sorted, which takes no assignment, so   }
+        { the paths are rebuilt into a second list.                         }
+        Try FindFiles(Dir, Mask, 63, False, Found); Except End;
+        For I := 0 To Found.Count - 1 Do
+            Files.Add(Dir + ExtractFileName(Found[I]));
+        Files.Sort;
+        For I := 0 To Files.Count - 1 Do
+        Begin
+            P := Files[I];
+            If Result <> '' Then Result := Result + ',';
+            Result := Result + '"' + EscapeJsonString(P) + '"';
+            If UpperCase(ChangeFileExt(ExtractFileName(P), '')) = UpperCase(BaseName) Then
+                Chosen := P;
+        End;
+        If (Chosen = '') And (Files.Count > 0) Then Chosen := Files[0];
+    Finally
+        Files.Free;
+        Found.Free;
+    End;
+    Result := '[' + Result + ']';
+End;
+
 Function Lib_ExtractIntLib(Params : String; RequestId : String) : String;
 Var
     IntLibPath, BaseName, ParentDir, ExtractDir : String;
     SchLibPath, PcbLibPath, Problem : String;
+    SchLibsJson, PcbLibsJson, Chosen : String;
     FoundSch, FoundPcb : Boolean;
     RespJson : String;
 Begin
@@ -10012,8 +10054,12 @@ Begin
         Problem := 'the library manager raised an error';
     End;
 
-    SchLibPath := ExtractDir + BaseName + '.SchLib';
-    PcbLibPath := ExtractDir + BaseName + '.PcbLib';
+    SchLibsJson := ExtractedLibsJson(ExtractDir, '*.SchLib', BaseName, Chosen);
+    SchLibPath := Chosen;
+    If SchLibPath = '' Then SchLibPath := ExtractDir + BaseName + '.SchLib';
+    PcbLibsJson := ExtractedLibsJson(ExtractDir, '*.PcbLib', BaseName, Chosen);
+    PcbLibPath := Chosen;
+    If PcbLibPath = '' Then PcbLibPath := ExtractDir + BaseName + '.PcbLib';
     FoundSch := FileExists(SchLibPath);
     FoundPcb := FileExists(PcbLibPath);
 
@@ -10038,7 +10084,9 @@ Begin
         ',"sch_lib_path":"' + EscapeJsonString(SchLibPath) + '"' +
         ',"sch_lib_found":' + BoolToJsonStr(FoundSch) +
         ',"pcb_lib_path":"' + EscapeJsonString(PcbLibPath) + '"' +
-        ',"pcb_lib_found":' + BoolToJsonStr(FoundPcb) + '}';
+        ',"pcb_lib_found":' + BoolToJsonStr(FoundPcb) +
+        ',"sch_libs":' + SchLibsJson +
+        ',"pcb_libs":' + PcbLibsJson + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
