@@ -71,7 +71,33 @@ _COLOURS = {
     "lens": (0.97, 0.97, 0.95),
     "gold": (0.85, 0.68, 0.25),
     "pin1": (0.90, 0.90, 0.90),
+    "ceramic_ivory": (0.92, 0.89, 0.80),
+    "nickel": (0.70, 0.70, 0.68),
+    "seal_ring": (0.80, 0.68, 0.42),
+    "silicon": (0.30, 0.32, 0.38),
+    "backside_coat": (0.07, 0.07, 0.08),
+    "substrate": (0.09, 0.22, 0.13),
+    "pcb_green": (0.10, 0.38, 0.18),
+    "tin": (0.82, 0.82, 0.82),
+    "lcp_white": (0.94, 0.93, 0.88),
+    "laser": (0.52, 0.52, 0.52),
+    "ink": (0.95, 0.95, 0.95),
 }
+
+#: A solid of this role is not drawn: it is taken out of the solids it
+#: overlaps (or those its ``cut_from`` names), a notch, a castellation
+#: half-hole, the bore of a hollow cylinder.
+CUT_ROLE = "cut"
+
+#: Roles a printed mark (``text``, ``dot``) may take. A mark is cut
+#: ``depth`` into the top face it sits on and filled with its colour, so
+#: it is flush with that face and never raised or wrapped over an edge.
+MARK_ROLES = ("ink", "laser", "pin1", "white")
+
+#: How deep a mark is cut into its face (mm), and how far it must stay
+#: inside that face's edges.
+MARK_DEPTH = 0.008
+MARK_INSET = 0.02
 
 
 @dataclass
@@ -79,7 +105,17 @@ class Solid:
     """One primitive. ``kind``: box (x0..z1), cylinder (centre, radius,
     z0..z1 along ``axis`` x, y or z), sphere (centre, radius) or prism (a
     polygon ``profile`` in the XZ plane, swept along Y from y0 to y1, or
-    in the YZ plane swept along X when ``axis`` is x)."""
+    in the YZ plane swept along X when ``axis`` is x); extrude (an XY
+    ``outline`` from z0 to z1); text and dot (a mark flush in the face at
+    z1).
+
+    A box or an extrude takes ``corner_r`` (its vertical edges rounded),
+    ``edge_r`` (its top edges rounded) and ``taper`` (degrees, the sides
+    drawn in as they rise). A sphere takes ``clip_z0`` / ``clip_z1``, the
+    planes it is cut flat at (a seated solder ball). ``rot`` (degrees
+    about Z through the origin) then ``dx dy dz`` place any solid; an
+    instance of a group is its solids so placed.
+    """
 
     kind: str
     role: str = "body"
@@ -95,6 +131,23 @@ class Solid:
     r: float = 0.0
     axis: str = "z"
     profile: list[tuple[float, float]] = field(default_factory=list)
+    name: str = ""
+    cut_from: list[str] = field(default_factory=list)
+    corner_r: float = 0.0
+    edge_r: float = 0.0
+    taper: float = 0.0
+    outline: list[tuple[float, float]] = field(default_factory=list)
+    text: str = ""
+    size: float = 0.0
+    bold: bool = False
+    angle: float = 0.0
+    depth: float = 0.0
+    clip_z0: Optional[float] = None
+    clip_z1: Optional[float] = None
+    rot: float = 0.0
+    dx: float = 0.0
+    dy: float = 0.0
+    dz: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -156,6 +209,15 @@ class _Ctx:
             v = ASSUMED[fallback_key]
             self.assumed.append(f"{name} = {v} mm (not in the description)")
         return v
+
+
+def seated_ball(x: float, y: float, diameter: float, standoff: float) -> Solid:
+    """A solder ball as seated: a sphere of the ball's diameter centred
+    half way up the standoff and cut flat at the board (z 0) and at the
+    package underside (z standoff), a barrel that neither hangs below
+    the board nor floats under the body."""
+    return Solid("sphere", "ball", cx=x, cy=y, cz=standoff / 2.0,
+                 r=diameter / 2.0, clip_z0=0.0, clip_z1=standoff)
 
 
 def _box(role, x0, y0, z0, x1, y1, z1) -> Solid:
@@ -331,12 +393,9 @@ def _array(c: _Ctx, model: Any, family: str) -> list[Solid]:
         if so is None:
             so = 0.8 * d
             c.assumed.append(f"ball standoff = {so:g} mm (0.8 x ball diameter)")
-        r = d / 2.0
         out = [_box("body", -bx / 2, -by / 2, so, bx / 2, by / 2, H)]
-        # Each ball hangs from the body underside; below a full diameter
-        # of standoff it reaches into the board, as a collapsed ball does.
         for p in model.pads:
-            out.append(Solid("sphere", "ball", cx=p.x, cy=p.y, cz=so - r, r=r))
+            out.append(seated_ball(p.x, p.y, d, so))
         return out
     tt = ASSUMED["terminal_thickness"]
     out = [_box("body", -bx / 2, -by / 2, tt, bx / 2, by / 2, H)]
@@ -421,12 +480,80 @@ _FAMILIES = {
 MODELLED_FAMILIES = tuple(sorted(_FAMILIES))
 
 
+def _local_bounds(s: Any) -> tuple[float, float, float, float, float, float]:
+    """(xmin, xmax, ymin, ymax, zmin, zmax) of a solid before ``rot`` and
+    ``dx dy dz``. Text is estimated from its size (0.6 of it per letter)."""
+    g = s.get if isinstance(s, dict) else (lambda k, d=None: getattr(s, k, d))
+    f = lambda k: float(g(k, 0.0) or 0.0)  # noqa: E731
+    kind = str(g("kind", "box") or "box").lower()
+    axis = str(g("axis", "z") or "z").lower()
+    if kind == "box":
+        return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
+                min(f("y0"), f("y1")), max(f("y0"), f("y1")),
+                min(f("z0"), f("z1")), max(f("z0"), f("z1")))
+    if kind == "sphere":
+        r = f("r")
+        lo = f("cz") - r if g("clip_z0", None) is None else max(f("cz") - r, f("clip_z0"))
+        hi = f("cz") + r if g("clip_z1", None) is None else min(f("cz") + r, f("clip_z1"))
+        return f("cx") - r, f("cx") + r, f("cy") - r, f("cy") + r, lo, hi
+    if kind == "cylinder":
+        r = f("r")
+        if axis == "x":
+            return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
+                    f("cy") - r, f("cy") + r, f("cz") - r, f("cz") + r)
+        if axis == "y":
+            return (f("cx") - r, f("cx") + r, min(f("y0"), f("y1")),
+                    max(f("y0"), f("y1")), f("cz") - r, f("cz") + r)
+        return (f("cx") - r, f("cx") + r, f("cy") - r, f("cy") + r,
+                min(f("z0"), f("z1")), max(f("z0"), f("z1")))
+    if kind == "prism":
+        prof = [(float(u), float(z)) for u, z in (g("profile", []) or [])] or [(0.0, 0.0)]
+        us, zs = [u for u, _ in prof], [z for _, z in prof]
+        if axis == "x":
+            return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
+                    min(us), max(us), min(zs), max(zs))
+        return min(us), max(us), min(f("y0"), f("y1")), max(f("y0"), f("y1")), min(zs), max(zs)
+    if kind == "extrude":
+        pts = [(float(x), float(y)) for x, y in (g("outline", []) or [])] or [(0.0, 0.0)]
+        return (min(x for x, _ in pts), max(x for x, _ in pts),
+                min(y for _, y in pts), max(y for _, y in pts),
+                min(f("z0"), f("z1")), max(f("z0"), f("z1")))
+    if kind in ("text", "dot"):
+        if kind == "dot":
+            hw = hh = f("r")
+        else:
+            hw, hh = 0.3 * f("size") * len(str(g("text", "") or "")), f("size") / 2
+        a = math.radians(f("angle"))
+        ex = abs(hw * math.cos(a)) + abs(hh * math.sin(a))
+        ey = abs(hw * math.sin(a)) + abs(hh * math.cos(a))
+        depth = f("depth") or MARK_DEPTH
+        return (f("cx") - ex, f("cx") + ex, f("cy") - ey, f("cy") + ey,
+                f("z1") - depth, f("z1"))
+    return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+
+
+def solid_bounds(s: Any) -> tuple[float, float, float, float, float, float]:
+    """(xmin, xmax, ymin, ymax, zmin, zmax) of a solid where it is placed."""
+    x0, x1, y0, y1, z0, z1 = _local_bounds(s)
+    g = s.get if isinstance(s, dict) else (lambda k, d=None: getattr(s, k, d))
+    rot = math.radians(float(g("rot", 0.0) or 0.0))
+    dx, dy, dz = (float(g(k, 0.0) or 0.0) for k in ("dx", "dy", "dz"))
+    if rot:
+        c, n = math.cos(rot), math.sin(rot)
+        pts = [(x * c - y * n, x * n + y * c) for x in (x0, x1) for y in (y0, y1)]
+        x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+        y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    return x0 + dx, x1 + dx, y0 + dy, y1 + dy, z0 + dz, z1 + dz
+
+
+def _drawn(s: Any) -> bool:
+    """Whether a solid is part of the model (a cutter is not)."""
+    role = s.get("role") if isinstance(s, dict) else getattr(s, "role", "body")
+    return str(role or "body") != CUT_ROLE
+
+
 def _top(s: Solid) -> float:
-    if s.kind == "sphere" or (s.kind == "cylinder" and s.axis == "x"):
-        return s.cz + s.r
-    if s.kind == "prism":
-        return max(z for _, z in s.profile)
-    return s.z1
+    return solid_bounds(s)[5]
 
 
 #: Fields each solid kind needs in plan_from_solids.
@@ -435,10 +562,112 @@ _SOLID_FIELDS = {
     "cylinder": ("r",),
     "sphere": ("cx", "cy", "cz", "r"),
     "prism": ("profile",),
+    "extrude": ("outline", "z0", "z1"),
+    "text": ("text", "size", "cx", "cy", "z1"),
+    "dot": ("cx", "cy", "r", "z1"),
 }
 
+#: Fields kept as given rather than read as numbers.
+_TEXT_FIELDS = ("kind", "role", "axis", "profile", "outline", "name",
+                "cut_from", "text", "bold", "clip_z0", "clip_z1")
 
-def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPlan], list[str]]:
+
+def _expand_instances(solids: list, groups: Optional[dict],
+                      problems: list[str]) -> list:
+    """Each ``{"kind": "instance", "group": name, rot, dx, dy, dz}`` as
+    the group's solids placed there. A name inside a group (and the
+    cut_from that point at it) gets ``@n``, the instance's number, so two
+    copies cut only their own solids."""
+    out: list = []
+    groups = groups or {}
+    count = 0
+    for i, raw in enumerate(solids or []):
+        if not (isinstance(raw, dict) and str(raw.get("kind", "")).lower() == "instance"):
+            out.append(raw)
+            continue
+        name = str(raw.get("group", ""))
+        members = groups.get(name)
+        if not isinstance(members, list) or not members:
+            problems.append(f"solid {i} (instance): no group {name!r}; groups: "
+                            + (", ".join(sorted(groups)) or "none given"))
+            continue
+        count += 1
+        try:
+            rot = float(raw.get("rot") or 0)
+            dx, dy, dz = (float(raw.get(k) or 0) for k in ("dx", "dy", "dz"))
+        except (TypeError, ValueError):
+            problems.append(f"solid {i} (instance): rot, dx, dy and dz are numbers")
+            continue
+        for m in members:
+            if not isinstance(m, dict) or str(m.get("kind", "")).lower() == "instance":
+                problems.append(f"group {name!r}: a member is not a solid "
+                                "(a group holds no instances)")
+                break
+            if float(m.get("rot") or 0):
+                problems.append(f"group {name!r}: place a member with its own "
+                                "coordinates, not rot; the instance turns it")
+                break
+            c = dict(m)
+            c["rot"] = rot
+            c["dx"] = float(m.get("dx") or 0) * math.cos(math.radians(rot)) \
+                - float(m.get("dy") or 0) * math.sin(math.radians(rot)) + dx
+            c["dy"] = float(m.get("dx") or 0) * math.sin(math.radians(rot)) \
+                + float(m.get("dy") or 0) * math.cos(math.radians(rot)) + dy
+            c["dz"] = float(m.get("dz") or 0) + dz
+            if c.get("name"):
+                c["name"] = f"{c['name']}@{count}"
+            if c.get("cut_from"):
+                c["cut_from"] = [f"{n}@{count}" for n in c["cut_from"]]
+            out.append(c)
+    return out
+
+
+def _solid_problem(s: Solid) -> str:
+    """Why a parsed solid cannot be built, or empty."""
+    if s.kind == "box" and not (s.x1 > s.x0 and s.y1 > s.y0 and s.z1 > s.z0):
+        return "each far edge must exceed its near edge"
+    if s.kind in ("cylinder", "sphere", "dot") and s.r <= 0:
+        return "r must be positive"
+    if s.kind == "extrude":
+        if len(s.outline) < 3:
+            return "an outline needs three points or more"
+        if not s.z1 > s.z0:
+            return "z1 must exceed z0"
+    if s.kind in ("box", "extrude"):
+        x0, x1, y0, y1, z0, z1 = _local_bounds(s)
+        if s.corner_r < 0 or s.edge_r < 0:
+            return "corner_r and edge_r cannot be negative"
+        if s.corner_r and s.corner_r * 2 >= min(x1 - x0, y1 - y0):
+            return "corner_r must be under half the narrower side"
+        if s.edge_r and s.edge_r >= z1 - z0:
+            return "edge_r must be under the height"
+        if not 0 <= s.taper < 60:
+            return "taper is degrees from 0 to under 60"
+        if s.taper and min(x1 - x0, y1 - y0) / 2 <= (z1 - z0) * math.tan(math.radians(s.taper)):
+            return "the taper closes the top before z1"
+    elif s.corner_r or s.edge_r or s.taper:
+        return "corner_r, edge_r and taper are for a box or an extrude"
+    if s.kind in ("text", "dot"):
+        if s.role not in MARK_ROLES:
+            return "a mark's role is one of " + ", ".join(MARK_ROLES)
+        if s.kind == "text" and (not s.text.strip() or s.size <= 0):
+            return "text needs the string and a size above 0"
+        if s.depth < 0:
+            return "depth cannot be negative"
+    elif s.role in ("ink", "laser"):
+        return "ink and laser are the colours of a text or dot mark"
+    if s.role == CUT_ROLE and s.kind in ("text", "dot"):
+        return "a mark is not a cut"
+    if s.kind != "sphere" and (s.clip_z0 is not None or s.clip_z1 is not None):
+        return "clip_z0 and clip_z1 are for a sphere"
+    if s.kind == "sphere" and s.clip_z0 is not None and s.clip_z1 is not None \
+            and not s.clip_z1 > s.clip_z0:
+        return "clip_z1 must exceed clip_z0"
+    return ""
+
+
+def plan_from_solids(solids: list[dict], source: str,
+                     groups: Optional[dict] = None) -> tuple[Optional[ModelPlan], list[str]]:
     """A model drawn as a list of primitives, for a part no family covers.
 
     A connector, a LED with a lens or a header has a shape no package
@@ -446,12 +675,14 @@ def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPla
     it. The caller reads them off the drawing and passes the solids, in
     mm, origin at the footprint origin, Z up from the board; ``source``
     names the drawing (document, page, figure) and is required, as for
-    every model here. Returns ``(plan, problems)``; plan is None when
-    any solid is malformed, and the problems say which and why.
+    every model here. ``groups`` names lists of solids an ``instance``
+    places. Returns ``(plan, problems)``; plan is None when any solid is
+    malformed, and the problems say which and why.
     """
     problems: list[str] = []
     out: list[Solid] = []
     allowed = set(Solid.__dataclass_fields__)
+    solids = _expand_instances(solids, groups, problems)
     for i, raw in enumerate(solids or []):
         if not isinstance(raw, dict):
             problems.append(f"solid {i}: not an object")
@@ -459,7 +690,7 @@ def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPla
         kind = str(raw.get("kind", "")).lower()
         if kind not in _SOLID_FIELDS:
             problems.append(f"solid {i}: kind {raw.get('kind')!r} is not one of "
-                            + ", ".join(_SOLID_FIELDS))
+                            + ", ".join(list(_SOLID_FIELDS) + ["instance"]))
             continue
         missing = [f for f in _SOLID_FIELDS[kind] if f not in raw]
         if kind == "cylinder":
@@ -471,10 +702,11 @@ def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPla
         if missing:
             problems.append(f"solid {i} ({kind}): missing {', '.join(missing)}")
             continue
-        role = str(raw.get("role") or "body")
-        if role not in _COLOURS:
+        default = "ink" if kind in ("text", "dot") else "body"
+        role = str(raw.get("role") or default)
+        if role not in _COLOURS and role != CUT_ROLE:
             problems.append(f"solid {i}: role {role!r} is not one of "
-                            + ", ".join(sorted(_COLOURS)))
+                            + ", ".join(sorted(list(_COLOURS) + [CUT_ROLE])))
             continue
         try:
             args = {k: v for k, v in raw.items() if k in allowed}
@@ -483,26 +715,47 @@ def plan_from_solids(solids: list[dict], source: str) -> tuple[Optional[ModelPla
                 args["profile"] = [(float(u), float(z)) for u, z in raw["profile"]]
                 if len(args["profile"]) < 3:
                     raise ValueError("a profile needs three points or more")
+            if kind == "extrude":
+                args["outline"] = [(float(x), float(y)) for x, y in raw["outline"]]
             for k, v in list(args.items()):
-                if k not in ("kind", "role", "axis", "profile"):
+                if k not in _TEXT_FIELDS:
                     args[k] = float(v)
+            for k in ("clip_z0", "clip_z1"):
+                if args.get(k) is not None:
+                    args[k] = float(args[k])
+            args["name"] = str(args.get("name") or "")
+            cut_from = args.get("cut_from") or []
+            args["cut_from"] = [cut_from] if isinstance(cut_from, str) else \
+                [str(n) for n in cut_from]
+            args["text"] = str(args.get("text") or "")
+            args["bold"] = bool(args.get("bold"))
             s = Solid(**args)
         except (TypeError, ValueError) as exc:
             problems.append(f"solid {i} ({kind}): {exc}")
             continue
-        if kind == "box" and not (s.x1 > s.x0 and s.y1 > s.y0 and s.z1 > s.z0):
-            problems.append(f"solid {i} (box): each far edge must exceed its near edge")
+        why = _solid_problem(s)
+        if why:
+            problems.append(f"solid {i} ({kind}): {why}")
             continue
-        if kind in ("cylinder", "sphere") and s.r <= 0:
-            problems.append(f"solid {i} ({kind}): r must be positive")
+        if s.cut_from and s.role != CUT_ROLE:
+            problems.append(f"solid {i} ({kind}): cut_from is for a solid of role cut")
             continue
         out.append(s)
+    names = {s.name for s in out if s.name}
+    for i, s in enumerate(out):
+        unknown = [n for n in s.cut_from if n not in names]
+        if unknown:
+            problems.append(f"solid {i}: cut_from names {', '.join(unknown)}, "
+                            "which no solid is named")
+    drawn = [s for s in out if _drawn(s)]
+    if out and not drawn and not problems:
+        problems.append("every solid is a cut; nothing is left to draw")
     if not out and not problems:
         problems.append("no solids given")
     if problems:
         return None, problems
     source = str(source or "").strip()
-    plan = ModelPlan("custom", out, [], round(max(_top(s) for s in out), 6),
+    plan = ModelPlan("custom", out, [], round(max(_top(s) for s in drawn), 6),
                      {"drawing": source} if source else {},
                      [] if source else ["every solid (no source drawing named)"])
     return plan, []
@@ -520,15 +773,55 @@ def _land_box(land: dict) -> tuple[float, float, float, float]:
     return x - w / 2, y - h / 2, x + w / 2, y + h / 2
 
 
+_CORNERS = ("top_left", "top_right", "bottom_left", "bottom_right")
+
+
+def chamfered_outline(x0: float, y0: float, x1: float, y1: float,
+                      cut: Any) -> Any:
+    """A land rectangle with corners cut at 45 degrees, as an outline.
+
+    ``cut`` is ``{"size": mm, "corners": ["top_left", ...]}`` (a single
+    ``corner`` also works), top being +Y. Returns the outline, or the
+    problem as a string.
+    """
+    if not isinstance(cut, dict):
+        return "a chamfer is {size, corners}"
+    try:
+        size = float(cut.get("size") or 0)
+    except (TypeError, ValueError):
+        return "chamfer size must be a number"
+    corners = cut.get("corners") or ([cut["corner"]] if cut.get("corner") else [])
+    if isinstance(corners, str):
+        corners = [corners]
+    bad = [c for c in corners if c not in _CORNERS]
+    if not corners or bad:
+        return "chamfer corners are " + ", ".join(_CORNERS)
+    if not 0 < size < min(x1 - x0, y1 - y0):
+        return "chamfer size must be above 0 and below the land's width"
+    pts: list[tuple[float, float]] = []
+    for name, (x, y), (ax, ay), (bx, by) in (
+            ("bottom_left", (x0, y0), (0, 1), (1, 0)),
+            ("bottom_right", (x1, y0), (-1, 0), (0, 1)),
+            ("top_right", (x1, y1), (0, -1), (-1, 0)),
+            ("top_left", (x0, y1), (1, 0), (0, -1))):
+        if name in corners:
+            pts += [(x + ax * size, y + ay * size), (x + bx * size, y + by * size)]
+        else:
+            pts.append((x, y))
+    return pts
+
+
 def terminal_solids(lands: list[dict], kind: str, height: float,
-                    diameter: float = 0.0) -> tuple[list[Solid], list[str]]:
+                    diameter: float = 0.0,
+                    chamfered: Optional[dict] = None) -> tuple[list[Solid], list[str]]:
     """One terminal for every land of the footprint, where the land is.
 
     ``lands`` are ``{name, x, y, w, h, shape, rotation}`` in mm.
     ``kind`` "plate": a gold plate the land's shape and size, ``height``
     thick (an LGA or LCC terminal); "ball": a solder ball of ``diameter``
-    whose top is ``height`` above the board (a BGA ball as seated).
-    Returns ``(solids, problems)``.
+    seated between the board and the package underside ``height`` above
+    it (seated_ball). ``chamfered`` maps a land name to its chamfer
+    ``{size, corners}`` (a DFN's pin 1 pad). Returns ``(solids, problems)``.
     """
     if kind not in ("plate", "ball"):
         return [], [f"terminals kind {kind!r} is plate or ball"]
@@ -539,13 +832,20 @@ def terminal_solids(lands: list[dict], kind: str, height: float,
     if not lands:
         return [], ["the footprint has no lands to put terminals on"]
     out: list[Solid] = []
+    chamfers = {str(k): v for k, v in (chamfered or {}).items()}
     for land in lands:
         x0, y0, x1, y1 = _land_box(land)
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        cut = chamfers.get(str(land.get("name", "")))
         if kind == "ball":
-            r = diameter / 2
-            out.append(Solid("sphere", "ball", cx=cx, cy=cy, cz=height - r, r=r))
-        elif str(land.get("shape", "")).lower() in ("circle", "round")                 and abs((x1 - x0) - (y1 - y0)) < 1e-6:
+            out.append(seated_ball(cx, cy, diameter, height))
+        elif cut is not None:
+            outline = chamfered_outline(x0, y0, x1, y1, cut)
+            if isinstance(outline, str):
+                return [], [f"land {land.get('name')}: {outline}"]
+            out.append(Solid("extrude", "gold", z0=0.0, z1=height, outline=outline))
+        elif str(land.get("shape", "")).lower() in ("circle", "round") \
+                and abs((x1 - x0) - (y1 - y0)) < 1e-6:
             out.append(Solid("cylinder", "gold", cx=cx, cy=cy, z0=0.0, z1=height,
                              r=(x1 - x0) / 2))
         else:
@@ -560,12 +860,13 @@ def strip_terminals(solids: list[Solid], lands: list[dict]) -> list[str]:
     has. Terminals come from the footprint (``terminal_solids``)."""
     problems = []
     for i, s in enumerate(solids):
-        if s.role not in TERMINAL_ROLES or s.kind != "box":
+        if s.role not in TERMINAL_ROLES or s.kind not in ("box", "extrude"):
             continue
-        if s.z0 > 0.05 or s.z1 - s.z0 > 0.3:
+        x0, x1, y0, y1, z0, z1 = solid_bounds(s)
+        if z0 > 0.05 or z1 - z0 > 0.3:
             continue  # a can or a lead above the board, not a terminal
         names = sorted({str(l["name"]) for l in lands
-                        if s.x0 < float(l["x"]) < s.x1 and s.y0 < float(l["y"]) < s.y1})
+                        if x0 < float(l["x"]) < x1 and y0 < float(l["y"]) < y1})
         if len(names) > 1:
             problems.append(
                 f"solid {i} ({s.role} box) covers lands {', '.join(names[:6])}"
@@ -670,7 +971,61 @@ def available_writers() -> list[str]:
     return out
 
 
+def _cq_profile(s: Solid):
+    """A box or extrude: its outline, rounded at the corners, extruded
+    with its taper, the top edges rounded, before placing."""
+    import cadquery as cq
+
+    if s.kind == "box":
+        w, h = s.x1 - s.x0, s.y1 - s.y0
+        sketch = cq.Sketch().rect(w, h)
+        at = ((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2)
+    else:
+        sketch = cq.Sketch().polygon(list(s.outline) + [s.outline[0]])
+        at = (0.0, 0.0)
+    if s.corner_r:
+        sketch = sketch.vertices().fillet(s.corner_r)
+    body = (cq.Workplane("XY").workplane(offset=s.z0).center(*at)
+            .placeSketch(sketch).extrude(s.z1 - s.z0, taper=s.taper or None))
+    if s.edge_r:
+        body = body.faces(">Z").edges().fillet(s.edge_r)
+    return body
+
+
+def _cq_mark(s: Solid):
+    import cadquery as cq
+
+    depth = s.depth or MARK_DEPTH
+    if s.kind == "dot":
+        mark = cq.Workplane("XY").circle(s.r).extrude(depth)
+    else:
+        mark = cq.Workplane("XY").text(s.text, s.size, depth,
+                                       kind="bold" if s.bold else "regular",
+                                       halign="center", valign="center")
+    if s.angle:
+        mark = mark.rotate((0, 0, 0), (0, 0, 1), s.angle)
+    return mark.translate((s.cx, s.cy, s.z1 - depth))
+
+
+def _cq_placed(s: Solid, shape):
+    if s.rot:
+        shape = shape.rotate((0, 0, 0), (0, 0, 1), s.rot)
+    if s.dx or s.dy or s.dz:
+        shape = shape.translate((s.dx, s.dy, s.dz))
+    return shape
+
+
 def _cq_solid(s: Solid):
+    import cadquery as cq
+
+    if s.kind in ("text", "dot"):
+        return _cq_placed(s, _cq_mark(s))
+    if s.kind in ("extrude",) or (s.kind == "box" and (s.corner_r or s.edge_r or s.taper)):
+        return _cq_placed(s, _cq_profile(s))
+    return _cq_placed(s, _cq_plain(s))
+
+
+def _cq_plain(s: Solid):
     import cadquery as cq
 
     if s.kind == "box":
@@ -678,7 +1033,14 @@ def _cq_solid(s: Solid):
                 .box(s.x1 - s.x0, s.y1 - s.y0, s.z1 - s.z0, centered=False)
                 .translate((s.x0, s.y0, s.z0)))
     if s.kind == "sphere":
-        return cq.Workplane("XY").sphere(s.r).translate((s.cx, s.cy, s.cz))
+        ball = cq.Workplane("XY").sphere(s.r).translate((s.cx, s.cy, s.cz))
+        if s.clip_z0 is not None or s.clip_z1 is not None:
+            lo = s.cz - s.r - 1 if s.clip_z0 is None else s.clip_z0
+            hi = s.cz + s.r + 1 if s.clip_z1 is None else s.clip_z1
+            span = 2 * s.r + 2
+            ball = ball.intersect(cq.Workplane("XY").box(span, span, hi - lo, centered=(True, True, False))
+                                  .translate((s.cx, s.cy, lo)))
+        return ball
     if s.kind == "cylinder":
         if s.axis == "x":
             return (cq.Workplane("YZ").circle(s.r).extrude(s.x1 - s.x0)
@@ -722,11 +1084,14 @@ def _worker_proc():
     return proc
 
 
-def _write_cadquery(plan: ModelPlan, path: Path, name: str) -> None:
+def _write_cadquery(plan: ModelPlan, path: Path, name: str,
+                    review: Optional[Path] = None) -> None:
     """Write through the worker process, never by importing CadQuery
     here: in the server the first import took up to 224 s (see
-    step_worker.py). A worker that died is started again once."""
-    req = json.dumps({"plan": plan.to_dict(), "path": str(path), "name": name}) + "\n"
+    step_worker.py). A worker that died is started again once. With
+    ``review``, the worker also draws the review picture there."""
+    req = json.dumps({"plan": plan.to_dict(), "path": str(path), "name": name,
+                      "review": str(review) if review else ""}) + "\n"
     with _worker_lock:
         for attempt in (1, 2):
             proc = _worker_proc()
@@ -745,18 +1110,138 @@ def _write_cadquery(plan: ModelPlan, path: Path, name: str) -> None:
         raise RuntimeError("the STEP worker stopped answering")
 
 
-def _write_cadquery_here(plan: ModelPlan, path: Path, name: str) -> None:
+def _overlaps(a, b) -> bool:
+    return not (a.xmax < b.xmin or b.xmax < a.xmin or a.ymax < b.ymin
+                or b.ymax < a.ymin or a.zmax < b.zmin or b.zmax < a.zmin)
+
+
+def build_shapes(plan: ModelPlan) -> list[tuple[str, Any, tuple]]:
+    """The model as ``(label, CadQuery workplane, rgb)``, one per drawn
+    solid: cut solids taken out of their targets, marks cut into the face
+    they sit on and filled. Raises ValueError for a mark that is not
+    flush inside a top face, or a cut that touches nothing."""
+    drawn: list[list] = []
+    cuts: list[Solid] = []
+    marks: list[Solid] = []
+    for i, s in enumerate(plan.solids):
+        if s.role == CUT_ROLE:
+            cuts.append(s)
+        elif s.kind in ("text", "dot"):
+            marks.append(s)
+        else:
+            drawn.append([f"{s.name or s.role}_{i}", s, _cq_solid(s)])
+    for c in cuts:
+        cutter = _cq_solid(c)
+        box = cutter.val().BoundingBox()
+        hit = 0
+        for entry in drawn:
+            s, shape = entry[1], entry[2]
+            if c.cut_from and s.name not in c.cut_from:
+                continue
+            if not _overlaps(box, shape.val().BoundingBox()):
+                continue
+            entry[2] = shape.cut(cutter)
+            hit += 1
+        if not hit:
+            raise ValueError(f"the cut {c.name or c.kind} at {_where(box)} "
+                             "touches no solid")
+    for m in marks:
+        mark = _cq_solid(m)
+        box = mark.val().BoundingBox()
+        face = None
+        for entry in drawn:
+            under = entry[2].val().BoundingBox()
+            if abs(under.zmax - (m.z1 + m.dz)) < 1e-4 and _overlaps(box, under):
+                face = under if face is None else face
+                entry[2] = entry[2].cut(mark)
+        label = m.text or f"dot at {m.cx:g}, {m.cy:g}"
+        if face is None:
+            raise ValueError(f"the mark {label!r} is not on a top face: no solid's "
+                             f"top is at z {m.z1 + m.dz:g}")
+        if (box.xmin < face.xmin + MARK_INSET or box.xmax > face.xmax - MARK_INSET
+                or box.ymin < face.ymin + MARK_INSET or box.ymax > face.ymax - MARK_INSET):
+            raise ValueError(f"the mark {label!r} ({_where(box)}) reaches past the "
+                             f"face it is on ({_where(face)}); keep it "
+                             f"{MARK_INSET:g} mm inside the edges")
+        drawn.append([f"mark_{label}", m, mark])
+    return [(label, shape, _COLOURS.get(s.role, _COLOURS["metal"]))
+            for label, s, shape in drawn]
+
+
+def _where(b) -> str:
+    return (f"x {b.xmin:.3f} to {b.xmax:.3f}, y {b.ymin:.3f} to {b.ymax:.3f}, "
+            f"z {b.zmin:.3f} to {b.zmax:.3f}")
+
+
+#: Directions the review picture looks from: above and below, from the
+#: front left corner.
+REVIEW_VIEWS = {"top_iso": (-1.0, -1.2, 1.1), "bottom_iso": (-1.0, -1.2, -1.1)}
+
+
+def render_review(shapes: list[tuple[str, Any, tuple]], png: Path,
+                  size: int = 700) -> None:
+    """Two views of the model side by side as a PNG, drawn offscreen
+    (VTK, which CadQuery brings): from above and from below."""
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+    import numpy as np
+    from PIL import Image
+
+    pictures = []
+    for direction in REVIEW_VIEWS.values():
+        ren = vtk.vtkRenderer()
+        ren.SetBackground(0.86, 0.87, 0.89)
+        for _label, shape, rgb in shapes:
+            data = shape.val().toVtkPolyData(0.002, 0.1)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(data)
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*rgb)
+            actor.GetProperty().SetSpecular(0.25)
+            ren.AddActor(actor)
+        cam = ren.GetActiveCamera()
+        cam.SetFocalPoint(0, 0, 0)
+        cam.SetPosition(*direction)
+        cam.SetViewUp(0, 0, 1)
+        cam.ParallelProjectionOn()
+        ren.ResetCamera()
+        cam.Zoom(0.92)
+        win = vtk.vtkRenderWindow()
+        win.SetOffScreenRendering(1)
+        win.SetSize(size, size)
+        win.AddRenderer(ren)
+        win.Render()
+        grab = vtk.vtkWindowToImageFilter()
+        grab.SetInput(win)
+        grab.Update()
+        img = grab.GetOutput()
+        w, h, _ = img.GetDimensions()
+        arr = vtk_to_numpy(img.GetPointData().GetScalars()).reshape(h, w, -1)[::-1, :, :3]
+        pictures.append(Image.fromarray(np.ascontiguousarray(arr)))
+        win.Finalize()
+    sheet = Image.new("RGB", (size * len(pictures), size), (255, 255, 255))
+    for k, pic in enumerate(pictures):
+        sheet.paste(pic, (k * size, 0))
+    png.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(str(png))
+
+
+def _write_cadquery_here(plan: ModelPlan, path: Path, name: str,
+                         review: Optional[Path] = None) -> None:
     import cadquery as cq
 
+    shapes = build_shapes(plan)
     assy = cq.Assembly(name=name)
-    for i, s in enumerate(plan.solids):
-        rgb = _COLOURS.get(s.role, _COLOURS["metal"])
-        assy.add(_cq_solid(s), name=f"{s.role}_{i}",
+    for label, shape, rgb in shapes:
+        assy.add(shape, name=re.sub(r"[^A-Za-z0-9_]", "_", label)[:60],
                  color=cq.Color(rgb[0], rgb[1], rgb[2]))
     if hasattr(assy, "export"):      # CadQuery 2.5 on; save is deprecated
         assy.export(str(path))
     else:
         assy.save(str(path), exportType="STEP")
+    if review is not None:
+        render_review(shapes, review)
 
 
 _FREECAD_SCRIPT = r'''
@@ -856,8 +1341,26 @@ def _colour_step(path: Path, colours: list[tuple[float, float, float]]) -> bool:
     return True
 
 
+def _cadquery_only(plan: ModelPlan) -> list[str]:
+    """What in ``plan`` only the CadQuery writer draws."""
+    found = []
+    for s in plan.solids:
+        if s.role == CUT_ROLE:
+            found.append("cuts")
+        if s.kind in ("extrude", "text", "dot"):
+            found.append(s.kind)
+        if s.corner_r or s.edge_r or s.taper:
+            found.append("rounded or tapered boxes")
+        if s.clip_z0 is not None or s.clip_z1 is not None:
+            found.append("seated balls")
+        if s.rot or s.dx or s.dy or s.dz:
+            found.append("placed instances")
+    return sorted(set(found))
+
+
 def write_step(plan: ModelPlan, path: str | Path, *, name: str = "part",
-               writers: Optional[list[str]] = None) -> dict[str, Any]:
+               writers: Optional[list[str]] = None,
+               review: Optional[str | Path] = None) -> dict[str, Any]:
     """Write ``plan`` as a STEP file with the first writer that works.
 
     A model is designed from the datasheet's mechanical drawing: a plan
@@ -881,15 +1384,22 @@ def write_step(plan: ModelPlan, path: str | Path, *, name: str = "part",
             if path.exists():
                 path.unlink()
             if w == "cadquery":
-                _write_cadquery(plan, path, name)
+                _write_cadquery(plan, path, name, Path(review) if review else None)
             elif w == "freecad":
+                only = _cadquery_only(plan)
+                if only:
+                    raise RuntimeError("the FreeCAD writer does not draw "
+                                       + ", ".join(only) + "; install CadQuery")
                 _write_freecad(plan, path)
             else:
                 raise ValueError(f"unknown writer {w}")
             head = path.read_bytes()[:64]
             if not head.startswith(b"ISO-10303-21"):
                 raise RuntimeError("the file written is not STEP")
-            return {"ok": True, "path": str(path), "writer": w, "tried": tried}
+            out = {"ok": True, "path": str(path), "writer": w, "tried": tried}
+            if review and w == "cadquery" and Path(review).is_file():
+                out["review"] = str(review)
+            return out
         except Exception as exc:  # each writer's failure is reported
             tried.append({"writer": w, "error": f"{type(exc).__name__}: {exc}"[:300]})
     reason = ("no STEP writer on this machine: install CadQuery "

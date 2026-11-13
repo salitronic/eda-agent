@@ -23,7 +23,7 @@ DISTRIBUTION = {
     "win32com": "pywin32", "win32con": "pywin32", "win32gui": "pywin32",
     "win32process": "pywin32", "win32ui": "pywin32", "pythoncom": "pywin32",
     "pywintypes": "pywin32", "win32clipboard": "pywin32", "win32gui_struct": "pywin32",
-    "eda_agent_render": "eda-agent-render",
+    "eda_agent_render": "eda-agent-render", "eda_agent_route": "eda-agent-route",
 }
 # Provided by a declared distribution rather than declared themselves.
 TRANSITIVE = {"werkzeug": "flask", "OCP": "cadquery"}

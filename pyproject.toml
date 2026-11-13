@@ -77,6 +77,12 @@ render = [
 render3d = [
     "eda-agent-render>=0.1",
 ]
+# The board router's grid search, compiled (pcb_autoroute): eda-agent's
+# own, built from route-core/. Without it the router searches with scipy,
+# more slowly, and finds paths of the same cost.
+route = [
+    "eda-agent-route>=0.1",
+]
 # KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). It talks to
 # KiCad's API server with the standard library alone, so this extra is
 # empty; it stays so that `pip install eda-agent[kicad]` keeps working.
@@ -87,6 +93,8 @@ kicad = []
 # body and says so. Kept out of the core install for its size.
 models3d = [
     "cadquery>=2.4",
+    # The review picture of a built model; CadQuery itself depends on it.
+    "vtk>=9.2",
 ]
 dev = [
     "pytest>=7.0",

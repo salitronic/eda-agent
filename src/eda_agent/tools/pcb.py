@@ -7349,9 +7349,8 @@ def register_pcb_tools(mcp):
             copper_thickness_mils, dielectric_type, dielectric_height_mils,
             dielectric_constant), "layer_count", and "board_name"
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_layer_stackup", {})
-        return result
+        from ..bridge.stackup import layer_stackup
+        return await layer_stackup(get_bridge())
 
     @mcp.tool()
     async def pcb_get_impedance_profiles() -> dict[str, Any]:
@@ -7690,7 +7689,8 @@ def register_pcb_tools(mcp):
         )
 
         bridge = get_bridge()
-        stackup = await bridge.send_command_async("pcb.get_layer_stackup", {})
+        from ..bridge.stackup import layer_stackup
+        stackup = await layer_stackup(bridge)
         if not isinstance(stackup, dict) or "layers" not in stackup:
             return {"success": False,
                     "error": "could not read layer stackup (open a .PcbDoc)"}
@@ -7907,8 +7907,8 @@ def register_pcb_tools(mcp):
             ``{"ok": True, "matches": bool, "findings": [...], "board":
             {...}}`` or the bridge's error.
         """
-        bridge = get_bridge()
-        board = await bridge.send_command_async("pcb.get_layer_stackup", {})
+        from ..bridge.stackup import layer_stackup
+        board = await layer_stackup(get_bridge())
         if not isinstance(board, dict) or "layers" not in board:
             return {"ok": False, "reason": "could not read the board stack-up",
                     "board": board}
@@ -7938,8 +7938,9 @@ def register_pcb_tools(mcp):
             ``{"ok", "template", "calls", "dry_run"}``, plus per-layer
             ``results`` and ``changed`` / ``not_changed`` when applied.
         """
+        from ..bridge.stackup import layer_stackup
         bridge = get_bridge()
-        board = await bridge.send_command_async("pcb.get_layer_stackup", {})
+        board = await layer_stackup(bridge)
         if not isinstance(board, dict) or "layers" not in board:
             return {"ok": False, "reason": "could not read the board stack-up",
                     "board": board}

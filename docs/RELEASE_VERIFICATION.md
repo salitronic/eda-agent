@@ -1,4 +1,4 @@
-# Release verification: 2026.11.11.04
+# Release verification: 2026.11.13.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -248,7 +248,7 @@ works elsewhere cannot be an undeclared identifier:
 | 64, layer move | `IntelliMoveLayerUp`, `IntelliMoveLayerDown` on the Layer Stack Manager's editor | no, nowhere | medium, reorders the stack; ran live down and back up, tracks stayed on their layers |
 | 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
-| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
+| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | yes, `Gen_PlaceBlanket` (sch_place_blanket) | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
 | 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
 | 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
@@ -427,7 +427,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.11.04`, `version_match` =
+Expect `altium_script_version` = `2026.11.13.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -1378,6 +1378,113 @@ Then the tools that use them, on a public example board opened in Altium
   (a thermal relief or a neck width): write down where.
   A difference is a finding about the engine's DRC or its board read;
   write it down with the rule it came from.
+
+Then routing in rounds under a brief, on the same kind of board:
+
+    pcb_route_brief      expect_file=<the board's full path>
+    pcb_route_brief      expect_file=<same> add=[{"nets": [<a critical net>],
+                         "layers": [<its pad layer>], "max_vias": 0,
+                         "source": <the datasheet page you read>}]
+    pcb_route_round      expect_file=<same>
+    design_job_result    job_id=<from the reply>        once done
+    pcb_autoroute_apply  job_id=<same> expect_file=<same>
+    pcb_route_round      expect_file=<same>             the next round
+
+* The first `pcb_route_brief` names the board's critical nets in
+  `needed`, each with what to read; `pcb_route_round` before the brief
+  answers `brief_needed` and starts no job.
+* A brief entry naming a layer none of the net's surface pads is on, or
+  a width under the board's width rule, comes back in `errors` and is
+  not saved.
+* The round's result routes only that round's nets, on the brief's
+  layers, with no more vias than it allows; `review.picture` opens and
+  shows them; `review.obeyed` lists the briefed nets.
+* After the apply, the next round leaves the first round's copper as it
+  is, and any track drawn by hand between the two rounds as well.
+* A net blocked on purpose (a keep_out across its only way) comes back
+  unrouted with `review.advice` options, each saying whether its trial
+  routed it; applying the one that routes and running the round again
+  routes the net.
+* A round's tracks reach each surface pad straight along one of its axes
+  and end on its centre; `review.findings` has no `pad_entry:` finding
+  for a net the round routed, and any piece off the 45 degree grid comes
+  back as an `angle:` finding.
+* On a board with a radio (an antenna part, or a net named RF or ANT),
+  `needed` names the feed; it is satisfied only by a sourced entry and an
+  area of kind antenna that allows it. With the area set, the next rounds
+  route every other net round it, and a pour already inside it comes
+  back as an `area:` finding asking for a polygon cutout.
+* A brief entry with `max_length` under the net's real length, or a
+  `reference` net with no copper next to the route, gives a `length:` or
+  `reference:` finding. `pcb_autoroute_apply` without `accept` answers
+  `unanswered` and writes nothing; with `accept=[{id, reason}]` it
+  writes, and lists the answer in `decisions`. Routing the same round
+  again gives the same finding, which then needs no new answer.
+* The Config tab's Routing discipline shows Enforced, Advisory and Off,
+  with Enforced lit on a new workspace. Set to Advisory, a round with a
+  critical net lacking an entry is routed, naming it in
+  `routed_without_brief`, and `pcb_autoroute_apply` without `accept`
+  writes and lists the findings in `unanswered`. Set to Off, neither is
+  named. Every reply then carries `routing_discipline`. Back on Enforced,
+  the next call refuses again, with no restart.
+* The window has a Help button at the top right, after the version. With
+  the AI client or the dashboard running, clicking it opens the help page
+  in the browser, one tab per click: labelled pictures of each part of the window
+  (picture included, with no dashboard running), then every setting.
+  The dashboard serves the same page at `/help/config`.
+* An entry with `apart_from` a noisy net (a switch node, a clock) and a
+  `spacing` routes the net at least that far from the other's copper on
+  each layer, measured in Altium with the measure tool; with
+  `max_parallel` and `parallel_gap` set short, a run beside it comes back
+  as an `apart:` finding.
+* On a board with a switching regulator, `pcb_route_brief` with no
+  changes lists its input loop in `loops_found`. Given as a loop with a
+  `max_area` under its size, the next round's `review.loops` gives the
+  area over the routed copper and a `loop:` finding; moving the input
+  capacitor next to the chip and routing again clears it.
+* A barrier round a mains net (or its net class) with a `creepage`
+  routes every other net at least that far from it, measured in Altium.
+  A low-voltage part placed closer gives a `barrier:` finding naming the
+  layer; a board cutout drawn between the two, and the round routed
+  again, clears the creepage finding but not a `clearance` one.
+* An `assembly` rule with `via_to_pad` routes no via closer than that to
+  any surface pad (the net's own included), and with `vias_under_parts`
+  false none under a part's body; a BGA's or exposed pad's part still
+  takes its vias. A pair of the round's parts closer than its part gap
+  gives an `assembly:gap:` finding. An `orient` rule over a row of
+  diodes turned unlike gives an `orient:` finding per odd one out, and a
+  `pins` entry for a cathode on the wrong net names the pin.
+* A clock entry with `terminate`, `driver` and a `max_stub`, routed with
+  a load hanging off the line, gives a `termination:` finding naming the
+  pad and its stub; routed as a daisy chain through the loads it does
+  not. A `guard` of GND with a guard track on one side only gives a
+  `guard:` finding. `apart_from` a net class with `max_broadside` gives
+  an `apart:` finding for a track run over one of its nets on the next
+  layer.
+* A `pdn` rule for an MCU with its rails and `max_distance` gives a
+  `pdn:` finding per power pin whose capacitor is further, and with
+  `min_vias` per pin or return pad short of vias. `pcb_route_simulate`
+  with what pdn and the capacitors' datasheet models runs ngspice and
+  writes the rail's impedance to a result file; what impedance writes an
+  openEMS model and script of the net (and runs it where openEMS is
+  installed, else says how to install it).
+* A second routing tool on the same board, with nothing changed between,
+  starts at once: the board read is kept while its stamp (commands that
+  wrote, object counts, part places) is unchanged. A write from any
+  session, or a part moved by hand, makes the next tool read it again.
+  A full read of the Bluetooth Sentinel example (10,000 copper objects)
+  takes about 6 s, a kept one 0.2 s.
+* The board's tracks and arcs are read from Altium's own text of the
+  board, the rest through the script. On a board with a pour, a plane and
+  copper on Mechanical17 or above, a routing tool's board matches
+  `pcb_get_copper` object for object; a script older than this one reads
+  everything through the script, as before.
+* A brief loop's nets are routed inside the loop's pads where they can
+  be: a route that would go round the outside of the loop goes the
+  inside way.
+* An entry with an `impedance` and no width is refused, naming the width
+  each allowed layer needs on the board's stack; `pcb_get_layer_stackup`
+  reports the dielectrics the Layer Stack Manager shows, not 0.
 
 Taking the routing up first, on a saved copy of a public example board:
 

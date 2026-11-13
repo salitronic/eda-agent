@@ -24,7 +24,10 @@ the board or sheet in view after each edit (default ``off``).
 the Teardrops options) for the user (default ``auto``: the tool answers
 them). ``length_units`` is the unit a new AI session gives and reads
 lengths in, ``mil`` (the default) or ``mm``; each session may change its
-own (lengths.py). ``checks_off`` names the checks switched off, comma separated
+own (lengths.py). ``usage`` is ``on`` to count what each tool call costs
+in tokens (diag/usage.py; default ``off``). ``routing`` is how strictly the
+router holds the AI to its routing discipline (see :data:`ROUTING`; default
+``enforced``). ``checks_off`` names the checks switched off, comma separated
 (see :data:`CHECKS`; default none: every check runs). Each of the others
 also has an environment variable in the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
@@ -52,6 +55,8 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "keep_in_view": ("off", "on"),
     "dialogs": ("auto", "manual"),
     "length_units": ("mil", "mm"),
+    "usage": ("off", "on"),
+    "routing": ("enforced", "advisory", "off"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -117,10 +122,32 @@ def keep_in_view(workspace: Optional[Path] = None) -> bool:
     return preferences(workspace)["keep_in_view"] == "on"
 
 
+def usage_on(workspace: Optional[Path] = None) -> bool:
+    """True when tool calls are to be counted (the Token count switch)."""
+    return preferences(workspace)["usage"] == "on"
+
+
 def dialogs_auto(workspace: Optional[Path] = None) -> bool:
     """True when a tool answers the dialog it opens (the change order, the
     Teardrops options) itself."""
     return preferences(workspace)["dialogs"] == "auto"
+
+
+#: What each routing discipline level asks of the AI. At every level the
+#: brief the AI gave is obeyed; the levels differ in what is asked for first.
+ROUTING: dict[str, str] = {
+    "enforced": ("a critical net needs a sourced brief entry before it is routed, and "
+                 "a round is applied only once every finding is answered"),
+    "advisory": ("a critical net without a brief entry is routed and named, and the "
+                 "findings are reported but nothing waits for an answer"),
+    "off": ("no brief entry is asked for and nothing waits on findings; the brief "
+            "the AI gives is still obeyed"),
+}
+
+
+def routing_discipline(workspace: Optional[Path] = None) -> str:
+    """'enforced', 'advisory' or 'off', as chosen on the Config tab."""
+    return preferences(workspace)["routing"]
 
 
 #: The checks the Config tab can switch off, and what each one checks. Every

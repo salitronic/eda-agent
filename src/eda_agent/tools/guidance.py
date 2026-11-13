@@ -627,6 +627,65 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "and use proj_create_outjob."),
     },
     {
+        "task": "Route a board, steering the router with a brief and reviewing each round",
+        "keywords": ("route", "routing", "autoroute", "router", "brief", "round",
+                     "review", "steer", "unroutable", "unrouted", "traces"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_route_brief", "pcb_route_round", "design_job_result",
+                "pcb_route_simulate", "pcb_autoroute_apply", "pcb_move_components",
+                "pcb_unroute"],
+        "avoid": [
+            ("pcb_autoroute", "one run for the whole board decides every net "
+                              "itself; rounds stop for your review after each "
+                              "group"),
+        ],
+        "note": (
+            "You decide how the board is routed; the router does the "
+            "mechanical work and obeys. pcb_route_brief with no changes "
+            "lists the critical nets (pairs, clocks, switching nodes, "
+            "high-current paths, antenna feeds) and what to read for "
+            "each: read the datasheet's layout section and the "
+            "standards, then add an entry per net or group (layers, "
+            "width, region, keep_out, max_vias, min/max_length, match "
+            "and skew, reference plane, source), and areas no other net "
+            "may enter (an antenna's keep-out, allowing its feed). An "
+            "impedance target goes in the entry, with the width the check "
+            "gives for each layer; clearance is an Altium rule. To keep "
+            "a net clear of a noisy one (a feedback line from a switch "
+            "node, an analog input from a clock), give apart_from with "
+            "the spacing and parallel run its sources allow. Name the "
+            "current loops that matter (a converter's hot loop, a gate "
+            "drive) as loops with the max_area or max_length the datasheet "
+            "gives; a read lists the loops the board shows. Across an "
+            "isolation barrier give a barrier: the side's nets or class, "
+            "the creepage and clearance from the standard's table for the "
+            "working voltage, pollution degree and material group. "
+            "From the assembler's rules give assembly (via_to_pad, "
+            "vias_under_parts, part_gap), and orient for parts that must "
+            "face one way or a polarity pin on its net. A terminated "
+            "net gets terminate, driver and max_stub; a sensitive one a "
+            "guard net; an IC's decoupling a pdn rule (rails, "
+            "max_distance, min_vias) from its datasheet. A finding a "
+            "closed form cannot settle names a pcb_route_simulate call "
+            "(ngspice for loops and decoupling, openEMS for impedance "
+            "and crosstalk) whose result file is the evidence. "
+            "pcb_route_round "
+            "routes the next group as a job; its review has a picture, "
+            "per-net figures and findings: each brief rule measured on "
+            "the copper, and each judgement that is yours. For a net it "
+            "could not route, advice lists the options it tried (a part "
+            "moved, an earlier net ripped up, a brief rule dropped) with "
+            "what each gave and the call that applies it. "
+            "pcb_autoroute_apply refuses while a finding is unanswered: "
+            "route again, or accept each with its reason (and evidence, "
+            "a simulation's result, where one decides it). A route you "
+            "draw yourself is kept by every later round. The user's "
+            "Routing discipline on the Config tab can make the brief and "
+            "the findings advisory or off; replies then carry "
+            "routing_discipline. Only the user changes it."),
+    },
+    {
         "task": "Route a USB or differential pair at a controlled impedance",
         "keywords": ("usb", "differential", "diff", "pair", "impedance", "90",
                      "100", "ohm", "coupled", "dp", "dm", "lvds", "matched"),

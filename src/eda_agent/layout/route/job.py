@@ -27,6 +27,16 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(board, LayoutBoard):
         raise ValueError("layout_route job requires a 'board' (LayoutBoard or its dict)")
     nets = params.get("nets")
+    from .brief import Brief, broken
+    brief = params.get("brief")
+    if isinstance(brief, dict):
+        brief = Brief.from_list(brief.get("entries") or [], brief.get("areas") or [],
+                                brief.get("loops") or [], brief.get("barriers") or [],
+                                brief.get("assembly"), brief.get("orient") or [],
+                                brief.get("pdn") or [])
+    elif not isinstance(brief, Brief):
+        brief = Brief.from_list(brief or [])
+    as_read = board          # its pours as Altium last poured them, for the findings
     board, old_pours = _without_old_pours(board)
     # The live view (design/live.py): the board before, progress while
     # routing (throttled), the routed board after.
@@ -36,20 +46,39 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     r = route_adaptive(board, nets=frozenset(nets) if nets else None,
                        planes=bool(params.get("planes", True)),
                        stages=params.get("stages"),
-                       log=live.progress_logger("route"))
+                       log=live.progress_logger("route"), brief=brief)
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
     # the board's tracks before it stay as they are (gloss.py).
     glossed = None
     if params.get("gloss", True):
         from .gloss import gloss
-        glossed = gloss(out, tracks=out.tracks[len(board.tracks):]).as_dict()
+        # A net the brief gives an area is left as routed: the straightest
+        # run between its ends can cross the area's edge.
+        fenced = {n for n, e in brief.of.items() if e.region or e.keep_out}
+        glossed = gloss(out, tracks=[t for t in out.tracks[len(board.tracks):]
+                                     if t.net not in fenced],
+                        spacing=brief.spacing_pairs(out),
+                        barriers=brief.barrier_sides(out)).as_dict()
     new_tracks = out.tracks[len(board.tracks):]
     new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
     mask_note = _mask_like_board(board, out.vias[len(board.vias):])
     # Judged as written: a via on one already there is never sent, and
     # counted it is a hole drilled twice that no board will have.
     out.vias = out.vias[:len(board.vias)] + new_vias
+    # The brief is obeyed or the net is held back: copper that breaks a
+    # rule is never part of the proposal, only reported with the rule.
+    held = broken(brief, new_tracks, new_vias)
+    outside_brief = {}
+    if held:
+        for net, why in held.items():
+            outside_brief[net] = {"broken": why,
+                                  "tracks": sum(t.net == net for t in new_tracks),
+                                  "vias": sum(x.net == net for x in new_vias)}
+        new_tracks = [t for t in new_tracks if t.net not in held]
+        new_vias = [x for x in new_vias if x.net not in held]
+        out.tracks = out.tracks[:len(board.tracks)] + new_tracks
+        out.vias = out.vias[:len(board.vias)] + new_vias
     v = verdict(out)
     drc = v["report"]
     stages = finish_report(r, out)
@@ -59,7 +88,14 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     rep = r.report
     wanted = set(nets) if nets else None
     unrouted = {n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
-    return {
+    # Only what this job did: the nets asked for, and vias it laid (the
+    # board's own vias in pads are the designer's, not the proposal's).
+    laid = {(round(x.x, 3), round(x.y, 3)) for x in new_vias}
+    stages["via_in_pad"] = [x for x in stages["via_in_pad"]
+                            if (round(x["x"], 3), round(x["y"], 3)) in laid]
+    if wanted is not None:
+        stages["unreached"] = [u for u in stages["unreached"] if u["net"] in wanted]
+    res = {
         "board": board.name,
         # pcb_autoroute_apply republishes this version once it is written.
         "live_version": (pub or {}).get("version"),
@@ -88,6 +124,8 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "gloss": glossed,
         },
         "unrouted": unrouted,
+        # Nets the brief rules, and those whose route broke it (held back).
+        "brief": {"nets": sorted(brief.of), "outside_brief": outside_brief},
         # What the planned stages did (see stages.py): every via in a pad,
         # each pair and bus, and every pad left unreached with its place
         # and the nets in its way.
@@ -106,8 +144,62 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
+        "notes": _notes(r) + _stage_notes(stages) + v["notes"] + mask_note
+        + ([f"{len(outside_brief)} nets were routed outside their brief and held back "
+            "(brief.outside_brief names the rule each broke): change the brief or the "
+            "board and route them again."] if outside_brief else []),
     }
+    if params.get("review"):
+        res["review"] = _review(board, out, brief, res, params, stages, as_read)
+        res["findings"] = res["review"]["findings"]
+    elif brief:
+        # A whole-board route answers for what the brief rules: its
+        # measured rules and its areas, not every net's judgement calls.
+        from . import review
+        ruled = {n for n in brief.of if wanted is None or n in wanted}
+        res["findings"] = review.findings(
+            as_read, out, res["tracks"], res["vias"], brief, ruled,
+            review.net_metrics(res["tracks"], res["vias"], board.pads_by_net()),
+            outside_brief, {n: k for n, k in unrouted.items() if n in ruled}, {}, judge=False)
+    return res
+
+
+def _review(board: LayoutBoard, out: LayoutBoard, brief, res: dict, params: dict,
+            stages: dict, as_read: LayoutBoard) -> dict:
+    """What the AI looks at before accepting the round (review.py)."""
+    import time as _time
+    from pathlib import Path as _Path
+
+    from . import review
+
+    nets = list(params.get("nets") or [])
+    metrics = review.net_metrics(res["tracks"], res["vias"], board.pads_by_net())
+    advice = {}
+    if res["unrouted"] and params.get("advise", True):
+        advice = review.advise(board, out, res["unrouted"], brief, stages["unreached"],
+                               stages=params.get("stages"), round_nets=nets,
+                               seconds=float(params.get("advise_seconds", 90.0)))
+    held = res["brief"]["outside_brief"]
+    pic = None
+    try:
+        from ...config import get_config
+        folder = _Path(get_config().workspace_dir) / "route_rounds"
+        name = f"{_Path(board.name).stem}_{_time.strftime('%Y%m%d_%H%M%S')}.png"
+        pic = review.picture(board, res["tracks"], res["vias"], nets or metrics.keys(), brief,
+                             stages["unreached"], folder / name)
+    except Exception as exc:  # noqa: BLE001 - the picture is a help, not the result
+        pic = f"no picture: {exc}"
+    found = review.findings(
+        as_read, out, res["tracks"], res["vias"], brief, nets or metrics.keys(), metrics, held,
+        res["unrouted"], advice,
+        planes={s.split(":", 1)[1] for s in res["summary"]["planes"] + res["summary"]["pours"]},
+        entries=review.pad_entries(res["tracks"], board.pads_by_net()))
+    loops = review.loop_measures(as_read, out, brief, nets or metrics.keys()) \
+        if brief.loops else []
+    return {"nets": metrics, "advice": advice, "picture": pic,
+            **({"loops": loops} if loops else {}),
+            "findings": found, "questions": [f["text"] for f in found],
+            "obeyed": sorted(n for n in brief.of if n in metrics and n not in held)}
 
 
 def _stage_notes(stages: dict) -> list[str]:

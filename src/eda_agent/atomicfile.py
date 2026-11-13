@@ -38,7 +38,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 logger = logging.getLogger("eda_agent.atomicfile")
 
@@ -91,3 +91,41 @@ def discard(tmp: _PathLike) -> None:
         Path(tmp).unlink()
     except OSError:
         pass
+
+
+def take_file_text(path: _PathLike) -> Optional[str]:
+    """Read and remove a file that several processes watch, in one claim.
+
+    The file is first renamed to a name only this process uses. A rename
+    of a file that has already gone fails, so when several processes see
+    the same file at once exactly one of them gets its text and the rest
+    get None. Reading first and deleting after let every watcher read it
+    in the gap. Returns None when the file is missing or already taken.
+
+    A scanner or sync client can hold the freshly written file for a
+    moment, which refuses the rename (or the read) with PermissionError
+    although nobody has taken it, so both are retried for up to a second.
+    """
+    path = Path(path)
+    mine = path.with_name(f"{path.name}.{os.getpid()}.taken")
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            os.rename(path, mine)
+            break
+        except FileNotFoundError:
+            return None
+        except OSError:
+            if time.monotonic() > deadline or not path.exists():
+                return None
+            time.sleep(0.02)
+    try:
+        while True:
+            try:
+                return mine.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                if time.monotonic() > deadline + 1.0:
+                    return None
+                time.sleep(0.02)
+    finally:
+        discard(mine)

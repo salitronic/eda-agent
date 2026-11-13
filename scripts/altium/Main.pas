@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.11.04';
+    SCRIPT_VERSION = '2026.11.13.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -116,6 +116,12 @@ Var
     { a compile only while it has not moved.                             }
     WriteSerial : Integer;
     CompiledAtSerial : Integer;
+    { Bumped by every command that does more than look (CommandOnlyLooks), }
+    { counted where every command passes; with LoopStartTick it tells a   }
+    { reader whether a board it read may have changed (the stamp section  }
+    { of pcb.get_layout_model).                                            }
+    CommandSerial : Integer;
+    LoopStartTick : Cardinal;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
@@ -173,6 +179,12 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageMode 'on' counts each tool call's token cost (the Python side  }
+    { does the counting). Default off.                                    }
+    UsageMode : String;
+    { RoutingMode is the routing discipline: 'enforced' (the default),    }
+    { 'advisory' or 'off'. The Python side holds the router to it.        }
+    RoutingMode : String;
     { ChecksOff lists the checks switched off on the Config tab, by name,  }
     { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
     { model_body, spice_model, fab_export). Empty, the default, keeps    }
@@ -2815,6 +2827,8 @@ Begin
     KeepInViewMode := 'off';
     LengthUnits := 'mil';
     DialogMode := 'auto';
+    UsageMode := 'off';
+    RoutingMode := 'enforced';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
@@ -2830,7 +2844,10 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
     If LowerCase(ExtractJsonValue(Content, 'length_units')) = 'mm' Then LengthUnits := 'mm';
-    ChecksOff := LowerCase(ExtractJsonValue(Content, 'checks_off'));
+    If LowerCase(ExtractJsonValue(Content, 'usage')) = 'on' Then UsageMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'advisory' Then RoutingMode := 'advisory';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'off' Then RoutingMode := 'off';
+    ChecksOff :=LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2842,6 +2859,8 @@ Begin
         + '","keep_in_view":"' + KeepInViewMode
         + '","length_units":"' + LengthUnits
         + '","dialogs":"' + DialogMode
+        + '","usage":"' + UsageMode
+        + '","routing":"' + RoutingMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
 
@@ -3343,6 +3362,8 @@ Begin
     DocOwners := '';
     WriteSerial := 0;
     CompiledAtSerial := -1;
+    CommandSerial := 0;
+    LoopStartTick := GetTickCount;
     HoldStartTick := 0;
     LastDoneTick := 0;
     JustPicked := False;

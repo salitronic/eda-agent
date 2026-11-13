@@ -33,9 +33,13 @@ def test_a_plate_on_every_land_where_the_land_is():
     assert c.kind == "cylinder" and c.r == pytest.approx(0.2)
 
 
-def test_balls_sit_with_their_top_at_the_height():
+def test_balls_are_seated_from_the_board_to_the_underside():
+    """A ball wider than the standoff hung 0.07-0.11 mm below the board."""
     solids, _ = models3d.terminal_solids(_LANDS, "ball", 0.25, diameter=0.3)
-    assert all(s.kind == "sphere" and s.cz + s.r == pytest.approx(0.25) for s in solids)
+    for s in solids:
+        assert s.kind == "sphere" and s.cz == pytest.approx(0.125) and s.r == pytest.approx(0.15)
+        assert (s.clip_z0, s.clip_z1) == (0.0, 0.25)
+        assert models3d.solid_bounds(s)[4:] == pytest.approx((0.0, 0.25))
     assert models3d.terminal_solids(_LANDS, "ball", 0.25)[1]  # no diameter
 
 
@@ -73,7 +77,7 @@ def _tool(monkeypatch, tmp_path, lands):
 
     written = []
 
-    def _write(plan, path, name="part"):
+    def _write(plan, path, name="part", review=None):
         written.append(plan)
         return {"ok": True, "path": str(path), "writer": "fake"}
 

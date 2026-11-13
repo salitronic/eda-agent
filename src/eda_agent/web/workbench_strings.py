@@ -34,7 +34,8 @@ def strings(page: str | None = None) -> list[str]:
         out.add(m.group(1))
     for m in re.finditer(r'T\([a-z.]+ \? "([^"]+)" : "([^"]+)"\)', script):
         out.update(m.groups())
-    html = text[text.index("<body>"):text.index("<script>")]
+    body = text.index("<body>")
+    html = text[body:text.index("<script>", body)]
     for m in re.finditer(r">([^<>]+)<", html):
         t = re.sub(r"\s+", " ", m.group(1)).strip()
         if t and re.search(r"[A-Za-z]{2}", t):

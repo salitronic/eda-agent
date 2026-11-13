@@ -1181,7 +1181,8 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
                 warns += 1
 
     for f in (_scan_call_order_across_files(targets)
-              + _scan_duplicate_definitions(targets)):
+              + _scan_duplicate_definitions(targets)
+              + _scan_undeclared_read(targets)):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 
@@ -1297,6 +1298,17 @@ def _blank_block_comments(lines: list[str]) -> list:
         i = 0
         while i < len(line):
             ch = line[i]
+            if depth == 0 and ch == "'":
+                # A string literal is code, and its braces are text: the
+                # JSON in '{"count":' opened a "comment" that blanked the
+                # code up to the next brace, routines and all.
+                end = line.find("'", i + 1)
+                while end != -1 and line[end + 1:end + 2] == "'":
+                    end = line.find("'", end + 2)
+                end = len(line) if end == -1 else end + 1
+                buf.append(line[i:end])
+                i = end
+                continue
             if depth == 0 and ch == "{":
                 depth += 1
                 buf.append(" ")
@@ -1389,6 +1401,9 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
                 names.add(name.lower())
 
     in_vars = False
+    # A name list wrapped over lines (`A, B,` then `C : String;`) has no
+    # colon on its first line; its names wait here for the type.
+    pending = ""
     for k in range(start, begin):
         line = strip_comments_and_strings(lines[k])
         if _VAR_OR_CONST_HEADER.match(line):
@@ -1402,7 +1417,73 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
                 take(rest)
             continue
         if in_vars and ":" in line:
-            take(line)
+            take(pending + line)
+            pending = ""
+        elif in_vars and re.match(r"^\s*\w+(?:\s*,\s*\w+)*\s*,\s*$", line):
+            pending += line
+    return names
+
+
+def _routine_end(lines: list[str], begin: int, stop: int) -> int:
+    """Index of the line that closes a routine whose body starts at begin.
+
+    A span runs to the next routine's head, but the globals a unit
+    declares between two routines sit in that gap, after the first
+    routine's own `End;`. The end is the first `End;` at column 0, the
+    Begin line itself for a one-line routine, or the line before a
+    column-0 Var / Const / Type block.
+    """
+    if re.search(r"\bEnd;\s*$", strip_comments_and_strings(lines[begin]),
+                 re.IGNORECASE):
+        return begin
+    for k in range(begin, stop):
+        if re.match(r"^End;", lines[k], re.IGNORECASE):
+            return k
+        if k > begin and re.match(r"^(?:Var|Const|Type)\b", lines[k],
+                                  re.IGNORECASE):
+            return k - 1
+    return stop - 1
+
+
+def _file_level_names(lines: list[str]) -> set:
+    """Names a unit declares for every routine of every unit to read.
+
+    Every routine name (nested ones too) and every name in a Var, Const
+    or Type block outside a routine body, enum members included.
+    """
+    names = set()
+    inside = set()
+    for _name, _start, begin, stop in _routine_spans(lines):
+        inside.update(range(begin, _routine_end(lines, begin, stop) + 1))
+    head = re.compile(r"^\s*(?:Function|Procedure)\s+(\w+)", re.IGNORECASE)
+    block = re.compile(r"^\s*(?:Var|Const|Type)\b", re.IGNORECASE)
+    in_block = False
+    for k, raw in enumerate(lines):
+        line = strip_comments_and_strings(raw)
+        named = head.match(line)
+        if named:
+            names.add(named.group(1).lower())
+            in_block = False
+            continue
+        if k in inside:
+            continue
+        if block.match(line):
+            in_block = True
+            line = block.sub("", line)
+        if re.match(r"^\s*Begin\b", line, re.IGNORECASE):
+            in_block = False
+        if not in_block:
+            continue
+        declared = re.match(r"^\s*([\w\s,]+?)\s*[:=]", line)
+        if declared:
+            names.update(n.strip().lower()
+                         for n in declared.group(1).split(",")
+                         if n.strip().isidentifier())
+        members = re.search(r"=\s*\(([\w\s,]+)\)", line)
+        if members:
+            names.update(n.strip().lower()
+                         for n in members.group(1).split(",")
+                         if n.strip().isidentifier())
     return names
 
 
@@ -1523,6 +1604,98 @@ def _scan_undeclared_local(path: str, lines: list[str]) -> list[Finding]:
                     memory="altium_wrong_api_identifier_family.md",
                 ))
                 break
+    return findings
+
+
+#: Words of the language itself, never declared anywhere.
+_PASCAL_WORDS = frozenset("""
+and or not xor div mod shl shr in is as begin end if then else while do
+for to downto repeat until case of with try except finally raise exit var
+const type record set function procedure result true false nil break
+continue array string integer boolean double
+""".split())
+
+#: Names Altium and DelphiScript provide: API constants (eTrackObject),
+#: server globals (PCBServer), RTL routines (StringReplace), classes
+#: (TStringList). Kept in a reviewed file, so a new one is added on
+#: purpose; StatusForm.dfm's controls are read from the form itself.
+EXTERNAL_NAMES_FILE = os.path.join(SCRIPT_DIR, "lint_external_names.txt")
+
+
+def load_external_names(path: str = EXTERNAL_NAMES_FILE) -> set:
+    """The reviewed external names, lower case. '#' starts a comment."""
+    names = set()
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                word = line.split("#", 1)[0].strip()
+                if word:
+                    names.add(word.lower())
+    return names
+
+
+def _form_control_names() -> set:
+    path = os.path.join(SCRIPT_DIR, "StatusForm.dfm")
+    if not os.path.exists(path):
+        return set()
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    return {n.lower() for n in re.findall(r"^\s*object\s+(\w+)\s*:", text,
+                                          re.MULTILINE)}
+
+
+#: A bare name a routine READS that nothing declares.
+#:
+#: DelphiScript resolves names when the line runs, so a misspelt helper, a
+#: variable never declared or a helper whose definition went missing all
+#: compile, and the first call that reaches the line stops the script with
+#: "Undeclared identifier" and the polling loop with it. undeclared-local
+#: only sees names other routines declare as locals; this checks every
+#: bare name against what the units declare, the routine's own
+#: parameters and locals, the form's controls and the reviewed external
+#: names. A member after '.' is the object's business and not judged.
+#: Routines that nest another routine are skipped, as by the other scope
+#: rules.
+def _scan_undeclared_read(targets: list,
+                          external: Optional[set] = None) -> list:
+    """Bare identifiers that no scope declares and no list allows."""
+    findings: list[Finding] = []
+    if external is None:
+        external = load_external_names() | _form_control_names()
+    loaded, shared = [], set()
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = _blank_block_comments(handle.read().split("\n"))
+        loaded.append((path, lines))
+        shared |= _file_level_names(lines)
+    base = shared | _BUILTIN_NAMES | _PASCAL_WORDS | external
+    word = re.compile(r"[A-Za-z_]\w*")
+    for path, lines in loaded:
+        for routine, start, begin, stop in _routine_spans(lines):
+            known = base | _declared_names(lines, start, begin)
+            told = set()
+            for k in range(begin, _routine_end(lines, begin, stop) + 1):
+                line = strip_comments_and_strings(lines[k])
+                for m in word.finditer(line):
+                    low = m.group(0).lower()
+                    if low in known or low in told:
+                        continue
+                    i = m.start()
+                    # `A.B` is a member, `$FF` a hex literal, `#13` a
+                    # character, `&Type` an escaped word, `1e5` a number.
+                    if i > 0 and (line[i - 1] in ".$&#"
+                                  or line[i - 1].isdigit()):
+                        continue
+                    told.add(low)
+                    findings.append(Finding(
+                        file=path, line=k + 1, col=i + 1,
+                        rule="undeclared-read", severity="error",
+                        snippet=lines[k].rstrip()
+                        + f"   [{routine} reads {m.group(0)}, declared nowhere]",
+                        memory="altium_wrong_api_identifier_family.md",
+                    ))
     return findings
 
 

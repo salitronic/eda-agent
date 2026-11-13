@@ -671,5 +671,16 @@
 "switched on or off",
 "taken in or out of DRC",
 "values changed",
-"{0} rule edits made through the tools since then"
+"{0} rule edits made through the tools since then",
+"Token use",
+"Calls",
+"Tokens",
+"Each",
+"No tool calls recorded in the last {0} days.",
+"Counting is off. Turn Token count on, on the Config tab of the Altium panel.",
+"Last {0} days: {1} calls, about {2} tokens. Estimated from the size of what each call sends and returns.",
+"Theme",
+"Follow the system",
+"Light",
+"Dark"
 ]

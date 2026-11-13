@@ -1,0 +1,106 @@
+name: wheels
+
+# The compiled parts (route-core: the router's grid search; render-core:
+# the path tracer) ship as wheels, so nobody installing eda-agent needs
+# Rust. Each wheel is abi3: one per platform serves Python 3.11 and later.
+#
+# A push or pull request that touches a crate builds and tests it.
+# A tag route-v0.1.0 or render-v0.1.0 also publishes that crate's wheels
+# to PyPI, through trusted publishing (no token in the repository).
+on:
+  push:
+    branches: [main]
+    paths: ["route-core/**", "render-core/**", ".github/workflows/wheels.yml"]
+    tags: ["route-v*", "render-v*"]
+  pull_request:
+    paths: ["route-core/**", "render-core/**", ".github/workflows/wheels.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - id: pick
+        run: |
+          case "$GITHUB_REF_NAME" in
+            route-v*)  echo 'list=["route-core"]' >> "$GITHUB_OUTPUT" ;;
+            render-v*) echo 'list=["render-core"]' >> "$GITHUB_OUTPUT" ;;
+            *)         echo 'list=["route-core","render-core"]' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  build:
+    needs: crates
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.crates.outputs.list) }}
+        platform:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-14, target: aarch64-apple-darwin }
+          # Built on the Apple-silicon runner; it cannot run there, so
+          # the import check below skips it.
+          - { os: macos-14, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Rust tests
+        working-directory: ${{ matrix.crate }}
+        run: cargo test --no-default-features
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ${{ matrix.crate }}
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          manylinux: auto
+
+      - name: The wheel installs and imports
+        if: matrix.platform.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          python -m pip install ${{ matrix.crate }}/dist/*.whl
+          python -c "import importlib; m = '${{ matrix.crate }}'.replace('-core', ''); importlib.import_module('eda_agent_' + m)"
+
+      # The router's search must find paths that cost exactly what the
+      # scipy search's do; here the wheel is there, so the test runs.
+      - name: The compiled search matches scipy
+        if: matrix.crate == 'route-core' && matrix.platform.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          python -m pip install -e ".[dev]"
+          python -c "from eda_agent.layout.route import search; assert search.kernel() == 'compiled'"
+          python -m pytest -q tests/layout/test_compiled_search_finds_the_same_cost.py
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.crate }}-${{ matrix.platform.target }}
+          path: ${{ matrix.crate }}/dist/*.whl
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.3

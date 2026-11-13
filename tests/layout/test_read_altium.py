@@ -147,7 +147,7 @@ def test_pads_are_paged_until_the_reply_says_done():
     send, calls = _replies([first[:2], first[2:]])
     b = read_board(send, page=2)
     assert [p.name for p in b.pads] == ["0", "1", "2"]
-    offsets = [c["offset"] for c in calls if c["section"] == "pads"]
+    offsets = [c["offset"] for c in calls if c.get("section") == "pads"]
     assert offsets == ["0", "2"]
 
 
@@ -237,6 +237,47 @@ def test_poured_copper_takes_the_net_of_the_pour_that_made_it():
     ]))
     r = b.regions[0]
     assert (r.kind, r.net, r.source) == ("pour", "GND", "polygon:GND_L01")
+
+
+def test_the_physical_stack_is_kept_for_impedance_and_its_absence_reads_as_none():
+    send, _ = _replies()
+    assert read_board(send).meta["stack"] == [], "a reply without it"
+
+    def with_stack(cmd, params):
+        if cmd == "pcb.physical_stack":
+            return {"layers": [
+                {"kind": "solder_mask", "name": "Top Solder", "thickness_mils": 0.4},
+                {"kind": "copper", "name": "Top Layer", "thickness_mils": 1.4},
+                {"kind": "dielectric", "name": "Core", "thickness_mils": 59.0, "constant": 4.3},
+                {"kind": "copper", "name": "Bottom Layer", "thickness_mils": 1.4}]}
+        return send(cmd, params)
+
+    stack = read_board(with_stack).meta["stack"]
+    assert [l["kind"] for l in stack] == ["copper", "dielectric", "copper"]
+    assert stack[1] == {"kind": "dielectric", "name": "Core", "thickness": 59.0, "er": 4.3}
+
+
+def test_a_hatched_pours_tracks_and_arcs_are_its_pour_not_routing():
+    # A public example board pours GND hatched on every layer; read as
+    # tracks, the router could not leave a pad they surrounded.
+    from eda_agent.layout import geom
+
+    b = read_board(_copper_only([
+        {"k": "track", "v": [0, 0, 100 * C, 0, 10 * C], "layer": "TopLayer", "net": "",
+         "in_polygon": True, "pour": "GND_TOP", "pour_net": "GND", **_COMMON},
+        {"k": "arc", "v": [0, 0, 50 * C, 0.0, 90.0, 4 * C], "layer": "TopLayer", "net": "",
+         "in_polygon": True, "pour": "GND_TOP", "pour_net": "GND", **_COMMON},
+        {"k": "track", "v": [0, 50 * C, 100 * C, 50 * C, 8 * C], "layer": "TopLayer",
+         "net": "SIG", "in_polygon": False, **_COMMON},
+    ]))
+    assert [(t.net, t.y1) for t in b.tracks] == [("SIG", 50.0)], "routing stays routing"
+    pour = [r for r in b.regions if r.kind == "pour"]
+    assert len(pour) > 2 and {(r.net, r.source) for r in pour} == {("GND", "polygon:GND_TOP")}
+    # The piece holds every point of the real stroke, its round ends too.
+    hatch = geom.polygon(pour[0].outline)
+    for x, y in ((0, 0), (100, 0), (-4.9, 0), (104.9, 0), (50, 4.9), (50, -4.9)):
+        assert geom.point_in_poly(x, y, hatch), (x, y)
+    assert not geom.point_in_poly(50, 7, hatch)
 
 
 def test_a_region_that_is_not_copper_is_read_as_a_cutout():

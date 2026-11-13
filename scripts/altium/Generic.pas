@@ -2306,6 +2306,25 @@ Begin
     Else If N = 'jumper' Then Result := eComponentKind_Jumper;
 End;
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness   }
+{ wire, splice or cable has no Name property of its own; this is its name.  }
+Function HarnessNameFromDescription(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
@@ -2405,8 +2424,11 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
+                { A harness wire, splice or cable: its name is in its    }
+                { description, so a Name filter finds it too.            }
                 Result := '';
+                Try Result := HarnessNameFromDescription(Obj.GetState_DescriptionString); Except End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
@@ -3832,6 +3854,7 @@ Begin
                 MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
+            NoteSchWriteLanded(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -3861,8 +3884,18 @@ Begin
         { Already applied above as part of the coalesced positional write. }
         If (PropName = 'Location.X') Or (PropName = 'Location.Y') Then Continue;
 
-        SetSchProperty(Obj, PropName, PropValue);
+        If SetSchProperty(Obj, PropName, PropValue) = 1 Then NoteSchWriteLanded(0);
     End;
+End;
+
+{ What a schematic write call says it changed. A modify that matched     }
+{ objects but landed no write (every property unknown, refused or kept   }
+{ by Altium, or the whole set rejected up front) changed nothing.        }
+Function SchCallModified(IsMutating : Boolean; TotalMatched : Integer; Mode : String) : Boolean;
+Begin
+    Result := IsMutating And ((TotalMatched > 0) Or (Mode = 'create'));
+    If Result And (Mode = 'modify') And (SchWritesLanded(0) = 0) Then
+        Result := False;
 End;
 
 {..............................................................................}
@@ -4696,7 +4729,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4763,7 +4796,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -7932,24 +7965,6 @@ Begin
     Else If Id = eHarnessBundle Then Result := 'bundle';
 End;
 
-{ The name a harness object gives in its description: the word after its    }
-{ kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
-Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
-Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
-End;
-
 { An Altium colour (blue in the high byte) as #RRGGBB. }
 Function HarnessColourHex(C : Integer) : String;
 Begin
@@ -9678,7 +9693,15 @@ End;
 {         parameters 'Name=Value|Name=Value' (optional: a bare blanket);    }
 {         directive_x, directive_y (default: the first vertex, on the edge, }
 {         where Altium reads a blanket's directive from);                   }
-{         line_style (integer), collapsed (true/false).                      }
+{         line_style (integer), collapsed (true/false);                    }
+{         color, area_color (Altium's BGR integers). Without them the      }
+{         blanket takes the user's own blanket defaults (Preferences >     }
+{         Schematic > Defaults), as one drawn in the editor does. A new    }
+{         object is drawn above what is already on the sheet and no        }
+{         scripted call reorders a sheet, so the fill is always written    }
+{         transparent; an opaque fill would hide every wire and label it   }
+{         encloses. Altium does not keep an opaque blanket fill on save    }
+{         anyway (it reads back opaque, but is transparent after reopen).  }
 Function Gen_PlaceBlanket(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
@@ -9686,10 +9709,13 @@ Var
     ParamSet : ISch_ParameterSet;
     Xs, Ys : TStringList;
     VertStr, ParamList, StyleStr, CollStr, DxStr, DyStr, DirJson : String;
+    ColorStr, AreaStr : String;
     DX, DY : Double;
     I : Integer;
 Begin
     VertStr := ExtractJsonValue(Params, 'vertices');
+    ColorStr := ExtractJsonValue(Params, 'color');
+    AreaStr := ExtractJsonValue(Params, 'area_color');
     ParamList := ExtractJsonValue(Params, 'parameters');
     StyleStr := ExtractJsonValue(Params, 'line_style');
     CollStr := LowerCase(ExtractJsonValue(Params, 'collapsed'));
@@ -9726,6 +9752,13 @@ Begin
                 'directive_x and directive_y must be numbers in mils. Nothing was placed.');
             Exit;
         End;
+        If ((ColorStr <> '') And (Not IsIntStr(ColorStr))) Or ((AreaStr <> '') And (Not IsIntStr(AreaStr))) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+                'color and area_color must be Altium colour integers (BGR, e.g. 255 = red). '
+                + 'Nothing was placed.');
+            Exit;
+        End;
 
         DX := StrToFloatDef(Xs[0], 0);
         DY := StrToFloatDef(Ys[0], 0);
@@ -9745,7 +9778,8 @@ Begin
             End;
         End;
 
-        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_Default);
+        { The user's blanket defaults, as the editor's Place > Blanket. }
+        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_GlobalCopy);
         If Blanket = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create blanket');
@@ -9763,6 +9797,15 @@ Begin
         Begin
             Try Blanket.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('Blanket.Collapsed'); End;
         End;
+        If ColorStr <> '' Then
+        Begin
+            Try Blanket.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Blanket.Color'); End;
+        End;
+        If AreaStr <> '' Then
+        Begin
+            Try Blanket.AreaColor := StrToIntDef(AreaStr, 0); Except NoteWriteFailed('Blanket.AreaColor'); End;
+        End;
+        Try Blanket.Transparent := True; Except NoteWriteFailed('Blanket.Transparent'); End;
 
         SchBeginEdit(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(Blanket);
@@ -9781,6 +9824,10 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{"placed":true,"vertices_count":' + IntToStr(Blanket.VerticesCount)
             + ',"vertices":"' + GetSchVertexProperty(Blanket, 'Vertices') + '"'
+            + ',"color":' + IntToStr(Blanket.Color)
+            + ',"area_color":' + IntToStr(Blanket.AreaColor)
+            + ',"transparent":' + BoolToJsonStr(Blanket.Transparent)
+            + ',"line_style":' + IntToStr(Blanket.LineStyle)
             + ',"directive":' + DirJson + '}');
     Finally
         Ys.Free;

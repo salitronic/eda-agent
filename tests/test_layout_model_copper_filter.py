@@ -22,6 +22,8 @@ from tests.pascal_source import load
 _ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 _KINDS = {"track": "eTrackObject", "arc": "eArcObject", "via": "eViaObject",
           "region": "eRegionObject", "fill": "eFillObject", "polygon": "ePolyObject"}
+#: Read from dimensions' and coordinate markers' own pieces, not a pass.
+_GROUPED = "grouped"
 
 
 def _pcb(name):
@@ -42,12 +44,21 @@ def test_no_kinds_is_one_pass_over_every_kind_as_before():
     fallback = chain[chain.rindex("Else"):]
     for obj in _KINDS.values():
         assert obj in fallback
-    assert "If Passes.Count = 0 Then Passes.Add('all');" in section
+    assert "If Passes.Count = 0 Then
+        If Not WantGrouped Then Passes.Add('all');" in section
 
 
 def test_the_kinds_accepted_are_the_kinds_filtered():
     known = _pcb("LmCopperKindKnown")
-    assert set(re.findall(r"Kind = '(\w+)'", known)) == set(_KINDS)
+    assert set(re.findall(r"Kind = '(\w+)'", known)) == set(_KINDS) | {_GROUPED}
+
+
+def test_grouped_walks_only_dimensions_and_coordinate_markers():
+    section = _pcb("LmCopperSection")
+    assert "If Kind = 'grouped' Then WantGrouped := True" in section
+    walk = section[section.index("If WantGrouped And Not More Then"):]
+    assert "Iter.AddFilter_ObjectSet(MkSet(eDimensionObject, eCoordinateObject));" in walk
+    assert "GIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));" in walk
 
 
 def test_a_layer_narrows_the_iterator_and_none_keeps_every_layer():

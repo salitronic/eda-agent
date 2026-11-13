@@ -76,7 +76,7 @@ def test_the_tool_writes_beside_the_library_and_links(monkeypatch, tmp_path):
                 return {"file_path": str(tmp_path / "Parts.PcbLib")}
             return {"success": True}
 
-    def _write(plan, path, name="part"):
+    def _write(plan, path, name="part", review=None):
         return {"ok": True, "path": str(path), "writer": "fake"}
 
     monkeypatch.setattr(lib_tools, "get_bridge", lambda: _Bridge())

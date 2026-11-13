@@ -2414,6 +2414,9 @@ End;
 Var
     _PropertyDiagStr : String;
     _DeleteFaultStr : String;
+    { Schematic property writes that landed since the reset, so a modify }
+    { whose every write was refused does not answer modified:true.       }
+    _SchWritesLanded : Integer;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -2427,6 +2430,17 @@ Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
+    _SchWritesLanded := 0;
+End;
+
+Procedure NoteSchWriteLanded(Dummy : Integer);
+Begin
+    _SchWritesLanded := _SchWritesLanded + 1;
+End;
+
+Function SchWritesLanded(Dummy : Integer) : Integer;
+Begin
+    Result := _SchWritesLanded;
 End;
 
 { Why a delete loop stopped early. The objects removed before it stopped are }

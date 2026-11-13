@@ -68,13 +68,43 @@ def available() -> bool:
     return win.available() and controls.available()
 
 
+#: A panel docked with a header on AD 26.11 is a TXPPanel caption and a
+#: TViewComponent of the same name holding its content, seen live for
+#: Projects and Messages. Documents are TViewComponents too, but no
+#: caption carries a document's name, so a caption matching a view is a
+#: panel even where no panel button names it.
+_PANEL_CAPTION = "txppanel"
+_PANEL_VIEW = "tviewcomponent"
+#: A floating panel is a top-level window of its own, outside the frame.
+_FLOATING_PANEL = "TClientBarControl"
+
+
 def _frame_controls(pid: int) -> list:
-    """Every child of the main frame, captured once."""
+    """Every child of the main frame and of each floating panel window,
+    captured once."""
     frame = menu.frame(pid)
     if frame is None:
         return []
+    every = []
     captured = win.capture(frame.hwnd)
-    return list(captured.controls) if captured is not None else []
+    if captured is not None:
+        every.extend(captured.controls)
+    try:
+        floating = [w for w in win.enumerate_windows(pid=pid)
+                    if w.class_name == _FLOATING_PANEL]
+    except Exception:                            # noqa: BLE001 - floating is extra
+        floating = []
+    for window in floating:
+        held = win.capture(window.hwnd)
+        if held is not None:
+            every.extend(held.controls)
+    return every
+
+
+def _is_panel_title(control, views: set) -> bool:
+    kind = control.class_name.lower()
+    return _PANEL_BUTTON in kind or (kind == _PANEL_CAPTION
+                                     and control.text in views)
 
 
 def list_open(pid: int) -> list:
@@ -86,11 +116,13 @@ def list_open(pid: int) -> list:
     names it.
     """
     every = _frame_controls(pid)
+    views = {c.text for c in every
+             if c.text and c.class_name.lower() == _PANEL_VIEW}
     seen = {}
     for control in every:
-        if _PANEL_BUTTON not in control.class_name.lower():
+        if not _is_panel_title(control, views):
             continue
-        if not control.text:
+        if not control.text or control.text in seen:
             continue
         x, y, width, height = control.rect
         if x < -10000:                           # parked off screen

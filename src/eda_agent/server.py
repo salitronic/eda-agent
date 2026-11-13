@@ -7,8 +7,9 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from .tools import (
@@ -515,10 +516,17 @@ class _CompactFastMCP(FastMCP):
         # Its commands to Altium take one turn together (Main.pas
         # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
+        outermost = plan is not None
+        given = arguments
+        started = time.monotonic()
         token = lengths.enter()
         try:
             with tool_call(name):
                 result = await super().call_tool(name, arguments)
+        except BaseException:
+            if outermost:
+                _count_usage(name, given, None, time.monotonic() - started, ok=False)
+            raise
         finally:
             lengths.leave(token)
         if plan is not None:
@@ -531,10 +539,30 @@ class _CompactFastMCP(FastMCP):
         if news:
             result = add_update_notice(result, news)
         if isinstance(result, tuple):
-            return (compact_text_blocks(result[0]), result[1])
-        if isinstance(result, list):
-            return compact_text_blocks(result)
+            result = (compact_text_blocks(result[0]), result[1])
+        elif isinstance(result, list):
+            result = compact_text_blocks(result)
+        if outermost:
+            _count_usage(name, given, result, time.monotonic() - started)
         return result
+
+
+def _count_usage(name: str, arguments: Any, result: Any, seconds: float,
+                 ok: bool = True) -> None:
+    """One line of diag/usage for a call the client made. tool_invoke is
+    counted under the tool it ran as well."""
+    try:
+        from .diag import usage
+        if not usage.enabled():
+            return
+        from .bridge.altium_bridge import _SESSION_TAG
+        member = ""
+        if name == "tool_invoke" and isinstance(arguments, dict):
+            member = str(arguments.get("name") or arguments.get("tool") or "")
+        usage.record(name, arguments, result, seconds, session=_SESSION_TAG,
+                     member=member, ok=ok)
+    except Exception:  # noqa: BLE001 - a count never breaks a tool
+        pass
 
 
 # Create global FastMCP instance, named for the backend so a client that
@@ -1148,6 +1176,16 @@ def main() -> int:
         help="Forget the saved Nexar login of altium365-login.",
     )
 
+    # usage -- estimated tokens and time per tool
+    usage_p = subparsers.add_parser(
+        "usage",
+        help=("Estimated tokens and time per tool over the last days, "
+              "heaviest first (EDA_AGENT_USAGE_OFF=1 stops the recording)."),
+    )
+    usage_p.add_argument("--days", type=int, default=7)
+    usage_p.add_argument("--top", type=int, default=25)
+    usage_p.add_argument("--json", action="store_true")
+
     # sdk-reach -- how much of Altium's SDK the property tools reach
     sdk_p = subparsers.add_parser(
         "sdk-reach",
@@ -1346,6 +1384,24 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
+    if args.command == "usage":
+        import json as _json
+        from .diag import usage
+        report = usage.summary(args.days, top=args.top)
+        if args.json:
+            print(_json.dumps(report, indent=2))
+            return
+        tot = report["total"]
+        print(f"Last {args.days} day(s): {tot['calls']} calls, about "
+              f"{tot['tokens']:,} tokens ({tot['in']:,} written, {tot['out']:,} read"
+              f"{', ' + format(tot['images'], ',') + ' in images' if tot['images'] else ''})"
+              + ("" if report["enabled"] else "  [recording is off]"))
+        print(f"{'tool':44} {'calls':>6} {'tokens':>10} {'avg':>7} {'avg ms':>7}")
+        for r in report["tools"]:
+            print(f"{r['tool'][:44]:44} {r['calls']:>6} {r['tokens']:>10,} "
+                  f"{r['avg_tokens']:>7,} {r['avg_ms']:>7,}")
+        return
+
     if args.command == "altium365-logout":
         from .altium365 import forget_login, read_environment
         path = read_environment().saved_login

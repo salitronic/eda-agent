@@ -130,7 +130,9 @@ def test_pin_timing_uses_the_names_the_script_engine_declares():
         assert "PinPropagationDelay" not in text
     timing = _body("Library.pas", "PinTimingJson")
     assert "Pin.PinPackageLength" in timing and "Pin.PropagationDelay * 1E12" in timing
-    assert "PinTimingJson(Pin)" in _body("Library.pas", "Lib_GetPinList")
+    assert "PinTimingJson(Pin)" in _body("Library.pas", "PinListJson")
+    assert "PinListJson(Component)" in _body("Library.pas", "Lib_GetPinList")
+    assert "PinListJson(Component)" in _body("Library.pas", "PinListsJson")
     setter = _body("Library.pas", "Lib_SetPinTiming")
     assert "Pin.PropagationDelay := StrToFloatDef(DelayStr, 0) * 1E-12" in setter
 

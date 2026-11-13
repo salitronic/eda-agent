@@ -1610,6 +1610,33 @@ Begin
     End;
 End;
 
+{ The shape words every pad writer takes: round, rectangular, octagonal
+  and roundrect. Case and surrounding spaces are ignored, and the rounded
+  rectangle spellings roundrectangle, roundedrect and rounded_rectangular
+  mean roundrect. Any other word is refused by the caller, never made
+  into a round pad. Returns the shape
+  word, empty when none was given (each writer keeps its own default), or
+  "?" and the word as given when it is not a pad shape. }
+Function CanonicalPadShape(Raw : String) : String;
+Var
+    S : String;
+Begin
+    S := LowerCase(Trim(Raw));
+    If (S = 'roundrectangle') Or (S = 'roundedrect') Or (S = 'rounded_rectangular') Then
+        S := 'roundrect';
+    If (S = '') Or (S = 'round') Or (S = 'rectangular') Or (S = 'octagonal')
+        Or (S = 'roundrect') Then
+        Result := S
+    Else
+        Result := '?' + Trim(Raw);
+End;
+
+Function PadShapeRefusal(Words : String) : String;
+Begin
+    Result := 'shape must be round, rectangular, octagonal or roundrect (got: '
+        + Words + ')';
+End;
+
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr : String;
@@ -1635,7 +1662,13 @@ Begin
     XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
     YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
     HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
-    Shape := ExtractJsonValue(Params, 'shape');
+    Shape := CanonicalPadShape(ExtractJsonValue(Params, 'shape'));
+    If Copy(Shape, 1, 1) = '?' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_SHAPE',
+            PadShapeRefusal(Copy(Shape, 2, Length(Shape))) + '; no pad was added');
+        Exit;
+    End;
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
     CornerRadius := StrToIntDef(ExtractJsonValue(Params, 'corner_radius'), 25);
@@ -2516,7 +2549,7 @@ End;
 { up as property_failures instead of a pad that silently lacks it.            }
 Function Lib_AddFootprintPads(Params : String; RequestId : String) : String;
 Var
-    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers : String;
+    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers, BadShapes : String;
     OpCount, Added, Failed : Integer;
     CornerRadius : Integer;
     X, Y, XSize, YSize, HoleSize : Double;
@@ -2542,6 +2575,30 @@ Begin
     If PadsStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pads is required');
+        Exit;
+    End;
+
+    { Every shape word is checked before any pad is made: a land pattern
+      half built from a batch is worse than none. }
+    BadShapes := '';
+    Remaining := PadsStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        Shape := CanonicalPadShape(GetBatchField(Op, 'shape'));
+        If Copy(Shape, 1, 1) = '?' Then
+        Begin
+            Shape := Copy(Shape, 2, Length(Shape));
+            If BadShapes = '' Then BadShapes := Shape
+            Else If Pos(Shape, BadShapes) = 0 Then
+                BadShapes := BadShapes + ', ' + Shape;
+        End;
+    End;
+    If BadShapes <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_SHAPE',
+            PadShapeRefusal(BadShapes) + '; no pad was added');
         Exit;
     End;
 
@@ -2582,7 +2639,7 @@ Begin
             YSize := StrToFloatDef(GetBatchField(Op, 'y_size'), MilsInUnits(60, UnitsStr));
             HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
             Rotation := StrToFloatDef(GetBatchField(Op, 'rotation'), 0);
-            Shape := GetBatchField(Op, 'shape');
+            Shape := CanonicalPadShape(GetBatchField(Op, 'shape'));
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
 
@@ -8023,68 +8080,17 @@ Begin
         + ',"propagation_delay_ps":' + FloatToJsonStr(Pin.PropagationDelay * 1E12);
 End;
 
-{..............................................................................}
-{ Get all pins of the current library component                               }
-{ Returns designator, name, electrical type, x, y for each pin               }
-{..............................................................................}
-
-Function Lib_GetPinList(Params : String; RequestId : String) : String;
+{ One symbol's pins as an object of count, component and pins. The         }
+{ component must come from LookupLibComponent or a library iterator (see  }
+{ Lib_GetPinList).                                                         }
+Function PinListJson(Component : ISch_Component) : String;
 Var
-    SchLib : ISch_Lib;
-    Component : ISch_Component;
     PinIterator : ISch_Iterator;
     Pin : ISch_Pin;
-    JsonItems, ElecStr, WantName : String;
+    JsonItems, ElecStr : String;
     First : Boolean;
     PinCount : Integer;
 Begin
-    SchLib := SchServer.GetCurrentSchDocument;
-    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
-        Exit;
-    End;
-
-    { Resolve THROUGH the library, never straight off the editor's current
-      component. Measured on a live library: SchIterator_Create on a component
-      taken from CurrentSchComponent faults with "Undeclared identifier:
-      SchIterator_Create", while the identical call works on a component
-      fetched by lib-ref or returned from a SchLib iterator, which is how
-      every other reader in this file gets one. DelphiScript narrows an
-      interface at iterator-return; a component handed over any other way
-      does not carry the methods, and the failure is a late-bound one that
-      Try/Except cannot catch.
-
-      component_name also lets a caller name the symbol rather than rely on
-      whatever the editor has selected, so reading a symbol's pins stops
-      depending on, and stops disturbing, the current selection. }
-    WantName := ExtractJsonValue(Params, 'component_name');
-    If WantName = '' Then
-    Begin
-        Component := GetTargetLibComponent(SchLib);
-        If Component <> Nil Then
-            Try
-                WantName := Component.LibReference;
-            Except
-                WantName := '';
-            End;
-    End;
-
-    If WantName = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
-            'No component is selected; pass component_name to name one');
-        Exit;
-    End;
-
-    Component := LookupLibComponent(SchLib, WantName);
-    If Component = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
-            'Component not found in library: ' + WantName);
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     PinCount := 0;
@@ -8132,10 +8138,116 @@ Begin
         Component.SchIterator_Destroy(PinIterator);
     End;
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"count":' + IntToStr(PinCount) +
+    Result := '{"count":' + IntToStr(PinCount) +
         ',"component":"' + EscapeJsonString(Component.LibReference) +
-        '","pins":[' + JsonItems + ']}');
+        '","pins":[' + JsonItems + ']}';
+End;
+
+{ Several symbols of the library in front in one reply: component_names is }
+{ their lib-refs separated by |. Each entry is the symbol's pins, or its   }
+{ name with "error" when the library has no such symbol.                   }
+Function PinListsJson(SchLib : ISch_Lib; Names : String) : String;
+Var
+    Component : ISch_Component;
+    Rest, Name, Items : String;
+    Cut : Integer;
+Begin
+    Items := '';
+    Rest := Names;
+    While Rest <> '' Do
+    Begin
+        Cut := Pos('|', Rest);
+        If Cut > 0 Then
+        Begin
+            Name := Copy(Rest, 1, Cut - 1);
+            Rest := Copy(Rest, Cut + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Name := Rest;
+            Rest := '';
+        End;
+        If Name <> '' Then
+        Begin
+            If Items <> '' Then Items := Items + ',';
+            Component := LookupLibComponent(SchLib, Name);
+            If Component = Nil Then
+                Items := Items + '{"component":"' + EscapeJsonString(Name) +
+                    '","error":"Component not found in library: ' +
+                    EscapeJsonString(Name) + '"}'
+            Else
+                Items := Items + PinListJson(Component);
+        End;
+    End;
+    Result := '{"components":[' + Items + ']}';
+End;
+
+{..............................................................................}
+{ Get all pins of a library component, or of several (component_names).       }
+{ Returns designator, name, electrical type, x, y for each pin               }
+{..............................................................................}
+
+Function Lib_GetPinList(Params : String; RequestId : String) : String;
+Var
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    WantName, Names : String;
+Begin
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+
+    { Resolve THROUGH the library, never straight off the editor's current
+      component. Measured on a live library: SchIterator_Create on a component
+      taken from CurrentSchComponent faults with "Undeclared identifier:
+      SchIterator_Create", while the identical call works on a component
+      fetched by lib-ref or returned from a SchLib iterator, which is how
+      every other reader in this file gets one. DelphiScript narrows an
+      interface at iterator-return; a component handed over any other way
+      does not carry the methods, and the failure is a late-bound one that
+      Try/Except cannot catch.
+
+      component_name also lets a caller name the symbol rather than rely on
+      whatever the editor has selected, so reading a symbol's pins stops
+      depending on, and stops disturbing, the current selection. }
+    Names := ExtractJsonValue(Params, 'component_names');
+    If Names <> '' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, PinListsJson(SchLib, Names));
+        Exit;
+    End;
+
+    WantName := ExtractJsonValue(Params, 'component_name');
+    If WantName = '' Then
+    Begin
+        Component := GetTargetLibComponent(SchLib);
+        If Component <> Nil Then
+            Try
+                WantName := Component.LibReference;
+            Except
+                WantName := '';
+            End;
+    End;
+
+    If WantName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected; pass component_name to name one');
+        Exit;
+    End;
+
+    Component := LookupLibComponent(SchLib, WantName);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+            'Component not found in library: ' + WantName);
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId, PinListJson(Component));
 End;
 
 {..............................................................................}
@@ -13113,13 +13225,11 @@ Begin
         Result := ('hole_width makes a slot; leave it out for a round or square hole');
         Exit;
     End;
-    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
-    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
-    If (Shape <> '') And (Shape <> 'round') And (Shape <> 'rectangular')
-        And (Shape <> 'octagonal') And (Shape <> 'roundrect') Then
+    Shape := CanonicalPadShape(PadArg(Src, IsOp, 'shape'));
+    If Copy(Shape, 1, 1) = '?' Then
     Begin
         Code := 'INVALID_SHAPE';
-        Result := ('shape must be round, rectangular, octagonal or roundrect');
+        Result := PadShapeRefusal(Copy(Shape, 2, Length(Shape)));
         Exit;
     End;
     CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
@@ -13208,8 +13318,7 @@ Var
 Begin
     { The same normalising as PadEditProblem, which has passed already. }
     HoleTypeStr := LowerCase(PadArg(Src, IsOp, 'hole_type'));
-    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
-    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
+    Shape := CanonicalPadShape(PadArg(Src, IsOp, 'shape'));
     CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
     CornerPct := -1;
     If (CornerStr <> '') And IsFloatStr(CornerStr) Then

@@ -36,7 +36,7 @@ from ..model import Track
 from .exact import BEND_TOL, turn
 from .fanout import snap8
 from .grid import EDGE, KEEPOUT, shape_distance
-from .search import Window, build_graph, shortest_path
+from .search import Window, find_path
 
 EPS = 1e-6
 
@@ -471,14 +471,13 @@ def _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m=
     sources = np.array([win.node(0, y, x) for y, x in src], dtype=np.int64)
     targets = np.array([win.node(0, y, x) for y, x in dst], dtype=np.int64)
     h = r._potential(win, targets)
-    graph = build_graph(win, cost, np.full(win.M, np.inf), r.move_factor[li:li + 1], r.pitch, h)
     span = math.hypot(x1 - x0, y1 - y0)
-    for a, b in r.DETOURS:
-        p = shortest_path(graph, sources, targets, a * span + b)
-        if p is not None:
-            room.leads = (len(ext_a), len(ext_b))
-            cells = ext_a + [win.decode(k)[1:] for k in p] + ext_b[::-1]
-            return cells, room
+    p = find_path(win, cost, np.full(win.M, np.inf), r.move_factor[li:li + 1], r.pitch, h,
+                  sources, targets, tuple(a * span + b for a, b in r.DETOURS))
+    if p is not None:
+        room.leads = (len(ext_a), len(ext_b))
+        cells = ext_a + [win.decode(k)[1:] for k in p] + ext_b[::-1]
+        return cells, room
     return None, room
 
 

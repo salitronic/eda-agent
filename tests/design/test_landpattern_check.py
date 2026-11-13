@@ -175,6 +175,9 @@ def test_limits_out_of_order_are_reported_once():
     (cases.qfn14_rect, {"pins_per_side": [5, 2, 5, 3]}, "adding up to"),
     (cases.bga80, {"pins": 81}, "has 80"),
     (cases.bga80, {"depopulated": ["Z9"]}, "not in a 9 x 9 grid"),
+    # A depopulated BGA described without its count came out full.
+    (cases.bga80, {"pins": 0, "depopulated": ()}, "pins is required for bga"),
+    (cases.bme280_lga, {"pins": 0}, "pins is required for lga"),
     (cases.usb_b, {"pins": 5}, "4 numbered contacts"),
 ])
 def test_pin_counts_the_family_cannot_have(make, changes, needle):

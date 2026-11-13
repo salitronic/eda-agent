@@ -63,6 +63,9 @@ class Altium365Config:
     domain: str = ""
     workspace_token: str = ""
     nexar_app_id: str = ""
+    #: A Nexar portal app is a confidential client: its token requests
+    #: are refused (HTTP 400, invalid_client) without the secret.
+    nexar_client_secret: str = field(default="", repr=False)
     redirect_uri: str = _DEFAULT_REDIRECT
     allowed_workspaces: tuple[str, ...] = ()
     saved_login: Path = field(
@@ -94,6 +97,7 @@ def read_environment(env: Optional[dict] = None) -> Altium365Config:
         domain=domain.strip("/"),
         workspace_token=env.get("EDA_AGENT_ALTIUM365_TOKEN", "").strip(),
         nexar_app_id=env.get("EDA_AGENT_NEXAR_APP_ID", "").strip(),
+        nexar_client_secret=env.get("EDA_AGENT_NEXAR_CLIENT_SECRET", "").strip(),
         redirect_uri=env.get("EDA_AGENT_NEXAR_REDIRECT", _DEFAULT_REDIRECT),
         allowed_workspaces=tuple(allowed))
 
@@ -239,15 +243,52 @@ def code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def _ask_for_token(form: dict, timeout_s: float) -> dict:
+#: What Nexar's token errors usually mean here, and what fixes them.
+_TOKEN_ERRORS = {
+    "invalid_client": "the app id or its secret is wrong; set "
+                      "EDA_AGENT_NEXAR_CLIENT_SECRET to the app's secret",
+    "invalid_grant": "the sign-in code or the saved login is no longer good; "
+                     "run eda-agent altium365-login again",
+    "unauthorized_client": "the Nexar app does not allow this sign-in; give it "
+                           "the authorization code grant in the Nexar portal",
+    "invalid_scope": "the Nexar app lacks a scope this asks for; add the "
+                     "Design scopes to the app in the Nexar portal",
+}
+
+
+def _token_form(config: Altium365Config, form: dict) -> dict:
+    """``form`` with the client id, and the secret when there is one."""
+    out = {**form, "client_id": config.nexar_app_id}
+    if config.nexar_client_secret:
+        out["client_secret"] = config.nexar_client_secret
+    return out
+
+
+def _ask_for_token(form: dict, timeout_s: float,
+                   urlopen: Callable = urllib.request.urlopen) -> dict:
     request = urllib.request.Request(
         f"{NEXAR_AUTH}/token", data=urllib.parse.urlencode(form).encode(), method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as reply:
+        with urlopen(request, timeout=timeout_s) as reply:
             return json.loads(reply.read())
     except urllib.error.HTTPError as exc:
-        raise Altium365Error(f"Nexar turned the sign-in down (HTTP {exc.code})") from exc
+        said = ""
+        try:
+            body = json.loads(exc.read() or b"{}")
+            said = str(body.get("error") or "")
+            detail = str(body.get("error_description") or "")
+        except (ValueError, OSError, AttributeError):
+            detail = ""
+        secret = form.get("client_secret") or ""
+        if secret:
+            detail = detail.replace(secret, "***")
+        why = _TOKEN_ERRORS.get(said, "")
+        raise Altium365Error(
+            f"Nexar turned the sign-in down (HTTP {exc.code}"
+            + (f", {said}" if said else "") + ")"
+            + (f": {detail}" if detail else "")
+            + (f". Likely {why}" if why else "")) from exc
 
 
 def browser_login(config: Altium365Config, open_url: Callable[[str], Any],
@@ -292,10 +333,10 @@ def browser_login(config: Altium365Config, open_url: Callable[[str], Any],
         listener.shutdown()
     if not codes:
         raise Altium365Error("the browser never came back with a sign-in")
-    token = _ask_for_token({"grant_type": "authorization_code", "code": codes[0],
-                            "redirect_uri": config.redirect_uri,
-                            "client_id": config.nexar_app_id,
-                            "code_verifier": verifier}, config.timeout_s)
+    token = _ask_for_token(_token_form(config, {
+        "grant_type": "authorization_code", "code": codes[0],
+        "redirect_uri": config.redirect_uri,
+        "code_verifier": verifier}), config.timeout_s)
     token["saved_at"] = time.time()
     store_login(config.saved_login, token)
     return {"signed_in": True, "expires_in_s": token.get("expires_in")}
@@ -337,9 +378,9 @@ class Altium365Session:
             return login["access_token"]
         if not login.get("refresh_token"):
             raise Altium365Error("the Nexar login expired: run eda-agent altium365-login")
-        renewed = _ask_for_token({"grant_type": "refresh_token",
-                                  "refresh_token": login["refresh_token"],
-                                  "client_id": cfg.nexar_app_id}, cfg.timeout_s)
+        renewed = _ask_for_token(_token_form(cfg, {
+            "grant_type": "refresh_token",
+            "refresh_token": login["refresh_token"]}), cfg.timeout_s, self._urlopen)
         renewed.setdefault("refresh_token", login["refresh_token"])
         renewed["saved_at"] = self._now()
         store_login(cfg.saved_login, renewed)

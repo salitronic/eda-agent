@@ -18,6 +18,7 @@ import os
 from typing import Any, Callable, Optional
 
 from ..bridge.kicad_bridge import KiCadNotReachableError, get_kicad_bridge
+from ..bridge.kicad_ipc import KiCadApiError
 from ..core.kicad_export import resolve_output, run_cli, summarize
 
 
@@ -25,7 +26,7 @@ def _read(fn: Callable[[Any], Any], key: str) -> dict[str, Any]:
     """Run a bridge read and wrap it, or report why KiCad is unreachable."""
     try:
         value = fn(get_kicad_bridge())
-    except KiCadNotReachableError as e:
+    except (KiCadNotReachableError, KiCadApiError) as e:
         return {"ok": False, "reason": str(e)}
     except Exception as e:
         return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -40,7 +41,7 @@ def _write(fn: Callable[[Any], Any]) -> dict[str, Any]:
     """Run a bridge mutation and wrap it, or report why it failed."""
     try:
         result = fn(get_kicad_bridge())
-    except KiCadNotReachableError as e:
+    except (KiCadNotReachableError, KiCadApiError) as e:
         return {"ok": False, "reason": str(e)}
     except Exception as e:
         return {"ok": False, "reason": f"KiCad write failed: {e}"}
@@ -140,7 +141,7 @@ async def _pcb_export(output_dir: Optional[str], tag: str,
         br = get_kicad_bridge()
         cli = br.kicad_cli_path()
         board = br.board_file_path()
-    except KiCadNotReachableError as e:
+    except (KiCadNotReachableError, KiCadApiError) as e:
         return {"ok": False, "reason": str(e)}
     outdir = resolve_output(output_dir, board, tag)
     args, produced = make_args(board, outdir)
@@ -159,7 +160,7 @@ async def _lib_export(library_path: str, output_dir: Optional[str], tag: str,
         return {"ok": False, "reason": f"library not found: {library_path}"}
     try:
         cli = get_kicad_bridge().kicad_cli_path()
-    except KiCadNotReachableError as e:
+    except (KiCadNotReachableError, KiCadApiError) as e:
         return {"ok": False, "reason": str(e)}
     outdir = resolve_output(output_dir, library_path, tag)
     args, produced = make_args(library_path, outdir)
@@ -177,7 +178,7 @@ async def _sch_export(output_dir: Optional[str], tag: str,
         br = get_kicad_bridge()
         cli = br.kicad_cli_path()
         sch = br.sch_file_path()
-    except KiCadNotReachableError as e:
+    except (KiCadNotReachableError, KiCadApiError) as e:
         return {"ok": False, "reason": str(e)}
     if not os.path.exists(sch):
         return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -199,7 +200,7 @@ def register_kicad_tools(mcp) -> None:
         versions, or a reason (enable the API server, open a board)."""
         try:
             return {"ok": True, **get_kicad_bridge().ping()}
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad call failed: {e}"}
@@ -336,7 +337,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             board = br.board_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         args = ["pcb", "upgrade"] + (["--force"] if force else []) + [board]
         try:
@@ -353,7 +354,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         if not os.path.exists(sch):
             return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -391,7 +392,7 @@ def register_kicad_tools(mcp) -> None:
         tracks. Useful for length-matching and impedance work."""
         try:
             tracks = get_kicad_bridge().tracks()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -416,7 +417,7 @@ def register_kicad_tools(mcp) -> None:
         sorted by length."""
         try:
             tracks = get_kicad_bridge().tracks()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -439,7 +440,7 @@ def register_kicad_tools(mcp) -> None:
         each with a count. Fewer via types is cheaper to fabricate."""
         try:
             vias = get_kicad_bridge().vias()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -490,7 +491,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             fps = br.footprints()
             _parts, pins, _u = br.component_pins()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -513,7 +514,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             board = br.board_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         fd, out = tempfile.mkstemp(suffix=".json", prefix="eda_stats_")
         os.close(fd)
@@ -539,7 +540,7 @@ def register_kicad_tools(mcp) -> None:
         """Pads with no net assigned (potentially unconnected pins)."""
         try:
             _parts, pins, _u = get_kicad_bridge().component_pins()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -555,7 +556,7 @@ def register_kicad_tools(mcp) -> None:
         try:
             nets = [n["name"] for n in get_kicad_bridge().nets()
                     if n.get("name")]
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -578,7 +579,7 @@ def register_kicad_tools(mcp) -> None:
         """All pads on a given net: reference and pin number."""
         try:
             _parts, pins, _u = get_kicad_bridge().component_pins()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -597,7 +598,7 @@ def register_kicad_tools(mcp) -> None:
         (case-insensitive)."""
         try:
             fps = get_kicad_bridge().footprints()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -655,7 +656,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         if not os.path.exists(sch):
             return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -685,7 +686,7 @@ def register_kicad_tools(mcp) -> None:
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
             board_file = br.board_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
 
         sections: dict[str, Any] = {}
@@ -789,7 +790,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         if not os.path.exists(sch):
             return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -811,7 +812,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         if not os.path.exists(sch):
             return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -837,7 +838,7 @@ def register_kicad_tools(mcp) -> None:
             sch = br.sch_file_path()
             parts, _pins, _u = br.component_pins()
             pcb_nets = {n["name"] for n in br.nets() if n.get("name")}
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         if not os.path.exists(sch):
             return {"ok": False, "reason": f"no schematic found at {sch}"}
@@ -860,7 +861,7 @@ def register_kicad_tools(mcp) -> None:
             stats = br.board_stats()
             outline = br.board_outline()
             vias = br.vias()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         except Exception as e:
             return {"ok": False, "reason": f"KiCad read failed: {e}"}
@@ -1025,7 +1026,7 @@ def register_kicad_tools(mcp) -> None:
         kicad-cli's own subcommands run; it cannot invoke other programs."""
         try:
             cli = get_kicad_bridge().kicad_cli_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         try:
             result = await run_cli(cli, [str(a) for a in (args or [])])
@@ -1062,7 +1063,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             board = br.board_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         project = os.path.splitext(board)[0] + ".kicad_pro"
         args = ["jobset", "run", "--file", jobset_path]
@@ -1145,7 +1146,7 @@ def register_kicad_tools(mcp) -> None:
             br = get_kicad_bridge()
             cli = br.kicad_cli_path()
             sch = br.sch_file_path()
-        except KiCadNotReachableError as e:
+        except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
         fd, cir = tempfile.mkstemp(suffix=".cir", prefix="eda_spice_")
         os.close(fd)
