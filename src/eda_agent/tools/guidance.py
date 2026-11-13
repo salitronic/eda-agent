@@ -82,9 +82,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             ("pcb_delete_object", "resolves a BOARD, not the library"),
         ],
         "note": (
-            "Both board tools open the first PcbDoc an open project holds "
-            "when none is focused, so aimed at a library they do not fail. "
-            "They remove primitives from a board you never named. Pads are "
+            "With a library in front both board tools take the only open "
+            "board, so aimed at a library they do not fail: they remove "
+            "primitives from a board you never named. Pads are "
             "excluded unless include_pads is set, since removing one "
             "changes the pinout rather than the drawing."),
     },
@@ -103,7 +103,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": (
             "Read the board first with pcb_get_mech_layer_names: it reports "
             "what each layer actually HOLDS, which a PcbDoc header does not "
-            "carry, so kinds can be moved with the geometry in view. Paired "
+            "carry, so kinds can be moved with the geometry in view (one "
+            "board walk per layer; count_primitives=False when only the "
+            "names are wanted). Paired "
             "kinds come from a SECOND enumeration with no side suffix and "
             "are written on the pair, not on either layer. Writing a paired "
             "kind as though it were a layer kind silently does nothing."),
@@ -520,12 +522,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["proj_annotate"],
         "avoid": [
-            ("obj_modify", "writing a designator on a PCB component from a "
-                           "script CRASHES Altium"),
+            ("obj_modify", "a PCB component's Designator is not writable "
+                           "here, and Text on its designator text renames "
+                           "the part on the board alone"),
         ],
         "note": (
             "Annotation is the supported route and keeps the schematic and "
-            "board in step, which a direct rename would not."),
+            "board in step, which a direct rename would not. For a few "
+            "chosen names: sch_rename_designators, then proj_sync_pcb."),
     },
     {
         "task": "Add or adjust a 3D body in a footprint",
@@ -1093,7 +1097,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "task": "Read the copper one pour poured, holes included",
         "keywords": ("poured", "holes", "pieces"),
         "when": (("poured", "copper"), ("pour", "holes"), ("pour", "pieces"),
-                 ("poured", "pieces")),
+                 ("poured", "pieces"), ("read", "pour", "copper")),
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_get_pour_copper", "pcb_get_polygons"],
@@ -1361,7 +1365,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["pcb_pours_at"],
         "avoid": [],
-        "note": "Tests the pour outline, not the poured copper.",
+        "note": ("Tests the pour outline, not the poured copper. The point is "
+                 "from the board origin; obj_query, pcb_get_vias and "
+                 "pcb_get_copper give absolute positions."),
     },
     {
         "task": "Set a differential pair rule's impedance limits",
@@ -1674,6 +1680,289 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "UseInvertedRectangle, InvertedTTTextBorder; "
                  "ConvertedString reads the text as shown."),
     },
+    # FAST ROUTES. Each answers a question whose first answer used to be a
+    # tool that looks at every object on the board, or none at all.
+    {
+        "task": "Find board objects at a point, on a net or on a part, quickly",
+        "keywords": ("point", "near", "nearest", "coordinate", "location",
+                     "bounds", "lookup", "fast", "quick", "slow", "via",
+                     "pad"),
+        "when": (("find", "via"), ("find", "pad"), ("find", "track"),
+                 ("via", "point"), ("pad", "point"), ("track", "point"),
+                 ("read", "via", "net"), ("read", "pad", "net"),
+                 ("filter", "slow")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["obj_query", "pcb_get_component_pads", "obj_count"],
+        "avoid": [
+            ("pcb_get_vias", "net= still looks at every via on the board"),
+            ("pcb_get_pad_properties", "looks at every pad and stops at 500 "
+                                       "without saying so"),
+        ],
+        "note": (
+            "On a board only an exact Net=, Component=, Layer= or "
+            "BoundsLeft/BoundsBottom (a track's X1/Y1) condition narrows "
+            "the search; X=, Y=, Name, Selected and every < > range check "
+            "each object of the type, seconds on a busy board. To find "
+            "again an object you read, filter on the BoundsLeft and "
+            "BoundsBottom it printed, with Net= when known. Ask only the "
+            "properties you need; limit=1 stops at the first match. "
+            "Component= does not reach a part's designator and comment "
+            "texts."),
+    },
+    {
+        "task": "Delete board objects on a layer or a net in one call",
+        "keywords": ("track", "arc", "mechanical", "free"),
+        "when": (("delete", "track"), ("remove", "track"), ("delete", "layer"),
+                 ("clear", "layer")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["obj_delete", "pcb_unroute"],
+        "avoid": [
+            ("pcb_delete_object", "removes one object per call"),
+            ("lib_delete_footprint_primitives", "the LIBRARY one: it works "
+                                                "inside a footprint"),
+        ],
+        "note": (
+            "obj_delete(\"eTrackObject\", filter=\"Layer=Mechanical21\"): "
+            "Layer= and Net= narrow the search. Add InComponent=false|"
+            "InPolygon=false to keep footprint copper and pour hatching. "
+            "An empty filter needs confirm_delete_all."),
+    },
+    {
+        "task": "Move a net's tracks onto one layer",
+        "keywords": ("move", "relayer", "track", "layer", "net"),
+        "when": (("move", "track"), ("track", "layer", "net")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_move_tracks_to_layer", "obj_modify"],
+        "avoid": [("lib_move_bodies_to_layer", "moves 3D bodies in a "
+                                               "LIBRARY")],
+        "note": (
+            "pcb_move_tracks_to_layer moves tracks only (arcs stay) and every "
+            "track of the net, footprint and hatched-pour tracks included. "
+            "For free copper only: obj_modify(\"eTrackObject\", filter=\"Net=X|"
+            "InComponent=false|InPolygon=false\", set=\"Layer=BottomLayer\"), "
+            "and again for eArcObject."),
+    },
+    {
+        "task": "Set via tenting, mask openings or sizes on a board",
+        "keywords": ("via", "vias", "tenting", "tent", "tented", "mask",
+                     "solder", "soldermask", "size", "hole", "opening"),
+        "when": (("via", "tenting"), ("via", "mask"), ("via", "size"),
+                 ("via", "hole"), ("tent", "via")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_set_via_tenting", "pcb_set_via_soldermask_relief",
+                "pcb_normalize_vias", "obj_modify"],
+        "avoid": [("lib_set_via_properties", "the LIBRARY one: vias inside "
+                                             "a footprint")],
+        "note": (
+            "pcb_set_via_tenting leaves vias inside footprints alone; "
+            "pcb_set_via_soldermask_relief writes them too. "
+            "pcb_normalize_vias takes vias of one size or hole to one "
+            "target. For one net, obj_modify(\"eViaObject\", "
+            "filter=\"Net=X\", ...) finds only the net's vias."),
+    },
+    {
+        "task": "Place vias on a board",
+        "keywords": ("via", "vias", "stitching", "array"),
+        "when": (("place", "via"), ("add", "via")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_vias", "pcb_place_via_array",
+                "pcb_place_stitching_vias"],
+        "avoid": [("pcb_add_pad_via_template", "adds a template to the "
+                                               "board's pad and via library, "
+                                               "not a via")],
+        "note": "pcb_place_vias takes the whole list in one call.",
+    },
+    {
+        "task": "Count tracks, vias, pads or any objects without reading them",
+        "keywords": ("count", "number", "total", "tally", "quantity", "track",
+                     "via", "pad", "layer"),
+        "when": (("count",), ("number", "object")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["obj_count", "lib_count_layer_objects",
+                "pcb_get_board_statistics"],
+        "avoid": [("obj_query", "reads every match to count it")],
+        "note": (
+            "On a board obj_count with NO filter asks Altium's own counter "
+            "and answers at once; with a filter it searches like obj_query. "
+            "In a PcbLib lib_count_layer_objects counts per layer across "
+            "every footprint."),
+    },
+    {
+        "task": "Read the tracks, arcs, vias or pours of one layer quickly",
+        "keywords": ("copper", "track", "arc", "geometry", "dump", "segment",
+                     "layer"),
+        "when": (("copper", "layer"), ("read", "copper"), ("read", "track"),
+                 ("read", "arc"), ("read", "via"), ("selected", "copper"),
+                 ("track", "geometry")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_copper", "pcb_get_selected_objects"],
+        "avoid": [
+            ("obj_query", "fine for a few objects; for a layer's geometry it "
+                          "reads property by property"),
+            ("pcb_get_mech_layer_names", "names mechanical layers; it reads "
+                                         "no copper"),
+        ],
+        "note": (
+            "pcb_get_copper(kinds=..., layer=..., selected=...) reads one "
+            "layer of one kind in a second or two; every kind of a busy "
+            "board takes minutes, and each page walks the board again. "
+            "Lengths are internal units (coord_per_mil in the reply), "
+            "positions absolute."),
+    },
+    {
+        "task": "Read the board's layer names and internal layer ids",
+        "keywords": ("layer", "internal", "id", "token", "stack", "names"),
+        "when": (("layer", "name"), ("layer", "id"), ("internal", "layer")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_layer_display", "pcb_layer_view",
+                "pcb_get_mech_layer_names"],
+        "avoid": [],
+        "note": (
+            "pcb_get_mech_layer_names counts what sits on every layer by "
+            "default, one board walk per layer: pass count_primitives=False "
+            "when only the names are wanted. Filters and writers take the "
+            "internal name (TopLayer, MidLayer1, Mechanical21) or the "
+            "board's own name."),
+    },
+    {
+        "task": "Change many pads of a footprint at once",
+        "keywords": ("pad", "pads", "resize", "size", "mask", "paste",
+                     "corner", "shape", "selected"),
+        "when": (("selected", "pad"), ("pad", "footprint", "size"),
+                 ("resize", "pad")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_select_footprint_primitives", "lib_set_pad_properties",
+                "lib_get_pad_geometry"],
+        "avoid": [("obj_modify", "a board type resolves a BOARD, not the "
+                                 "library in front")],
+        "note": (
+            "One value for many pads: ONE broad selection set (object_type "
+            "pad and a layer) in lib_select_footprint_primitives, then "
+            "lib_set_pad_properties(selected=True). A set per pad name "
+            "costs more than writing each pad. Different values: the ids "
+            "from lib_get_pad_geometry, then lib_set_pad_properties with "
+            "items that all carry id (one walk). Undo is per pad."),
+    },
+    {
+        "task": "Renumber the pads of a footprint",
+        "keywords": ("renumber", "number", "numbering", "pad", "pads"),
+        "when": (("renumber", "pad"), ("number", "pad")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["pcb_renumber_pads", "lib_set_pad_properties"],
+        "avoid": [],
+        "note": (
+            "pcb_renumber_pads acts on the PcbLib footprint in front, its "
+            "pcb_ prefix notwithstanding. For an order of your own, "
+            "lib_set_pad_properties with items carrying id and new_name "
+            "renames them in one walk, no temporary names."),
+    },
+    {
+        "task": "Switch the online DRC off for a long run of board edits",
+        "keywords": ("online", "drc"),
+        "when": (("online", "drc"),),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_edit_options"],
+        "avoid": [("pcb_run_drc", "runs a check; it does not switch the "
+                                  "online one")],
+        "note": ("pcb_edit_options(online_drc=False), then put back the value "
+                 "it read; every placed object is checked while it is on."),
+    },
+    {
+        "task": "Remove 3D bodies a tool added to a footprint",
+        "keywords": ("3d", "body", "bodies", "identifier", "envelope",
+                     "generated"),
+        "when": (("remove", "body"), ("delete", "body"), ("remove", "3d"),
+                 ("delete", "3d")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_delete_footprint_primitives"],
+        "avoid": [("lib_select_footprint_primitives",
+                   "a selection by box can take the footprint's own STEP "
+                   "body, and PCB:Clear is far slower")],
+        "note": ("identifier= takes every body whose Identifier starts with "
+                 "it and never one without, such as the footprint's STEP "
+                 "model."),
+    },
+    {
+        "task": "Show, hide or lock layers, or set the current layer",
+        "keywords": ("hide", "show", "visible", "visibility", "lock",
+                     "current", "single", "layer"),
+        "when": (("hide", "layer"), ("show", "layer"), ("current", "layer"),
+                 ("single", "layer"), ("lock", "layer")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_layer_view", "pcb_set_layer_visibility"],
+        "avoid": [("pcb_view_options", "sets display preferences, not which "
+                                       "layers show")],
+        "note": ("pcb_layer_view reads and sets visible, the mechanical "
+                 "lock, the current layer and single layer mode; it also "
+                 "acts on a PcbLib in front."),
+    },
+    {
+        "task": "Save the board view and put it back",
+        "keywords": ("view", "zoom", "restore", "save", "back"),
+        "when": (("view", "back"), ("restore", "view"), ("save", "view")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_view", "obj_zoom"],
+        "avoid": [],
+        "note": "pcb_view action get, then set with what it gave.",
+    },
+    {
+        "task": "Measure the distance between two board objects",
+        "keywords": ("distance", "gap", "between", "measure", "apart"),
+        "when": (("distance", "between"), ("far", "apart")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_measure_clearance", "pcb_find_dominant_rule"],
+        "avoid": [],
+        "note": ("Name each object as U1.3 or as type:filter; an indexed "
+                 "filter (Net=, X1/Y1, BoundsLeft/BoundsBottom) finds it "
+                 "at once."),
+    },
+    {
+        "task": "Add or remove teardrops on a board",
+        "keywords": ("teardrop", "teardrops"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_add_teardrops", "pcb_remove_teardrops"],
+        "avoid": [],
+        "note": ("Altium's own Teardrops dialog, answered by the tool when "
+                 "Dialogs is Automatic; a repour can delete them."),
+    },
+    {
+        "task": "Place copper thieving on a board",
+        "keywords": ("thieving", "balancing"),
+        "when": (("copper", "thieving"), ("copper", "balancing")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_thieving_pads"],
+        "avoid": [],
+        "note": ("A grid of round pads with no net in the empty copper of "
+                 "one layer, at most 5000 a run."),
+    },
+    {
+        "task": "Add test points to the nets of a net class",
+        "keywords": ("testpoint", "testpoints", "test", "probe"),
+        "when": (("test", "point"),),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_add_testpoints_for_net_class"],
+        "avoid": [],
+        "note": ("One pad per net of the class that has no testpoint yet, in "
+                 "a row above the board, to be moved into place."),
+    },
 )
 
 
@@ -1685,8 +1974,11 @@ _NOT_POSSIBLE: tuple[dict[str, Any], ...] = (
     {
         "capability": "Rename a PCB designator directly from a script",
         "backends": ("altium",),
-        "why": "Writing the designator on a PCB component crashes Altium.",
-        "do_instead": ["proj_annotate"],
+        "why": ("A PCB component's Designator is not writable from a script "
+                "(writing it crashed Altium). Text written on its designator "
+                "text does rename the part, but on the board alone, out of "
+                "step with the schematic."),
+        "do_instead": ["proj_annotate", "sch_rename_designators"],
     },
     {
         "capability": "Apply an ECO without a human click",
@@ -1830,6 +2122,9 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
     # "bulk change a property on every symbol" missed every batch_ tool,
     # because the tools say batch and the caller said bulk.
     "bulk": ("batch",),
+    # "how many vias are on the board" found nothing: "how" and "many"
+    # are stopwords, so the question kept only "via" and "board".
+    "howmany": ("count",),
 }
 
 

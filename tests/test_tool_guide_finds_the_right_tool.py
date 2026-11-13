@@ -155,6 +155,28 @@ QUESTIONS = [
     ("make symbol pins from a datasheet pin table", {"lib_read_pin_table"}),
     ("check the design against our company rules", {"design_check_company_rules"}),
     ("list the projects in my altium 365 workspace", {"altium365_list_projects"}),
+    # A documentation audit (#359): each of these was answered with a
+    # recipe for something else, or with a tool that looks at every object
+    # on the board where a narrowed one exists.
+    ("read the copper on one layer", {"pcb_get_copper"}),
+    ("count the tracks on a layer", {"obj_count"}),
+    ("how many vias are on the board", {"obj_count"}),
+    ("find the via at a point", {"obj_query"}),
+    ("turn off online drc", {"pcb_edit_options"}),
+    ("save and restore the board view", {"pcb_view"}),
+    ("hide layers and show one layer",
+     {"pcb_layer_view", "pcb_set_layer_visibility"}),
+    ("set the size of all selected pads in a footprint",
+     {"lib_set_pad_properties"}),
+    ("get the internal layer id for a layer name",
+     {"pcb_get_layer_display", "pcb_layer_view"}),
+    ("add teardrops", {"pcb_add_teardrops"}),
+    ("place thieving copper", {"pcb_place_thieving_pads"}),
+    ("delete all tracks on a mechanical layer", {"obj_delete"}),
+    ("set via tenting on a net", {"pcb_set_via_tenting"}),
+    ("move the tracks of a net to the bottom layer",
+     {"pcb_move_tracks_to_layer"}),
+    ("read a pour's copper", {"pcb_get_pour_copper"}),
 ]
 
 #: The second held-out set, written 2026-09-23 BEFORE put, reflect and

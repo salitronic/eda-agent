@@ -20,8 +20,9 @@ next, do it, log the result.
 
 ## Entry points by client
 
-- **Claude Code**: the `/autodesign` skill (`.claude/skills/autodesign/`)
-  loads the protocol automatically when the task matches.
+- **Claude Code**: the `/autodesign` skill loads the protocol when the task
+  matches, once copied from `skills/autodesign/` into `.claude/skills/`
+  (see [skills/README.md](../skills/README.md)).
 - **Prompt-capable clients (e.g. Codex)**: invoke the `autonomous_design`
   MCP prompt, optionally with a `requirement` argument.
 - **Any client**: call the `design_autonomy_guide` tool. It returns the
@@ -36,7 +37,8 @@ next, do it, log the result.
 2. `design_session_start(requirement)` → keep the `session_id`. Open
    `design_live_view` so the board can be watched as it changes, and log
    each decision before acting on it with `design_live_note`.
-3. `app_checkpoint("before autonomous run")` if a project will be modified.
+3. `app_checkpoints(action="make", args={"label": "before autonomous run"})`
+   if a project will be modified.
 4. Repeat `design_next_action(session_id)`:
    - `proceed` / `retry` → do the stage with its `suggested_tools`, meet the
      `exit_gate`, then `design_session_log(event="stage_result",
