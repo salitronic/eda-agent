@@ -503,9 +503,37 @@ Begin
         Else If PropName = 'TextPosition' Then Dim.TextPosition := N
         Else If PropName = 'TextDimensionUnit' Then Dim.TextDimensionUnit := N
         Else If PropName = 'TextPrecision' Then Dim.TextPrecision := N
-        Else If PropName = 'TextFormat' Then Dim.TextFormat := Value
-        Else If PropName = 'TextPrefix' Then Dim.TextPrefix := Value
-        Else If PropName = 'TextSuffix' Then Dim.TextSuffix := Value
+        { The texts are read back: Altium keeps its own diameter sign as   }
+        { the prefix of a radial- or linear-diameter dimension and takes    }
+        { the assignment without a word, so an unread write was reported    }
+        { as made (#356). A value it did not keep is refused.               }
+        Else If PropName = 'TextFormat' Then
+        Begin
+            Dim.TextFormat := Value;
+            If Dim.TextFormat <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
+        Else If PropName = 'TextPrefix' Then
+        Begin
+            Dim.TextPrefix := Value;
+            If Dim.TextPrefix <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
+        Else If PropName = 'TextSuffix' Then
+        Begin
+            Dim.TextSuffix := Value;
+            If Dim.TextSuffix <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
         Else If PropName = 'ArrowSize' Then Dim.ArrowSize := MilsToCoordF(F)
         Else If PropName = 'ArrowLineWidth' Then Dim.ArrowLineWidth := MilsToCoordF(F)
         Else If PropName = 'ArrowLength' Then Dim.ArrowLength := MilsToCoordF(F)
