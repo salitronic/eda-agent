@@ -566,6 +566,35 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "bodies a footprint carries and the layer each is on."),
     },
     {
+        "task": "Find and replace basic 3D models (extruded boxes) with real ones",
+        "keywords": ("basic", "extruded", "placeholder", "cylinder",
+                     "sphere"),
+        "when": (("basic", "3d"), ("basic", "model"), ("extruded",),
+                 ("box", "model")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_check_pcblib", "lib_audit_footprint_policies",
+                "pcb_get_components", "lib_create_3d_model",
+                "lib_create_footprint_from_package",
+                "pcb_update_footprints_from_library"],
+        "avoid": [
+            ("lib_add_footprint_bodies", "adds another extruded body, the "
+                                         "basic model being replaced"),
+        ],
+        "note": (
+            "A basic 3D model is a footprint whose bodies are only extruded "
+            "boxes, cylinders or spheres, with no STEP model. Unless \"Basic "
+            "3D models\" is Allowed on the Config tab, lib_check_pcblib, "
+            "lib_audit_footprint_policies and pcb_get_components name them "
+            "under basic_3d_models. Tell the user which ones and ask; replace "
+            "only those they agree to, each with a STEP model built from the "
+            "datasheet mechanical drawing (lib_create_3d_model with "
+            "replace_existing removes the old bodies). For parts on a board, "
+            "replace the model in the library, then "
+            "pcb_update_footprints_from_library. Only the user changes the "
+            "Config tab setting; see docs/CONFIG.md."),
+    },
+    {
         "task": "Simulate a supply, inrush, hot-plug or load step in Altium",
         "keywords": ("simulate", "simulation", "spice", "transient", "inrush",
                      "hotplug", "hot-plug", "ringing", "droop", "sim", "ngspice",

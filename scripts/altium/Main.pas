@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.13.12';
+    SCRIPT_VERSION = '2026.11.13.13';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -185,6 +185,10 @@ Var
     { RoutingMode is the routing discipline: 'enforced' (the default),    }
     { 'advisory' or 'off'. The Python side holds the router to it.        }
     RoutingMode : String;
+    { Basic3dMode 'allowed' lets a footprint keep extruded, cylinder or   }
+    { sphere bodies as its 3D model; 'not_allowed' (the default) has the  }
+    { Python side report them and ask before replacing them.              }
+    Basic3dMode : String;
     { ChecksOff lists the checks switched off on the Config tab, by name,  }
     { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
     { model_body, spice_model, fab_export). Empty, the default, keeps    }
@@ -2829,6 +2833,7 @@ Begin
     DialogMode := 'auto';
     UsageMode := 'off';
     RoutingMode := 'enforced';
+    Basic3dMode := 'not_allowed';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
@@ -2847,6 +2852,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'usage')) = 'on' Then UsageMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'routing')) = 'advisory' Then RoutingMode := 'advisory';
     If LowerCase(ExtractJsonValue(Content, 'routing')) = 'off' Then RoutingMode := 'off';
+    If LowerCase(ExtractJsonValue(Content, 'basic_3d_models')) = 'allowed' Then Basic3dMode := 'allowed';
     ChecksOff :=LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
@@ -2861,6 +2867,7 @@ Begin
         + '","dialogs":"' + DialogMode
         + '","usage":"' + UsageMode
         + '","routing":"' + RoutingMode
+        + '","basic_3d_models":"' + Basic3dMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
 

@@ -34,7 +34,7 @@ SESSION = {
     # Config tab settings.
     "SavingOff", "ValueFormat", "ValueUnit", "EditsMode", "DeletingMode",
     "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode", "UsageMode", "RoutingMode", "ChecksOff",
-    "LengthUnits",
+    "LengthUnits", "Basic3dMode",
     # Save passes and the documents edited this session.
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",

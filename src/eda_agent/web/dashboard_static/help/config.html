@@ -94,6 +94,8 @@
   <a href="#token-count">Token count</a>
   <h2>Routing</h2>
   <a href="#routing">Routing discipline</a>
+  <h2>3D models</h2>
+  <a href="#basic-3d-models">Basic 3D models</a>
 </nav>
 
 <main>
@@ -127,7 +129,8 @@ above the tabs are the same on every tab.</p>
 <p>Your settings, in groups: <a href="#edits">Permissions</a>,
 <a href="#keep-in-view">View</a>, <a href="#value-format">Values</a>,
 <a href="#dialogs">Dialogs</a>, <a href="#check-footprint">Checks</a>,
-<a href="#token-count">Diagnostics</a> and <a href="#routing">Routing</a>.
+<a href="#token-count">Diagnostics</a>, <a href="#routing">Routing</a> and
+<a href="#basic-3d-models">3D models</a>.
 Every row works the same way:</p>
 <!-- figure:config -->
 <h3 id="win-footer">Bottom of the window</h3>
@@ -378,6 +381,27 @@ so the part is never taken for a checked one.</p>
   <p class="note">At every level the router obeys the brief the AI did give,
     and the review still measures the copper. Routes you draw yourself in
     Altium are never checked or blocked by this setting.</p>
+</section>
+
+<h2 class="group">3D models</h2>
+
+<section class="setting" id="basic-3d-models">
+  <h3>Basic 3D models</h3>
+  <p>A basic 3D model is a footprint whose 3D bodies are only extruded boxes,
+    cylinders or spheres, with no STEP model of the part among them. It shows
+    roughly where the part is, but not what it looks like.</p>
+  <dl>
+    <dt>Not allowed <span class="default">default</span></dt>
+    <dd>When the AI checks footprints or reads a board's parts, it tells you
+      which footprints have a basic model and asks whether to replace them.
+      Each one you agree to is rebuilt as a STEP model from the part's
+      datasheet drawing. A new footprint whose STEP model cannot be built
+      gets no box in its place, and the AI tells you why.</dd>
+    <dt>Allowed</dt>
+    <dd>Basic models are kept and not reported.</dd>
+  </dl>
+  <p class="note">The AI never replaces a model without asking you first.
+    Boxes used as clearance or keep-in volumes are not affected.</p>
 </section>
 </main>
 </div>

@@ -1695,6 +1695,19 @@ async def _footprint_3d_body(bridge: Any, step: Any, spec: Any, model: Any,
         if mode == "step":
             return {"kind": "none", "note": f"3D body: none, {why_not_step}"}
 
+    from ..preferences import basic_3d_models_allowed
+    if not basic_3d_models_allowed():
+        reason = f" because {why_not_step}" if why_not_step else ""
+        return {"kind": "none",
+                "note": ("3D body: none. No STEP model was built" + reason
+                         + ", and the extruded box this would fall back to is "
+                         "a basic 3D model, which the Config tab does not "
+                         "allow. Tell the user and ask: build the model from "
+                         "the datasheet drawing with lib_create_3d_model, or, "
+                         "if they want a basic model, they set \"Basic 3D "
+                         "models\" to Allowed on the Config tab and this is "
+                         "run again with model_3d \"extruded\".")}
+
     b = model.body
     if b.z1 <= b.z0 or b.x1 <= b.x0 or b.y1 <= b.y0:
         return {"kind": "none", "note": "3D body: none, the package gives no "
@@ -3627,8 +3640,11 @@ def register_library_tools(mcp):
             Dict with added, failed, bad_points, bad_height,
             unknown_layers, total and ``bodies``, each read back
             (outline, heights, identifier, layer) with which optional
-            properties were applied.
+            properties were applied. Unless the Config tab allows basic
+            3D models, ``basic_3d_models`` says to ask the user before
+            these stand in for the part's model.
         """
+        from ..preferences import basic_3d_models_allowed
         refusal = _units_refusal(units)
         if refusal:
             return refusal
@@ -3644,6 +3660,13 @@ def register_library_tools(mcp):
             "library.add_footprint_bodies", _with_units(params, units))
         if isinstance(result, dict) and problems:
             result["refused"] = problems
+        if isinstance(result, dict) and not basic_3d_models_allowed():
+            result["basic_3d_models"] = (
+                "An extruded body is a basic 3D model, which the Config tab "
+                "does not allow as a part's model. A clearance or keep-in "
+                "volume is fine. If these bodies stand in for the part, tell "
+                "the user and ask whether to build its STEP model from the "
+                "datasheet drawing with lib_create_3d_model instead.")
         return result
 
     @mcp.tool()
@@ -4302,12 +4325,15 @@ def register_library_tools(mcp):
                 dimensions are inferred from the library.
 
         Returns ``{library_path, footprint_count, conventions, findings,
-        summary}``.
+        summary}``, and ``basic_3d_models`` when footprints have only
+        extruded, cylinder or sphere bodies and the Config tab does not
+        allow basic 3D models: tell the user and ask before replacing any.
         """
         from ..design.footprint_policy import (
             audit_footprint_library,
             plan_footprint_fixes,
         )
+        from ..preferences import basic_3d_models_report, is_basic_3d_model
 
         bridge = get_bridge()
         footprints, resolved_path = await _read_library_geometry(
@@ -4315,6 +4341,11 @@ def register_library_tools(mcp):
         report = audit_footprint_library(footprints, policy=policy)
         report["fixes"] = plan_footprint_fixes(report)
         report["library_path"] = resolved_path
+        report.update(basic_3d_models_report([
+            str(fp.get("name") or "") for fp in footprints
+            if "step_bodies" in fp
+            and is_basic_3d_model(int(fp.get("bodies") or 0),
+                                  int(fp.get("step_bodies") or 0))]))
         return report
 
     @mcp.tool()
@@ -7325,8 +7356,13 @@ def register_library_tools(mcp):
             ``footprints_checked``, ``footprints_with_problems`` and
             ``footprints`` [{footprint, pieces, problems [{check,
             detail}]}]; positions in a detail are mil from the
-            footprint's origin.
+            footprint's origin. ``basic_3d_models`` names the footprints
+            whose 3D model is only extruded, cylinder or sphere bodies
+            when the Config tab does not allow basic 3D models: tell the
+            user and ask before replacing any.
         """
+        from ..preferences import (basic_3d_models_allowed,
+                                   basic_3d_models_report, is_basic_3d_model)
         params: dict[str, Any] = {}
         if checks is not None:
             unknown = [c for c in checks if c not in _PCBLIB_CHECKS]
@@ -7342,8 +7378,18 @@ def register_library_tools(mcp):
             params["library_path"] = path
         if footprint_name.strip():
             params["footprint_name"] = footprint_name.strip()
-        return await get_bridge().send_command_async(
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
             "library.check_pcblib", params, timeout=600.0)
+        if isinstance(result, dict) and not basic_3d_models_allowed():
+            footprints, _ = await _read_library_geometry(bridge, path or None)
+            only = footprint_name.strip()
+            result.update(basic_3d_models_report([
+                str(fp.get("name") or "") for fp in footprints
+                if (not only or fp.get("name") == only) and "step_bodies" in fp
+                and is_basic_3d_model(int(fp.get("bodies") or 0),
+                                      int(fp.get("step_bodies") or 0))]))
+        return result
 
     @mcp.tool()
     async def lib_set_pin_timing(

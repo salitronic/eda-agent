@@ -68,6 +68,11 @@ def _pcb(monkeypatch, replies=None):
 # --- the PCB library check ---------------------------------------------------
 
 def test_pcblib_check_sends_the_checks_and_refuses_bad_input(monkeypatch, tmp_path):
+    from eda_agent import preferences
+    # With basic 3D models allowed the check is the one command; the read
+    # that finds basic models is covered in test_basic_3d_models_are_flagged.
+    monkeypatch.setattr(preferences, "basic_3d_models_allowed",
+                        lambda workspace=None: True)
     lib = tmp_path / "Parts.PcbLib"
     lib.write_bytes(b"")
     tools, bridge = _lib(monkeypatch)

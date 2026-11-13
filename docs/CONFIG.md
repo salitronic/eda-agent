@@ -81,3 +81,14 @@ you draw yourself in Altium are never checked or blocked by any of this.
 | Setting | Choices | What it does |
 |---|---|---|
 | Token count | Off / On | On counts what each tool call costs the AI in tokens (an estimate from the size of its text and pictures) and how long it takes. The totals show on the dashboard's Tools panel and with `eda-agent usage`. Nothing is added to what the AI reads. `EDA_AGENT_USAGE_OFF=1` in the AI client's config keeps it off. |
+
+## 3D models
+
+| Setting | Choices | What it does |
+|---|---|---|
+| Basic 3D models | Not allowed / Allowed | A basic 3D model is a footprint whose bodies are only extruded boxes, cylinders or spheres, with no STEP model among them. Not allowed, the default: the footprint checks (`lib_check_pcblib`, `lib_audit_footprint_policies`) and `pcb_get_components` name each such footprint under `basic_3d_models`, and the AI tells the user and asks whether to replace them. Each one the user agrees to is rebuilt as a STEP model from the part's datasheet drawing (`lib_create_3d_model`), and a board takes it with `pcb_update_footprints_from_library`. A new footprint gets no extruded box when its STEP model cannot be built; the reply says why. Allowed: basic models are kept and not reported. |
+
+Bodies added with `lib_add_footprint_bodies` are still added either way,
+because a clearance or keep-in volume is a body too. When basic models are
+not allowed, the reply reminds the AI to ask the user if those bodies are
+standing in for the part.

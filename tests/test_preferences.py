@@ -41,7 +41,7 @@ _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
     UiAutomationMode, KeepInViewMode, LengthUnits, DialogMode, UsageMode, RoutingMode,
-    ChecksOff,
+    Basic3dMode, ChecksOff,
     WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
@@ -135,7 +135,8 @@ def test_python_reads_the_same_file(tmp_path):
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
         "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
-        "length_units": "mil", "usage": "off", "routing": "enforced"}
+        "length_units": "mil", "usage": "off", "routing": "enforced",
+        "basic_3d_models": "not_allowed"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -161,7 +162,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_EcoAutoClick", "opt_EcoManualClick",
                     "opt_UsageOffClick", "opt_UsageOnClick",
                     "opt_RouteEnforcedClick", "opt_RouteAdvisoryClick",
-                    "opt_RouteOffClick"):
+                    "opt_RouteOffClick", "opt_Basic3dNotAllowedClick",
+                    "opt_Basic3dAllowedClick"):
         assert f"= {handler}" in dfm, handler
         assert handler in form, handler
     for option, call in (("None", "'none', 'without'"), ("Rkm", "'rkm', 'without'"),
@@ -188,7 +190,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("UsageOn", "'usage', 'on'"),
                          ("RouteEnforced", "'routing', 'enforced'"),
                          ("RouteAdvisory", "'routing', 'advisory'"),
-                         ("RouteOff", "'routing', 'off'")):
+                         ("RouteOff", "'routing', 'off'"),
+                         ("Basic3dNotAllowed", "'basic_3d_models', 'not_allowed'"),
+                         ("Basic3dAllowed", "'basic_3d_models', 'allowed'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -500,3 +504,42 @@ def test_the_routing_discipline_is_kept_and_defaults_to_enforced(tmp_path):
         encoding="utf-8")
     assert "| Routing discipline | Enforced / Advisory / Off |" in doc
     assert set(preferences.ROUTING) == set(preferences.CHOICES["routing"])
+
+
+def test_basic_3d_models_are_kept_and_default_to_not_allowed(tmp_path):
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(Basic3dMode);",
+        "  Basic3dMode := 'allowed'; StorePreferences(0);",
+        "  Basic3dMode := ''; LoadPreferences(0); WriteLn(Basic3dMode);",
+        "  Basic3dMode := 'not_allowed'; StorePreferences(0);",
+        "  Basic3dMode := ''; LoadPreferences(0); WriteLn(Basic3dMode);",
+    ])
+    assert out == ["not_allowed", "allowed", "not_allowed"]
+    assert not preferences.basic_3d_models_allowed(tmp_path)
+    (tmp_path / "preferences.json").write_text('{"basic_3d_models":"allowed"}')
+    assert preferences.basic_3d_models_allowed(tmp_path)
+    (tmp_path / "preferences.json").write_text('{"basic_3d_models":"maybe"}')
+    assert not preferences.basic_3d_models_allowed(tmp_path)
+    painted = functions(strip_comments(_code("StatusForm.pas")))["PaintAgentSettings"]
+    for name in ("opt_Basic3dNotAllowed", "opt_Basic3dAllowed", "lbl_CfgBasic3dHint"):
+        assert name in painted, name
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md").read_text(
+        encoding="utf-8")
+    assert "| Basic 3D models | Not allowed / Allowed |" in doc
+
+
+def test_a_footprint_is_basic_only_without_a_step_body():
+    assert preferences.is_basic_3d_model(bodies=2, step_bodies=0)
+    assert not preferences.is_basic_3d_model(bodies=2, step_bodies=1)
+    assert not preferences.is_basic_3d_model(bodies=0, step_bodies=0)
+
+
+def test_basic_models_are_reported_with_what_to_ask(tmp_path):
+    report = preferences.basic_3d_models_report(["SOT23", "", "QFN16", "SOT23"],
+                                                tmp_path)
+    flag = report["basic_3d_models"]
+    assert flag["footprints"] == ["QFN16", "SOT23"]
+    assert "ask" in flag["ask_the_user"] and "lib_create_3d_model" in flag["ask_the_user"]
+    assert preferences.basic_3d_models_report([], tmp_path) == {}
+    (tmp_path / "preferences.json").write_text('{"basic_3d_models":"allowed"}')
+    assert preferences.basic_3d_models_report(["SOT23"], tmp_path) == {}

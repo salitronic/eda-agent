@@ -576,6 +576,13 @@ Begin
         + 'are obeyed at every level, and your own routing is never blocked.';
     SetTip(lbl_CfgRouting, Tip);  SetTip(opt_RouteEnforced, Tip);
     SetTip(opt_RouteAdvisory, Tip);  SetTip(opt_RouteOff, Tip);
+    Tip := 'Whether a footprint may keep a basic 3D model: extruded boxes, '
+        + 'cylinders or spheres instead of a STEP model of the part. Not '
+        + 'allowed: the AI reports each footprint that has one, asks you '
+        + 'whether to replace it, and builds the replacement from the '
+        + 'datasheet drawing.';
+    SetTip(lbl_CfgBasic3d, Tip);  SetTip(opt_Basic3dNotAllowed, Tip);
+    SetTip(opt_Basic3dAllowed, Tip);
     SetTip(btn_Help, 'Open the help page in your browser: labelled pictures '
         + 'of each part of this window, then every setting on the Config tab explained.');
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
@@ -854,6 +861,8 @@ Begin
     OwnPanelColours(opt_UsageOff);  OwnPanelColours(opt_UsageOn);
     OwnPanelColours(sep_Cfg9);      OwnPanelColours(opt_RouteEnforced);
     OwnPanelColours(opt_RouteAdvisory);  OwnPanelColours(opt_RouteOff);
+    OwnPanelColours(sep_Cfg10);     OwnPanelColours(opt_Basic3dNotAllowed);
+    OwnPanelColours(opt_Basic3dAllowed);
 End;
 
 
@@ -1084,6 +1093,15 @@ Begin
         Else
             lbl_CfgRoutingHint.Caption := 'Critical nets need a sourced brief; '
                 + 'each finding is answered before a round is written.';
+        PaintOption(opt_Basic3dNotAllowed, Basic3dMode <> 'allowed');
+        PaintOption(opt_Basic3dAllowed, Basic3dMode = 'allowed');
+        If Basic3dMode = 'allowed' Then
+            lbl_CfgBasic3dHint.Caption := 'A footprint may keep extruded boxes, '
+                + 'cylinders or spheres as its 3D model.'
+        Else
+            lbl_CfgBasic3dHint.Caption := 'Footprints with only extruded boxes, '
+                + 'cylinders or spheres are reported, and you are asked before '
+                + 'each is replaced with a STEP model from its drawing.';
         PaintChecks(0);
     Except End;
 End;
@@ -1640,7 +1658,8 @@ Begin
         Else If Setting = 'length_units' Then LengthUnits := Choice
         Else If Setting = 'dialogs' Then DialogMode := Choice
         Else If Setting = 'usage' Then UsageMode := Choice
-        Else If Setting = 'routing' Then RoutingMode := Choice;
+        Else If Setting = 'routing' Then RoutingMode := Choice
+        Else If Setting = 'basic_3d_models' Then Basic3dMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1703,6 +1722,12 @@ Begin ChooseAgentSetting('routing', 'advisory'); End;
 
 Procedure opt_RouteOffClick(Sender : TObject);
 Begin ChooseAgentSetting('routing', 'off'); End;
+
+Procedure opt_Basic3dNotAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('basic_3d_models', 'not_allowed'); End;
+
+Procedure opt_Basic3dAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('basic_3d_models', 'allowed'); End;
 
 { A check switched on or off on the Config tab, stored at once. }
 Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);

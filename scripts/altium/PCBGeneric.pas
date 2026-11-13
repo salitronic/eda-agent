@@ -1126,18 +1126,20 @@ Begin
 End;
 
 { Walks the component's 3D bodies: MaxOverall = the tallest OverallHeight, }
-{ Count = how many. With WantList the result is the bodies as JSON objects }
-{ (comma separated, no brackets), else ''.                                 }
-Function ComponentBodyScan(Comp : IPCB_Component; WantList : Boolean; Var MaxOverall : Integer; Var Count : Integer) : String;
+{ Count = how many, StepCount = how many are STEP models. With WantList the }
+{ result is the bodies as JSON objects (comma separated, no brackets),     }
+{ else ''.                                                                 }
+Function ComponentBodyScan(Comp : IPCB_Component; WantList : Boolean; Var MaxOverall : Integer; Var Count : Integer; Var StepCount : Integer) : String;
 Var
     GIter : IPCB_GroupIterator;
     Body  : IPCB_ComponentBody;
     Overall, Standoff : Integer;
-    Ident, LayerName : String;
+    Ident, LayerName, Kind : String;
 Begin
     Result := '';
     MaxOverall := 0;
     Count := 0;
+    StepCount := 0;
     GIter := Comp.GroupIterator_Create;
     Try
         GIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
@@ -1149,6 +1151,8 @@ Begin
             Try Overall := Body.OverallHeight; Except Overall := 0; End;
             If (Count = 0) Or (Overall > MaxOverall) Then MaxOverall := Overall;
             Inc(Count);
+            Kind := ComponentBodyKind(Body);
+            If Kind = 'step' Then Inc(StepCount);
             If WantList Then
             Begin
                 Standoff := 0;
@@ -1159,7 +1163,7 @@ Begin
                 Try LayerName := LayerDisplayName(Body.Layer); Except LayerName := ''; End;
                 If Result <> '' Then Result := Result + ',';
                 Result := Result + '{"identifier":"' + EscapeJsonString(Ident)
-                    + '","kind":"' + ComponentBodyKind(Body)
+                    + '","kind":"' + Kind
                     + '","layer":"' + EscapeJsonString(LayerName)
                     + '","standoff_mils":' + FloatToJsonStr(CoordToMilsF(Standoff))
                     + ',"overall_mils":' + FloatToJsonStr(CoordToMilsF(Overall)) + '}';
@@ -1174,9 +1178,9 @@ End;
 { The component's tallest 3D body in mils as JSON, '' when it has none.  }
 Function ComponentModelHeightJson(Comp : IPCB_Component) : String;
 Var
-    MaxOverall, Count : Integer;
+    MaxOverall, Count, StepCount : Integer;
 Begin
-    ComponentBodyScan(Comp, False, MaxOverall, Count);
+    ComponentBodyScan(Comp, False, MaxOverall, Count, StepCount);
     If Count > 0 Then Result := FloatToJsonStr(CoordToMilsF(MaxOverall))
     Else Result := '';
 End;

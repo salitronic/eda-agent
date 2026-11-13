@@ -2641,7 +2641,7 @@ Var
     BodyJson : String;
     BodyMode, BodyList, HeightJson : String;
     WantList : Boolean;
-    MaxOverall, BodyCount : Integer;
+    MaxOverall, BodyCount, StepCount : Integer;
     ParamMils, MaxMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -2685,7 +2685,7 @@ Begin
         Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
         Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
-        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount);
+        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount);
         MaxMils := CoordToMilsF(MaxOverall);
         HeightMils := ParamMils;
         If BodyCount > 0 Then
@@ -2693,7 +2693,8 @@ Begin
                 + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ','
         Else
             HeightJson := '"model_height_mils":null,"height_mismatch":false,';
-        HeightJson := HeightJson + '"body_count":' + IntToStr(BodyCount) + ',';
+        HeightJson := HeightJson + '"body_count":' + IntToStr(BodyCount) + ','
+            + '"step_body_count":' + IntToStr(StepCount) + ',';
         If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
 
         { Bounding rectangle for collision/placement planning. Returns the    }

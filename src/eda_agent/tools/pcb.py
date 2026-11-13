@@ -3750,9 +3750,13 @@ def register_pcb_tools(mcp):
             footprint's Height field as entered in the library, and
             ``model_height_mils`` the tallest 3D body (STEP or extruded;
             null without one). ``height_mismatch`` is true when they
-            differ; ``body_count`` says how many bodies were read. Either
+            differ; ``body_count`` says how many bodies were read and
+            ``step_body_count`` how many are STEP models. Either height
             can be wrong for a given part: check the datasheet when it
-            matters.
+            matters. ``basic_3d_models`` names the footprints placed with
+            only extruded, cylinder or sphere bodies when the Config tab
+            does not allow basic 3D models: tell the user and ask before
+            replacing any.
 
         Args:
             body_heights: ``max`` (default) gives the tallest body per
@@ -3764,9 +3768,23 @@ def register_pcb_tools(mcp):
         if mode not in ("max", "all"):
             return {"ok": False,
                     "reason": f"body_heights must be 'max' or 'all', got {body_heights!r}"}
+        from ..preferences import basic_3d_models_report, is_basic_3d_model
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.get_components", {"body_heights": mode})
+        if isinstance(result, dict):
+            basic: dict[str, list[str]] = {}
+            for comp in result.get("components") or []:
+                if ("step_body_count" in comp and is_basic_3d_model(
+                        int(comp.get("body_count") or 0),
+                        int(comp.get("step_body_count") or 0))):
+                    basic.setdefault(str(comp.get("footprint") or ""), []).append(
+                        str(comp.get("designator") or ""))
+            report = basic_3d_models_report(list(basic))
+            if report:
+                report["basic_3d_models"]["parts"] = {
+                    fp: sorted(des) for fp, des in sorted(basic.items()) if fp}
+                result.update(report)
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()

@@ -1,4 +1,4 @@
-# Release verification: 2026.11.13.12
+# Release verification: 2026.11.13.13
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -430,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.13.12`, `version_match` =
+Expect `altium_script_version` = `2026.11.13.13`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4123,7 +4123,7 @@ Scratch copies only, closed without saving.
 
 ## 79. Pull requests of 2026-11-13
 
-Measured live on AD 26.11.1.5 with script 2026.11.13.12 on scratch copies,
+Measured live on AD 26.11.1.5 with the previous release's script on scratch copies,
 `app_ping` answering after every call, unless marked.
 
 1. Justification: a text frame answers blank (unreadable), a net label
@@ -4147,6 +4147,23 @@ Measured live on AD 26.11.1.5 with script 2026.11.13.12 on scratch copies,
 10. Not measured here: a multi-part DbLib symbol placed as part 1 (no
     DbLib), short paths sent in their long spelling (8.3 names are off on
     this disk), Replicate of a region in `pcb_replicate_layout`.
+
+## 80. Basic 3D models on the Config tab
+
+No new Altium identifiers: a body's `Model.ModelType` is already read by
+`Lib_GetFootprintPrimitives` and `ComponentBodyKind`.
+
+1. The Config tab shows a 3D MODELS group under Routing, with "Basic 3D
+   models" at Not allowed on a fresh workspace. Choosing Allowed and back
+   is kept as `basic_3d_models` in `preferences.json`, and the log says so.
+2. `lib_audit_footprint_policies` and `lib_check_pcblib` on a PcbLib with
+   one extruded-only footprint and one STEP footprint name only the first
+   under `basic_3d_models`; each footprint in the geometry read carries
+   `step_bodies`.
+3. `pcb_get_components` gives `step_body_count` per part, and
+   `basic_3d_models` names the footprints and designators that have only
+   extruded bodies.
+4. With Allowed, none of the three replies carries `basic_3d_models`.
 
 ## Still open, and not blocking
 

@@ -50,7 +50,7 @@ def test_step_and_extruded_bodies_are_told_apart():
 
 def test_the_model_height_is_the_tallest_body_or_nothing():
     body = _generic()["ComponentModelHeightJson"]
-    assert "ComponentBodyScan(Comp, False, MaxOverall, Count);" in body
+    assert "ComponentBodyScan(Comp, False, MaxOverall, Count, StepCount);" in body
     assert "If Count > 0 Then Result := FloatToJsonStr(CoordToMilsF(MaxOverall))" in body
     assert "Else Result := '';" in body
     assert "Comp.Height" not in body
@@ -73,7 +73,7 @@ def test_model_height_is_advertised_and_a_length():
 
 def test_get_components_reports_both_heights_and_picks_neither():
     body = load(_PCB)["PCB_GetComponents"]
-    assert "ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount)" in body
+    assert "ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount)" in body
     assert "HeightMils := ParamMils;" in body
     assert "HeightMils := MaxMils" not in body
     for key in ('"model_height_mils":', '"model_height_mils":null', '"body_count":',

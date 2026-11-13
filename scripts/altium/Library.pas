@@ -4849,10 +4849,12 @@ Var
     Txt : IPCB_Text;
     XOrg, YOrg : TCoord;
     Offset, Limit, Total, Emitted : Integer;
-    PadN, PrimN, TextN, BodyCount, DesigCount : Integer;
-    SumX, SumY, PadX, PadY, LayerId : Integer;
+    PadN, PrimN, TextN, BodyCount, StepCount, DesigCount : Integer;
+    SumX, SumY, PadX, PadY, LayerId, ModelKind : Integer;
     CenterX, CenterY, TxtX, TxtY : TCoord;
     TRect : TCoordRect;
+    Body : IPCB_ComponentBody;
+    BodyModel : IPCB_Model;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
     Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
@@ -4987,6 +4989,7 @@ Begin
                 PrimsJson := '[';
                 PrimN := 0;
                 BodyCount := 0;
+                StepCount := 0;
                 SeenKeys := '';
                 Try
                     GrpIter := Footprint.GroupIterator_Create;
@@ -4997,7 +5000,20 @@ Begin
                         While Prim <> Nil Do
                         Begin
                             If Prim.ObjectId = eComponentBodyObject Then
-                                Inc(BodyCount)
+                            Begin
+                                Inc(BodyCount);
+                                { T3DModelType 1 is a STEP model; 0 extruded,
+                                  2 cylinder, 3 sphere. }
+                                Body := Prim;
+                                BodyModel := Nil;
+                                Try BodyModel := Body.Model; Except BodyModel := Nil; End;
+                                ModelKind := -1;
+                                If BodyModel <> Nil Then
+                                Begin
+                                    Try ModelKind := BodyModel.ModelType; Except ModelKind := -1; End;
+                                End;
+                                If ModelKind = 1 Then Inc(StepCount);
+                            End
                             Else
                             Begin
                                 KindStr := 'track';
@@ -5125,7 +5141,8 @@ Begin
                     ',"texts":' + TextsJson +
                     ',"pad_center":' + CenterJson +
                     ',"designator_count":' + IntToStr(DesigCount) +
-                    ',"bodies":' + IntToStr(BodyCount) + '}';
+                    ',"bodies":' + IntToStr(BodyCount) +
+                    ',"step_bodies":' + IntToStr(StepCount) + '}';
                 Inc(Emitted);
             End;
             Inc(Total);

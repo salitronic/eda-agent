@@ -2181,6 +2181,96 @@ object StatusForm: TStatusForm
         Font.Style = []
         ParentFont = False
       end
+      object sep_Cfg10: TPanel
+        Left = 12
+        Top = 1176
+        Width = 340
+        Height = 1
+        BevelOuter = bvNone
+        Color = $00545454
+        TabOrder = 49
+      end
+      object lbl_CfgGrpModels: TLabel
+        Left = 12
+        Top = 1188
+        Width = 340
+        Height = 16
+        AutoSize = False
+        Caption = '3D MODELS'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00FFB363
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object lbl_CfgBasic3d: TLabel
+        Left = 12
+        Top = 1214
+        Width = 150
+        Height = 16
+        AutoSize = False
+        Caption = 'Basic 3D models'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -12
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object opt_Basic3dNotAllowed: TPanel
+        Left = 166
+        Top = 1210
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Not allowed'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 50
+        OnClick = opt_Basic3dNotAllowedClick
+      end
+      object opt_Basic3dAllowed: TPanel
+        Left = 262
+        Top = 1210
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Allowed'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 51
+        OnClick = opt_Basic3dAllowedClick
+      end
+      object lbl_CfgBasic3dHint: TLabel
+        Left = 12
+        Top = 1238
+        Width = 340
+        Height = 42
+        AutoSize = False
+        WordWrap = True
+        Caption = ''
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00A0A0A0
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+      end
     end
   end
   object pnl_Footer: TPanel

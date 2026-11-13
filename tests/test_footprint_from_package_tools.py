@@ -555,8 +555,12 @@ def test_the_3d_body_is_a_step_model_from_the_drawing_first(altium, monkeypatch)
 
 
 def test_with_no_step_writer_the_body_falls_back_to_an_extruded_box(altium, monkeypatch):
+    from eda_agent import preferences
     from eda_agent.design import models3d
     monkeypatch.setattr(models3d, "available_writers", lambda: [])
+    # The fallback is a basic 3D model, so the Config tab has to allow it.
+    monkeypatch.setattr(preferences, "basic_3d_models_allowed",
+                        lambda workspace=None: True)
     run, box = altium
     out = run(package=cases.soic8().to_dict())
     assert out["model_3d"]["kind"] == "extruded"
