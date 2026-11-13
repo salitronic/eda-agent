@@ -10613,7 +10613,10 @@ Var
     Processed : Integer;
 Begin
     SchLib := SchServer.GetCurrentSchDocument;
-    If SchLib = Nil Then
+    { A schematic SHEET in front is not a library: GetTargetLibComponent  }
+    { reads CurrentSchComponent, which a sheet does not have, and that    }
+    { stops the script past any Try. Every other caller checks the kind. }
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
         Exit;
