@@ -2878,7 +2878,8 @@ def register_library_tools(mcp):
                 library-part recipe (tool_guide). ``source``: {document, revision, page,
                 ref, url, path}; with path (the PDF), a page without
                 its land pattern is refused. bga/lga ``options``: letters "y"|"x", a1
-                "top_left"|..., as the ball map's top view; bga
+                "top_left"|..., as the ball map's top view; bga/lga
+                ``pins``: the printed ball count (required); bga
                 ``depopulated``: ball names left empty; ``vendor``
                 {land_diameter} builds the datasheet's land. ``custom_pads``
                 (number, may repeat; x, y, width, height, shape "circle"
@@ -3408,63 +3409,62 @@ def register_library_tools(mcp):
         replace_existing: bool = True,
         terminals: Optional[dict[str, Any]] = None,
         drawing: Optional[dict[str, Any]] = None,
+        groups: Optional[dict[str, list[dict[str, Any]]]] = None,
+        review: bool = True,
     ) -> dict[str, Any]:
         """Build a STEP model from the datasheet drawing and link it to a
         footprint in the open .PcbLib (brought forward itself).
 
-        For a part no package family covers (a connector, a LED with a
-        lens, a header, a switch): read each feature off the mechanical
-        drawing and give it as a primitive. lib_create_footprint_from_package
-        already models the standard families; an extruded body
-        (lib_add_footprint_bodies) is only the fallback.
-
-        Written with CadQuery (FreeCAD when EDA_AGENT_STEP_WRITER is
-        "freecad"); a solid's role sets its colour. Show it with
-        obj_switch_view (mode 3d, footprint_name, fit).
+        For a part no package family covers: read each feature off the
+        mechanical drawing as a primitive. lib_create_footprint_from_package
+        models the standard families. Written with CadQuery (FreeCAD when
+        EDA_AGENT_STEP_WRITER is "freecad", plain shapes only).
 
         Terminals come from the footprint: ``terminals`` puts one on every
-        land, where the land is. A flat gold, metal or ball box at the
-        board covering lands of two names (a row drawn as one strip) is
-        refused.
+        land. A flat terminal box covering lands of two names is refused.
 
         Args:
             footprint_name: the footprint to link the model to.
-            solids: primitives in mm, origin at the footprint origin, Z up
-                from the board (a top-side part sits on Z=0). Each has
-                ``kind`` and ``role`` (colour: body, metal, ceramic, ball,
-                white, lens, gold, pin1) and:
-                box ``x0 y0 z0 x1 y1 z1``; cylinder ``r`` with ``cx cy
-                z0 z1`` (vertical) or ``axis: "x"``, ``cy cz x0 x1``;
-                sphere ``cx cy cz r``; prism ``profile`` [[u, z], ...]
-                in the XZ plane swept from ``y0`` to ``y1`` (``axis``
-                "y"), or in the YZ plane swept from ``x0`` to ``x1``
-                (``axis`` "x").
-            source: the drawing the dimensions come from (document,
-                revision, page or figure). Required: a model is not built
-                from guesses.
-            output_dir: folder for the .step; empty puts it in a ``3D``
-                folder beside the active library.
-            replace_existing: remove the footprint's 3D bodies first
-                (default True, reported as ``replaced_bodies``).
-            terminals: ``{"kind": "plate", "height": mm}`` for a plate the
-                shape of each land (LGA, LCC, QFN), or ``{"kind": "ball",
-                "height": mm, "diameter": mm}`` for a seated solder ball
-                whose top is ``height`` above the board (BGA).
-            drawing: the outline drawing's totals as printed, in mm, each a
-                number or [min, max]: ``body_x``, ``body_y`` (the body
-                solids), ``height`` (the top; a maximum only is [0, max]) and, where
-                printed, ``span_x`` / ``span_y`` across the leads. The
+            solids: primitives in mm, footprint origin, Z up from the
+                board; each has ``kind`` and ``role`` (a colour, or
+                ``cut``). box ``x0 y0 z0 x1 y1 z1``; extrude ``outline``
+                [[x, y]...] ``z0 z1``; both take ``corner_r``, ``edge_r``
+                (top edges), ``taper`` (deg); cylinder ``r cx cy z0 z1``
+                (``axis`` "x": ``cy cz x0 x1``); sphere ``cx cy cz r``
+                (``clip_z0 clip_z1``); prism ``profile`` [[u, z]...] over
+                ``y0 y1`` (``axis`` "x": ``x0 x1``); text ``text size cx
+                cy z1`` (``angle bold``), dot ``cx cy r z1``: marks cut
+                flush into the top face at z1, inside its edges; instance
+                ``group rot dx dy dz``. A cut is taken from what it
+                overlaps, or from the ``cut_from`` names (``name``).
+                Roles: body metal ceramic ceramic_ivory ball white lens
+                gold pin1 nickel seal_ring silicon backside_coat
+                substrate pcb_green tin lcp_white; marks ink, laser.
+            source: the drawing (document, revision, page or figure).
+                Required: a model is not built from guesses.
+            output_dir: folder for the .step; empty: ``3D`` beside the
+                library.
+            replace_existing: remove the footprint's 3D bodies first.
+            terminals: ``{"kind": "plate", "height"}`` shaped as each land
+                (``chamfered`` {land: {size, corners}}), or ``{"kind":
+                "ball", "height": A1, "diameter"}``, seated from the
+                board to the package underside.
+            groups: name -> solids that instance solids place.
+            review: write a PNG from above and below.
+            drawing: the outline drawing's totals in mm, a number or
+                [min, max]: ``body_x``, ``body_y``, ``height`` (max only:
+                [0, max]), ``span_x`` / ``span_y`` where printed. The
                 model is refused when its extents differ.
 
         Returns:
             ``ok``, ``path``, ``writer``, ``height_mm``, ``drawing_dims``,
-            ``linked``, ``replaced_bodies``, ``terminals`` (count), or
+            ``linked``, ``replaced_bodies``, ``terminals``, ``review``, or
             ``ok: false`` with ``problems`` or ``reason``.
         """
         from ..design import models3d
 
         plan, problems = models3d.plan_from_solids(
-            solids, source) if solids or not terminals else (None, [])
+            solids, source, groups) if solids or not terminals else (None, [])
         if plan is None and (problems or not terminals):
             return {"ok": False, "problems": problems or ["no solids given"]}
         bridge = get_bridge()
@@ -3476,7 +3476,8 @@ def register_library_tools(mcp):
             extra, problems = models3d.terminal_solids(
                 lands, str(terminals.get("kind", "")),
                 float(terminals.get("height") or 0),
-                float(terminals.get("diameter") or 0))
+                float(terminals.get("diameter") or 0),
+                terminals.get("chamfered"))
             if problems:
                 return {"ok": False, "problems": problems}
             if plan is None:
@@ -3512,7 +3513,8 @@ def register_library_tools(mcp):
                        for ch in footprint_name) or "model"
         wrote = await asyncio.to_thread(
             models3d.write_step, plan, folder / f"{safe}.step",
-            name=footprint_name or safe)
+            name=footprint_name or safe,
+            review=folder / f"{safe}_review.png" if review else None)
         if not wrote["ok"]:
             return {"ok": False, "reason": wrote.get("reason"),
                     "tried": wrote.get("tried")}
@@ -3528,6 +3530,7 @@ def register_library_tools(mcp):
                 "height_mm": plan.height, "solids": len(plan.solids),
                 "source": source, "linked": linked,
                 "replaced_bodies": replaced, "terminals": placed,
+                **({"review": wrote["review"]} if wrote.get("review") else {}),
                 **({"drawing_dims": dims["rows"]} if dims is not None
                    else {"unchecked": check_skipped("model_body")})}
 
@@ -8036,6 +8039,7 @@ def register_library_tools(mcp):
     async def lib_get_pad_geometry(
         footprint_name: str,
         library_path: str = "",
+        compact: bool = False,
     ) -> dict[str, Any]:
         """Pad geometry of one PcbLib footprint as floats in mm, relative
         to the footprint origin (no integer-mil rounding, for datasheet
@@ -8045,6 +8049,8 @@ def register_library_tools(mcp):
             footprint_name: the footprint name in the library.
             library_path: optional .PcbLib path; defaults to the
                 focused library.
+            compact: pads as ``[name, x_mm, y_mm]`` rows only (a
+                thousand-ball BGA in a short reply).
 
         Returns:
             {name, description, library_path, pad_count, pads: [{
@@ -8067,10 +8073,16 @@ def register_library_tools(mcp):
             rule holds it); *_state is the cache's manual/valid/invalid.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        reply = await bridge.send_command_async(
             "library.get_pad_geometry",
             {"footprint_name": footprint_name, "library_path": library_path},
         )
+        if compact and isinstance(reply, dict) and isinstance(reply.get("pads"), list):
+            rows = [[p.get("name"), p.get("x_mm"), p.get("y_mm")]
+                    for p in reply["pads"] if isinstance(p, dict)]
+            reply = {k: v for k, v in reply.items() if k != "pads"}
+            reply.update(columns=["name", "x_mm", "y_mm"], pads=rows)
+        return reply
 
     async def _pad_rows_by_id(items: list, shared: dict):
         """Items that name their pads by ``id`` go to the id writer as

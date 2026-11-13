@@ -624,7 +624,14 @@ def _check_pin_count(c: _Ctx) -> None:
                         and str(rename[k]))
         else:
             count = len(names) - len(set(s.depopulated) & set(names))
-        if s.pins and s.pins != count:
+        if not s.pins:
+            # Without the printed count a depopulated grid is built full:
+            # a 153-ball part described as 14 x 14 came out with 196.
+            c.add("pin_count", "error",
+                  f"pins is required for {f}: give the ball count the "
+                  f"datasheet prints, so the {s.rows} x {s.cols} grid "
+                  f"({count} positions) is checked against it", [])
+        elif s.pins != count:
             c.add("pin_count", "error",
                   f"pins says {s.pins}, but a {s.rows} x {s.cols} grid less "
                   f"{len(s.depopulated)} depopulated position(s) has {count}",

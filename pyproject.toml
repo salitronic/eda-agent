@@ -87,6 +87,8 @@ kicad = []
 # body and says so. Kept out of the core install for its size.
 models3d = [
     "cadquery>=2.4",
+    # The review picture of a built model; CadQuery itself depends on it.
+    "vtk>=9.2",
 ]
 dev = [
     "pytest>=7.0",
