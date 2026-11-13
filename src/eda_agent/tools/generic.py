@@ -523,12 +523,11 @@ def register_generic_tools(mcp):
                 mils), "IslandAreaThreshold" (square mils),
                 "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
                 and the read-only "PourIndex,Poured"; nothing repours.
-                Lengths are decimal mils.
 
                 A board type returns EVERY primitive of that type
                 ("InComponent=false|InPolygon=false": free copper).
-                Mechanical-layer tracks have no net. Each property asked
-                is read per object. On a board only an exact Net=,
+                Mechanical-layer tracks have no net. On a board only an
+                exact Net=,
                 Component= or BoundsLeft/BoundsBottom (X1/Y1) is indexed;
                 any other condition (X=, Y=) is checked on every object
                 (Layer=: one layer's).
@@ -539,10 +538,9 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all. A number
-                property (length, angle, colour, ordinal) matches as a
-                number, '.' or ',' decimal: Location.Y=9000.0 meets 9000.
-                Text, names and designators match exactly.
+                "Text=VCC" or "Designator.Text=R1"; "" matches all.
+                Numbers match as numbers ('.' or ','): Location.Y=9000.0
+                meets 9000; text matches exactly.
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
                 character, case ignored), "Net!~VCC*" excludes by one. A
@@ -553,7 +551,8 @@ def register_generic_tools(mcp):
                 search early, and count is then the number returned.
 
         Returns:
-            Dictionary with "objects" array and "count"
+            "objects", "count"; "not_on_this_type": properties the type
+            lacks.
         """
         bad = filter_problem(filter)
         if bad:
