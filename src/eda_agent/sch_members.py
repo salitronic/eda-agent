@@ -77,6 +77,16 @@ ROWS: tuple[MemberRow, ...] = (
         note="a probe is a parameter set; its Style is measured on 26.11 only",
     ),
     MemberRow(
+        members=("Justification",),
+        types=("eLabel", "eNetLabel", "eParameter", "eDesignator", "eSheetName",
+               "eSheetFileName", "ePowerObject", "eCrossSheetConnector"),
+        sdk=("ISch_Label", "ISch_NetLabel", "ISch_Parameter", "ISch_Designator",
+             "ISch_SheetName", "ISch_SheetFileName", "ISch_PowerObject",
+             "ISch_CrossSheetConnector"),
+        measured=("25.8", "26.11"),
+        note="a text frame aligns with Alignment instead",
+    ),
+    MemberRow(
         members=("Width",),
         types=("ePort",),
         sdk=("ISch_Port",),

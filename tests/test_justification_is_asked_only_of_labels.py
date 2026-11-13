@@ -3,69 +3,42 @@
 # Copyright (c) 2026 Vincent Himpe
 """Justification is read and written only on the label types that have it.
 
-Issue #328.
-
 MEASURED on AD 25.8.1: a generic query of a schematic text frame asking
 for Justification raised "Undeclared identifier: Justification" in an
 error box no Try catches, and the polling loop stopped. A text frame has
-Alignment, not Justification. Both the getter and the setter now ask an
-allowlist first, like IsSolid beside them; any other type answers
-unreadable / not written.
+Alignment, not Justification. The member table (eda_agent.sch_members)
+holds the types that have it, and the generated SchMemberGate refuses the
+rest before the getter or setter touches the object.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-from tests.pascal_source import load
+from eda_agent import sch_members as sm
 
 _GENERIC = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas"
 _LABELS = ("eLabel", "eNetLabel", "eParameter", "eDesignator", "eSheetName",
            "eSheetFileName", "ePowerObject", "eCrossSheetConnector")
 
 
-def _units():
-    return load(_GENERIC, minimum=20)
+def test_the_table_holds_the_labels_and_no_text_frame():
+    types = sm.TYPES_BY_MEMBER["Justification"]
+    assert set(types) == set(_LABELS)
+    for t in ("eTextFrame", "eNote", "ePort", "ePin", "eLine", "eWire"):
+        assert t not in types, t
 
 
-def _branch(body: str) -> str:
-    at = body.index("PropName = 'Justification'")
-    end = body.index("End", at)
-    return body[at:end]
-
-
-def test_the_allowlist_holds_the_labels_and_no_text_frame():
-    gate = _units()["SchObjectHasJustification"]
+def test_the_generated_gate_carries_it():
+    text = _GENERIC.read_text(encoding="utf-8-sig")
+    gate = text[text.index("Function SchMemberGate("):]
+    gate = gate[:gate.index("{ END GENERATED SchMemberGate }")]
+    at = gate.index("(PropName = 'Justification')")
+    branch = gate[at:gate.index("Result := 1;", at)]
     for t in _LABELS:
-        assert "(Obj.ObjectId = %s)" % t in gate, t
-    for t in ("eTextFrame", "eNote", "ePort", "ePin", "eLine", "eWire",
-              "eRectangle", "eSheetEntry"):
-        assert "(Obj.ObjectId = %s)" % t not in gate, t
+        assert "(Id = %s)" % t in branch, t
 
 
-def test_the_getter_asks_first():
-    branch = _branch(_units()["GetSchProperty"])
-    assert (branch.index("If SchObjectHasJustification(Obj) Then")
-            < branch.index("Obj.Justification"))
-    assert "NotePropertyDiag('unreadable', PropName);" in branch
-
-
-def test_the_setter_asks_first():
-    branch = _branch(_units()["SetSchProperty"])
-    assert (branch.index("If SchObjectHasJustification(Obj) Then")
-            < branch.index("Obj.Justification :="))
-    assert "Matched := False;" in branch
-
-
-def test_no_unguarded_justification_is_left_in_the_generic_property_code():
-    for name in ("GetSchProperty", "SetSchProperty"):
-        body = _units()[name]
-        for m in re.finditer(r"Obj\.Justification", body):
-            before = body[max(0, m.start() - 160):m.start()]
-            assert "SchObjectHasJustification(Obj)" in before, name
-
-
-def test_the_gate_is_defined_before_its_callers():
-    raw = _GENERIC.read_text(encoding="utf-8-sig")
-    assert (raw.index("Function SchObjectHasJustification(")
-            < raw.index("Function GetSchProperty("))
+def test_a_text_frame_is_told_to_use_alignment():
+    why = sm.member_refusal("eTextFrame", "Justification")
+    assert why and "eLabel" in why
+    assert sm.member_refusal("eNetLabel", "Justification") is None
