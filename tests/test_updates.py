@@ -478,3 +478,15 @@ def test_a_set_aside_launcher_goes_once_nothing_holds_it(running_launcher, monke
     proc.wait()
     assert updates.remove_old_launchers() == 1
     assert not list(exe.parent.glob("*.old-*")) and exe.exists()
+
+
+@pytest.mark.parametrize("prefix, says", [
+    (r"D:\tools\pipx\venvs\eda-agent", "pipx upgrade eda-agent"),
+    ("/home/u/.local/share/pipx/venvs/eda-agent", "pipx upgrade eda-agent"),
+    (r"D:\tools\uv\tools\eda-agent", "uv tool upgrade eda-agent"),
+    ("/home/u/.local/share/uv/tools/eda-agent", "uv tool upgrade eda-agent"),
+    (r"C:\Python312", "python -m pip install --upgrade eda-agent"),
+])
+def test_a_tool_install_is_told_to_upgrade_with_its_own_tool(monkeypatch, prefix, says):
+    monkeypatch.setattr(updates.sys, "prefix", prefix)
+    assert says in updates._upgrade_how(from_index=True)

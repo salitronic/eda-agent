@@ -88,23 +88,33 @@ The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), s
 
 ## Installation
 
+From PyPI, into an environment of its own so its dependencies never clash with your other Python tools:
+
 ```bash
-git clone https://github.com/salitronic/eda-agent
-cd eda-agent
-python -m pip install -e .
+pipx install eda-agent
 ```
 
-or, from PyPI:
+or `uv tool install eda-agent` with [uv](https://docs.astral.sh/uv/). Either puts the `eda-agent` command on your `PATH` (run `pipx ensurepath` once if pipx says it is not). Without pipx or uv, plain pip works too:
 
 ```bash
 python -m pip install eda-agent
 ```
 
-A clone gets every commit as it lands and is updated with `server_update`; a PyPI install gets tagged releases and is updated with `python -m pip install --upgrade eda-agent`. Each looks for updates where it came from.
+That installs tagged releases. To run the latest commits on `main` instead, install from GitHub (no clone needed):
 
-Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
+```bash
+pipx install "git+https://github.com/salitronic/eda-agent"
+```
 
-Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. Everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`.
+or `python -m pip install "git+https://github.com/salitronic/eda-agent"`.
+
+Each copy looks for updates where it came from and, when there are some, says the command that upgrades it: `pipx upgrade eda-agent`, `uv tool upgrade eda-agent`, or `python -m pip install --upgrade` with the same source. A clone you install yourself is for working on eda-agent; see [Development](#development).
+
+Two optional parts are compiled, and come as ready-built wheels (no Rust needed): `eda-agent[route]` makes the board router's path search several times faster, and `eda-agent[render3d]` adds the path tracer for `pcb_render_3d`. Without them the same tools run on numpy and scipy.
+
+With pip, use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
+
+Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. For a pip install, everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`. A pipx or uv install has its own Python, so use `eda-agent` there.
 
 ### Claude Code
 
@@ -118,7 +128,7 @@ Adds `eda-agent` as an MCP server named `altium` to your Claude Code project con
 claude mcp add -s user altium eda-agent
 ```
 
-If `eda-agent` isn't on your `PATH` ("'eda-agent' is not recognized"), register it through Python instead. This needs no path at all:
+If `eda-agent` isn't on your `PATH` ("'eda-agent' is not recognized") after a pip install, register it through Python instead. This needs no path at all:
 
 ```bash
 claude mcp add -s user altium -- python -m eda_agent
@@ -162,7 +172,7 @@ The polling loop starts and your MCP client can drive Altium.
 
 ### Updating
 
-For as long as it runs, the server looks once an hour, in the background, whether this repository has new commits; the look is a cheap check that the branch has moved, and a full check follows only when it has. When there are new commits, the next tool reply says so and lists them, `app_ping` and `app_context` repeat it, and the assistant asks you before installing anything. A check that fails is reported once too. A copy installed with pip from this repository compares the commit it was installed from with the latest one; any other pip install compares its version with the one here. Either says how to upgrade. If you agree, `server_update(apply=True)` fast-forwards your clone, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
+For as long as it runs, the server looks once an hour, in the background, whether this repository has new commits; the look is a cheap check that the branch has moved, and a full check follows only when it has. When there are new commits, the next tool reply says so and lists them, `app_ping` and `app_context` repeat it, and the assistant asks you before installing anything. A check that fails is reported once too. A copy installed with pip from this repository compares the commit it was installed from with the latest one; any other pip install compares its version with the one here. Either says how to upgrade. If you agree, for a clone, `server_update(apply=True)` fast-forwards it, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
 
 ```bash
 eda-agent update          # shows what is new, then asks
@@ -267,7 +277,9 @@ managed library, and can publish, release and change parameters (only with
 `confirm=True`). Two routes: the workspace's own API, with
 `EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
 `EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+`EDA_AGENT_NEXAR_APP_ID`, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET` (a
+Nexar portal app refuses a sign-in without it) and `eda-agent altium365-login`
+once (`eda-agent altium365-logout` forgets it).
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
@@ -563,10 +575,16 @@ Coordinates throughout the API are in **mils** (1 mil = 0.0254 mm).
 
 ## Development
 
+To work on eda-agent, install a clone in editable mode, so the code you edit is the code that runs:
+
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/salitronic/eda-agent
+cd eda-agent
+python -m pip install -e ".[dev]"
 python -m pytest tests/ -q
 ```
+
+An editable install reads the code from the clone, but pip records the version when it installs: after a `git pull`, run `python -m pip install -e ".[dev]"` again, or `pip list` keeps showing the old version and new dependencies are missing. `server_update` does both for you. Keep the clone where it is; moving or deleting the folder breaks the install.
 
 The test suite includes a Python Altium simulator for end-to-end integration tests, Free Pascal cross-validation that runs the actual DelphiScript functions against Python mirrors, and a regression suite for previously encountered edge cases.
 
