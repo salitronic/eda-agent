@@ -261,7 +261,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
     if _FILTER_NAME.fullmatch(cond.strip()):
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
-                     "Name=Value conditions joined by |, each matched exactly "
+                     "Name=Value conditions joined by |, each matched exactly, "
+                     "a number property as a number "
                      "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
                      "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
@@ -534,8 +535,10 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
-                length matches as a number in mils ('.' or ',' decimal).
+                "Text=VCC" or "Designator.Text=R1"; "" matches all. A number
+                property (length, angle, colour, ordinal) matches as a
+                number, '.' or ',' decimal: Location.Y=9000.0 meets 9000.
+                Text, names and designators match exactly.
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
                 (a value that is not a number matches no < > <= >=);
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one

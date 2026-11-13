@@ -2264,26 +2264,16 @@ End;
 { without saying why. A comma is read as the decimal point, both sides are   }
 { vetted by IsFloatStr before the locale-safe StrToFloatDef parses them, so  }
 { nothing here can raise, and they must agree to half a coordinate unit      }
-{ (0.00005 mil). Every other property is still matched exactly.             }
+{ (0.00005 mil). An angle (Rotation=90.0 against 90) and a union index    }
+{ are numbers too. Every other property is still matched exactly.         }
 Function FilterValueMatchesPCB(PropName, Actual, Expected : String) : Boolean;
-Var
-    Want, Ch : String;
-    I : Integer;
 Begin
     Result := (Actual = Expected);
     If Result Then Exit;
-    If Not IsLengthProperty(PropName) Then Exit;
-    Want := '';
-    For I := 1 To Length(Expected) Do
-    Begin
-        Ch := Copy(Expected, I, 1);
-        If Ch = ',' Then Ch := '.';
-        Want := Want + Ch;
-    End;
-    Want := Trim(Want);
-    If Not IsFloatStr(Want) Then Exit;
-    If Not IsFloatStr(Actual) Then Exit;
-    Result := Abs(StrToFloatDef(Actual, 0) - StrToFloatDef(Want, 0)) < 0.00005;
+    If Not (IsLengthProperty(PropName) Or (PropName = 'Rotation')
+        Or (PropName = 'HoleRotation') Or (PropName = 'StartAngle')
+        Or (PropName = 'EndAngle') Or (PropName = 'UnionIndex')) Then Exit;
+    Result := FilterNumbersEqual(Actual, Expected);
 End;
 
 Function MatchesFilterPCB(Obj : IPCB_Primitive; FilterStr : String) : Boolean;

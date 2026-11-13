@@ -3812,6 +3812,50 @@ Begin
     RefreshSchObjectRender(Comp);
 End;
 
+{ Whether GetSchProperty reads PropName from a NUMBER: a length in mils   }
+{ (Location.X, Corner.Y, XSize, Vertex2.X ...) or an integer (a colour,   }
+{ an orientation, a font id, an enum ordinal). Only these compare as      }
+{ numbers in a filter; a text, a name or a designator stays exact.        }
+Function IsSchNumberProperty(PropName : String) : Boolean;
+Var
+    U : String;
+Begin
+    U := UpperCase(PropName);
+    Result := (U = 'LOCATION.X') Or (U = 'LOCATION.Y') Or
+        (U = 'CORNER.X') Or (U = 'CORNER.Y') Or
+        (U = 'CORNERXRADIUS') Or (U = 'CORNERYRADIUS') Or
+        (U = 'WIDTH') Or (U = 'PINLENGTH') Or
+        (U = 'CONNECTIONX') Or (U = 'CONNECTIONY') Or
+        (U = 'XSIZE') Or (U = 'YSIZE') Or (U = 'DISTANCEFROMTOP') Or
+        (U = 'BOUNDINGRECTANGLE.X1') Or (U = 'BOUNDINGRECTANGLE.Y1') Or
+        (U = 'BOUNDINGRECTANGLE.X2') Or (U = 'BOUNDINGRECTANGLE.Y2') Or
+        (U = 'COLOR') Or (U = 'AREACOLOR') Or (U = 'TEXTCOLOR') Or
+        (U = 'ORIENTATION') Or (U = 'JUSTIFICATION') Or
+        (U = 'FONTID') Or (U = 'TEXTFONTID') Or
+        (U = 'LINEWIDTH') Or (U = 'LINESTYLE') Or (U = 'STYLE') Or
+        (U = 'IOTYPE') Or (U = 'ALIGNMENT') Or (U = 'SIDE') Or
+        (U = 'OWNERPARTID') Or (U = 'OWNERPARTDISPLAYMODE') Or
+        (U = 'DISPLAYMODE') Or (U = 'DISPLAYMODECOUNT') Or
+        (U = 'CURRENTPARTID') Or (U = 'PARTCOUNT') Or
+        (U = 'OBJECTID') Or (U = 'VERTICESCOUNT');
+    { Vertex.1.X, Vertex2.Y, VertexLast.X: one coordinate each. Vertices }
+    { (the whole x,y;x,y list) is a text and stays exact.                }
+    If (Not Result) And (Copy(U, 1, 6) = 'VERTEX') Then
+        Result := (Copy(U, Length(U) - 1, 2) = '.X') Or
+            (Copy(U, Length(U) - 1, 2) = '.Y');
+End;
+
+{ Whether one filter value matches what GetSchProperty read: exactly, or, }
+{ for a property read from a number, as that number. Location.Y=9000.0    }
+{ matched nothing when the getter read 9000, and said nothing either.     }
+Function FilterValueMatchesSch(PropName, Actual, Expected : String) : Boolean;
+Begin
+    Result := (Actual = Expected);
+    If Result Then Exit;
+    If Not IsSchNumberProperty(PropName) Then Exit;
+    Result := FilterNumbersEqual(Actual, Expected);
+End;
+
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
 Var
     Remaining, Condition, PropName, Expected, Actual, Op : String;
@@ -3864,7 +3908,8 @@ Begin
 
         // Compare
         Actual := GetSchProperty(Obj, PropName);
-        If Not FilterOpHolds(Op, Actual, Expected, Actual = Expected) Then
+        If Not FilterOpHolds(Op, Actual, Expected,
+                FilterValueMatchesSch(PropName, Actual, Expected)) Then
         Begin
             Result := False;
             Exit;

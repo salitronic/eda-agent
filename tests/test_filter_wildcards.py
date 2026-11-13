@@ -136,6 +136,7 @@ def test_wildcards_match_under_free_pascal(tmp_path):
         _routine("Utils.pas", "FilterOpPos"),
         _routine("Utils.pas", "FilterOpText"),
         _routine("Utils.pas", "FilterWildMatch"),
+        _routine("Utils.pas", "FilterNumbersEqual"),
         _routine("Utils.pas", "FilterOpHolds"),
         _routine("PCBGeneric.pas", "IsLengthProperty"),
         _routine("PCBGeneric.pas", "FilterValueMatchesPCB"),

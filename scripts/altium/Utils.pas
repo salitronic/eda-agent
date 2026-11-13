@@ -1208,6 +1208,41 @@ Begin
     Result := PPos > PLen;
 End;
 
+{ FilterNumbersEqual - whether two filter values are the same NUMBER.    }
+{ A comma is read as the decimal point and spaces are ignored; both must  }
+{ be numbers (IsFloatStr, so nothing here can raise) and agree to half a  }
+{ unit in the fourth decimal (0.00005), the finest a length is printed    }
+{ in. So 9000, 9000.0, 9000,00 and 09000 are one value; abc is no number  }
+{ and equals nothing. Used by the PCB and schematic matchers for          }
+{ properties they KNOW are numbers (a length, a colour, an ordinal):      }
+{ applied to a text it would make a designator 01 equal 1.                }
+Function FilterNumbersEqual(Actual, Expected : String) : Boolean;
+Var
+    A, E, Ch : String;
+    I : Integer;
+Begin
+    Result := False;
+    A := '';
+    For I := 1 To Length(Actual) Do
+    Begin
+        Ch := Copy(Actual, I, 1);
+        If Ch = ',' Then Ch := '.';
+        A := A + Ch;
+    End;
+    E := '';
+    For I := 1 To Length(Expected) Do
+    Begin
+        Ch := Copy(Expected, I, 1);
+        If Ch = ',' Then Ch := '.';
+        E := E + Ch;
+    End;
+    A := Trim(A);
+    E := Trim(E);
+    If Not IsFloatStr(A) Then Exit;
+    If Not IsFloatStr(E) Then Exit;
+    Result := Abs(StrToFloatDef(A, 0) - StrToFloatDef(E, 0)) < 0.00005;
+End;
+
 { FilterOpHolds - whether Actual stands in relation Op to Expected. Equal }
 { is the caller's own equality (a PCB length matches within half a unit). }
 { < > <= >= compare numbers ('.' or ',' decimal); a value that is not a   }
