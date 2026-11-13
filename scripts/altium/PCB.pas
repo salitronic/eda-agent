@@ -5348,22 +5348,19 @@ End;
 { rest of the answer stands; read_errors counts them.                         }
 {..............................................................................}
 { BoardLayerStackCount - how many layer stacks the board has: one, or one per  }
-{ kind of board region on a rigid-flex board (#346). Read from the Layer      }
-{ Stack Manager's provider; below AD 22 its calls halt the script (see        }
-{ LayerStackManagerRefusal), so there the answer is 1.                        }
+{ kind of board region on a rigid-flex board. Read off the board's master     }
+{ stack, so a read leaves the Layer Stack Manager's cached provider alone.    }
 Function BoardLayerStackCount(Board : IPCB_Board) : Integer;
 Var
-    LSM, LSP : Variant;
-    Code : Integer;
+    MLS : IPCB_MasterLayerStack;
 Begin
     Result := 1;
-    Code := AltiumVersionCode(0);
-    If (Code > 0) And (Code < 2200) Then Exit;
-    LSM := LayerStackManager;
-    { the provider is cached: dropped first so the count follows the board }
-    LSM.RemoveLayerStackProvider(Board);
-    LSP := GetLayerStackProvider(Board);
-    Result := LSP.GetLayerStacksCount;
+    Try
+        MLS := Board.MasterLayerStack;
+        If MLS <> Nil Then Result := MLS.SubstackCount;
+    Except
+        Result := 1;
+    End;
     If Result < 1 Then Result := 1;
 End;
 
@@ -5430,7 +5427,7 @@ Begin
         { ("Undeclared identifier: Name", AD 26.11), so the profile is asked  }
         { for its record on each copper layer, in every substack: a          }
         { rigid-flex board has one stack per kind of board region, each with }
-        { its own lines (#346). A substack answers for every copper layer of }
+        { its own lines. A substack answers for every copper layer of        }
         { the board, its own or not; stack_index says which one a row is.    }
         Traces := '';
         For K := 0 To SubCount - 1 Do
@@ -5844,7 +5841,7 @@ Begin
         Inc(Order);
         L := MLS.Next(eLayerClass_Physical, L);
     End;
-    { the master stack only; a rigid-flex board has more (#346) }
+    { the master stack only; a rigid-flex board has more }
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonInt('style', MLS.LayerStackStyle) + ','
         + JsonInt('stacks_count', BoardLayerStackCount(Board)) + ','
@@ -30676,7 +30673,7 @@ Begin
 
         { The pairs are the board's own (Board.LayerPair): the default      }
         { stack's list has the right count on a rigid-flex board but answers }
-        { its own first pair again for a pair of another stack (#347). Name, }
+        { its own first pair again for a pair of another stack. Name,        }
         { micro via and back drill come from the stack's pair on the same    }
         { two layers, when it has one. start / stop are the layer ids; the   }
         { name is added when one of the stack's layers carries that id.     }

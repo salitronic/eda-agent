@@ -2892,9 +2892,9 @@ def register_pcb_tools(mcp):
                 pcb_sync_stack_manager brings it back in step.
 
         A rigid-flex board has one stack per kind of board region. The
-        top-level layers and spans are the first stack's; ``stacks`` gives
-        every stack with its own layers and spans, and ``branches`` which
-        stack each section of the board uses.
+        top-level layers and spans are the first stack's; with more than one
+        stack, ``stacks`` gives every stack with its own layers and spans, and
+        ``branches`` which stack each section of the board uses.
 
         Returns:
             ``layers`` (name, guid, type_id, type, material,
@@ -2915,26 +2915,26 @@ def register_pcb_tools(mcp):
         if model not in ("", "xml", "records"):
             return {"ok": False,
                     "reason": 'include_model is "", "xml" or "records"'}
-        # The model holds every stack (#346): it is always read as XML, and
-        # handed back only when it was asked for.
+        # The model holds every stack whole. A board with one stack needs
+        # none of it, so it is read only when asked for or when the reply
+        # counts more than one stack.
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.layer_stack_manager", {"include_model": "records" if model == "records" else "xml"})
-        if isinstance(result, dict) and "layers" in result:
-            xml = result.pop("model", "") if model != "records" else ""
-            if model == "records":
-                stacks, xml = await _stack_model(bridge)
-            else:
+        params: dict[str, Any] = {"include_model": model} if model else {}
+        result = await bridge.send_command_async("pcb.layer_stack_manager", params)
+        multi = isinstance(result, dict) and int(result.get("stacks_count") or 1) > 1
+        if multi and "layers" in result:
+            stacks = None
+            if model == "xml":
                 try:
-                    stacks = read_stack_model(xml) if xml else None
+                    stacks = read_stack_model(result.get("model") or "")
                 except (ValueError, SyntaxError):
                     stacks = None
+            else:
+                stacks, _ = await _stack_model(bridge)
             if stacks is not None:
                 result["stacks"] = stacks["stacks"]
                 result["branches"] = stacks["branches"]
                 drill_pair_stacks(result.get("drill_pairs") or [], stacks["stacks"])
-            if model == "xml":
-                result["model"] = xml
         if compare and isinstance(result, dict) and "layers" in result:
             physical = await bridge.send_command_async("pcb.physical_stack", {})
             diff = stack_manager_out_of_step(result, physical)

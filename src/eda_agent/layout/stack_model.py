@@ -6,7 +6,7 @@
 A rigid-flex board has more than one layer stack: one per kind of board
 region. Each stack has its own layers, via spans, drill spans and its own
 transmission line in every impedance profile. The script API reaches only
-the first stack's layers and spans (#346): a stack's ``Layers`` collection
+the first stack's layers and spans: a stack's ``Layers`` collection
 lists every layer of the board, and a layer's id stops the script. The
 manager's model (pcb.layer_stack_manager include_model="xml", the
 StackupDocument XML) holds each stack whole, so the stacks are read from it.
@@ -20,7 +20,8 @@ import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 #: The manager's layer type ids, named as pcb.layer_stack_manager names them
-#: (PCB.pas LsmTypeName), plus the two flex layer types.
+#: (PCB.pas LsmTypeName). A flex stack's coverlay is a solder mask layer. Any
+#: other id is "other", with the id itself in type_id.
 LAYER_TYPES = {
     "f4eccd87-2cfb-4f37-be50-4f3a272b4d01": "copper",
     "136c62ef-1fa6-4897-ae71-7e797b632b92": "core",
@@ -28,7 +29,6 @@ LAYER_TYPES = {
     "92b02d5e-8d69-48a8-880e-ac4b77db099d": "dielectric",
     "7b384237-13d8-4318-8bcb-accd8d9a51e7": "solder_mask",
     "c7ef040e-8d00-490b-b00c-a7e7823ff174": "overlay",
-    "8de65238-89ed-47c5-bbf8-0f6f02d1899c": "coverlay",
 }
 
 #: A length in the model: a number and a unit.
@@ -84,6 +84,7 @@ def _layer(e: ET.Element) -> dict[str, Any]:
         "name": e.get("Name", ""),
         "guid": _key(e.get("Id")),
         "type": LAYER_TYPES.get(_key(e.get("TypeId")), "other"),
+        "type_id": _key(e.get("TypeId")),
         "enabled": _flag(e, "IsEnabled", True),
         "shared": _flag(e, "IsShared", False),
         "material": props.get("Material", ""),
@@ -196,7 +197,7 @@ def drill_pair_stacks(pairs: list[dict[str, Any]],
     A pair's layers are matched to a span's start and stop layer by name,
     either way round. A pair no span covers gets an empty list. A pair the
     script could not name (the default stack's list has no pair of another
-    stack, #347) takes the name of the span that covers it.
+    stack) takes the name of the span that covers it.
     """
     for pair in pairs:
         ends = {pair.get("start_layer_name") or "", pair.get("stop_layer_name") or ""}

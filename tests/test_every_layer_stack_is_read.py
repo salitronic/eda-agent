@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
-"""A rigid-flex board's every layer stack is read, not only the first (#346).
+"""A rigid-flex board's every layer stack is read, not only the first.
 
 A rigid-flex board has one layer stack per kind of board region, each with
 its own layers, via spans and impedance lines. The stack readers reported
 the first stack only, and pcb.layer_stack_manager's drill pairs answered
-the first stack's pair again for a pair of another stack (#347).
+the first stack's pair again for a pair of another stack.
 
 Measured on AD 25.8.1, two stacks: the board's substacks
 (MasterLayerStack.GetState_Substacks(K)) each answer their own impedance
@@ -30,7 +30,7 @@ _PCB = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "PCB.pas"
 _NS = "http://altium.com/ns/LayerStackManager"
 _COPPER = "f4eccd87-2cfb-4f37-be50-4f3a272b4d01"
 _CORE = "136c62ef-1fa6-4897-ae71-7e797b632b92"
-_COVER = "8de65238-89ed-47c5-bbf8-0f6f02d1899c"
+_COVER = "7b384237-13d8-4318-8bcb-accd8d9a51e7"  # solder mask: a coverlay
 
 
 def _layer(guid, type_id, name, thick="1.4mil", enabled=None):
@@ -88,13 +88,21 @@ def test_every_stack_with_its_own_layers_and_spans():
     assert [l["name"] for l in flex["layers"]] == [
         "Top Coverlay", "Mid-Layer 1", "Core 2", "Mid-Layer 2"]
     assert (rigid["region"], flex["region"]) == (False, True)
-    assert flex["layers"][0]["type"] == "coverlay"
+    assert flex["layers"][0]["type"] == "solder_mask"
+    assert flex["layers"][0]["type_id"] == _COVER
     assert rigid["layers"][2]["enabled"] is False
     assert rigid["via_spans"] == [{"name": "Thru 1:4", "type": "ThruVia",
                                    "start_layer": "Top Layer", "stop_layer": "Bottom Layer"}]
     assert flex["via_spans"][0]["name"] == "Flex thru"
     assert (flex["via_spans"][0]["start_layer"], flex["via_spans"][0]["stop_layer"]) == (
         "Mid-Layer 1", "Mid-Layer 2")
+
+
+def test_an_unknown_layer_type_is_other_with_its_id():
+    odd = "b0827674-798c-4cf8-807c-8e6c2a11c145"
+    m = sm.read_stack_model(MODEL.replace(_COVER, "{%s}" % odd.upper()))
+    top = m["stacks"][1]["layers"][0]
+    assert (top["type"], top["type_id"]) == ("other", odd)
 
 
 def test_lengths_are_mils_whatever_the_unit():
@@ -175,16 +183,16 @@ def test_impedance_walks_every_substack_and_says_which():
     assert "JsonInt('stack_index', K)" in body
 
 
-def test_the_stack_count_is_defined_before_its_callers_and_gated():
+def test_the_stack_count_is_defined_before_its_callers_and_read_off_the_board():
     text = _PCB.read_text(encoding="utf-8")
     at = text.index("Function BoardLayerStackCount(")
     assert at < text.index("Function PCB_GetImpedanceProfiles(")
     assert at < text.index("Function PCB_PhysicalStack(")
     body = load(_PCB)["BoardLayerStackCount"]
-    # below AD 22 the manager's calls halt the script
-    assert "If (Code > 0) And (Code < 2200) Then Exit;" in body
-    assert body.index("RemoveLayerStackProvider(Board)") < body.index("GetLayerStackProvider(Board)")
-    assert "Result := LSP.GetLayerStacksCount;" in body
+    # read off the board: the manager's cached provider is left alone, and
+    # nothing here halts the script on an older build
+    assert "Result := MLS.SubstackCount;" in body
+    assert "LayerStackProvider" not in body and "AltiumVersionCode" not in body
 
 
 def test_physical_stack_says_how_many_stacks_there_are():
@@ -215,9 +223,10 @@ class _Mcp:
 
 
 class _Bridge:
-    def __init__(self, refuse_manager=False):
+    def __init__(self, refuse_manager=False, stacks=2):
         self.sent = []
         self.refuse_manager = refuse_manager
+        self.stacks = stacks
 
     async def send_command_async(self, command, params=None, timeout=None):
         self.sent.append((command, dict(params or {})))
@@ -225,11 +234,12 @@ class _Bridge:
             if self.refuse_manager:
                 from eda_agent.bridge.exceptions import AltiumCommandError
                 raise AltiumCommandError("not on this version", code="UNSUPPORTED_VERSION")
-            reply = {"layers": [], "drill_pairs": [
+            reply = {"layers": [], "stacks_count": self.stacks, "drill_pairs": [
                 {"name": "Thru 1:4", "start_layer_name": "Top Layer", "stop_layer_name": "Bottom Layer"},
                 {"name": "", "start_layer_name": "Mid-Layer 1", "stop_layer_name": "Mid-Layer 2"}]}
-            reply["model"] = (MODEL if params.get("include_model") == "xml"
-                              else "|RECORDS=1|")
+            if params.get("include_model"):
+                reply["model"] = (MODEL if params["include_model"] == "xml"
+                                  else "|RECORDS=1|")
             return reply
         if command == "pcb.get_impedance_profiles":
             return {"profiles": _rows()}
@@ -246,17 +256,27 @@ def _tool(monkeypatch, name, bridge, **kw):
 def test_the_manager_reply_lists_every_stack_and_drops_the_model(monkeypatch):
     bridge = _Bridge()
     out = _tool(monkeypatch, "pcb_layer_stack_manager", bridge, compare=False)
-    assert bridge.sent == [("pcb.layer_stack_manager", {"include_model": "xml"})]
+    assert bridge.sent == [("pcb.layer_stack_manager", {}),
+                           ("pcb.layer_stack_manager", {"include_model": "xml"})]
     assert [s["name"] for s in out["stacks"]] == ["Rigid", "Flex"]
     assert out["branches"][0]["sections"][1]["stacks"] == ["Flex"]
     assert [p["stacks"] for p in out["drill_pairs"]] == [["Rigid"], ["Flex"]]
     assert "model" not in out
 
 
+def test_one_stack_reads_no_model(monkeypatch):
+    bridge = _Bridge(stacks=1)
+    out = _tool(monkeypatch, "pcb_layer_stack_manager", bridge, compare=False)
+    assert bridge.sent == [("pcb.layer_stack_manager", {})]
+    assert "stacks" not in out and "model" not in out
+
+
 def test_an_asked_for_model_is_still_handed_back(monkeypatch):
-    out = _tool(monkeypatch, "pcb_layer_stack_manager", _Bridge(),
+    bridge = _Bridge()
+    out = _tool(monkeypatch, "pcb_layer_stack_manager", bridge,
                 include_model="xml", compare=False)
     assert out["model"] == MODEL and len(out["stacks"]) == 2
+    assert len(bridge.sent) == 1
     bridge = _Bridge()
     out = _tool(monkeypatch, "pcb_layer_stack_manager", bridge,
                 include_model="records", compare=False)
