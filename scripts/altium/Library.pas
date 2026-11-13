@@ -20257,6 +20257,17 @@ End;
 { With no usable quote pair only letters, digits, '_' and '$' are allowed.    }
 { Callers pass only names the DbLib itself declares, or that ADO reported, so }
 { this is the second check, not the first.                                    }
+{ The quote a table name takes: the DbLib's own, or none when the DbLib says   }
+{ QuoteTableNames=0. Altium then sends the name bare, and a database that   }
+{ reads its quote characters literally (MySQL over ODBC) refuses a quoted   }
+{ one. No quote puts DbLibQuoteIdent in its plain mode, which takes only a  }
+{ plain identifier.                                                         }
+Function DbLibTableQuote(Lines : TStringList; Q : String) : String;
+Begin
+    Result := Q;
+    If Trim(DbLibGlobalValue(Lines, 'QuoteTableNames')) = '0' Then Result := '';
+End;
+
 Function DbLibQuoteIdent(Name : String; LeftQ : String; RightQ : String) : String;
 Var
     I : Integer;
@@ -20604,7 +20615,7 @@ Begin
                 If Connected Then
                 Begin
                     QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
-                        Table, LeftQ, RightQ);
+                        Table, DbLibTableQuote(Lines, LeftQ), DbLibTableQuote(Lines, RightQ));
                     If QTable = '' Then
                         QueryErr := 'TABLE_NAME_REFUSED'
                     Else
@@ -20747,7 +20758,7 @@ Begin
                 And (Enabled <> '1') Then
                 Continue;
             QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
-                Table, LeftQ, RightQ);
+                Table, DbLibTableQuote(Lines, LeftQ), DbLibTableQuote(Lines, RightQ));
             If QTable = '' Then
             Begin
                 If FailedJson <> '' Then FailedJson := FailedJson + ',';
@@ -21156,7 +21167,7 @@ Begin
         If ErrCode = '' Then
         Begin
             QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Declared, 'SchemaName'),
-                Declared, LeftQ, RightQ);
+                Declared, DbLibTableQuote(Lines, LeftQ), DbLibTableQuote(Lines, RightQ));
             If QTable = '' Then
             Begin
                 ErrCode := 'TABLE_NAME_REFUSED';

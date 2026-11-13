@@ -100,7 +100,8 @@ _ROUTINES = [
     "DbLibDoubled", "DbLibIsSecretKey", "DbLibRedactConnStr", "DbLibConnHasSecret",
     "DbLibConnValue", "DbLibSetConnValue", "DbLibIsJetOrAce", "DbLibIsAbsolutePath",
     "DbLibConnectionForRead", "DbLibConnKind", "DbLibIsPlainIdentChar",
-    "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField", "DbLibKeyField",
+    "DbLibTableQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
+    "DbLibKeyField",
     "DbLibFootprintFields",
 ]
 
@@ -243,6 +244,20 @@ def test_only_a_name_that_cannot_close_its_quote_reaches_a_select(tmp_path):
         ("DbLibQualifiedTable('', 'ICs', '[', ']')", "[ICs]"),
         ("'<' + DbLibQualifiedTable('d]bo', 'ICs', '[', ']') + '>'", "<>"),
     ])
+
+
+def test_quote_table_names_off_sends_the_table_name_bare(tmp_path):
+    out = _run(tmp_path, [
+        "  WriteLn(DbLibQualifiedTable('', 'ICs', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')));",
+        "  L.Insert(3, 'QuoteTableNames=0');",
+        "  WriteLn(DbLibQualifiedTable('', 'ic', DbLibTableQuote(L, '}'), DbLibTableQuote(L, '{')));",
+        "  WriteLn('<' + DbLibQualifiedTable('', 'Part List', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')) + '>');",
+        "  L.Delete(3); L.Insert(3, 'QuoteTableNames=1');",
+        "  WriteLn(DbLibQualifiedTable('', 'ICs', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')));",
+    ])
+    # unset and 1 quote; 0 sends a plain name bare and refuses one that
+    # would need quoting
+    assert out == ["[ICs]", "ic", "<>", "[ICs]"]
 
 
 def test_access_is_opened_read_only_and_nothing_else_is_touched(tmp_path):
