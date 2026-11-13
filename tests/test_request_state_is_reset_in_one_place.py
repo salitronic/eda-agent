@@ -33,13 +33,14 @@ SESSION = {
     "PumpInTick", "PumpFinalised", "PumpQuitting", "PumpTicked",
     # Config tab settings.
     "SavingOff", "ValueFormat", "ValueUnit", "EditsMode", "DeletingMode",
-    "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode", "ChecksOff",
+    "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode", "UsageMode", "RoutingMode", "ChecksOff",
     "LengthUnits",
     # Save passes and the documents edited this session.
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
-    "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "DocOwners", "CastErrorCount",
+    "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial",
+    "CommandSerial", "LoopStartTick", "DocOwners", "CastErrorCount",
     "LastCreatedLibComponent", "LastCreatedLibComponentName", "LastCreatedLibDocAddr",
     "JsonIdxDoc0", "JsonIdxDoc1", "JsonIdxDoc2", "JsonIdxDoc3",
     "JsonIdx0", "JsonIdx1", "JsonIdx2", "JsonIdx3", "JsonIdxNext",

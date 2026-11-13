@@ -25828,6 +25828,56 @@ Begin
     Result := Body;
 End;
 
+{ Pieces of a reply joined with commas, two neighbours at a time: a script  }
+{ copies a whole string at every append, so adding piece after piece to   }
+{ one string copies the reply so far once per piece, and on a board of     }
+{ ten thousand objects that copying was most of the read.                  }
+Function LmJoinPieces(Pieces : TStringList) : String;
+Var
+    Cur, Nxt : TStringList;
+    R, I, N : Integer;
+Begin
+    Cur := TStringList.Create;
+    N := Pieces.Count;
+    For I := 0 To N - 1 Do Cur.Add(Pieces[I]);
+    For R := 1 To 30 Do
+    Begin
+        N := Cur.Count;
+        If N <= 1 Then Break;
+        Nxt := TStringList.Create;
+        I := 0;
+        While I < N Do
+        Begin
+            If I + 1 < N Then Nxt.Add(Cur[I] + ',' + Cur[I + 1])
+            Else Nxt.Add(Cur[I]);
+            I := I + 2;
+        End;
+        Cur.Free;
+        Cur := Nxt;
+    End;
+    Result := '';
+    If Cur.Count > 0 Then Result := Cur[0];
+    Cur.Free;
+End;
+
+{ A layer's name, looked up once per read: a call to a script function    }
+{ costs tens of microseconds, and a board read names a layer for each of   }
+{ tens of thousands of objects, so what repeats is asked once and kept.    }
+Function LmLayerNameCached(Lyr : TLayer; Keys : TStringList; Names : TStringList) : String;
+Var
+    K : Integer;
+Begin
+    K := Keys.IndexOf(IntToStr(Lyr));
+    If K >= 0 Then
+    Begin
+        Result := Names[K];
+        Exit;
+    End;
+    Result := LayerDisplayName(Lyr);
+    Keys.Add(IntToStr(Lyr));
+    Names.Add(Result);
+End;
+
 Function LmComponentsSection(Board : IPCB_Board) : String;
 Var
     Iter : IPCB_BoardIterator;
@@ -25842,8 +25892,14 @@ Var
     Items, Prims, Bodies, LayerName, Entry : String;
     Locked : Boolean;
     Overall, Standoff : Integer;
+    Pieces, LayerKeys, LayerNames : TStringList;
+    LyrKey : String;
+    K : Integer;
 Begin
     Items := '';
+    Pieces := TStringList.Create;
+    LayerKeys := TStringList.Create;
+    LayerNames := TStringList.Create;
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
@@ -25895,8 +25951,22 @@ Begin
                 Child := GIter.FirstPCBObject;
                 While Child <> Nil Do
                 Begin
+                    { Named once per layer: a footprint has many children, }
+                    { and only its mechanical ones are kept.                }
                     LayerName := '';
-                    Try LayerName := LayerDisplayName(Child.Layer); Except LayerName := ''; End;
+                    Try
+                        LyrKey := IntToStr(Child.Layer);
+                        K := LayerKeys.IndexOf(LyrKey);
+                        If K >= 0 Then LayerName := LayerNames[K]
+                        Else
+                        Begin
+                            LayerName := LayerDisplayName(Child.Layer);
+                            LayerKeys.Add(LyrKey);
+                            LayerNames.Add(LayerName);
+                        End;
+                    Except
+                        LayerName := '';
+                    End;
                     If Copy(LayerName, 1, 10) = 'Mechanical' Then
                     Begin
                         Entry := '';
@@ -25932,8 +26002,7 @@ Begin
             End;
 
             BR := Comp.BoundingRectangle;
-            If Items <> '' Then Items := Items + ',';
-            Items := Items + '{"ref":"' + EscapeJsonString(Comp.Name.Text)
+            Entry := '{"ref":"' + EscapeJsonString(Comp.Name.Text)
                 + '","footprint":"' + EscapeJsonString(Comp.Pattern)
                 + '","comment":"' + EscapeJsonString(Comp.Comment.Text)
                 + '","x":' + IntToStr(Comp.X) + ',"y":' + IntToStr(Comp.Y)
@@ -25944,11 +26013,16 @@ Begin
                 + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
                 + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']'
                 + ',"mech":[' + Prims + '],"bodies":[' + Bodies + ']}';
+            Pieces.Add(Entry);
             Comp := Iter.NextPCBObject;
         End;
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    Items := LmJoinPieces(Pieces);
+    Pieces.Free;
+    LayerKeys.Free;
+    LayerNames.Free;
     Entry := '"components":[' + Items + ']';
     Result := Entry;
 End;
@@ -25995,8 +26069,10 @@ Var
     Idx, Emitted, I : Integer;
     Items, Copper, HoleStr, Mode, Body : String;
     More, Simple : Boolean;
+    Pieces : TStringList;
 Begin
     Items := '';
+    Pieces := TStringList.Create;
     Idx := 0;
     Emitted := 0;
     More := False;
@@ -26075,8 +26151,7 @@ Begin
                     Simple := (Pad.Mode = ePadMode_Simple);
                     Mode := IntToStr(Pad.Mode);
 
-                    If Items <> '' Then Items := Items + ',';
-                    Items := Items + '{"comp":"' + EscapeJsonString(LmOwner(Pad))
+                    Pieces.Add('{"comp":"' + EscapeJsonString(LmOwner(Pad))
                         + '","name":"' + EscapeJsonString(Pad.Name)
                         + '","x":' + IntToStr(Pad.X) + ',"y":' + IntToStr(Pad.Y)
                         + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
@@ -26094,7 +26169,7 @@ Begin
                         + ',"hole_type":"' + HoleStr
                         + '","hole_width":' + IntToStr(Pad.HoleWidth)
                         + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
-                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + LmMaskJson(Pad) + '}';
+                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + LmMaskJson(Pad) + '}');
                     Inc(Emitted);
                 End;
                 Inc(Idx);
@@ -26106,6 +26181,8 @@ Begin
     Finally
         SigLayers.Free;
     End;
+    Items := LmJoinPieces(Pieces);
+    Pieces.Free;
     Body := '"pads":[' + Items + '],"offset":' + IntToStr(Offset)
         + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
     Result := Body;
@@ -26157,7 +26234,66 @@ End;
 Function LmCopperKindKnown(Kind : String) : Boolean;
 Begin
     Result := (Kind = 'track') Or (Kind = 'arc') Or (Kind = 'via')
-        Or (Kind = 'region') Or (Kind = 'fill') Or (Kind = 'polygon');
+        Or (Kind = 'region') Or (Kind = 'fill') Or (Kind = 'polygon')
+        Or (Kind = 'grouped');
+End;
+
+{ A region's outline and holes from one walk of its shape where it has no }
+{ arc: its vertices are the outline then. With an arc, the flattened       }
+{ contour and the shape, as LmRegionShape gives them.                      }
+Function LmRegionShapeFast(Region : IPCB_Region) : String;
+Var
+    Seg : TPolySegment;
+    Contour : IPCB_Contour;
+    I, N, H, NH, Ix, Iy : Integer;
+    Pts, Holes : String;
+    HasArc : Boolean;
+Begin
+    N := 0;
+    Try N := Region.ShapeSegmentCount; Except N := 0; End;
+    If N <= 0 Then
+    Begin
+        Result := LmRegionShape(Region);
+        Exit;
+    End;
+    Pts := '';
+    HasArc := False;
+    Try
+        For I := 0 To N - 1 Do
+        Begin
+            Seg := Region.ShapeSegments(I);
+            If Seg.Kind <> ePolySegmentLine Then
+            Begin
+                HasArc := True;
+                Break;
+            End;
+            Ix := Seg.vx;
+            Iy := Seg.vy;
+            If Pts <> '' Then Pts := Pts + ',';
+            Pts := Pts + '[' + IntToStr(Ix) + ',' + IntToStr(Iy) + ']';
+        End;
+    Except
+        HasArc := True;
+    End;
+    If HasArc Then
+    Begin
+        Result := LmRegionShape(Region);
+        Exit;
+    End;
+    Holes := '';
+    NH := 0;
+    Try NH := Region.HoleCount; Except NH := 0; End;
+    For H := 0 To NH - 1 Do
+    Begin
+        Contour := Nil;
+        Try Contour := Region.Holes[H]; Except Contour := Nil; End;
+        If Contour <> Nil Then
+        Begin
+            If Holes <> '' Then Holes := Holes + ',';
+            Holes := Holes + LmContourPts(Contour);
+        End;
+    End;
+    Result := '"pts":[' + Pts + '],"holes":[' + Holes + ']';
 End;
 
 Function LmCopperSection(Board : IPCB_Board; Offset : Integer; Limit : Integer;
@@ -26178,14 +26314,35 @@ Var
     SigLayers : TStringList;
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
-    Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
+    Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, OwnerName2, Sizes : String;
     More, Keepout, InPoly, Wanted, Wide : Boolean;
     OneLayer : IPCB_LayerSet;
     Passes : TStringList;
     P : Integer;
     Rest, Kind : String;
+    Oid, K : Integer;
+    LayerKeys, LayerNames, CommonKeys, Commons, Pieces : TStringList;
+    CKey, NetName, Chunk : String;
+    NetObj : IPCB_Net;
+    InChunk : Integer;
+    SamePour, WantGrouped : Boolean;
+    Grp : IPCB_Group;
+    GIter : IPCB_GroupIterator;
+    PourAddr, LastPourAddr : Integer;
+    PourLayer, LastPourLayer : TLayer;
+    LastPourCommon : String;
 Begin
     Items := '';
+    Chunk := '';
+    InChunk := 0;
+    Pieces := TStringList.Create;
+    LayerKeys := TStringList.Create;
+    LayerNames := TStringList.Create;
+    CommonKeys := TStringList.Create;
+    Commons := TStringList.Create;
+    LastPourAddr := 0;
+    LastPourLayer := eNoLayer;
+    LastPourCommon := '';
     Idx := 0;
     Emitted := 0;
     More := False;
@@ -26209,12 +26366,15 @@ Begin
     { over every kind, so the unnarrowed read keeps its order and paging.    }
     Passes := TStringList.Create;
     Rest := Kinds;
+    WantGrouped := False;
     While Rest <> '' Do
     Begin
         Kind := LmNextKind(Rest);
-        If Kind <> '' Then Passes.Add(Kind);
+        If Kind = 'grouped' Then WantGrouped := True
+        Else If Kind <> '' Then Passes.Add(Kind);
     End;
-    If Passes.Count = 0 Then Passes.Add('all');
+    If Passes.Count = 0 Then
+        If Not WantGrouped Then Passes.Add('all');
     For P := 0 To Passes.Count - 1 Do
     Begin
         If More Then Break;
@@ -26274,51 +26434,117 @@ Begin
                             More := True;
                             Break;
                         End;
-                        If Trace Then LmTrace(IntToStr(Idx) + ' kind=' + IntToStr(Obj.ObjectId) + ' flags');
+                        Oid := Obj.ObjectId;
+                        If Trace Then LmTrace(IntToStr(Idx) + ' kind=' + IntToStr(Oid) + ' flags');
                         Keepout := False;
                         Try Keepout := Obj.IsKeepout; Except Keepout := False; End;
                         InPoly := False;
                         Try InPoly := Obj.InPolygon; Except InPoly := False; End;
-                        { Poured copper carries no net of its own: the pour that   }
-                        { made it does. Name it here so the reader need not guess  }
-                        { the owner from geometry, which fails on nested pours.    }
-                        OwnerName := '';
-                        OwnerNet := '';
+                        { What follows the shape (layer, net, part, pour) is the   }
+                        { same for every piece of one pour, and for every object   }
+                        { with one layer, net and part: it is built and escaped    }
+                        { once and kept under that key. Escaping and joining text  }
+                        { is what a read spends its time on, not Altium's calls.   }
+                        PourOwner := Nil;
+                        NetName := '';
+                        OwnerName2 := '';
+                        { The pieces of one pour come one after another: the one  }
+                        { before's text is used again with no key to build.       }
+                        SamePour := False;
                         If InPoly Then
                         Begin
-                            If Trace Then LmTrace(IntToStr(Idx) + ' owner');
-                            PourOwner := Obj.Polygon;
+                            Try PourOwner := Obj.Polygon; Except PourOwner := Nil; End;
                             If PourOwner <> Nil Then
                             Begin
+                                { The layer too: a plane's outline pieces share one }
+                                { owner across the plane layers.                    }
+                                PourAddr := PourOwner.I_ObjectAddress;
+                                PourLayer := Obj.Layer;
+                                SamePour := (Not Keepout) And (LastPourCommon <> '') And (PourAddr = LastPourAddr)
+                                    And (PourLayer = LastPourLayer);
+                                CKey := 'p' + IntToStr(PourAddr) + '|' + IntToStr(PourLayer);
+                            End
+                            Else CKey := 'p0|' + IntToStr(Obj.Layer);
+                        End
+                        Else
+                        Begin
+                            Try
+                                NetObj := Obj.Net;
+                                If NetObj <> Nil Then NetName := NetObj.Name;
+                            Except
+                                NetName := '';
+                            End;
+                            { Poured copper is never a footprint's own. Read here,  }
+                            { not through LmOwner: a script function call costs     }
+                            { more than the Altium calls it makes.                  }
+                            Try
+                                If Obj.InComponent Then OwnerName2 := Obj.Component.Name.Text;
+                            Except
+                                OwnerName2 := '';
+                            End;
+                            CKey := IntToStr(Obj.Layer) + '|' + NetName + '|' + OwnerName2;
+                        End;
+                        If Keepout Then CKey := CKey + '|k';
+                        { IndexOf ignores case; the key read back must match exactly. }
+                        K := -1;
+                        If Not SamePour Then
+                        Begin
+                            K := CommonKeys.IndexOf(CKey);
+                            If K >= 0 Then
+                                If CommonKeys[K] <> CKey Then K := -1;
+                        End;
+                        If SamePour Then
+                            Common := LastPourCommon
+                        Else If K >= 0 Then
+                            Common := Commons[K]
+                        Else
+                        Begin
+                            { Poured copper carries no net of its own: the pour that   }
+                            { made it does. Name it here so the reader need not guess  }
+                            { the owner from geometry, which fails on nested pours.    }
+                            OwnerName := '';
+                            OwnerNet := '';
+                            If PourOwner <> Nil Then
+                            Begin
+                                If Trace Then LmTrace(IntToStr(Idx) + ' owner');
                                 OwnerName := PourOwner.Name;
                                 If PourOwner.Net <> Nil Then OwnerNet := PourOwner.Net.Name;
                             End;
+                            If InPoly Then NetName := LmNetName(Obj);
+                            If Trace Then LmTrace(IntToStr(Idx) + ' common');
+                            Common := ',"layer":"' + LmLayerNameCached(Obj.Layer, LayerKeys, LayerNames)
+                                + '","net":"' + EscapeJsonString(NetName)
+                                + '","comp":"' + EscapeJsonString(OwnerName2)
+                                + '","keepout":' + BoolToJsonStr(Keepout)
+                                + ',"in_polygon":' + BoolToJsonStr(InPoly)
+                                + ',"pour":"' + EscapeJsonString(OwnerName)
+                                + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
+                            CommonKeys.Add(CKey);
+                            Commons.Add(Common);
                         End;
-                        If Trace Then LmTrace(IntToStr(Idx) + ' common');
-                        Common := ',"layer":"' + LayerDisplayName(Obj.Layer)
-                            + '","net":"' + EscapeJsonString(LmNetName(Obj))
-                            + '","comp":"' + EscapeJsonString(LmOwner(Obj))
-                            + '","keepout":' + BoolToJsonStr(Keepout)
-                            + ',"in_polygon":' + BoolToJsonStr(InPoly)
-                            + ',"pour":"' + EscapeJsonString(OwnerName)
-                            + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
+                        If InPoly And (PourOwner <> Nil) And Not Keepout Then
+                        Begin
+                            LastPourAddr := PourAddr;
+                            LastPourLayer := PourLayer;
+                            LastPourCommon := Common;
+                        End;
                         Entry := '';
-                        If Obj.ObjectId = eTrackObject Then
+                        { One Format call, not a join per number: each join is a  }
+                        { script operation, and tracks are most of a board.        }
+                        If Oid = eTrackObject Then
                         Begin
                             Track := Obj;
-                            Entry := '{"k":"track","v":[' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
-                                + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2) + ','
-                                + IntToStr(Track.Width) + ']' + Common;
-                        End;
-                        If Obj.ObjectId = eArcObject Then
+                            Entry := Format('{"k":"track","v":[%d,%d,%d,%d,%d]%s',
+                                [Track.X1, Track.Y1, Track.X2, Track.Y2, Track.Width, Common]);
+                        End
+                        Else If Oid = eArcObject Then
                         Begin
                             Arc := Obj;
-                            Entry := '{"k":"arc","v":[' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
-                                + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle)
-                                + ',' + FloatToJsonStr(Arc.EndAngle) + ',' + IntToStr(Arc.LineWidth) + ']'
-                                + Common;
-                        End;
-                        If Obj.ObjectId = eViaObject Then
+                            Entry := Format('{"k":"arc","v":[%d,%d,%d,%s,%s,%d]%s',
+                                [Arc.XCenter, Arc.YCenter, Arc.Radius, FloatToJsonStr(Arc.StartAngle),
+                                FloatToJsonStr(Arc.EndAngle), Arc.LineWidth, Common]);
+                        End
+                        Else If Oid = eViaObject Then
                         Begin
                             Via := Obj;
                             If Trace Then LmTrace(IntToStr(Idx) + ' via sizes');
@@ -26332,34 +26558,34 @@ Begin
                                 If Via.IntersectLayer(Lyr) Then
                                 Begin
                                     If Sizes <> '' Then Sizes := Sizes + ',';
-                                    Sizes := Sizes + '["' + LayerDisplayName(Lyr) + '",'
+                                    Sizes := Sizes + '["' + LmLayerNameCached(Lyr, LayerKeys, LayerNames) + '",'
                                         + IntToStr(Via.SizeOnLayer(Lyr)) + ']';
                                 End;
                             End;
                             Entry := '{"k":"via","v":[' + IntToStr(Via.X) + ',' + IntToStr(Via.Y)
                                 + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
-                                + ',"low":"' + LayerDisplayName(Via.LowLayer)
-                                + '","high":"' + LayerDisplayName(Via.HighLayer)
+                                + ',"low":"' + LmLayerNameCached(Via.LowLayer, LayerKeys, LayerNames)
+                                + '","high":"' + LmLayerNameCached(Via.HighLayer, LayerKeys, LayerNames)
                                 + '","sizes":[' + Sizes + ']' + LmMaskJson(Via) + Common;
-                        End;
-                        If Obj.ObjectId = eRegionObject Then
+                        End
+                        Else If Oid = eRegionObject Then
                         Begin
                             Region := Obj;
                             If Trace Then LmTrace(IntToStr(Idx) + ' region shape');
                             Entry := '{"k":"region","kind":' + IntToStr(Region.Kind)
                                 + ',"cutout":' + BoolToJsonStr(Region.Kind = eRegionKind_BoardCutout)
                                 + ',"copper":' + BoolToJsonStr(Region.Kind = eRegionKind_Copper)
-                                + ',' + LmRegionShape(Region) + Common;
-                        End;
-                        If Obj.ObjectId = eFillObject Then
+                                + ',' + LmRegionShapeFast(Region) + Common;
+                        End
+                        Else If Oid = eFillObject Then
                         Begin
                             Fill := Obj;
                             Entry := '{"k":"fill","v":[' + IntToStr(Fill.X1Location) + ','
                                 + IntToStr(Fill.Y1Location) + ',' + IntToStr(Fill.X2Location) + ','
                                 + IntToStr(Fill.Y2Location) + ',' + FloatToJsonStr(Fill.Rotation) + ']'
                                 + Common;
-                        End;
-                        If Obj.ObjectId = ePolyObject Then
+                        End
+                        Else If Oid = ePolyObject Then
                         Begin
                             { A pour's BOUNDARY. The copper it pours is its own   }
                             { regions and tracks, which arrive flagged in_polygon.  }
@@ -26388,8 +26614,15 @@ Begin
                         End;
                         If Entry <> '' Then
                         Begin
-                            If Items <> '' Then Items := Items + ',';
-                            Items := Items + Entry;
+                            { Each entry with its comma; a piece drops the first. }
+                            Chunk := Chunk + ',' + Entry;
+                            Inc(InChunk);
+                            If InChunk >= 20 Then
+                            Begin
+                                Pieces.Add(Copy(Chunk, 2, Length(Chunk)));
+                                Chunk := '';
+                                InChunk := 0;
+                            End;
                         End;
                         Inc(Emitted);
                     End;
@@ -26401,8 +26634,74 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     End;
+    { Grouped: the tracks and arcs of dimensions and coordinate markers,    }
+    { from those few objects' own pieces. Altium's board text leaves them  }
+    { out; read this way, a reader of that text need not walk every track. }
+    If WantGrouped And Not More Then
+    Begin
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eDimensionObject, eCoordinateObject));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Grp := Iter.FirstPCBObject;
+            While Grp <> Nil Do
+            Begin
+                GIter := Grp.GroupIterator_Create;
+                Try
+                    GIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+                    Obj := GIter.FirstPCBObject;
+                    While Obj <> Nil Do
+                    Begin
+                        Keepout := False;
+                        Try Keepout := Obj.IsKeepout; Except Keepout := False; End;
+                        Common := ',"layer":"' + LmLayerNameCached(Obj.Layer, LayerKeys, LayerNames)
+                            + '","net":"' + EscapeJsonString(LmNetName(Obj))
+                            + '","comp":"' + EscapeJsonString(LmOwner(Obj))
+                            + '","keepout":' + BoolToJsonStr(Keepout)
+                            + ',"in_polygon":false,"pour":"","pour_net":""}';
+                        If Obj.ObjectId = eTrackObject Then
+                        Begin
+                            Track := Obj;
+                            Entry := Format('{"k":"track","v":[%d,%d,%d,%d,%d]%s',
+                                [Track.X1, Track.Y1, Track.X2, Track.Y2, Track.Width, Common]);
+                        End
+                        Else
+                        Begin
+                            Arc := Obj;
+                            Entry := Format('{"k":"arc","v":[%d,%d,%d,%s,%s,%d]%s',
+                                [Arc.XCenter, Arc.YCenter, Arc.Radius, FloatToJsonStr(Arc.StartAngle),
+                                FloatToJsonStr(Arc.EndAngle), Arc.LineWidth, Common]);
+                        End;
+                        Chunk := Chunk + ',' + Entry;
+                        Inc(InChunk);
+                        If InChunk >= 20 Then
+                        Begin
+                            Pieces.Add(Copy(Chunk, 2, Length(Chunk)));
+                            Chunk := '';
+                            InChunk := 0;
+                        End;
+                        Inc(Emitted);
+                        Obj := GIter.NextPCBObject;
+                    End;
+                Finally
+                    Grp.GroupIterator_Destroy(GIter);
+                End;
+                Grp := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    End;
     Passes.Free;
     SigLayers.Free;
+    If Chunk <> '' Then Pieces.Add(Copy(Chunk, 2, Length(Chunk)));
+    Items := LmJoinPieces(Pieces);
+    Pieces.Free;
+    LayerKeys.Free;
+    LayerNames.Free;
+    CommonKeys.Free;
+    Commons.Free;
     Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
         + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
     Result := Body;
@@ -26625,6 +26924,100 @@ Begin
     Result := Body;
 End;
 
+{ What tells a reader, in well under a second, whether the board it read  }
+{ before may have changed: the commands that did more than look since the }
+{ loop started, the board's object counts by type, and every part's place.}
+{ A hand edit that adds, deletes or moves a part changes it; one that      }
+{ drags copper without adding or deleting any does not.                   }
+
+Function LmStampSection(Board : IPCB_Board) : String;
+Var
+    Counter : IPCB_PrimitiveCounter;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Counts, Parts, Chunk : String;
+    Pieces : TStringList;
+    N, K, InChunk : Integer;
+Begin
+    Counts := '';
+    Try
+        Counter := Board.GetPrimitiveCounter;
+        If Counter <> Nil Then
+            Counts := IntToStr(Counter.GetObjectCount(eTrackObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eArcObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eViaObject)) + ','
+                + IntToStr(Counter.GetObjectCount(ePadObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eRegionObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eFillObject)) + ','
+                + IntToStr(Counter.GetObjectCount(ePolyObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eComponentObject)) + ','
+                + IntToStr(Counter.GetObjectCount(eTextObject));
+    Except
+        Counts := '';
+    End;
+    Pieces := TStringList.Create;
+    Chunk := '';
+    InChunk := 0;
+    N := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            If Chunk <> '' Then Chunk := Chunk + ',';
+            Chunk := Chunk + '[' + IntToStr(Comp.X) + ',' + IntToStr(Comp.Y) + ','
+                + FloatToJsonStr(Comp.Rotation) + ',' + IntToStr(Comp.Layer) + ']';
+            Inc(N);
+            Inc(InChunk);
+            If InChunk >= 200 Then
+            Begin
+                Pieces.Add(Chunk);
+                Chunk := '';
+                InChunk := 0;
+            End;
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If Chunk <> '' Then Pieces.Add(Chunk);
+    Parts := '';
+    For K := 0 To Pieces.Count - 1 Do
+    Begin
+        If K > 0 Then Parts := Parts + ',';
+        Parts := Parts + Pieces[K];
+    End;
+    Pieces.Free;
+    Result := '"file":"' + EscapeJsonString(Board.FileName) + '","loop":'
+        + IntToStr(LoopStartTick) + ',"serial":' + IntToStr(CommandSerial)
+        + ',"counts":[' + Counts + '],"parts":[' + Parts + ']';
+End;
+
+{ Altium's own text of the board it holds, unsaved edits included, written }
+{ to a file in the workspace: the caller reads it and deletes it. Writing   }
+{ it takes well under a second where walking the board's tracks takes      }
+{ most of a read. The board document is not saved or renamed.              }
+Function LmTextSection(Board : IPCB_Board) : String;
+Var
+    BoardEx : IPCB_BoardEx;
+    Path, Problem : String;
+Begin
+    Path := WorkspaceDir + 'board_text_' + IntToStr(GetTickCount) + '.txt';
+    Problem := '';
+    Try
+        BoardEx := Board;
+        BoardEx.SaveToASCIIFile(Path);
+    Except
+        Problem := 'the writer raised an error';
+    End;
+    If (Problem = '') And Not FileExists(Path) Then Problem := 'no file was written';
+    If UpperCase(Board.FileName) = UpperCase(Path) Then Problem := 'the board took the text file''s name';
+    Result := '"path":"' + EscapeJsonString(Path) + '","problem":"' + EscapeJsonString(Problem) + '"';
+End;
+
 Function PCB_GetLayoutModel(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -26648,6 +27041,8 @@ Begin
 
     Body := '';
     If Section = 'board' Then Body := LmBoardSection(Board);
+    If Section = 'stamp' Then Body := LmStampSection(Board);
+    If Section = 'text' Then Body := LmTextSection(Board);
     If Section = 'components' Then Body := LmComponentsSection(Board);
     If Section = 'pads' Then Body := LmPadsSection(Board, Offset, Limit);
     If Section = 'copper' Then
@@ -26697,8 +27092,8 @@ Begin
     If Body = '' Then
     Begin
         Response := BuildErrorResponse(RequestId, 'BAD_SECTION',
-            'section must be one of board, components, pads, copper, rules, '
-            + 'classes; got "' + Section + '"');
+            'section must be one of board, stamp, text, components, pads, '
+            + 'copper, rules, classes; got "' + Section + '"');
         Result := Response;
         Exit;
     End;
@@ -31480,6 +31875,9 @@ Begin
         'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
         'gloss':                   Result := PCB_Gloss(Params, RequestId);
         'physical_stack':          Result := PCB_PhysicalStack(Params, RequestId);
+        { The read alone, never a style change: a board read uses it, and a  }
+        { read must not count as a command that changed the board.          }
+        'get_physical_stack':      Result := PCB_PhysicalStack('{}', RequestId);
         'layer_stack_manager':     Result := PCB_LayerStackManager(Params, RequestId);
         'copper_layers':           Result := PCB_CopperLayers(Params, RequestId);
         'drop_stack_layer':        Result := PCB_DropStackLayer(Params, RequestId);

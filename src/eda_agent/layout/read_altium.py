@@ -14,7 +14,8 @@ reach the command.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from . import geom
 from .model import (
@@ -27,6 +28,10 @@ Send = Callable[[str, dict], Any]
 COORD_PER_MIL = 10000.0
 COMMAND = "pcb.get_layout_model"
 PAGE = 1500
+#: The copper in one reply where it fits: each page walks the board from its
+#: first object to its offset, so seven pages walked 31,500 objects for
+#: nothing. The script builds the reply in chunks, so its size costs little.
+COPPER_PAGE = 60000
 
 
 def _m(c) -> float:
@@ -74,12 +79,12 @@ def _outline_points(raw: list, tol: float = 0.05) -> list[tuple[float, float]]:
     return out
 
 
-def _paged(send: Send, section: str, key: str, page: int) -> list[dict]:
+def _paged(send: Send, section: str, key: str, page: int, **extra: str) -> list[dict]:
     items: list[dict] = []
     offset = 0
     while True:
         reply = send(COMMAND, {"section": section, "offset": str(offset),
-                               "limit": str(page)})
+                               "limit": str(page), **extra})
         chunk = reply.get(key) or []
         items.extend(chunk)
         if not reply.get("more"):
@@ -294,7 +299,23 @@ def _copper(items: list[dict], board: LayoutBoard) -> None:
         # hole with pcb_place_arc was read as copper on a layer the router
         # does not route, so a signal ran straight through it.
         keepout = bool(o.get("keepout")) or layer == "KeepOutLayer"
-        if k == "track":
+        # A hatched pour is drawn as tracks and arcs. They are the pour's
+        # copper, not routing: read as tracks, the router took a board's
+        # hatched GND pours on every layer as fixed copper and could not
+        # leave a pad they surrounded, nor set them aside to pour again.
+        poured = o.get("in_polygon") and not keepout and k in ("track", "arc")
+        if poured:
+            v = [_m(x) for x in o["v"]]
+            if k == "track":
+                strokes = [(v[0], v[1], v[2], v[3], v[4])]
+            else:
+                pts = geom.arc_points(v[0], v[1], v[2], float(o["v"][3]), float(o["v"][4]))
+                strokes = [(a[0], a[1], b[0], b[1], v[5]) for a, b in zip(pts, pts[1:])]
+            for s in strokes:
+                board.regions.append(Region(layer, geom.stroke_outline(*s), [], net, "pour",
+                                            False, comp,
+                                            f"polygon:{o.get('pour', '')}"))
+        elif k == "track":
             x1, y1, x2, y2, w = (_m(v) for v in o["v"])
             board.tracks.append(Track(layer, x1, y1, x2, y2, w, net, comp, keepout))
         elif k == "arc":
@@ -476,30 +497,50 @@ def _pour_nets(board: LayoutBoard) -> None:
             r.source = best.source
 
 
-def _foreign_copper(board: LayoutBoard, region: Region, net: str) -> bool:
+class _CopperPoints:
+    """The points ``_foreign_copper`` tests, per layer, sorted by x: a via
+    spanning the layer, a pad on it (a plated hole on every layer) and a
+    track on it by its midpoint. Built once per board: a hatched pour is
+    thousands of pieces, and each one scanned every via, pad and track."""
+
+    def __init__(self, board: LayoutBoard):
+        per: dict[str, list[tuple[float, float, str]]] = {}
+        every: list[tuple[float, float, str]] = []
+        for v in board.vias:
+            for lay in board.layers_between(v.low_layer, v.high_layer):
+                per.setdefault(lay, []).append((v.x, v.y, v.net))
+        for p in board.pads:
+            if p.hole > 0 and p.plated:
+                every.append((p.x, p.y, p.net))
+            else:
+                for lay in set(p.layers()):
+                    per.setdefault(lay, []).append((p.x, p.y, p.net))
+        for t in board.tracks:
+            if not t.keepout:
+                per.setdefault(t.layer, []).append(((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2, t.net))
+        self._every = sorted(every)
+        self._every_x = [p[0] for p in self._every]
+        self._per = {lay: sorted(pts) for lay, pts in per.items()}
+        self._per_x = {lay: [p[0] for p in pts] for lay, pts in self._per.items()}
+
+    def foreign(self, region: Region, net: str) -> bool:
+        import bisect
+        body = region.shape()
+        x0, y0, x1, y1 = body.bbox
+        for pts, xs in ((self._per.get(region.layer, ()), self._per_x.get(region.layer, ())),
+                        (self._every, self._every_x)):
+            for x, y, n in pts[bisect.bisect_left(xs, x0):bisect.bisect_right(xs, x1)]:
+                if n != net and y0 <= y <= y1 and geom.point_in_poly(x, y, body):
+                    return True
+        return False
+
+
+def _foreign_copper(board: LayoutBoard, region: Region, net: str,
+                    points: Optional[_CopperPoints] = None) -> bool:
     """Whether copper of a net other than ``net`` (or of none) sits in the
     body of ``region``: a via spanning its layer, a pad on it (a plated
     hole counts on every layer) or a track on it, by its midpoint."""
-    body = region.shape()
-    x0, y0, x1, y1 = body.bbox
-    layer = region.layer
-
-    def inside(x, y):
-        return x0 <= x <= x1 and y0 <= y <= y1 and geom.point_in_poly(x, y, body)
-
-    for v in board.vias:
-        if v.net != net and layer in board.layers_between(v.low_layer, v.high_layer) \
-                and inside(v.x, v.y):
-            return True
-    for p in board.pads:
-        if p.net != net and (layer in p.layers() or (p.hole > 0 and p.plated)) \
-                and inside(p.x, p.y):
-            return True
-    for t in board.tracks:
-        if t.net != net and t.layer == layer and not t.keepout \
-                and inside((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2):
-            return True
-    return False
+    return (points or _CopperPoints(board)).foreign(region, net)
 
 
 def repair_pour_nets(board: LayoutBoard) -> int:
@@ -519,10 +560,11 @@ def repair_pour_nets(board: LayoutBoard) -> int:
     bounds = [(b, b.shape(), abs(_area(b.outline))) for b in board.regions
               if b.kind == "pour_boundary" and b.net]
     changed = 0
+    points = _CopperPoints(board)
     for r in board.regions:
         if r.kind != "pour" or not r.net or r.layer not in signal or len(r.outline) < 3:
             continue
-        if not _foreign_copper(board, r, r.net):
+        if not _foreign_copper(board, r, r.net, points):
             continue
         fits: dict[str, tuple] = {}
         for b, shape, area in bounds:
@@ -531,7 +573,7 @@ def repair_pour_nets(board: LayoutBoard) -> int:
             if all(_on_or_in(x, y, shape) for x, y in r.outline) \
                     and (b.net not in fits or area < fits[b.net][1]):
                 fits[b.net] = (b, area)
-        good = [b for b, _ in fits.values() if not _foreign_copper(board, r, b.net)]
+        good = [b for b, _ in fits.values() if not _foreign_copper(board, r, b.net, points)]
         if len(good) == 1:
             r.net, r.source = good[0].net, good[0].source
             changed += 1
@@ -600,7 +642,7 @@ def read_board(send: Send, page: int = PAGE,
     comps = send(COMMAND, {"section": "components"})
     board.components = _components(comps, _courtyard_layers(head), by_comp)
 
-    raw_copper = _paged(send, "copper", "copper", page)
+    raw_copper, board.meta["copper_read"] = _copper_items(send, page, _layers_named(head))
     _copper(raw_copper, board)
     # A script older than the mask read sends no tenting: the sliver check
     # then says it did not run rather than take every via as open. Pads or
@@ -618,19 +660,141 @@ def read_board(send: Send, page: int = PAGE,
                          for c in classes.get("net_classes") or []}
     board.diff_pairs = [DiffPair(d["name"], d.get("positive", ""), d.get("negative", ""))
                         for d in classes.get("diff_pairs") or []]
+    board.meta["stack"] = _physical_stack(send)
     return board
 
 
-def read_live_board(expect_file: str, page: int = PAGE) -> LayoutBoard:
+def _layers_named(head: dict) -> list[str]:
+    """The board's mechanical layers, from its board section."""
+    return [str(m.get("id", "")) for m in head.get("mech_layers") or []]
+
+
+#: What the board's own text leaves to the script: everything but tracks and
+#: arcs, and the tracks and arcs of dimensions and coordinate markers.
+_SCRIPT_KINDS = "via,region,fill,polygon,grouped"
+
+
+def _copper_items(send: Send, page: int, layers: list[str]) -> tuple[list[dict], str]:
+    """The copper read's entries and how they were read.
+
+    Tracks and arcs come from Altium's text of the board when it can give
+    them exactly (read_altium_text), and the rest through the script: the
+    layers of ``layers`` the text cannot name (Mechanical16 and up, all
+    written Mechanical16) are read each on its own, a walk that meets that
+    layer's objects only. That skips the walk over the copper tracks, most
+    of a read. Anything that stops it
+    (an older script, a layer or a link the text reader does not know, a
+    file it cannot read) reads all copper through the script instead."""
+    from . import read_altium_text
+
+    try:
+        got = send(COMMAND, {"section": "text"}) or {}
+        path = got.get("path") or ""
+        if not path or got.get("problem"):
+            raise read_altium_text.TextUnusable(got.get("problem") or "no text")
+        try:
+            # Altium writes the text in the system's code page; every name
+            # taken from it must be ASCII (read_altium_text), so the bytes
+            # are read one for one.
+            text = Path(path).read_bytes().decode("latin-1")
+        finally:
+            Path(path).unlink(missing_ok=True)
+        lines = read_altium_text.tracks_and_arcs(text, mechanical=False)
+        size = max(page, COPPER_PAGE)
+        unplaced = read_altium_text.text_cannot_place
+        rest = [o for o in _paged(send, "copper", "copper", size, kinds=_SCRIPT_KINDS)
+                if not (o.get("k") in ("track", "arc") and unplaced(str(o.get("layer", ""))))]
+        for layer in dict.fromkeys(m for m in layers if m and unplaced(m)):
+            rest += _paged(send, "copper", "copper", size, kinds="track,arc", layer=layer)
+        return rest + lines, "text"
+    except Exception:  # noqa: BLE001 - any failure: the whole copper read through the script
+        return _paged(send, "copper", "copper", max(page, COPPER_PAGE)), "script"
+
+
+def _physical_stack(send: Send) -> list[dict]:
+    """The copper and dielectric layers top down, as the Layer Stack Manager
+    has them: {kind, name, thickness (mils), er}. Empty when the reply has
+    none (an older script, a fixture): impedance is then not judged."""
+    try:
+        # The read-only name, so a read does not count as a change to the
+        # board (board_stamp); an older script knows only the other.
+        got = send("pcb.get_physical_stack", {}) or {}
+        if not got.get("layers"):
+            got = send("pcb.physical_stack", {}) or {}
+    except Exception:  # noqa: BLE001 - optional: the board reads without it
+        try:
+            got = send("pcb.physical_stack", {}) or {}
+        except Exception:  # noqa: BLE001
+            return []
+    out = []
+    for l in got.get("layers") or []:
+        if l.get("kind") not in ("copper", "dielectric"):
+            continue
+        out.append({"kind": l["kind"], "name": str(l.get("name", "")),
+                    "thickness": float(l.get("thickness_mils") or 0.0),
+                    "er": float(l.get("constant") or 0.0)})
+    return out
+
+
+#: The last read of each board, pickled, with the stamp it was read under.
+#: Pickled so that each caller gets its own copy in a fraction of the time
+#: a copy through to_dict takes on a board of ten thousand objects.
+_READS: dict[str, tuple[dict, bytes]] = {}
+_READS_KEPT = 4
+
+
+def board_stamp(send: Send) -> Optional[dict]:
+    """What says, in well under a second, whether the focused board may
+    have changed since a read: the commands that did more than look since
+    the script's loop started (from every session), the board's object
+    counts by type and every part's place. None from a script too old to
+    give it. A hand edit that drags copper without adding or deleting any
+    leaves it as it was."""
+    try:
+        got = send(COMMAND, {"section": "stamp"})
+    except Exception:  # noqa: BLE001 - an older script: no stamp, a full read
+        return None
+    if not isinstance(got, dict) or "serial" not in got:
+        return None
+    import copy
+    return copy.deepcopy({k: got.get(k) for k in ("file", "loop", "serial", "counts", "parts")})
+
+
+def read_live_board(expect_file: str, page: int = PAGE, fresh: bool = False) -> LayoutBoard:
     """The named board, read from the running Altium through the bridge.
 
     ``expect_file`` is required here, not optional: see ``read_board``.
+    The last read of the board is used again while its stamp (board_stamp)
+    is unchanged, unless ``fresh``; a read is kept only when no command
+    did more than look while it ran. Each caller gets its own copy.
     """
+    import pickle
+
     from eda_agent.bridge.altium_bridge import get_bridge
 
     if not expect_file:
         raise ValueError("expect_file is required for a live read")
     bridge = get_bridge()
-    return read_board(lambda cmd, params: bridge.send_command(cmd, params,
-                                                              timeout=120.0),
-                      page, expect_file)
+
+    def send(cmd, params):
+        return bridge.send_command(cmd, params, timeout=120.0)
+
+    key = str(Path(expect_file)).lower().replace("\\", "/")
+    stamp = board_stamp(send)
+    if stamp is not None:
+        if not _same_file(str(stamp.get("file", "")), expect_file):
+            raise WrongBoard(
+                f"asked to read {expect_file} but the focused board is "
+                f"{stamp.get('file') or '(none)'}; nothing further was read")
+        kept = _READS.get(key)
+        if kept is not None and not fresh and kept[0] == stamp:
+            board = pickle.loads(kept[1])
+            board.meta["read"] = "kept"
+            return board
+    board = read_board(send, page, expect_file)
+    if stamp is not None and board_stamp(send) == stamp:
+        _READS.pop(key, None)
+        _READS[key] = (stamp, pickle.dumps(board, protocol=pickle.HIGHEST_PROTOCOL))
+        while len(_READS) > _READS_KEPT:
+            _READS.pop(next(iter(_READS)))
+    return board

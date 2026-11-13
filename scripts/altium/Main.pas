@@ -116,6 +116,12 @@ Var
     { a compile only while it has not moved.                             }
     WriteSerial : Integer;
     CompiledAtSerial : Integer;
+    { Bumped by every command that does more than look (CommandOnlyLooks), }
+    { counted where every command passes; with LoopStartTick it tells a   }
+    { reader whether a board it read may have changed (the stamp section  }
+    { of pcb.get_layout_model).                                            }
+    CommandSerial : Integer;
+    LoopStartTick : Cardinal;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
@@ -3356,6 +3362,8 @@ Begin
     DocOwners := '';
     WriteSerial := 0;
     CompiledAtSerial := -1;
+    CommandSerial := 0;
+    LoopStartTick := GetTickCount;
     HoldStartTick := 0;
     LastDoneTick := 0;
     JustPicked := False;

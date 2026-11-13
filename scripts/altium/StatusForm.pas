@@ -2536,6 +2536,7 @@ Begin
           way through may well have written something first, and that is
           exactly when a cached netlist is worth least. }
         If Not CommandIsReadOnly(Command) Then InvalidateCompileCache(0);
+        If Not CommandOnlyLooks(Command) Then CommandSerial := CommandSerial + 1;
 
         If ResponseContent = '' Then
         Begin
