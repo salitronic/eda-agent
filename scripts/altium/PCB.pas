@@ -13412,6 +13412,7 @@ Var
     Room : IPCB_ConfinementConstraint;
     JsonItems, KindStr : String;
     BR : TCoordRect;
+    BL, BB, BRt, BT : TCoord;
     First : Boolean;
     Count : Integer;
 Begin
@@ -13442,11 +13443,14 @@ Begin
             { BoundingRect / Kind / Comment etc. live on IPCB_ConfinementConstraint, }
             { not on the base IPCB_Rule. Narrow the typed reference before reading. }
             Room := Rule;
+            { Plain locals: when the read fails on the first room BR was }
+            { never assigned, and a field write on such a record stops   }
+            { the script past any Try.                                   }
+            BL := 0; BB := 0; BRt := 0; BT := 0;
             Try
                 BR := Room.BoundingRect;
-            Except
-                BR.Left := 0; BR.Bottom := 0; BR.Right := 0; BR.Top := 0;
-            End;
+                BL := BR.Left; BB := BR.Bottom; BRt := BR.Right; BT := BR.Top;
+            Except End;
 
             Try
                 If Room.Kind = eConfineIn Then KindStr := 'ConfineIn'
@@ -13458,10 +13462,10 @@ Begin
                 + '"kind":"' + EscapeJsonString(KindStr) + '",'
                 + '"scope_1":"' + EscapeJsonString(Rule.Scope1Expression) + '",'
                 + '"comment":"' + EscapeJsonString(Rule.Comment) + '",'
-                + '"x1":' + FloatToJsonStr(CoordToMilsF(BR.Left)) + ','
-                + '"y1":' + FloatToJsonStr(CoordToMilsF(BR.Bottom)) + ','
-                + '"x2":' + FloatToJsonStr(CoordToMilsF(BR.Right)) + ','
-                + '"y2":' + FloatToJsonStr(CoordToMilsF(BR.Top)) + '}';
+                + '"x1":' + FloatToJsonStr(CoordToMilsF(BL)) + ','
+                + '"y1":' + FloatToJsonStr(CoordToMilsF(BB)) + ','
+                + '"x2":' + FloatToJsonStr(CoordToMilsF(BRt)) + ','
+                + '"y2":' + FloatToJsonStr(CoordToMilsF(BT)) + '}';
             Inc(Count);
         End;
         Rule := Iterator.NextPCBObject;

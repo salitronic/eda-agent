@@ -1075,6 +1075,7 @@ Var
     Checked, Violations : Integer;
     LayerStr, ItemsJson, EntryJson : String;
     BBox : TCoordRect;
+    AtX, AtY : TCoord;
     First, IsInvalid : Boolean;
 Begin
     Board := Nil;
@@ -1121,14 +1122,21 @@ Begin
                         Inc(Violations);
                         LayerStr := '';
                         Try LayerStr := LayerDisplayName(Obj.Layer); Except End;
-                        BBox.X1 := 0; BBox.Y1 := 0;
-                        Try BBox := Obj.BoundingRectangle; Except End;
+                        { Plain locals, not BBox fields: when the read below }
+                        { fails on the first region BBox was never assigned, }
+                        { and a field write on such a record stops the       }
+                        { script past any Try.                               }
+                        AtX := 0; AtY := 0;
+                        Try
+                            BBox := Obj.BoundingRectangle;
+                            AtX := BBox.X1; AtY := BBox.Y1;
+                        Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
                         First := False;
                         EntryJson :=
                             JsonStr('layer', LayerStr) + ',' +
-                            JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(BBox.X1)) + ',' +
-                                          FloatToJsonStr(CoordToMilsF(BBox.Y1)) + ')');
+                            JsonStr('at', '(' + FloatToJsonStr(CoordToMilsF(AtX)) + ',' +
+                                          FloatToJsonStr(CoordToMilsF(AtY)) + ')');
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
@@ -4038,7 +4046,7 @@ Var
     Track : IPCB_Track;
     Rect : TCoordRect;
     PadLayer, LayerId, Checked, Violations : Integer;
-    PadX, PadY : TCoord;
+    PadX, PadY, RL, RR, RT, RB : TCoord;
     DesStr, NetStr, LayerStr, PinStr, ItemsJson, EntryJson : String;
     PadNetName, TrackNetName : String;
     First, TrackTouches, EndpointAtCenter : Boolean;
@@ -4115,17 +4123,22 @@ Begin
                             LayerId := Layer.LayerID;
                             If ILayer.IsSignalLayer(LayerId) Then
                             Begin
-                                Try Rect := Pad.BoundingRectangleOnLayer(LayerId);
-                                Except Rect.Left := 0; Rect.Right := 0;
-                                       Rect.Top := 0; Rect.Bottom := 0; End;
+                                { Plain locals: a field write on a Rect the  }
+                                { failed read never assigned stops the       }
+                                { script past any Try.                       }
+                                RL := 0; RR := 0; RT := 0; RB := 0;
+                                Try
+                                    Rect := Pad.BoundingRectangleOnLayer(LayerId);
+                                    RL := Rect.Left; RR := Rect.Right;
+                                    RT := Rect.Top; RB := Rect.Bottom;
+                                Except End;
 
                                 TrackTouches := False;
                                 EndpointAtCenter := False;
                                 SIter := Board.SpatialIterator_Create;
                                 Try
                                     SIter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                                    SIter.AddFilter_Area(Rect.Left, Rect.Bottom,
-                                                          Rect.Right, Rect.Top);
+                                    SIter.AddFilter_Area(RL, RB, RR, RT);
                                     SIter.AddFilter_LayerSet(MkSet(LayerId));
                                     Track := SIter.FirstPCBObject;
                                     While Track <> Nil Do
@@ -4178,17 +4191,19 @@ Begin
                 Else If (PadLayer = eTopLayer) Or (PadLayer = eBottomLayer) Then
                 Begin
                     { SMD pad: check tracks on the pad's own layer.            }
-                    Try Rect := Pad.BoundingRectangleOnLayer(PadLayer);
-                    Except Rect.Left := 0; Rect.Right := 0;
-                           Rect.Top := 0; Rect.Bottom := 0; End;
+                    RL := 0; RR := 0; RT := 0; RB := 0;
+                    Try
+                        Rect := Pad.BoundingRectangleOnLayer(PadLayer);
+                        RL := Rect.Left; RR := Rect.Right;
+                        RT := Rect.Top; RB := Rect.Bottom;
+                    Except End;
 
                     TrackTouches := False;
                     EndpointAtCenter := False;
                     SIter := Board.SpatialIterator_Create;
                     Try
                         SIter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                        SIter.AddFilter_Area(Rect.Left, Rect.Bottom,
-                                              Rect.Right, Rect.Top);
+                        SIter.AddFilter_Area(RL, RB, RR, RT);
                         SIter.AddFilter_LayerSet(MkSet(PadLayer));
                         Track := SIter.FirstPCBObject;
                         While Track <> Nil Do
