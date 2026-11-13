@@ -14,6 +14,7 @@ have a handful of rule classes and hundreds of nets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -51,6 +52,14 @@ class RouteRules:
         self.net_id = net_id
         self.names = {i: n for n, i in net_id.items()}
         self.default_clearance = rules.default_clearance() or 6.0
+        # Widths the routing brief sets (brief.py): the AI's, and kept as given.
+        self.width_set: dict[str, float] = {}
+        # Spacing the brief asks between two nets (Brief.spacing_pairs): a
+        # clearance between those two alone, never under the rules'.
+        self.spacing: dict[tuple[str, str], float] = {}
+        # The brief's isolation barriers (Brief.barrier_sides): (one side,
+        # the other or None for every other net, the distance between).
+        self.barriers: list[tuple[frozenset, Optional[frozenset], float]] = []
         edge = rules.of_type("board_outline")
         self.edge_clearance = edge[0].values.get("gap", 0.0) if edge else 0.0
         self._sig: dict[int, tuple] = {}
@@ -78,6 +87,13 @@ class RouteRules:
             for kind in ("track",) + OBSTACLE_KINDS:
                 f = self.facts(net, kind)
                 sig.append((self.rules._matches(rr.scope1, f), self.rules._matches(rr.scope2, f)))
+        if any(net in pair for pair in self.spacing):
+            # Its clearance to some nets is its own: no other net is alike.
+            sig.append(("spacing", net))
+        if self.barriers:
+            # Which side of each barrier it is on: nets on the same sides
+            # of every barrier need the same clearance from anything.
+            sig.append(("barriers",) + tuple(self._side(net, b) for b in self.barriers))
         self._sig[owner] = tuple(sig)
         return self._sig[owner]
 
@@ -103,8 +119,26 @@ class RouteRules:
             rr = self.rules.binary("clearance", ft, self.facts(other, kind))
             gap = rr.values.get("gap", 0.0) if rr else self.default_clearance
             best = max(best, gap)
+        mine = self.names.get(routed, "")
+        best = max(best, self.spacing.get((mine, other), 0.0))
+        for b in self.barriers:
+            sides = {self._side(mine, b), self._side(other, b)}
+            if sides == {"a", "b"}:
+                best = max(best, b[2])
         self._pair[key] = best
         return best
+
+    @staticmethod
+    def _side(net: str, barrier) -> str:
+        """'a' on the barrier's named side, 'b' on the other, '' on neither
+        (a barrier between two named groups leaves the rest out). Copper
+        on no net is on the other side of a barrier from every other net."""
+        a, b, _d = barrier
+        if net and net in a:
+            return "a"
+        if b is None or net in b:
+            return "b"
+        return ""
 
     def clearance_row(self, routed: int, polygon: bool = False) -> np.ndarray:
         """Clearance to every owner id, indexed through ``lookup``."""
@@ -164,7 +198,11 @@ class RouteRules:
         at, and a track that wide leaving a small pad runs straight into
         the next one. A person necks down; this keeps a net to what its
         smallest pad takes.
+
+        A width the routing brief sets is taken as it is.
         """
+        if net in self.width_set:
+            return self.width_set[net]
         w = self.rules.width(self.facts(net, "track"))
         width = w.get("preferred") or w.get("min") or 6.0
         sizes = [min(c.w, c.h) for p in pads for c in p.copper if min(c.w, c.h) > 0]

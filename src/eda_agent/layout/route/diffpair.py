@@ -162,7 +162,7 @@ def route_pairs(ctx) -> None:
         entry = {"name": name, "positive": pos, "negative": neg, "source": source,
                  "routed": False, "reason": ""}
         rep.pairs.append(entry)
-        if not (ctx.routed(pos) and ctx.routed(neg)):
+        if not (ctx.routed(pos, pair=True) and ctx.routed(neg, pair=True)):
             entry["reason"] = "not routed here"
             continue
         if pos in ctx.planes or neg in ctx.planes or pos in ctx.pours or neg in ctx.pours:
@@ -174,8 +174,10 @@ def route_pairs(ctx) -> None:
             continue
         rule = pair_rule(r.rules, name, pos)
         pid, nid = r.grid.net_id[pos], r.grid.net_id[neg]
-        width = rule.get("width") or r.options.pair_width or min(ctx.width(pos), ctx.width(neg))
-        gap = rule.get("gap") or r.options.pair_gap or r.rr.pair_clearance(pid, nid)
+        briefed = r.brief.of.get(pos) or r.brief.of.get(neg)
+        width = (briefed.width if briefed is not None and briefed.width is not None else None)             or rule.get("width") or r.options.pair_width or min(ctx.width(pos), ctx.width(neg))
+        gap = ((briefed.gap if briefed is not None and briefed.gap is not None else None)
+               or rule.get("gap") or r.options.pair_gap or r.rr.pair_clearance(pid, nid))
         # The gap can be no less than the clearance between the two nets.
         gap = max(gap, r.rr.pair_clearance(pid, nid), r.rr.pair_clearance(nid, pid))
         entry.update(width=round(width, 4), gap=round(gap, 4))
@@ -194,9 +196,15 @@ def route_pairs(ctx) -> None:
         for (pa, na), (pb, nb) in options:
             ends = [(pos, pa, pb), (neg, na, nb)]
             for li in _layers(r, [b.pads[i] for i in (pa, pb, na, nb)]):
+                if not _brief_allows_layer(r, (pos, neg), li):
+                    why = "the brief leaves out every layer the four pads share"
+                    continue
                 got = plan_group(ctx, ends, width, width + gap, li)
                 if isinstance(got, str):
                     why = "polarity swap needed" if "cross" in got else got
+                    continue
+                if not _brief_allows_lanes(r, (pos, neg), got):
+                    why = "the coupled lanes leave the brief's region or enter one of its areas"
                     continue
                 plan = got
                 break
@@ -309,6 +317,25 @@ def lane_cells(r, pts, li: int, width: float) -> list:
             if math.hypot(cx - ax - t * dx, cy - ay - t * dy) <= width / 2 - 0.25:
                 out.add((li, j, i))
     return sorted(out)
+
+
+def _brief_allows_layer(r, nets, li: int) -> bool:
+    return all(r.brief_masks.get(n) is None or r.brief_masks[n][0][li] for n in nets)
+
+
+def _brief_allows_lanes(r, nets, plan) -> bool:
+    for n in nets:
+        ruled = r.brief_masks.get(n)
+        walls = [w for w in r.brief_walls if w[0][plan.li] and n not in w[2]]
+        if (ruled is None or ruled[1] is None) and not walls:
+            continue
+        line = plan.lines[plan.nets.index(n)]
+        for _, y, x in lane_cells(r, line, plan.li, plan.width):
+            if ruled is not None and ruled[1] is not None and not ruled[1][y, x]:
+                return False
+            if any(w[1][y, x] for w in walls):
+                return False
+    return True
 
 
 def _layers(r, pads) -> list[int]:
