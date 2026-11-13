@@ -14,6 +14,7 @@ from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
+from ..sch_members import member_refusals
 from .library import _mils
 from ..units import format_length
 from .pin_hints import pin_location_hint
@@ -591,6 +592,11 @@ def register_generic_tools(mcp):
         untrusted = untrusted_text_note(properties)
         if untrusted and isinstance(result, dict):
             result["_untrusted_content"] = untrusted
+        # A member the type does not carry reads blank; say why, from the
+        # same table the script's gate is generated from.
+        refused = member_refusals(object_type, properties.split(","))
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
         return result
 
     @mcp.tool()
@@ -820,6 +826,9 @@ def register_generic_tools(mcp):
         if (isinstance(result, dict) and object_type in ("eParameter", "eDesignator")
                 and re.search(r"(^|\|)\s*GraphicallyLocked\s*=", set)):
             result["note"] = _PARAMETER_LOCK_DOES_NOT_SAVE
+        refused = member_refusals(object_type, [a.split("=", 1)[0] for a in set.split("|")])
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
         return result
 
     @mcp.tool()

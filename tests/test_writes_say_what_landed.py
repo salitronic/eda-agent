@@ -48,7 +48,7 @@ def test_a_harness_wire_answers_name_from_its_description():
     code = (SCRIPTS / "Generic.pas").read_text(encoding="utf-8", errors="replace")
     reader = _routine("Generic.pas", "GetSchProperty")
     name = reader[reader.index("PropName = 'Name'"):]
-    name = name[:name.index("Else If PropName = 'LibReference'")]
+    name = name[:name.index("PropName = 'LibReference'")]
     assert "HarnessNameFromDescription(Obj.GetState_DescriptionString)" in name
     assert code.index("Function HarnessNameFromDescription") < code.index("Function GetSchProperty")
 
