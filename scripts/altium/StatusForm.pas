@@ -563,6 +563,21 @@ Begin
         + 'it as the tool was asked, then reads the result back. Manual: the '
         + 'dialog waits for you.';
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
+    Tip := 'Count the tokens each AI tool call costs, as an estimate from the '
+        + 'size of its text and pictures. The totals show on the dashboard''s '
+        + 'Tools panel and with eda-agent usage. Nothing is added to what the '
+        + 'AI reads.';
+    SetTip(lbl_CfgUsage, Tip);  SetTip(opt_UsageOff, Tip);  SetTip(opt_UsageOn, Tip);
+    Tip := 'How strictly the router holds the AI to routing discipline. '
+        + 'Enforced: a critical net (pair, clock, switching node, antenna '
+        + 'feed) needs a sourced routing brief first, and a round is written '
+        + 'only once the AI has answered every finding. Advisory: findings are '
+        + 'reported but nothing waits. Off: neither. The rules the AI gives '
+        + 'are obeyed at every level, and your own routing is never blocked.';
+    SetTip(lbl_CfgRouting, Tip);  SetTip(opt_RouteEnforced, Tip);
+    SetTip(opt_RouteAdvisory, Tip);  SetTip(opt_RouteOff, Tip);
+    SetTip(btn_Help, 'Open the help page in your browser: labelled pictures '
+        + 'of each part of this window, then every setting on the Config tab explained.');
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
         + 'update it; it tells you what is new first.');
     SetTip(btn_Sponsor, 'Open github.com/sponsors/salitronic in your browser.');
@@ -820,6 +835,7 @@ Begin
     OwnPanelColours(pnl_Sponsor);   OwnPanelColours(pnl_SponsorEdge);
     OwnPanelColours(btn_Sponsor);   OwnPanelColours(btn_SponsorClose);
     OwnPanelColours(btn_SponsorHeart); OwnPanelColours(btn_Update);
+    OwnPanelColours(btn_Help);
     OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
     OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
     OwnPanelColours(opt_FmtSiUnit);
@@ -834,6 +850,10 @@ Begin
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
     OwnPanelColours(sep_Cfg6);
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
+    OwnPanelColours(sep_Cfg8);
+    OwnPanelColours(opt_UsageOff);  OwnPanelColours(opt_UsageOn);
+    OwnPanelColours(sep_Cfg9);      OwnPanelColours(opt_RouteEnforced);
+    OwnPanelColours(opt_RouteAdvisory);  OwnPanelColours(opt_RouteOff);
 End;
 
 
@@ -1045,6 +1065,25 @@ Begin
         Else
             lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
                 + 'open: change orders, teardrops.';
+        PaintOption(opt_UsageOff, UsageMode <> 'on');
+        PaintOption(opt_UsageOn, UsageMode = 'on');
+        If UsageMode = 'on' Then
+            lbl_CfgUsageHint.Caption := 'Each tool call''s token cost is '
+                + 'counted, for the dashboard and eda-agent usage.'
+        Else
+            lbl_CfgUsageHint.Caption := 'Tool calls are not counted.';
+        PaintOption(opt_RouteEnforced, (RoutingMode <> 'advisory') And (RoutingMode <> 'off'));
+        PaintOption(opt_RouteAdvisory, RoutingMode = 'advisory');
+        PaintOption(opt_RouteOff, RoutingMode = 'off');
+        If RoutingMode = 'off' Then
+            lbl_CfgRoutingHint.Caption := 'No brief is asked for and nothing '
+                + 'waits on findings. The AI''s rules are still obeyed.'
+        Else If RoutingMode = 'advisory' Then
+            lbl_CfgRoutingHint.Caption := 'Findings are reported; nothing waits '
+                + 'for the AI to answer them.'
+        Else
+            lbl_CfgRoutingHint.Caption := 'Critical nets need a sourced brief; '
+                + 'each finding is answered before a round is written.';
         PaintChecks(0);
     Except End;
 End;
@@ -1532,6 +1571,27 @@ Begin
     Except End;
 End;
 
+{ Open the help page in the browser, on a setting when one is named. The }
+{ server or the dashboard, whichever takes the link file first, opens it; }
+{ with neither running, it opens once one starts.                         }
+Procedure OpenConfigHelp(Setting : String);
+Begin
+    Try
+        WriteFileContent(WorkspaceDir + 'open_dashboard.url', 'help:' + Setting);
+        ShowNotice('');
+    Except End;
+End;
+
+{ The Help button at the top right of the window: the help page, which }
+{ opens on labelled pictures of the window and explains every setting. }
+Procedure btn_HelpClick(Sender : TObject);
+Begin OpenConfigHelp(''); End;
+Procedure btn_HelpEnter(Sender : TObject);
+Begin Try btn_Help.Color := COLOR_BG_HOVER; Except End; End;
+Procedure btn_HelpLeave(Sender : TObject);
+Begin Try btn_Help.Color := COLOR_BG_ELEVATED; Except End; End;
+
+
 { A value format chosen on the Config tab is stored at once, so the server }
 { and a restart see it. Only SI takes a unit.                             }
 Procedure ChooseValueFormat(Choice : String; UnitChoice : String);
@@ -1568,7 +1628,9 @@ Begin
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
         Else If Setting = 'length_units' Then LengthUnits := Choice
-        Else If Setting = 'dialogs' Then DialogMode := Choice;
+        Else If Setting = 'dialogs' Then DialogMode := Choice
+        Else If Setting = 'usage' Then UsageMode := Choice
+        Else If Setting = 'routing' Then RoutingMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1616,6 +1678,21 @@ Begin ChooseAgentSetting('length_units', 'mil'); End;
 
 Procedure opt_UnitsMmClick(Sender : TObject);
 Begin ChooseAgentSetting('length_units', 'mm'); End;
+
+Procedure opt_UsageOffClick(Sender : TObject);
+Begin ChooseAgentSetting('usage', 'off'); End;
+
+Procedure opt_UsageOnClick(Sender : TObject);
+Begin ChooseAgentSetting('usage', 'on'); End;
+
+Procedure opt_RouteEnforcedClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'enforced'); End;
+
+Procedure opt_RouteAdvisoryClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'advisory'); End;
+
+Procedure opt_RouteOffClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'off'); End;
 
 { A check switched on or off on the Config tab, stored at once. }
 Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);

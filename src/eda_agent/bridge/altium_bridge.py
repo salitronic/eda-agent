@@ -1094,24 +1094,26 @@ class AltiumBridge:
         """If the Altium status form dropped open_dashboard.url, open it.
 
         The sentinel file's content is a URL (anything starting with http:// or
-        https:// is accepted). The file is removed after the open call so the
-        same trigger doesn't fire twice. Any error is logged and swallowed --
-        a missing sentinel is the common case on every tick.
+        https:// is accepted), or ``help:<setting>`` for the Config tab's
+        help page (see ``web.help``). Every server process and the dashboard watch
+        the same file, so it is taken with take_file_text: one of them opens
+        the page, once. Any error is logged and swallowed -- a missing
+        sentinel is the common case on every tick.
         """
+        from ..atomicfile import take_file_text
+
         sentinel = self.config.workspace_dir / "open_dashboard.url"
         if not sentinel.exists():
             return
-        try:
-            url = sentinel.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
+        url = take_file_text(sentinel)
+        if url is None:
             return
-        try:
-            sentinel.unlink()
-        except OSError:
-            pass
-        if not url.startswith("http://") and not url.startswith("https://"):
+        from ..web.help import link_target
+        target = link_target(url, self.config.workspace_dir)
+        if target is None:
             logger.debug("dashboard sentinel had bad URL: %r", url[:80])
             return
+        url = target
         try:
             import webbrowser
             webbrowser.open(url)
@@ -1621,9 +1623,8 @@ class AltiumBridge:
 
         _recover_script_crash only acts for the call whose handler crashed.
         When that caller has gone (exited, timed out, or a client without
-        this recovery), nothing pressed OK, and every other session's call
-        failed on the box until a person closed it. Measured 2026-11-11 on
-        proj_set_parameter (#311).
+        this recovery), nothing else presses OK, and every other session's
+        call would fail on the box until a person closed it.
 
         Only while THIS call's request is still queued (the loop is not
         running it) and no one holds the recovery marker. The crashed call

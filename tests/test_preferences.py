@@ -40,7 +40,8 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, LengthUnits, DialogMode, ChecksOff,
+    UiAutomationMode, KeepInViewMode, LengthUnits, DialogMode, UsageMode, RoutingMode,
+    ChecksOff,
     WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
@@ -134,7 +135,7 @@ def test_python_reads_the_same_file(tmp_path):
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
         "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
-        "length_units": "mil"}
+        "length_units": "mil", "usage": "off", "routing": "enforced"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -157,7 +158,10 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_UnitsMilClick", "opt_UnitsMmClick",
                     "opt_DeleteAllowedClick", "opt_DeleteRefusedClick",
                     "opt_CloseAllowedClick", "opt_CloseRefusedClick",
-                    "opt_EcoAutoClick", "opt_EcoManualClick"):
+                    "opt_EcoAutoClick", "opt_EcoManualClick",
+                    "opt_UsageOffClick", "opt_UsageOnClick",
+                    "opt_RouteEnforcedClick", "opt_RouteAdvisoryClick",
+                    "opt_RouteOffClick"):
         assert f"= {handler}" in dfm, handler
         assert handler in form, handler
     for option, call in (("None", "'none', 'without'"), ("Rkm", "'rkm', 'without'"),
@@ -179,7 +183,12 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("CloseAllowed", "'closing', 'allowed'"),
                          ("CloseRefused", "'closing', 'refused'"),
                          ("EcoAuto", "'dialogs', 'auto'"),
-                         ("EcoManual", "'dialogs', 'manual'")):
+                         ("EcoManual", "'dialogs', 'manual'"),
+                         ("UsageOff", "'usage', 'off'"),
+                         ("UsageOn", "'usage', 'on'"),
+                         ("RouteEnforced", "'routing', 'enforced'"),
+                         ("RouteAdvisory", "'routing', 'advisory'"),
+                         ("RouteOff", "'routing', 'off'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -456,3 +465,38 @@ def test_the_length_unit_is_kept_and_defaults_to_mils(tmp_path):
     assert out == ["mil", "mm"]
     # The file the panel writes is the one the Python side reads.
     assert preferences.preferences(tmp_path)["length_units"] == "mm"
+
+
+def test_the_token_count_is_kept_and_defaults_to_off(tmp_path):
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(UsageMode);",
+        "  UsageMode := 'on'; StorePreferences(0);",
+        "  UsageMode := ''; LoadPreferences(0); WriteLn(UsageMode);",
+    ])
+    assert out == ["off", "on"]
+    assert preferences.usage_on(tmp_path)
+    painted = functions(strip_comments(_code("StatusForm.pas")))["PaintAgentSettings"]
+    assert "opt_UsageOn" in painted and "lbl_CfgUsageHint" in painted
+
+
+def test_the_routing_discipline_is_kept_and_defaults_to_enforced(tmp_path):
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(RoutingMode);",
+        "  RoutingMode := 'advisory'; StorePreferences(0);",
+        "  RoutingMode := ''; LoadPreferences(0); WriteLn(RoutingMode);",
+        "  RoutingMode := 'off'; StorePreferences(0);",
+        "  RoutingMode := ''; LoadPreferences(0); WriteLn(RoutingMode);",
+    ])
+    assert out == ["enforced", "advisory", "off"]
+    assert preferences.routing_discipline(tmp_path) == "off"
+    (tmp_path / "preferences.json").write_text('{"routing":"lax"}')
+    assert preferences.routing_discipline(tmp_path) == "enforced"
+    assert _run(tmp_path, ["  LoadPreferences(0); WriteLn(RoutingMode);"]) == ["enforced"]
+    painted = functions(strip_comments(_code("StatusForm.pas")))["PaintAgentSettings"]
+    for name in ("opt_RouteEnforced", "opt_RouteAdvisory", "opt_RouteOff",
+                 "lbl_CfgRoutingHint"):
+        assert name in painted, name
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md").read_text(
+        encoding="utf-8")
+    assert "| Routing discipline | Enforced / Advisory / Off |" in doc
+    assert set(preferences.ROUTING) == set(preferences.CHOICES["routing"])

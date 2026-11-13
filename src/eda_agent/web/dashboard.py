@@ -609,20 +609,21 @@ def _watch_open_dashboard_sentinel(workspace_dir: Path, stop: threading.Event) -
     runs after the first MCP call attaches the bridge. The dashboard server
     is typically already running long before MCP attaches, so this watcher
     is what actually makes the button respond promptly on first click.
+    The file is taken with take_file_text, so of all the processes watching
+    it only one opens the page.
     """
+    from eda_agent.atomicfile import take_file_text
+
     sentinel = workspace_dir / "open_dashboard.url"
     while not stop.wait(0.5):
         if not sentinel.exists():
             continue
-        try:
-            url = sentinel.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
+        url = take_file_text(sentinel)
+        if url is None:
             continue
-        try:
-            sentinel.unlink()
-        except OSError:
-            pass
-        if not url.startswith("http://") and not url.startswith("https://"):
+        from eda_agent.web.help import link_target
+        url = link_target(url, workspace_dir)
+        if url is None:
             continue
         try:
             import webbrowser
@@ -898,6 +899,12 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         return resp
+
+    @app.route("/help/config")
+    def config_help() -> Response:
+        """The help page of the bridge's window: what each setting does."""
+        from .help import page_html
+        return Response(page_html(), mimetype="text/html")
 
     @app.after_request
     def _no_cache_api(resp: Response) -> Response:

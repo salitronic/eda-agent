@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eda-agent: help</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --ink: #1d232b; --soft: #55606d; --rule: #dcd8cf;
+    --mark: #1f6f8b; --card: #ffffff; --hit: #fff4d6; --warn: #9a5b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #22262b; --ink: #e6e3dc; --soft: #a3a9b1; --rule: #3a4048;
+      --mark: #6cb6d4; --card: #2a2f35; --hit: #3d3a2a; --warn: #e0a54a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 "Segoe UI", system-ui, sans-serif;
+  }
+  .page { display: grid; grid-template-columns: 15rem 1fr; gap: 2.5rem;
+          max-width: 84rem; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  nav { position: sticky; top: 1.5rem; align-self: start; font-size: 0.9rem; }
+  nav h2 { font-size: 0.9rem; margin: 1.2rem 0 0.3rem; color: var(--soft); font-weight: 600; }
+  nav a { display: block; color: var(--ink); text-decoration: none; padding: 0.1rem 0; }
+  nav a:hover, nav a:focus-visible { color: var(--mark); text-decoration: underline; }
+  main { max-width: 64rem; }
+  main > p, main > h1, h2.group, section.setting { max-width: 44rem; }
+  section.wide > p { max-width: 44rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 0.6rem; }
+  .lede { color: var(--soft); margin: 0 0 2rem; }
+  h2.group { font-size: 1.15rem; margin: 2.6rem 0 0.8rem; padding-bottom: 0.3rem;
+             border-bottom: 1px solid var(--rule); }
+  section.setting { background: var(--card); border: 1px solid var(--rule);
+                    border-radius: 6px; padding: 1rem 1.2rem 0.4rem; margin: 0 0 1rem;
+                    scroll-margin-top: 1.5rem; }
+  section.setting:target { background: var(--hit); border-color: var(--mark); }
+  section.setting h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+  dl { margin: 0.6rem 0 0.9rem; display: grid; grid-template-columns: max-content 1fr;
+       gap: 0.35rem 1rem; }
+  dt { font-weight: 600; }
+  dd { margin: 0; }
+  .default { color: var(--soft); font-weight: 400; font-size: 0.85rem; }
+  .note { color: var(--soft); font-size: 0.92rem; }
+  .warn { color: var(--warn); }
+  code { font-family: Consolas, monospace; font-size: 0.9em; }
+  ol { padding-left: 1.3rem; }
+  a { color: var(--mark); }
+  svg.figure { display: block; width: 100%; height: auto; margin: 0.4rem 0 1.4rem;
+               font-family: "Segoe UI", system-ui, sans-serif; }
+  svg.figure image { image-rendering: auto; }
+  svg.figure .leader { fill: none; stroke: #e0a020; stroke-width: 1.4; }
+  svg.figure .dot { fill: #ffd23f; stroke: #1d232b; stroke-width: 1.2; }
+  svg.figure .title { font-size: 13px; font-weight: 700; fill: var(--ink); }
+  svg.figure .title a { fill: var(--mark); text-decoration: underline; }
+  svg.figure .note { font-size: 12px; fill: var(--soft); }
+  @media (max-width: 760px) {
+    .page { grid-template-columns: 1fr; }
+    nav { position: static; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+<nav aria-label="Settings">
+  <a href="#overview">The window</a>
+  <a href="#win-header">State and counters</a>
+  <a href="#win-buttons">Buttons and filter</a>
+  <a href="#tab-log">Log and Perf tabs</a>
+  <a href="#tab-config">Config tab</a>
+  <h2>Permissions</h2>
+  <a href="#edits">Edits to designs</a>
+  <a href="#deleting">Deleting</a>
+  <a href="#closing">Closing documents</a>
+  <a href="#ui-automation">Menus, dialogs, keys</a>
+  <h2>View</h2>
+  <a href="#keep-in-view">Keep board in view</a>
+  <a href="#lengths">Lengths in</a>
+  <h2>Values</h2>
+  <a href="#value-format">Component value format</a>
+  <h2>Dialogs</h2>
+  <a href="#dialogs">Tool dialogs</a>
+  <h2>Checks</h2>
+  <a href="#check-footprint">Footprint vs drawing</a>
+  <a href="#check-symbol">Symbol vs pin table</a>
+  <a href="#check-pins-pads">Symbol pins vs pads</a>
+  <a href="#check-3d-body">3D body vs drawing</a>
+  <a href="#check-spice">SPICE model file</a>
+  <a href="#check-fab">Fab export</a>
+  <a href="#check-refuses">When a check refuses</a>
+  <h2>Diagnostics</h2>
+  <a href="#token-count">Token count</a>
+  <h2>Routing</h2>
+  <a href="#routing">Routing discipline</a>
+</nav>
+
+<main>
+<h1>The EDA Agent window and its settings</h1>
+<p class="lede">These settings decide what the AI may do in Altium and how
+strictly its work is checked. Only you change them: the AI reads them and
+never switches one itself. Each choice takes effect on the next command, with
+no restart of Altium or the AI client, and is kept across restarts.</p>
+
+<section id="overview" class="wide">
+<h2 class="group">The window</h2>
+<p>The bridge's window in Altium, a part at a time from the top. The parts
+above the tabs are the same on every tab.</p>
+<h3 id="win-header">State and version</h3>
+<!-- figure:header -->
+<h3 id="win-counters">Counters</h3>
+<!-- figure:counters -->
+<h3 id="win-buttons">Buttons</h3>
+<!-- figure:buttons -->
+<h3 id="win-filter">Log filter</h3>
+<!-- figure:filter -->
+<h3 id="win-tabs">Tabs</h3>
+<!-- figure:tabs -->
+<h3 id="tab-log">Log tab</h3>
+<p>The commands the AI runs, as they run.</p>
+<!-- figure:log -->
+<h3 id="tab-perf">Perf tab</h3>
+<p>Each command's count and timings for this session.</p>
+<!-- figure:perf -->
+<h3 id="tab-config">Config tab</h3>
+<p>Your settings, in groups: <a href="#edits">Permissions</a>,
+<a href="#keep-in-view">View</a>, <a href="#value-format">Values</a>,
+<a href="#dialogs">Dialogs</a>, <a href="#check-footprint">Checks</a>,
+<a href="#token-count">Diagnostics</a> and <a href="#routing">Routing</a>.
+Every row works the same way:</p>
+<!-- figure:config -->
+<h3 id="win-footer">Bottom of the window</h3>
+<!-- figure:footer -->
+</section>
+
+<h2 class="group">Permissions</h2>
+
+<section class="setting" id="edits">
+  <h3>Edits to designs</h3>
+  <p>Whether the AI may change the open schematics, boards and libraries.</p>
+  <dl>
+    <dt>Allowed <span class="default">default</span></dt>
+    <dd>The AI may place, move, route, edit and save.</dd>
+    <dt>Read-only</dt>
+    <dd>Every command that changes a design is refused. Reads, checks, renders
+      and exports still run, so the AI can still review a design.</dd>
+  </dl>
+  <p class="note">Use read-only while you review a board you don't want touched,
+    or on a released design. <code>EDA_AGENT_READONLY</code> in the AI client's
+    config also makes it read-only, whatever this says.</p>
+</section>
+
+<section class="setting" id="deleting">
+  <h3>Deleting</h3>
+  <p>Whether the AI may delete or remove anything: objects, parts, footprints,
+    nets, sheets, rules, variants, layers, documents from a project, and
+    routing.</p>
+  <dl>
+    <dt>Allowed <span class="default">default</span></dt>
+    <dd>Deleting commands run like any other edit.</dd>
+    <dt>Refused</dt>
+    <dd>Every command that deletes or removes is refused. Other edits still
+      run.</dd>
+  </dl>
+  <p class="note">A refused delete can stop a task that has to replace
+    something, such as re-routing a net (its old copper is removed first).</p>
+</section>
+
+<section class="setting" id="closing">
+  <h3>Closing documents</h3>
+  <p>Whether the AI may close a document or a project.</p>
+  <dl>
+    <dt>Allowed <span class="default">default</span></dt>
+    <dd>The AI may close what it opened, and what a task needs closed.</dd>
+    <dt>Refused</dt>
+    <dd>Nothing is closed. Your open documents stay as you left them.</dd>
+  </dl>
+</section>
+
+<section class="setting" id="ui-automation">
+  <h3>Menus, dialogs, keys</h3>
+  <p>Whether the AI may pick menus, press dialog buttons and type into Altium.
+    The AI always uses Altium's scripting API first. This is the fallback for
+    the few things the API cannot reach.</p>
+  <dl>
+    <dt>On <span class="default">default</span></dt>
+    <dd>The AI may drive the interface where there is no API route, and says
+      in its report which step needed it.</dd>
+    <dt>Off</dt>
+    <dd>No menus, button presses or keystrokes. Some tasks have no other route
+      and are refused.</dd>
+  </dl>
+  <p class="note"><code>EDA_AGENT_UI_AUTOMATION=0</code> in the AI client's
+    config also turns it off, whatever this says.</p>
+</section>
+
+<h2 class="group">View</h2>
+
+<section class="setting" id="keep-in-view">
+  <h3>Keep board in view</h3>
+  <p>Whether the window is fitted to the whole board or sheet after each edit
+    the AI makes.</p>
+  <dl>
+    <dt>Off <span class="default">default</span></dt>
+    <dd>The view stays where you put it.</dd>
+    <dt>On</dt>
+    <dd>After each edit the window is fitted to the whole design, at most
+      every 2 seconds, so you see the change wherever it is.</dd>
+  </dl>
+  <p class="note"><code>EDA_AGENT_KEEP_BOARD_IN_VIEW=1</code> in the AI
+    client's config also turns it on.</p>
+</section>
+
+<section class="setting" id="lengths">
+  <h3>Lengths in</h3>
+  <p>The unit the AI gives and reads lengths in: coordinates, widths,
+    clearances, thicknesses.</p>
+  <dl>
+    <dt>mil <span class="default">default</span></dt>
+    <dd>New AI sessions work in mils.</dd>
+    <dt>mm</dt>
+    <dd>New AI sessions work in millimetres.</dd>
+  </dl>
+  <p class="note">Each session starts in this unit and may switch its own.
+    Every reply says which unit it is in, so a length is never misread.</p>
+</section>
+
+<h2 class="group">Values</h2>
+
+<section class="setting" id="value-format">
+  <h3>Component value format</h3>
+  <p>How a component value is written when the AI cleans values up.</p>
+  <dl>
+    <dt>None <span class="default">default</span></dt>
+    <dd>Values are left as they are written. Nothing is reformatted.</dd>
+    <dt>4K7 2u2</dt>
+    <dd>The RKM code of IEC 60062: the letter in place of the decimal point,
+      so a point lost in printing cannot change the value. No unit:
+      4K7, 2u2, 100n, 3V3, 0R1.</dd>
+    <dt>4.7k 2.2u</dt>
+    <dd>A decimal point and an SI prefix, without the unit:
+      4.7k, 2.2u, 100n, 3.3V, 0.1.</dd>
+    <dt>with unit</dt>
+    <dd>A decimal point and an SI prefix, with the unit: 4.7k, 2.2uF, 100nF,
+      10uH, 3.3V. Resistors carry no unit, since the ohm sign cannot pass
+      through the bridge.</dd>
+  </dl>
+</section>
+
+<h2 class="group">Dialogs</h2>
+
+<section class="setting" id="dialogs">
+  <h3>Tool dialogs</h3>
+  <p>What happens to a dialog a tool opens, such as the Engineering Change
+    Order or the Teardrops options.</p>
+  <dl>
+    <dt>Automatic <span class="default">default</span></dt>
+    <dd>The AI answers the dialog as the tool was asked, then reads the result
+      back.</dd>
+    <dt>Manual</dt>
+    <dd>The dialog waits for you. Use this when you want to read every change
+      order before it is applied.</dd>
+  </dl>
+</section>
+
+<h2 class="group">Checks</h2>
+<p>Each check runs before a part is built or fab files are written, and
+refuses the build when what was made does not match its source. All are on by
+default. A check that is off is skipped, and the result says it was skipped,
+so the part is never taken for a checked one.</p>
+
+<section class="setting" id="check-footprint">
+  <h3>Footprint vs drawing</h3>
+  <p>Checks a footprint's pads against the land pattern in its datasheet
+    drawing.</p>
+  <p class="note">You might switch it off for lands you changed on purpose:
+    longer for hand soldering, or to a house rule.</p>
+</section>
+
+<section class="setting" id="check-symbol">
+  <h3>Symbol vs pin table</h3>
+  <p>Checks a symbol's pins against the pin table in the part's datasheet.</p>
+  <p class="note">You might switch it off when the pin table is a picture the
+    AI cannot read, or when you name pins differently on purpose.</p>
+</section>
+
+<section class="setting" id="check-pins-pads">
+  <h3>Symbol pins vs pads</h3>
+  <p>Checks that the symbol's pin numbers match the footprint's pads, so
+    every pin lands on a pad.</p>
+  <p class="note">You might switch it off when the footprint lives in an
+    installed library or vault the check cannot read, or when you leave named
+    pads off the symbol on purpose.</p>
+</section>
+
+<section class="setting" id="check-3d-body">
+  <h3>3D body vs drawing</h3>
+  <p>Checks a part's 3D body against the outline in its datasheet.</p>
+  <p class="note">You might switch it off for a deliberately simplified body,
+    or a part whose datasheet has no outline drawing.</p>
+</section>
+
+<section class="setting" id="check-spice">
+  <h3>SPICE model file</h3>
+  <p>Checks a SPICE model file before it is attached to a part: that the file
+    holds the named model, complete and of the kind it is attached as, with no
+    more nodes than the part has pins, and that its comments name a publisher,
+    as a vendor's model does.</p>
+  <p class="note">You might switch it off for your own model, measured or
+    written in-house.</p>
+</section>
+
+<section class="setting" id="check-fab">
+  <h3>Fab export</h3>
+  <p>Checks the board and its parts against the fab's limits before Gerbers,
+    drill files and assembly files are written.</p>
+  <p class="note">You might switch it off for a limit the fab agreed for this
+    order. For a fab with no data in eda-agent, the AI can use fab "custom"
+    with your own limits instead.</p>
+</section>
+
+<section class="setting" id="check-refuses">
+  <h3>When a check refuses</h3>
+  <p>A refusal is the check doing its job. The AI shows you what differs, in
+    your terms: which land, pin, dimension or node, and by how much. If you
+    still want it built as it is:</p>
+  <ol>
+    <li>Switch that row off here.</li>
+    <li>Ask the AI to build it again. The result is marked unchecked.</li>
+    <li>Switch the row back on when you are done.</li>
+  </ol>
+  <p class="note warn">The AI never passes a check another way, such as
+    placing pads one by one or editing after the build: that would give you
+    the part without the record that it differs from its source.</p>
+</section>
+
+<h2 class="group">Diagnostics</h2>
+
+<section class="setting" id="token-count">
+  <h3>Token count</h3>
+  <p>Whether the cost of each AI tool call is counted.</p>
+  <dl>
+    <dt>Off <span class="default">default</span></dt>
+    <dd>Tool calls are not counted.</dd>
+    <dt>On</dt>
+    <dd>Each call's cost in tokens (an estimate from the size of its text and
+      pictures) and its time are counted. The totals show on the dashboard's
+      Tools panel and with <code>eda-agent usage</code>. Nothing is added to
+      what the AI reads.</dd>
+  </dl>
+  <p class="note"><code>EDA_AGENT_USAGE_OFF=1</code> in the AI client's config
+    keeps it off, whatever this says.</p>
+</section>
+
+<h2 class="group">Routing</h2>
+
+<section class="setting" id="routing">
+  <h3>Routing discipline</h3>
+  <p>How strictly the router holds the AI to engineering discipline when it
+    routes. The AI gives the router a routing brief: the layers, widths and
+    impedance of the critical nets, what keeps apart, the loops to keep small,
+    the isolation barriers, each with its source. After each round the router
+    reviews the copper and lists its findings.</p>
+  <dl>
+    <dt>Enforced <span class="default">default</span></dt>
+    <dd>A critical net (a differential pair, clock, switching node,
+      high-current path or antenna feed) is left unrouted until the AI gives
+      it a brief entry with its source. A round is written to the board only
+      once the AI has answered every finding of its review, with a reason.</dd>
+    <dt>Advisory</dt>
+    <dd>Critical nets without a brief are routed and named in the reply.
+      Findings are listed, but the round is written without waiting for
+      answers.</dd>
+    <dt>Off</dt>
+    <dd>No brief is asked for and nothing waits on findings.</dd>
+  </dl>
+  <p class="note">At every level the router obeys the brief the AI did give,
+    and the review still measures the copper. Routes you draw yourself in
+    Altium are never checked or blocked by this setting.</p>
+</section>
+</main>
+</div>
+<script>
+  // The panel opens this page on the setting it was asked about.
+  (function () {
+    var jump = document.documentElement.getAttribute("data-jump");
+    if (jump && !location.hash && document.getElementById(jump)) {
+      location.hash = jump;
+    }
+  })();
+</script>
+</body>
+</html>

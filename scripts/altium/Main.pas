@@ -173,6 +173,12 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageMode 'on' counts each tool call's token cost (the Python side  }
+    { does the counting). Default off.                                    }
+    UsageMode : String;
+    { RoutingMode is the routing discipline: 'enforced' (the default),    }
+    { 'advisory' or 'off'. The Python side holds the router to it.        }
+    RoutingMode : String;
     { ChecksOff lists the checks switched off on the Config tab, by name,  }
     { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
     { model_body, spice_model, fab_export). Empty, the default, keeps    }
@@ -2815,6 +2821,8 @@ Begin
     KeepInViewMode := 'off';
     LengthUnits := 'mil';
     DialogMode := 'auto';
+    UsageMode := 'off';
+    RoutingMode := 'enforced';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
@@ -2830,7 +2838,10 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
     If LowerCase(ExtractJsonValue(Content, 'length_units')) = 'mm' Then LengthUnits := 'mm';
-    ChecksOff := LowerCase(ExtractJsonValue(Content, 'checks_off'));
+    If LowerCase(ExtractJsonValue(Content, 'usage')) = 'on' Then UsageMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'advisory' Then RoutingMode := 'advisory';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'off' Then RoutingMode := 'off';
+    ChecksOff :=LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2842,6 +2853,8 @@ Begin
         + '","keep_in_view":"' + KeepInViewMode
         + '","length_units":"' + LengthUnits
         + '","dialogs":"' + DialogMode
+        + '","usage":"' + UsageMode
+        + '","routing":"' + RoutingMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
 
