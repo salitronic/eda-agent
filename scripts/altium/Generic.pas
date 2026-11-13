@@ -2306,6 +2306,25 @@ Begin
     Else If N = 'jumper' Then Result := eComponentKind_Jumper;
 End;
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness   }
+{ wire, splice or cable has no Name property of its own; this is its name.  }
+Function HarnessNameFromDescription(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
@@ -2405,8 +2424,11 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
+                { A harness wire, splice or cable: its name is in its    }
+                { description, so a Name filter finds it too.            }
                 Result := '';
+                Try Result := HarnessNameFromDescription(Obj.GetState_DescriptionString); Except End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
@@ -3832,6 +3854,7 @@ Begin
                 MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
+            NoteSchWriteLanded(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -3861,8 +3884,18 @@ Begin
         { Already applied above as part of the coalesced positional write. }
         If (PropName = 'Location.X') Or (PropName = 'Location.Y') Then Continue;
 
-        SetSchProperty(Obj, PropName, PropValue);
+        If SetSchProperty(Obj, PropName, PropValue) = 1 Then NoteSchWriteLanded(0);
     End;
+End;
+
+{ What a schematic write call says it changed. A modify that matched     }
+{ objects but landed no write (every property unknown, refused or kept   }
+{ by Altium, or the whole set rejected up front) changed nothing.        }
+Function SchCallModified(IsMutating : Boolean; TotalMatched : Integer; Mode : String) : Boolean;
+Begin
+    Result := IsMutating And ((TotalMatched > 0) Or (Mode = 'create'));
+    If Result And (Mode = 'modify') And (SchWritesLanded(0) = 0) Then
+        Result := False;
 End;
 
 {..............................................................................}
@@ -4696,7 +4729,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4763,7 +4796,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -7932,24 +7965,6 @@ Begin
     Else If Id = eHarnessBundle Then Result := 'bundle';
 End;
 
-{ The name a harness object gives in its description: the word after its    }
-{ kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
-Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
-Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
-End;
-
 { An Altium colour (blue in the high byte) as #RRGGBB. }
 Function HarnessColourHex(C : Integer) : String;
 Begin
@@ -9681,14 +9696,12 @@ End;
 {         line_style (integer), collapsed (true/false);                    }
 {         color, area_color (Altium's BGR integers). Without them the      }
 {         blanket takes the user's own blanket defaults (Preferences >     }
-{         Schematic > Defaults), as one drawn in the editor does:          }
-{         eCreate_Default gave a black border and an OPAQUE BLACK fill     }
-{         that hid every wire and label it enclosed (issue #317). A       }
-{         new object is drawn above what is already on the sheet and no    }
+{         Schematic > Defaults), as one drawn in the editor does. A new    }
+{         object is drawn above what is already on the sheet and no        }
 {         scripted call reorders a sheet, so the fill is always written    }
-{         transparent. MEASURED on AD 25.8.1: an opaque blanket fill reads }
-{         back opaque, but is transparent after save and reopen, so an     }
-{         opaque one is not offered.                                       }
+{         transparent; an opaque fill would hide every wire and label it   }
+{         encloses. Altium does not keep an opaque blanket fill on save    }
+{         anyway (it reads back opaque, but is transparent after reopen).  }
 Function Gen_PlaceBlanket(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;

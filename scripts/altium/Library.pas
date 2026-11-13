@@ -1610,11 +1610,11 @@ Begin
     End;
 End;
 
-{ The shape words the pad writers take (issue #309). The two pad creators
-  compared the word as given and sent anything else to round, so a
-  "rectangle" pad, or a "Rectangular" one, was made round and the reply
-  said success. Case and spaces are ignored and the rounded rectangle
-  spellings set_pad_properties already took are kept. Returns the shape
+{ The shape words every pad writer takes: round, rectangular, octagonal
+  and roundrect. Case and surrounding spaces are ignored, and the rounded
+  rectangle spellings roundrectangle, roundedrect and rounded_rectangular
+  mean roundrect. Any other word is refused by the caller, never made
+  into a round pad. Returns the shape
   word, empty when none was given (each writer keeps its own default), or
   "?" and the word as given when it is not a pad shape. }
 Function CanonicalPadShape(Raw : String) : String;
@@ -2578,8 +2578,8 @@ Begin
         Exit;
     End;
 
-    { Every shape word is checked before any pad is made (issue #309): a
-      land pattern half built from a batch is worse than none. }
+    { Every shape word is checked before any pad is made: a land pattern
+      half built from a batch is worse than none. }
     BadShapes := '';
     Remaining := PadsStr;
     While True Do

@@ -937,10 +937,9 @@ End;
 { Both paths are now followed by a re-read of DM_Parameters, and the reply    }
 { carries what was READ, not what was asked for.                              }
 {                                                                             }
-{ The PROJECT FILE is what is saved. Adding a parameter does not mark the     }
-{ project modified, so saving only modified documents left it in memory and  }
-{ out of the .PrjPcb (AD 25.8.1), and wrote every other modified document of }
-{ the project, which nobody asked for.                                        }
+{ The PROJECT FILE is what is saved, and only it: adding a parameter does not }
+{ mark the project modified, so saving the modified documents would leave it  }
+{ out of the .PrjPcb and write documents nobody asked to save.                }
 Function Proj_SetParameter(Params : String; RequestId : String) : String;
 Var
     ProjectPath, ParamName, ParamValue, ReadBack : String;
@@ -979,6 +978,14 @@ Begin
     End;
 
     ProjectPath := Project.DM_ProjectFullPath;
+    { Free Documents, in focus behind a loose document, has no file. }
+    If Not FileExists(ProjectPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND',
+            'The project in focus is "' + ProjectPath
+            + '", not a project file; pass project_path. Nothing was written.');
+        Exit;
+    End;
 
     { Update in place if it is already there. }
     Found := False;
@@ -989,9 +996,9 @@ Begin
             Param := Project.DM_Parameters(I);
             If Param.DM_Name = ParamName Then
             Begin
-                { DM_Value is a getter: assigning it stopped the script with }
-                { a blank "Error" box no Try/Except catches (#310).        }
-                { DM_SetValue is the setter, as Prj-Parameters.pas uses it.  }
+                { DM_Value is a getter; assigning it stops the script with a }
+                { blank "Error" box no Try/Except catches. DM_SetValue is    }
+                { the setter, as Prj-Parameters.pas uses it.                 }
                 Param.DM_SetValue(ParamValue);
                 Found := True;
                 Break;
@@ -7736,6 +7743,16 @@ Begin
     If Project = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PROJECT', Problem);
+        Exit;
+    End;
+    { With a loose document in front the focused project is Free Documents, }
+    { which has no project file: its levels are the ones every free sheet  }
+    { is checked against, and nobody asked to change those.                }
+    If Not FileExists(Project.DM_ProjectFullPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'The project in focus is "' + Project.DM_ProjectFullPath
+            + '", not a project file; pass project_path. Nothing was written.');
         Exit;
     End;
     Workspace := GetWorkspace;

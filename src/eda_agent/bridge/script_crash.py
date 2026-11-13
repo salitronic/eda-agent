@@ -366,10 +366,8 @@ def recover_orphan(workspace_dir, pid: int, dialog: dict,
                    on_restarted: Callable[[], None]) -> dict:
     """Clear a script error box whose crashed call is no longer waiting.
 
-    MEASURED 2026-11-11 (proj_set_parameter on an existing parameter, #311):
-    the caller that crashed the script had gone, so nothing pressed OK, and
-    every other session's call failed on the box until a person closed it.
-    The crash is recovered exactly as its own caller would have: screenshot,
+    With no one left to press OK, every other session's call would fail on
+    the box until a person closed it. The crash is recovered exactly as its own caller would have: screenshot,
     OK, a crash record, the loop restarted in the background.
     """
     rid = halted_request(workspace_dir)
