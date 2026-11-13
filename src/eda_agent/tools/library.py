@@ -6329,7 +6329,9 @@ def register_library_tools(mcp):
         Returns:
             Dictionary with ``success``, ``source``, ``new_name``,
             ``source_library``, ``dest_library``, ``same_library`` and
-            ``overwrote`` flags.
+            ``overwrote`` flags. ``source_holder`` true: the source held
+            one symbol, so a temporary one was shown and removed; the
+            source library is left modified, not saved.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"source_name": source_name}
