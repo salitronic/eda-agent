@@ -201,6 +201,19 @@ async def _refuse_manual_sheet_layout(
     }
 
 
+def typed_line_breaks(text: str, typed_breaks: bool = True) -> str:
+    """A text frame's text with each typed backslash-n made a newline.
+
+    A caller that cannot send a newline types the two characters instead.
+    Only a text holding no real newline is converted: one that already has
+    newlines was written with them, and its backslash-n is text (a path
+    such as C:\\new\\board, a regex). The script stores backslash-n as sent.
+    """
+    if not typed_breaks or "\n" in text or "\r" in text:
+        return text
+    return text.replace("\\n", "\n")
+
+
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 # Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
@@ -3894,12 +3907,13 @@ def register_generic_tools(mcp):
         text: str,
         align: str = "left",
         font_id: int = 0,
+        typed_breaks: bool = True,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. A newline, or a typed ``\\n``, becomes Altium's own line
-        break.
+        text. A newline becomes Altium's own line break; a text with no
+        newline may type ``\\n`` for one instead.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
@@ -3907,10 +3921,13 @@ def register_generic_tools(mcp):
             align: Horizontal alignment "left", "center", or "right".
             font_id: The frame's font. 0 takes the font the sheet's text
                 frames already use, else its net labels' font.
+            typed_breaks: False keeps a typed ``\\n`` as text, as in the
+                path ``C:\\new``.
 
         Returns:
             The placement: the frame's corners and the ``font_id`` it got.
         """
+        text = typed_line_breaks(text, typed_breaks)
         bridge = get_bridge()
         return await bridge.send_command_async(
             "generic.place_text_frame",
