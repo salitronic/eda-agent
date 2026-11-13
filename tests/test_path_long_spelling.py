@@ -124,12 +124,12 @@ def test_a_name_windows_cannot_resolve_is_left_as_given(monkeypatch):
 @windows_only
 def test_a_library_in_front_is_matched_under_either_spelling(short_dir):
     long_dir, short = short_dir
-    lib = long_dir + "\Parts.PcbLib"
+    lib = long_dir + "\\Parts.PcbLib"
     open(lib, "w").close()
 
     class _Bridge:
         async def send_command_async(self, command, params=None, **kw):
             return {"file_path": lib}
 
-    got = asyncio.run(library._unfocused_pcblib(_Bridge(), short + "\Parts.PcbLib"))
+    got = asyncio.run(library._unfocused_pcblib(_Bridge(), short + "\\Parts.PcbLib"))
     assert got == ""

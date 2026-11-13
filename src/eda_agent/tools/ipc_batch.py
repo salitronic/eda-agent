@@ -240,7 +240,7 @@ def register_ipc_batch_tools(mcp):
         folders = ipc_templates.template_folders()
         if not folders:
             return {"ok": False, "reason": "no IPC Footprint Generator templates are "
-                    "installed under ProgramData\Altium; the IPC Footprint Generator "
+                    "installed under ProgramData\\Altium; the IPC Footprint Generator "
                     "extension is part of Altium Designer's installation"}
         if not family.strip():
             return {"ok": True, "folder": str(folders[0]),

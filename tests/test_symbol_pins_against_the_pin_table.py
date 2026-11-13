@@ -99,7 +99,7 @@ def test_a_subscripted_name_printed_as_two_words_matches(tmp_path):
                            "4 PS HOLD PS HOLD input", "7 VCC LO Output for high",
                            "8 PB OUT Status of PB push-button input"]]))
     ok = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
-        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\VCCLO"),
+        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\\VCCLO"),
         ("8", "PB_OUT")))
     assert ok["ok"], ok
     wrong = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
