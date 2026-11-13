@@ -17976,13 +17976,13 @@ End;
 
 {..............................................................................}
 { Gen_PlaceTextFrame - Place a multi-line schematic text frame (note block).  }
-{ Params: x1,y1,x2,y2 (mils, the two rectangle corners), text (use \n for     }
-{         line breaks), align ("left"/"center"/"right", optional)             }
+{ Params: x1,y1,x2,y2 (mils, the two rectangle corners), text (a newline     }
+{         breaks a line), align ("left"/"center"/"right", optional)           }
 { Style, all optional, applied before the frame is registered (absent = the  }
 { frame's default, so older callers see no change): area_color (fill; makes  }
 { the frame solid), color (border), text_color (packed BGR integers),        }
 { show_border, word_wrap, clip_to_rect (true/false), text_margin (mils).     }
-{ The reply reads every one of them back off the placed frame.              }
+{ The reply reads every one of them back off the placed frame.               }
 {..............................................................................}
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
@@ -18003,10 +18003,11 @@ Begin
     Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     TextStr := ExtractJsonValue(Params, 'text');
     AlignStr := LowerCase(ExtractJsonValue(Params, 'align'));
-    { A line break arrives as a newline or as a typed backslash-n, and the  }
-    { second was stored and printed as the two characters. Altium's own    }
-    { break in a text frame is CR LF; every spelling becomes that.          }
-    TextStr := StringReplace(TextStr, '\' + 'n', #10, MkSet(rfReplaceAll));
+    { The break in a text frame is CR LF; every newline spelling becomes    }
+    { that. The text arrives JSON-unescaped, so a break the caller meant is }
+    { a real newline by now. A backslash followed by n is TEXT here (a path }
+    { such as C:\new\board) and stays as sent: sch_place_text_frame turns a }
+    { typed backslash-n into a newline before it sends.                     }
     TextStr := StringReplace(TextStr, #13 + #10, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #13, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #10, #13 + #10, MkSet(rfReplaceAll));

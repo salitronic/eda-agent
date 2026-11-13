@@ -201,6 +201,19 @@ async def _refuse_manual_sheet_layout(
     }
 
 
+def typed_line_breaks(text: str, typed_breaks: bool = True) -> str:
+    """A text frame's text with each typed backslash-n made a newline.
+
+    A caller that cannot send a newline types the two characters instead.
+    Only a text holding no real newline is converted: one that already has
+    newlines was written with them, and its backslash-n is text (a path
+    such as C:\\new\\board, a regex). The script stores backslash-n as sent.
+    """
+    if not typed_breaks or "\n" in text or "\r" in text:
+        return text
+    return text.replace("\\n", "\n")
+
+
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 # Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
@@ -3928,13 +3941,15 @@ def register_generic_tools(mcp):
         text_margin: Optional[float] = None,
         word_wrap: Optional[bool] = None,
         clip_to_rect: Optional[bool] = None,
+        typed_breaks: bool = True,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. A newline, or a typed ``\\n``, becomes Altium's own line
-        break. The style is set before the frame is placed, so a table of
-        filled cells needs no search and restyle afterwards.
+        text. A newline becomes Altium's own line break; a text with no
+        newline may type ``\\n`` for one instead. The style is set before
+        the frame is placed, so a table of filled cells needs no search
+        and restyle afterwards.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
@@ -3949,6 +3964,8 @@ def register_generic_tools(mcp):
                 (all three on).
             text_margin: Gap between border and text in mils; None keeps
                 the default.
+            typed_breaks: False keeps a typed ``\\n`` as text, as in the
+                path ``C:\\new``.
 
         Returns:
             The placement: the frame's corners, the ``font_id`` it got and
@@ -3959,7 +3976,7 @@ def register_generic_tools(mcp):
             "y1": _mils(y1),
             "x2": _mils(x2),
             "y2": _mils(y2),
-            "text": text,
+            "text": typed_line_breaks(text, typed_breaks),
             "align": align,
             "font_id": str(int(font_id)),
         }
