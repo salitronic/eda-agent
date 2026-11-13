@@ -1806,6 +1806,9 @@ def register_generic_tools(mcp):
     async def obj_clear_highlights() -> dict[str, Any]:
         """Clear all net highlights in the active schematic or PCB document.
 
+        On a schematic a highlight is a selection, so the whole sheet is
+        deselected (no count is reported).
+
         Returns:
             Dictionary confirming highlights were cleared
         """
