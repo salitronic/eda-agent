@@ -3681,7 +3681,8 @@ def register_pcb_tools(mcp):
             "pcb.get_clearance_violations", params, timeout=90.0)
 
     @mcp.tool()
-    async def pcb_run_drc(allow_modal: bool = False) -> dict[str, Any]:
+    async def pcb_run_drc(allow_modal: bool = False,
+                          detail: str = "full") -> dict[str, Any]:
         """Run Design Rule Check on the active PCB, with no dialog.
 
         Altium's batch check of the rules ticked for batch checking, and
@@ -3694,6 +3695,11 @@ def register_pcb_tools(mcp):
                 Checker DIALOG instead, which blocks the bridge for every
                 session until a person presses Run or Cancel. Only for
                 someone at the keyboard who wants that dialog's options.
+            detail: "full" (default) or "summary": no ``rules.sheet``
+                (``sheet_omitted``; read it with pcb_drc_rules) and
+                ``report_rules`` only with violations
+                (``report_rules_checked`` counts all). Fingerprint,
+                changes and verdict stay. For repeated runs.
 
         Returns:
             ``violation_count`` (all), ``mode`` ("batch" or "dialog"),
@@ -3718,15 +3724,18 @@ def register_pcb_tools(mcp):
             incomplete, not_run; ``verdict_reason`` says why. Report the
             verdict, never only the violation count.
         """
-        from ..export.drc_rules import enrich_drc
+        from ..export.drc_rules import DETAILS, enrich_drc
 
+        detail = (detail or "full").strip().lower()
+        if detail not in DETAILS:
+            return {"ok": False, "reason": "detail is full or summary"}
         bridge = get_bridge()
         if allow_modal:
             return await bridge.send_command_async(
                 "pcb.run_drc", {"allow_modal": "true"})
         result = await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
         if isinstance(result, dict):
-            await enrich_drc(bridge, result)
+            await enrich_drc(bridge, result, detail=detail)
         return result
 
     @mcp.tool()
