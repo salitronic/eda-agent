@@ -1901,31 +1901,40 @@ def register_project_tools(mcp):
         format: str = "pdf",
         width: int = 1920,
         height: int = 1080,
+        document_path: str = "",
+        project_path: str = "",
+        dpi: int = 150,
+        page: int = 1,
     ) -> dict[str, Any]:
-        """Export the active schematic / PCB document, silent (no dialog).
+        """Export a schematic sheet or board to PDF, PNG, JPG or BMP.
 
-        Only PDF is silent; it prints the focused document, as
-        ``proj_export_pdf`` does, so make the wanted tab active first.
-        png/jpg/bmp return ``IMAGE_FORMAT_UNSUPPORTED``: they need an
-        OutJob with an image container, run by ``proj_run_outjob``.
-        An old file at ``output_path`` is deleted first, and a run that
-        leaves no file is ``EXPORT_FILE_MISSING``.
+        WITH ``document_path`` (recommended): that sheet / board is
+        printed whatever is in front, loaded or not, with no dialog. A
+        temporary one-output OutJob is added to its project, run (PDF
+        container), removed and deleted, and the document in front is
+        put back. A board gives two pages (top, bottom mirrored); png /
+        jpg / bmp render ``page`` at ``dpi``. Reply: ``pages``,
+        ``restored_front``, ``project_file_rewritten`` (Altium rewrote
+        the .PrjPcb, as any save of an older file does).
+
+        WITHOUT it: the FOCUSED document only, PDF only, through
+        WorkspaceManager:Print, which on AD 25 opens the print preview.
 
         Args:
-            output_path: Full path for the output file. The directory must
-                already exist. The extension should be ``.pdf``.
-            format: Output format. Only ``"pdf"`` is silent today
-                (default). ``"png"``, ``"jpg"``, ``"bmp"`` return an
-                explicit ``IMAGE_FORMAT_UNSUPPORTED`` error.
-            width, height: Unused by the PDF path.
-
-        Returns:
-            Dictionary confirming the export with the resolved path,
-            format, width, height, and the scoped schematic. Sets
-            ``file_exists`` based on a Python-side existence check.
+            output_path: Full path of the file to write; its folder
+                must exist. An old file there is replaced.
+            format: "pdf" (default), "png", "jpg" or "bmp".
+            width, height: Unused.
+            document_path: Full path of the .SchDoc / .PcbDoc to print.
+            project_path: Its .PrjPcb (open in Altium); found beside
+                the document when omitted.
+            dpi, page: Raster resolution and the 1-based page.
         """
         import os
 
+        if document_path:
+            return await _export_document(
+                output_path, format, document_path, project_path, dpi, page)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "project.export_image",
@@ -1972,6 +1981,221 @@ def register_project_tools(mcp):
                     f"not be supported on this Altium build."
                 )
         return result
+
+    def _same_file(a, b):
+        import os
+
+        if not a or not b:
+            return False
+        return (os.path.normcase(os.path.abspath(str(a)))
+                == os.path.normcase(os.path.abspath(str(b))))
+
+    async def _export_document(output_path, format, document_path,
+                               project_path, dpi, page):
+        """proj_export_image with document_path: print one named document
+        through a temporary one-output OutJob in its project (issue #361).
+
+        Plain WorkspaceManager:Print opens the print preview on AD 25; a
+        Publish container run by project.run_outjob does not. The OutJob
+        has to belong to the document's project (one outside it stops on
+        an Altium "Missing file" error), so it is added for the run and
+        removed again, and the document in front is put back, also when
+        the run fails.
+        """
+        import os
+        import shutil
+        import tempfile
+        import time
+        import uuid
+        from pathlib import Path
+
+        from ..config import get_config
+        from ..export import document_print as dp
+        from ..prjpcb import finish_removal
+
+        fmt = str(format or "pdf").lower().lstrip(".")
+        if fmt == "jpeg":
+            fmt = "jpg"
+        base = {"success": False, "document": document_path, "format": fmt,
+                "output_path": output_path}
+        if fmt not in ("pdf", "png", "jpg", "bmp"):
+            return {**base, "error": "IMAGE_FORMAT_UNSUPPORTED", "details": (
+                f"format {format!r}: use pdf, png, jpg or bmp")}
+        kind = dp.kind_of(document_path)
+        if kind is None:
+            return {**base, "error": "DOCUMENT_KIND_UNSUPPORTED", "details": (
+                "document_path must be a .SchDoc or a .PcbDoc")}
+        if not os.path.isfile(document_path):
+            return {**base, "error": "DOCUMENT_NOT_FOUND",
+                    "details": f"{document_path} does not exist"}
+        if not os.path.isdir(os.path.dirname(os.path.abspath(output_path))):
+            return {**base, "error": "OUTPUT_DIR_MISSING", "details": (
+                f"the folder of {output_path} does not exist")}
+        if not project_path:
+            found = dp.find_projects(document_path)
+            if len(found) != 1:
+                return {**base, "error": "PROJECT_NOT_FOUND" if not found
+                        else "PROJECT_AMBIGUOUS", "candidates": found,
+                        "details": (
+                            "give project_path: the .PrjPcb that holds the "
+                            "document (an OutJob runs only inside its "
+                            "document's project)")}
+            project_path = found[0]
+        elif not os.path.isfile(project_path):
+            return {**base, "error": "PROJECT_NOT_FOUND",
+                    "details": f"{project_path} does not exist"}
+        base["kind"] = kind
+        base["project_path"] = project_path
+
+        bridge = get_bridge()
+        front = ""
+        try:
+            got = await bridge.send_command_async(
+                "application.get_active_document", {})
+            if isinstance(got, dict):
+                front = str(got.get("file_path") or "")
+        except Exception:                            # noqa: BLE001
+            front = ""
+        before = Path(project_path).read_bytes()
+        stamp = uuid.uuid4().hex[:8]
+        outjob = os.path.join(os.path.dirname(project_path),
+                              f"{dp.TEMP_PREFIX}{stamp}.OutJob")
+        work = tempfile.mkdtemp(prefix="eda_export_")
+        pdf_name = f"export_{stamp}.pdf"
+        text = dp.build_outjob(dp.relative_to_project(document_path,
+                                                      project_path),
+                               kind, work, pdf_name)
+        with open(outjob, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        reply = dict(base)
+        added = False
+        try:
+            add = await bridge.send_command_async(
+                "project.add_document",
+                {"document_path": outjob, "project_path": project_path})
+            added = isinstance(add, dict) and bool(add.get("success"))
+            if not added:
+                reply["error"] = "OUTJOB_NOT_ADDED"
+                reply["details"] = f"project.add_document answered {add!r}"
+            else:
+                run = await _send_run(bridge, {"container_name": dp.CONTAINER,
+                                               "outjob_path": outjob}, 120.0)
+                if isinstance(run, dict):
+                    for key in ("dialog", "dialog_message", "run_raised",
+                                "error", "details"):
+                        if run.get(key):
+                            reply[f"run_{key}" if not key.startswith("run")
+                                  else key] = run[key]
+        finally:
+            try:
+                await bridge.send_command_async(
+                    "application.close_document",
+                    {"file_path": outjob, "discard": "true"})
+            except Exception:                        # noqa: BLE001
+                pass
+            removed = not added
+            if added:
+                try:
+                    rem = await bridge.send_command_async(
+                        "project.remove_document",
+                        {"document_path": outjob,
+                         "project_path": project_path})
+                    rem = finish_removal(rem, str(
+                        get_config().workspace_dir / "backups" / "prjpcb"))
+                    removed = (isinstance(rem, dict) and bool(rem.get("removed"))
+                               and not rem.get("in_project_file"))
+                    if isinstance(rem, dict) and rem.get("stale_sections"):
+                        reply["stale_sections"] = rem["stale_sections"]
+                except Exception as exc:             # noqa: BLE001
+                    reply["remove_error"] = repr(exc)
+            if removed:
+                try:
+                    os.remove(outjob)
+                except OSError:
+                    reply["outjob_left"] = outjob
+            else:
+                # Deleting a file the project still lists would leave a
+                # missing document in it: keep it and say so.
+                reply["outjob_left"] = outjob
+                reply["outjob_left_reason"] = (
+                    "the temporary OutJob is still in the project; remove it "
+                    "with proj_remove_document, then delete the file")
+            reply["outjob_removed"] = removed
+            if (reply.get("stale_sections") or {}).get("pruned"):
+                # finish_removal edited the .PrjPcb on disk, and Altium
+                # then reloads the open project by itself: measured on AD
+                # 25, the reload starts within about a second and for under
+                # a second more project calls answer PROJECT_NOT_FOUND.
+                # Wait for it to drop out (5 s at most) and come back, so
+                # the caller's next call finds the project.
+                reloaded = settled = False
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 15.0:
+                    try:
+                        await bridge.send_command_async(
+                            "project.get_documents",
+                            {"project_path": project_path}, timeout=10.0)
+                        if reloaded or time.monotonic() - t0 >= 5.0:
+                            settled = True
+                            break
+                    except Exception:                # noqa: BLE001
+                        reloaded = True
+                    time.sleep(0.25)
+                reply["project_reloaded"] = reloaded
+                reply["project_settled"] = settled
+            if front:
+                try:
+                    await bridge.send_command_async(
+                        "application.set_active_document",
+                        {"file_path": front})
+                    got = await bridge.send_command_async(
+                        "application.get_active_document", {})
+                    now = str(got.get("file_path") or "") \
+                        if isinstance(got, dict) else ""
+                except Exception:                    # noqa: BLE001
+                    now = ""
+                reply["restored_front"] = now
+                reply["restored"] = _same_file(now, front)
+            try:
+                reply["project_file_rewritten"] = (
+                    Path(project_path).read_bytes() != before)
+            except OSError:
+                pass
+        try:
+            written = [os.path.join(work, n) for n in os.listdir(work)
+                       if n.lower().endswith(".pdf")]
+            pdf = os.path.join(work, pdf_name)
+            if not os.path.isfile(pdf) and len(written) == 1:
+                pdf = written[0]
+            if "error" in reply and not os.path.isfile(pdf):
+                return reply
+            if not os.path.isfile(pdf):
+                reply["error"] = "EXPORT_FILE_MISSING"
+                reply["details"] = (
+                    "the OutJob ran but wrote no PDF"
+                    + (f"; Altium said: {reply.get('run_dialog')}"
+                       if reply.get("run_dialog") else ""))
+                return reply
+            reply["pages"] = dp.pdf_pages(pdf)
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            if fmt == "pdf":
+                shutil.copyfile(pdf, output_path)
+            else:
+                shot = dp.render_page(pdf, output_path, dpi, page)
+                reply.update({k: v for k, v in shot.items() if k != "ok"})
+                if not shot.get("ok"):
+                    reply["error"] = "RENDER_FAILED"
+                    return reply
+            reply.pop("error", None)
+            reply.pop("details", None)
+            reply["file_exists"] = os.path.isfile(output_path)
+            reply["file_size_bytes"] = (os.path.getsize(output_path)
+                                        if reply["file_exists"] else 0)
+            reply["success"] = reply["file_exists"]
+            return reply
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     @mcp.tool()
     async def proj_list_outjob_containers(outjob_path: str = "") -> dict[str, Any]:
