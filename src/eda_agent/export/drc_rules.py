@@ -266,13 +266,52 @@ def verdict(drc: dict[str, Any], baseline: Optional[dict[str, Any]],
     return "pass", "no violations under the approved rules"
 
 
-async def enrich_drc(bridge, result: dict[str, Any]) -> None:
+DETAILS = ("full", "summary")
+
+
+def summarize(result: dict[str, Any]) -> None:
+    """Cut an enriched DRC reply down to what a repeated run needs.
+
+    The rule sheet is the bulk of a reply and rarely changes between two
+    runs, so it is left out. What says which rules the run was under
+    stays: the fingerprint, the difference from the approved set and the
+    verdict. Altium's per-rule rows keep only the rules with violations.
+    ``not_checked`` was worked out from every row before this runs.
+    """
+    rows = result.get("report_rules")
+    if isinstance(rows, list):
+        result["report_rules_checked"] = len(rows)
+        result["report_rules"] = [r for r in rows
+                                  if int(r.get("violations") or 0) > 0]
+    section = result.get("rules")
+    if not isinstance(section, dict) or not section.get("read"):
+        return
+    section.pop("sheet", None)
+    section["sheet_omitted"] = True
+    logged = section.pop("logged_changes_since_approval", None)
+    if logged is not None:
+        section["logged_changes_since_approval_count"] = len(logged)
+    section["note"] = "rule sheet left out; read it with pcb_drc_rules(action='show')"
+    why = result.get("verdict_reason")
+    if isinstance(why, str):
+        result["verdict_reason"] = why.replace(
+            "read rules.sheet", "read the rules with pcb_drc_rules(action='show')")
+
+
+async def enrich_drc(bridge, result: dict[str, Any], detail: str = "full") -> None:
     """Add to a batch DRC reply what Altium's report says, the rules it ran
     under, their difference from the approved ones, and the verdict.
 
     Every route that runs Altium's DRC goes through this, so none of them
-    can report a pass without saying under which rules.
+    can report a pass without saying under which rules. ``detail``
+    "summary" then leaves out the rule sheet (see ``summarize``).
     """
+    await _enrich(bridge, result)
+    if detail == "summary":
+        summarize(result)
+
+
+async def _enrich(bridge, result: dict[str, Any]) -> None:
     from .drc_report import read_drc_report
 
     if result.get("drc_confirmed") is True and isinstance(result.get("report_path"), str):
