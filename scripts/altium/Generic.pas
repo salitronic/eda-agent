@@ -5080,6 +5080,33 @@ Begin
 End;
 
 {..............................................................................}
+{ A BOARD TYPE CANNOT HONOUR A SCOPE. The PCB path acts on the board in      }
+{ front, or the only open board, whatever the scope says, so a scope naming  }
+{ another document, the project or a library symbol used to be dropped       }
+{ without a word: obj_delete scoped to one board deleted on another.         }
+{ Refused before ApplyLibComponentScope, which moves the SchLib in front to  }
+{ the named symbol. A type the schematic resolver knows keeps its scope:     }
+{ "component" is the schematic part. Verb names the action in the message.  }
+{ Returns an empty string when the call may go on. Gen_QueryObjects keeps   }
+{ its own, stricter check (issue #365).                                      }
+{..............................................................................}
+
+Function BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr,
+    Verb : String) : String;
+Begin
+    Result := '';
+    If ScopeType = 'active_doc' Then Exit;
+    If ObjectTypeFromString(ObjTypeStr) <> -1 Then Exit;
+    If ObjectTypeFromStringPCB(ObjTypeStr) = -1 Then Exit;
+    Result := BuildErrorResponse(RequestId, 'SCOPE_NOT_SUPPORTED',
+        'A PCB object type cannot be scoped with "' + Scope + '". A board '
+        + 'type is always ' + Verb + ' on the active board, so a document, '
+        + 'project or lib_component scope would be ignored. Bring the board '
+        + 'you mean to the front and use the default scope. Nothing was '
+        + Verb + '.');
+End;
+
+{..............................................................................}
 { If ScopeType is 'lib_component', switch the active SchLib to the named      }
 { symbol (ScopePath holds the lib-ref) and rewrite ScopeType to 'active_doc'  }
 { so the normal active-doc path then iterates that symbol's primitives. This  }
@@ -5261,6 +5288,8 @@ Begin
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
     If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'modified');
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5407,6 +5436,8 @@ Begin
 
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'deleted');
     If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
@@ -11103,6 +11134,8 @@ Begin
     Scope := ExtractJsonValue(Params, 'scope');
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'counted');
     If Result <> '' Then Exit;
 
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
