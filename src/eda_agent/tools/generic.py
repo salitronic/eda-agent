@@ -768,8 +768,8 @@ def register_generic_tools(mcp):
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
-                selected for you). A board type ignores scope: it acts
-                on the active board.
+                selected for you). A board type takes only the default:
+                any other is refused (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
             items: Several filter+set operations at once (see above).
 
@@ -910,9 +910,9 @@ def register_generic_tools(mcp):
         with an empty filter needs confirm_delete_all, or nothing is sent.
         Arguments given beside ``items`` apply to every item.
 
-        A PCB type deletes from the active board, whatever the scope (with
-        a library or sheet in front: the only open board, brought forward;
-        in a footprint use lib_delete_footprint_primitives). It also
+        A PCB type deletes from the active board (with a library or sheet
+        in front: the only open board, brought forward; in a footprint use
+        lib_delete_footprint_primitives). It also
         matches footprint primitives and polygon hatching unless the
         filter says "InComponent=false|InPolygon=false". To take up
         routing use ``pcb_unroute``.
@@ -921,7 +921,8 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant (see `obj_query`)
             scope: "active_doc", "project", "doc:PATH", or
                 "lib_component:NAME" (a named symbol in the active SchLib).
-                A PCB type ignores it (see above).
+                A PCB type takes only "active_doc"; any other is refused
+                (SCOPE_NOT_SUPPORTED) and nothing is deleted.
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
@@ -2849,7 +2850,8 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant (see `obj_query` for options)
             scope: "active_doc" (default), "project", or
                 "doc:C:\\path\\Sheet.SchDoc" for a specific loaded sheet.
-                A PCB type counts the active board whatever the scope.
+                A PCB type counts the active board and takes no other
+                scope (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
