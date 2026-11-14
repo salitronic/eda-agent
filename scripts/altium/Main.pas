@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.13.13';
+    SCRIPT_VERSION = '2026.11.14.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -354,6 +354,12 @@ Begin
             Remaining := '';
             Exit;
         End;
+        { A field always starts with its key, so a run of exactly three  }
+        { tildes is a value ending in '~' (KiCad's empty field) and then }
+        { the separator: the value keeps its tilde.                      }
+        If (SepPos + 2 <= Length(Remaining)) And (Remaining[SepPos + 2] = '~') Then
+            If Not ((SepPos + 3 <= Length(Remaining)) And (Remaining[SepPos + 3] = '~')) Then
+                SepPos := SepPos + 1;
         Result := Copy(Remaining, 1, SepPos - 1);
         Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
         If Result <> '' Then Exit;

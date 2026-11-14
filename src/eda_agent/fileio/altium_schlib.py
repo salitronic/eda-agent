@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Headless .SchLib reader (roadmap V1: library hygiene).
+"""The component names and descriptions in a .SchLib, for the library search.
 
 An Altium ``.SchLib`` is an OLE compound document with one storage per
-component (``<CompName>/Data``), whose first record is the same
-``|KEY=VALUE|`` ASCII header as a schematic component (RECORD=1:
-``LibReference``, ``ComponentDescription``). The rest of each Data stream is
-Altium's BINARY pin format, not reverse-engineered here (same discipline as
-the PcbDoc reader: no guessing a binary layout without ground truth). So this
-reader covers the component *header* level, which is enough for the highest-
-value library-hygiene checks (undocumented or unnamed parts).
+component (``<CompName>/Data``), whose first record is an ASCII
+``|KEY=VALUE|`` header (``LibReference``, ``ComponentDescription``). Only
+that header is read; the rest of each stream is not parsed, and the file is
+never written.
 """
 
 from __future__ import annotations

@@ -37,12 +37,18 @@ def test_a_malformed_or_short_list_is_refused_before_anything_is_made():
 def test_the_vertices_keep_their_decimals():
     body = _body()
     assert "Contour.Count := NPts;" in body
-    assert ("Contour.X[I] := MilsToCoordF(\n"
-            "                    StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0));") \
-        in body.replace("\r\n", "\n")
-    assert ("Contour.Y[I] := MilsToCoordF(\n"
-            "                    StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0));") \
-        in body.replace("\r\n", "\n")
+    assert "RegionPointsSplit(PointsStr, Xs, Ys);" in body
+    # Contour vertices count from 1, the lists from 0.
+    assert "Contour.X[I] := MilsToCoordF(StrToFloatDef(Xs[I - 1], 0));" in body
+    assert "Contour.Y[I] := MilsToCoordF(StrToFloatDef(Ys[I - 1], 0));" in body
+
+
+def test_a_polygon_from_points_takes_every_point_from_the_first():
+    body = load(_PCB)["PCB_PlacePolygonRect"]
+    loop = body.index("For I := 0 To NPts - 1 Do")
+    assert "Seg.vx := MilsToCoordF(StrToFloatDef(Xs[I], 0));" in body[loop:]
+    assert "Seg.vy := MilsToCoordF(StrToFloatDef(Ys[I], 0));" in body[loop:]
+    assert body.index("RegionPointsSplit(PointsStr, Xs, Ys);") < loop
 
 
 def test_the_rectangle_is_still_drawn_without_points():

@@ -202,14 +202,16 @@ Every row works the same way:</p>
 
 <section class="setting" id="keep-in-view">
   <h3>Keep board in view</h3>
-  <p>Whether the window is fitted to the whole board or sheet after each edit
+  <p>Whether the window is fitted to the board or sheet after each edit
     the AI makes.</p>
   <dl>
     <dt>Off <span class="default">default</span></dt>
     <dd>The view stays where you put it.</dd>
     <dt>On</dt>
-    <dd>After each edit the window is fitted to the whole design, at most
-      every 2 seconds, so you see the change wherever it is.</dd>
+    <dd>After each edit the window is fitted to the board outline, with a
+      margin of a twentieth of its larger side, or to the sheet, at most
+      every 2 seconds. Parts parked off the board do not zoom the view
+      out.</dd>
   </dl>
   <p class="note"><code>EDA_AGENT_KEEP_BOARD_IN_VIEW=1</code> in the AI
     client's config also turns it on.</p>

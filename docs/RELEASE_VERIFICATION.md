@@ -1,4 +1,4 @@
-# Release verification: 2026.11.13.13
+# Release verification: 2026.11.14.4
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -430,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.13.13`, `version_match` =
+Expect `altium_script_version` = `2026.11.13.14`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -2247,11 +2247,7 @@ Scratch documents only.
    Component Models" for R1. A part with no footprint model lands in
    `footprints_not_applied`.
 
-Python only: `design_bom_file` on a `.PcbDoc` or a missing path is an
-error, and a project never compiled (no `.PrjPcbStructure`) is an error
-saying so; a sheet with no parts returns an empty BOM with a `warning`.
-`design_review_file` refuses the same three. Under WSL,
-`design_plan_from_sheet` on a Windows sheet path names the sheet by its
+Python only: under WSL, `design_plan_from_sheet` on a Windows sheet path names the sheet by its
 file, so a re-emit lands on the same sheet.
 
 Not run yet: none of this has executed in Altium on this build.
@@ -4164,6 +4160,64 @@ No new Altium identifiers: a body's `Model.ModelType` is already read by
    `basic_3d_models` names the footprints and designators that have only
    extruded bodies.
 4. With Allowed, none of the three replies carries `basic_3d_models`.
+
+## 81. Keep board in view fits the board outline
+
+No new Altium identifiers: `BoardOutline.BoundingRectangle` and
+`GraphicalView_ZoomOnRect` are already used by `PCB_View` and others.
+
+1. On a board with parts parked well outside the outline, `obj_zoom` with
+   action `board` answers `fitted_to` = `board_outline`, and the window
+   shows the outline with a small margin, not the parked parts.
+2. With Keep board in view On, a `pcb_move_components` call leaves the
+   view fitted the same way.
+3. With a schematic in front, Keep board in view still fits the sheet's
+   objects.
+
+## 82. A KiCad project rebuilt in Altium, and polygon outlines
+
+No new Altium identifiers: `pcb.place_polygon_rect` takes a `points` outline
+through `RegionPointCount` and `RegionPointCoord`, already used by
+`library.add_footprint_regions`, and `Polygon.Name`; the component stamp
+counts each designator once with a `TStringList`. `obj_query` reads a
+symbol arc's `Radius`, `StartAngle` and `EndAngle` through `ISch_Arc`,
+narrowed by `ObjectId` as `Corner` is. `NextBatchOp` reads exactly three
+tildes as a value's `~` and then the separator.
+
+Verified live on 2026.11.14.2 with steps 1 to 4 and 6: ecc83 imported with
+`libraries.same` True (6 symbols, 6 footprints), `nets.same` True and 33
+pads in place.
+
+1. `proj_import_from_kicad` on KiCad's `ecc83` demo, `dry_run` True, lists
+   6 symbols and 6 footprints, every sheet with no `errors`, and touches no
+   document.
+2. The same with `dry_run` False and an empty output folder finishes every
+   stage with `ok`: `nets.same` True (9 KiCad nets, 9 Altium, no
+   differences) and `board.pads.same` True. The SchLib and PcbLib sit in
+   the output folder and belong to the new project; no other library is
+   opened or written.
+3. In that SchLib, R's pins wire at (0, ±150) and are 50 mil long; its body
+   is 80 by 200 mil, unfilled; its pin numbers and names are not drawn.
+   ECC83 has three parts, each with its own drawing.
+4. On the sheet, U1's three parts share one designator, and the drawing
+   stage reports no `values` failure.
+5. `pcb_place_polygon` with a five-point outline places a pour with five
+   vertices and the given `name`; without `points` it places the rectangle
+   as before.
+6. The live import reports `libraries.same` True with `checked` 6 and 6.
+   Copy the ecc83 demo to a scratch folder, change R's pin 1 length in its
+   `.kicad_sch` from 1.27 to 2.54 and import that copy: the library stage
+   builds the longer pin, the check still matches it, and `ok` stays True;
+   the check's handling of a real difference is covered offline.
+7. `obj_query` on `sch_arc` with scope `lib_component:ECC83@1` reads
+   `Radius` 200 and `StartAngle` / `EndAngle` near 0.25 and 179.75 for the
+   envelope's top; on an `eLine` the three come back unreadable without
+   stopping the script.
+8. `sch_set_components_parameters` with two stamps whose last field is
+   `Datasheet=~` updates both parts (`failed` 0).
+9. With a document named like the import's own (another
+   `ecc83-pp.SchLib`) open, a live import refuses at once and names it in
+   `open_with_the_same_name`.
 
 ## Still open, and not blocking
 

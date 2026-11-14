@@ -2424,6 +2424,7 @@ Var
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     RR : ISch_RoundRectangle;
+    ArcObj : ISch_Arc;
     SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
@@ -2504,6 +2505,24 @@ Begin
                     Result := FloatToJsonStr(CoordToMilsF(RR.CornerXRadius))
                 Else
                     Result := FloatToJsonStr(CoordToMilsF(RR.CornerYRadius));
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        { An arc's radius and angles live on ISch_Arc only: the same       }
+        { narrowing, read in mils and degrees.                             }
+        Else If (PropName = 'Radius') Or (PropName = 'StartAngle')
+            Or (PropName = 'EndAngle') Then
+        Begin
+            If Obj.ObjectId = eArc Then
+            Begin
+                ArcObj := Obj;
+                If PropName = 'Radius' Then
+                    Result := FloatToJsonStr(CoordToMilsF(ArcObj.Radius))
+                Else If PropName = 'StartAngle' Then
+                    Result := FloatToJsonStr(ArcObj.StartAngle)
+                Else
+                    Result := FloatToJsonStr(ArcObj.EndAngle);
             End
             Else
                 NotePropertyDiag('unreadable', PropName);
@@ -5702,6 +5721,31 @@ Begin
     Result := (Kind = 'SCH') Or (Kind = 'SCHLIB') Or (Kind = 'HARNESSWIRINGDIAGRAM');
 End;
 
+{ Fits BOARD's view to its outline grown by a twentieth of the larger side; }
+{ False when there is no board or its outline has no size.                 }
+Function ZoomOnBoardOutline(Board : IPCB_Board) : Boolean;
+Var
+    BR : TCoordRect;
+    L, B, R, T, M : TCoord;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try
+        BR := Board.BoardOutline.BoundingRectangle;
+    Except
+        Exit;
+    End;
+    L := BR.Left;
+    B := BR.Bottom;
+    R := BR.Right;
+    T := BR.Top;
+    If (R <= L) Or (T <= B) Then Exit;
+    M := (R - L) Div 20;
+    If (T - B) Div 20 > M Then M := (T - B) Div 20;
+    Board.GraphicalView_ZoomOnRect(L - M, B - M, R + M, T + M);
+    Result := True;
+End;
+
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
     Action, FocusedKind, ZoomProcess : String;
@@ -5745,6 +5789,21 @@ Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
                 'document zooms to a whole schematic sheet; on a board use board or fit');
             Exit;
+        End;
+        { "board" on a board fits the window to the board outline with a     }
+        { margin of a twentieth of its larger side all round, so parts       }
+        { parked off the board never pull the view out. Fit Board below is   }
+        { the fallback when the outline cannot be read.                      }
+        If (Action = 'board') And (FocusedKind = 'PCB') Then
+        Begin
+            Board := GetPCBBoardAnywhere(0);
+            If ZoomOnBoardOutline(Board) Then
+            Begin
+                Result := BuildSuccessResponse(RequestId, '{"action":"board",'
+                    + '"document_kind":"PCB","dispatched":true,'
+                    + '"fitted_to":"board_outline"}');
+                Exit;
+            End;
         End;
         ResetParameters;
         { "board" is View > Fit Board (AdvPcb.rcs PLPCB:ViewFitBoard): the  }
@@ -16186,6 +16245,7 @@ Var
     SrvDoc : IServerDocument;
     FpBefore, FpAfter, FpMissed : String;
     FpApplied : Integer;
+    Matched : TStringList;
 Begin
     StampsStr := ExtractJsonValue(Params, 'stamps');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -16211,6 +16271,7 @@ Begin
     { Build parallel arrays: designator -> raw op string.                     }
     DesigList := TStringList.Create;
     OpsList := TStringList.Create;
+    Matched := TStringList.Create;
     Try
         Remaining := StampsStr;
         OpCount := 0;
@@ -16302,6 +16363,10 @@ Begin
                             End;
                         End;
                         Inc(Updated);
+                        { A multi-part symbol is one designator over several }
+                        { parts: count the stamp once, not once per part.    }
+                        If Matched.IndexOf(Comp.Designator.Text) < 0 Then
+                            Matched.Add(Comp.Designator.Text);
                     End;
                     Obj := Iter.NextSchObject;
                 End;
@@ -16313,10 +16378,11 @@ Begin
             SchDoc.GraphicallyInvalidate;
         End;
 
-        Failed := OpCount - Updated;
+        Failed := OpCount - Matched.Count;
     Finally
         DesigList.Free;
         OpsList.Free;
+        Matched.Free;
     End;
 
     { Through the one helper, so the edit is recorded as well as flagged: }
@@ -16352,7 +16418,7 @@ Var
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
-    DesigList, OpsList : TStringList;
+    DesigList, OpsList, Matched : TStringList;
     Loc : TLocation;
     SrvDoc : IServerDocument;
 Begin
@@ -16378,6 +16444,7 @@ Begin
 
     DesigList := TStringList.Create;
     OpsList := TStringList.Create;
+    Matched := TStringList.Create;
     Try
         Remaining := PosStr;
         OpCount := 0;
@@ -16439,6 +16506,8 @@ Begin
                             SchEndModify(Comp.Comment);
                         End;
                         Inc(Updated);
+                        If Matched.IndexOf(Comp.Designator.Text) < 0 Then
+                            Matched.Add(Comp.Designator.Text);
                     End;
                     Obj := Iter.NextSchObject;
                 End;
@@ -16449,10 +16518,11 @@ Begin
             SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
         End;
-        Failed := OpCount - Updated;
+        Failed := OpCount - Matched.Count;
     Finally
         DesigList.Free;
         OpsList.Free;
+        Matched.Free;
     End;
 
     { Through the one helper, so the edit is recorded as well as flagged: }

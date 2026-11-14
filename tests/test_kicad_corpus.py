@@ -500,12 +500,16 @@ def fp_findings():
             emitted = next(
                 (s["args"]["pads"] for s in plan["steps"]
                  if s["tool"] == "lib_add_footprint_pads"), [])
-            missing = len(pads) - len(emitted)
-            # Every reason a pad may legitimately be absent from the
-            # plan. APERTURE joined this list when paste and mask
-            # apertures started being skipped on purpose: an Altium pad
-            # is copper and an aperture is not, so emitting one would
-            # short the pads it subdivides.
+            # A paste or mask opening is drawn as a region on its layer,
+            # not as a pad: an Altium pad is copper and would short the
+            # pads the opening subdivides.
+            openings = sum(
+                1 for s in plan["steps"] if s["tool"] == "lib_add_footprint_regions"
+                for r in s["args"]["regions"]
+                if r["layer"] in ("TopPaste", "BottomPaste", "TopSolder", "BottomSolder"))
+            missing = len(pads) - len(emitted) - min(openings, sum(
+                1 for p in pads if p.layer in (5, 6, 7, 8)))
+            # Every other reason a pad may legitimately be absent.
             explained = any(
                 "no pad number" in w or "UNPLATED" in w or "SLOT" in w
                 or "APERTURE" in w

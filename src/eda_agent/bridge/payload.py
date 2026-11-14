@@ -27,7 +27,10 @@ The rules are narrow on purpose:
 * ``=`` is left ALONE. Only the first ``=`` splits, so ``EN=1`` and
   ``OC=OUT`` parse correctly and escaping them would corrupt real names.
 * a lone ``~`` is left ALONE. It is KiCad's overbar marker (``~{RESET}``)
-  and mangling it renames every active-low pin on the part.
+  and mangling it renames every active-low pin on the part. A value
+  ending in one, last in its operation, meets the separator as ``~~~``;
+  NextBatchOp reads exactly three tildes as the value's then the
+  separator, so it stays.
 
 Substitution rather than escaping is forced: the deployed Pascal parser
 has no escape syntax to escape TO.

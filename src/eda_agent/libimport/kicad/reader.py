@@ -337,13 +337,12 @@ def read_kicad_symbol(text: str, name: Optional[str] = None,
         if sub_style not in (0, style):
             continue
         part = _symbol_shapes(sub)
-        # Tag this unit's pins so the emitter can assign them to the
-        # right sub-part. Unit 0 is shared art; its pins (rare, but the
-        # format allows them) belong to every sub-part, which is what
-        # owner_part_id 0 means on the Altium side.
+        # Tag this unit's pins and art so the emitter can assign them to
+        # the right sub-part. Unit 0 is shared by every sub-part, which is
+        # what owner_part_id 0 means on the Altium side.
         for shape in part:
+            shape.unit = number
             if shape.kind == "pin":
-                shape.unit = number
                 # Symbol-level in KiCad, per-pin in the neutral model and
                 # in Altium; see _visible above.
                 shape.name_visible = names_visible
@@ -533,6 +532,57 @@ def _arc_from_three_points(start, mid, end) -> Optional[EeArc]:
     return arc
 
 
+def _custom_pad_outlines(node: list, px: float, py: float, angle: float
+                         ) -> list[list[tuple[float, float]]]:
+    """A custom pad's primitives as closed outlines in footprint millimetres
+    (KiCad's Y down). They are given in the pad's own frame, turned with it:
+    a polygon or rectangle as drawn, a circle as 32 points, a line as the
+    band its width covers."""
+    t = math.radians(angle)
+
+    def place(x: float, y: float) -> tuple[float, float]:
+        return (px + x * math.cos(t) + y * math.sin(t),
+                py - x * math.sin(t) + y * math.cos(t))
+
+    def pt(n, key):
+        p = find(n, key)
+        return (_num(p[1]), _num(p[2])) if p and len(p) > 2 else None
+
+    out: list[list[tuple[float, float]]] = []
+    prims = find(node, "primitives") or []
+    for item in prims[1:] if prims else []:
+        if not isinstance(item, list) or not item:
+            continue
+        tag = str(item[0])
+        width = _num(value(item, "width", 1, 0))
+        if tag == "gr_poly":
+            pts = [(_num(p[1]), _num(p[2])) for p in find_all(find(item, "pts") or [], "xy")
+                   if len(p) > 2]
+            if len(pts) >= 3:
+                out.append([place(*p) for p in pts])
+        elif tag == "gr_rect":
+            a, b = pt(item, "start"), pt(item, "end")
+            if a and b:
+                out.append([place(*p) for p in ((a[0], a[1]), (b[0], a[1]),
+                                                 (b[0], b[1]), (a[0], b[1]))])
+        elif tag == "gr_circle":
+            c, e = pt(item, "center"), pt(item, "end")
+            if c and e:
+                r = math.dist(c, e) + width / 2
+                out.append([place(c[0] + r * math.cos(2 * math.pi * i / 32),
+                                  c[1] + r * math.sin(2 * math.pi * i / 32))
+                            for i in range(32)])
+        elif tag == "gr_line" and width > 0:
+            a, b = pt(item, "start"), pt(item, "end")
+            if a and b and a != b:
+                ux, uy = b[0] - a[0], b[1] - a[1]
+                n = math.hypot(ux, uy)
+                nx, ny = -uy / n * width / 2, ux / n * width / 2
+                out.append([place(*p) for p in ((a[0] + nx, a[1] + ny), (b[0] + nx, b[1] + ny),
+                                                 (b[0] - nx, b[1] - ny), (a[0] - nx, a[1] - ny))])
+    return out
+
+
 def read_kicad_footprint(text: str) -> EasyEdaComponent:
     """Parse a ``.kicad_mod`` document into the neutral model.
 
@@ -584,6 +634,16 @@ def read_kicad_footprint(text: str) -> EasyEdaComponent:
         pad.plated = ptype != "np_thru_hole"
         pad.layer = 11 if ptype in ("thru_hole", "np_thru_hole") else \
             _layer_id(node, 1)
+        # Copper decides an SMD pad's side whatever order the layers are
+        # listed in; a pad with none is an opening on every paste and mask
+        # layer it names.
+        named = [str(v) for v in (find(node, "layers") or [])[1:]]
+        if pad.layer != 11:
+            copper = [n for n in named if n in ("F.Cu", "B.Cu")]
+            if copper:
+                pad.layer = _LAYER_TO_ID[copper[0]]
+        pad.aperture_layers = [_LAYER_TO_ID[n] for n in named
+                               if _LAYER_TO_ID.get(n) in (5, 6, 7, 8)]
         pad.shape = {"rect": "RECT", "roundrect": "ROUNDRECT",
                      "circle": "ELLIPSE", "oval": "OVAL",
                      "custom": "POLYGON",
@@ -594,9 +654,21 @@ def read_kicad_footprint(text: str) -> EasyEdaComponent:
             ratio = find(node, "roundrect_rratio")
             pad.corner_ratio = (_num(ratio[1]) if ratio and len(ratio) > 1
                                 else 0.25)
-        if pshape in ("custom", "trapezoid"):
+        if pshape == "custom":
+            # The anchor is a plain pad; the copper is the anchor plus the
+            # primitives, kept as outlines in the footprint's frame.
+            options = find(node, "options") or []
+            anchor = find(options, "anchor") if options else None
+            if anchor and len(anchor) > 1 and str(anchor[1]) == "circle":
+                pad.shape = "ELLIPSE"
+            else:
+                pad.shape = "RECT"
+            pad.custom_outlines = [
+                [(x * k, fy(y)) for x, y in poly]
+                for poly in _custom_pad_outlines(node, px, py, angle)]
+        elif pshape == "trapezoid":
             warnings.append(
-                f"pad {pad.number!r} is a {pshape} pad, emitted as its "
+                f"pad {pad.number!r} is a trapezoid pad, emitted as its "
                 f"bounding rectangle; verify against the land pattern")
         shapes.append(pad)
 

@@ -113,22 +113,31 @@ def test_a_missing_origin_is_not_treated_as_hostile(client):
     assert r.status_code == 200
 
 
-def test_a_deliberate_share_can_name_its_host(client, monkeypatch):
-    """Binding to a real address is already gated behind a warning.
-
-    Without an escape hatch the guard would make that mode unusable,
-    and an unusable guard gets deleted rather than configured.
-    """
-    monkeypatch.setenv("EDA_AGENT_DASHBOARD_ALLOWED_HOSTS",
-                       "workshop-pc.lan")
+def test_no_setting_lets_another_machine_in(client, monkeypatch):
+    """The dashboard is for this computer only: no variable widens it."""
+    monkeypatch.setenv("EDA_AGENT_DASHBOARD_ALLOWED_HOSTS", "workshop-pc.lan")
 
     assert client.get("/api/tools",
                       headers={"Host": "workshop-pc.lan:8766"}
-                      ).status_code == 200
-    assert client.get("/api/tools",
-                      headers={"Host": "evil.example.com"}
-                      ).status_code == 403, (
-        "naming one host must not allow every host")
+                      ).status_code == 403
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "workshop-pc.lan"])
+def test_the_dashboard_will_not_listen_beyond_loopback(host):
+    from eda_agent.web import dashboard
+
+    with pytest.raises(SystemExit):
+        dashboard.main(["--host", host])
+
+
+def test_the_cli_will_not_start_it_beyond_loopback(monkeypatch):
+    import sys
+    from eda_agent import server
+
+    monkeypatch.setattr(sys, "argv", ["eda-agent", "dashboard",
+                                      "--host", "0.0.0.0"])
+    with pytest.raises(SystemExit):
+        server.main()
 
 
 # --------------------------------------------------------------------

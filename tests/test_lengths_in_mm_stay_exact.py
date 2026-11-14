@@ -200,7 +200,7 @@ def test_the_conversion_is_exact_under_fpc(tmp_path):
 
 def test_region_points_parse_exactly_under_fpc(tmp_path):
     """The regions handler reads its points with RegionPointCount and
-    RegionPointCoord. Compiled here with the IsFloatStr they rely on and
+    RegionPointsSplit. Compiled here with the IsFloatStr they rely on and
     fed the payload the Python side builds, so the two agree on every
     coordinate, and a malformed pair refuses the region."""
     fpc = shutil.which("fpc")
@@ -212,22 +212,26 @@ def test_region_points_parse_exactly_under_fpc(tmp_path):
     payload, problems = library_module._regions_payload([region])
     assert not problems
     points = payload.split(";points=", 1)[1]
-    lines = [f"  WriteLn(RegionPointCount('{points}'));"]
-    for i in range(1, 5):
-        lines.append(f"  WriteLn(RegionPointCoord('{points}', {i}, True) + '|' "
-                     f"+ RegionPointCoord('{points}', {i}, False));")
+    lines = [f"  WriteLn(RegionPointCount('{points}'));",
+             f"  RegionPointsSplit('{points}', Xs, Ys);",
+             "  For I := 0 To Xs.Count - 1 Do WriteLn(Xs[I] + '|' + Ys[I]);"]
     lines += [
         "  WriteLn(RegionPointCount('1,2/3,4/5'));",
         "  WriteLn(RegionPointCount('1,2/3,x/5,6'));",
         "  WriteLn(RegionPointCount(''));",
-        "  WriteLn('<' + RegionPointCoord('1,2/3,4', 3, True) + '>');",
+        "  Xs.Free; Ys.Free;",
+        "  Xs := TStringList.Create; Ys := TStringList.Create;",
+        "  RegionPointsSplit('1,2/3', Xs, Ys);",
+        "  WriteLn('<' + Xs[1] + '>', Xs.Count);",
     ]
     program = "\n".join([
-        "program regions;", "{$mode delphi}", "uses SysUtils;",
+        "program regions;", "{$mode delphi}", "uses SysUtils, Classes;",
         _routine("Utils.pas", "IsFloatStr"),
         _routine("Library.pas", "RegionPointCount"),
-        _routine("Library.pas", "RegionPointCoord"),
-        "begin", *lines, "end.",
+        _routine("Library.pas", "RegionPointsSplit"),
+        "var Xs, Ys : TStringList; I : Integer;",
+        "begin", "  Xs := TStringList.Create; Ys := TStringList.Create;",
+        *lines, "end.",
     ])
     path = tmp_path / "regions.pas"
     path.write_text(program, encoding="utf-8")
@@ -240,7 +244,7 @@ def test_region_points_parse_exactly_under_fpc(tmp_path):
     for got, (x, y) in zip(out[1:5], region["points"]):
         gx, gy = got.split("|")
         assert (float(gx), float(gy)) == (x, y)
-    assert out[5:] == ["-1", "-1", "0", "<>"]
+    assert out[5:] == ["-1", "-1", "0", "<>2"]
 
 
 @pytest.mark.parametrize("unit,name", [

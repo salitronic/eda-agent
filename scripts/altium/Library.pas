@@ -3313,15 +3313,16 @@ Begin
     Result := Count;
 End;
 
-{ RegionPointCoord - one coordinate of the Which-th pair (1-based) of a      }
-{ points field, as its text; '' past the end. WantX picks x, else y.         }
-Function RegionPointCoord(PointsStr : String; Which : Integer; WantX : Boolean) : String;
+{ RegionPointsSplit - every x,y pair of a points field, in one pass, as the  }
+{ text of each coordinate: Xs[I - 1] and Ys[I - 1] for the I-th pair, '' for }
+{ a pair with no comma. The caller makes and frees both lists. One walk of  }
+{ the field, so a region with thousands of points reads in one pass.        }
+Procedure RegionPointsSplit(PointsStr : String; Xs : TStringList; Ys : TStringList);
 Var
-    Rest, PointStr : String;
-    SlashPos, CommaPos, Seen : Integer;
+    Rest, PointStr, Nothing : String;
+    SlashPos, CommaPos : Integer;
 Begin
-    Result := '';
-    Seen := 0;
+    Nothing := '';
     Rest := Trim(PointsStr);
     While Rest <> '' Do
     Begin
@@ -3336,14 +3337,16 @@ Begin
             PointStr := Copy(Rest, 1, SlashPos - 1);
             Rest := Copy(Rest, SlashPos + 1, Length(Rest));
         End;
-        Seen := Seen + 1;
-        If Seen = Which Then
+        CommaPos := Pos(',', PointStr);
+        If CommaPos = 0 Then
         Begin
-            CommaPos := Pos(',', PointStr);
-            If CommaPos = 0 Then Exit;
-            If WantX Then Result := Trim(Copy(PointStr, 1, CommaPos - 1))
-            Else Result := Trim(Copy(PointStr, CommaPos + 1, Length(PointStr)));
-            Exit;
+            Xs.Add(Nothing);
+            Ys.Add(Nothing);
+        End
+        Else
+        Begin
+            Xs.Add(Trim(Copy(PointStr, 1, CommaPos - 1)));
+            Ys.Add(Trim(Copy(PointStr, CommaPos + 1, Length(PointStr))));
         End;
     End;
 End;
@@ -3368,6 +3371,7 @@ Var
     Contour : IPCB_Contour;
     NPts, I : Integer;
     DidLayer, DidHeights, DidColor, DidOpacity, DidIdent : Boolean;
+    Xs, Ys : TStringList;
 Begin
     Result := Nil;
     Applied := '';
@@ -3378,12 +3382,18 @@ Begin
     If Body = Nil Then Exit;
     Contour := Body.MainContour.Replicate;
     Contour.Count := NPts;
-    For I := 1 To NPts Do
-    Begin
-        Contour.X[I] := OrgX + CoordFromUnits(
-            StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), Units);
-        Contour.Y[I] := OrgY + CoordFromUnits(
-            StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), Units);
+    Xs := TStringList.Create;
+    Ys := TStringList.Create;
+    Try
+        RegionPointsSplit(PointsStr, Xs, Ys);
+        For I := 1 To NPts Do
+        Begin
+            Contour.X[I] := OrgX + CoordFromUnits(StrToFloatDef(Xs[I - 1], 0), Units);
+            Contour.Y[I] := OrgY + CoordFromUnits(StrToFloatDef(Ys[I - 1], 0), Units);
+        End;
+    Finally
+        Xs.Free;
+        Ys.Free;
     End;
     Body.SetOutlineContour(Contour);
 
@@ -3601,6 +3611,7 @@ Var
     ArcsOk : Boolean;
     Layer : TLayer;
     OrgX, OrgY : TCoord;
+    Xs, Ys : TStringList;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -3706,16 +3717,18 @@ Begin
                 Continue;
             End;
             Region.Layer := Layer;
+            Xs := TStringList.Create;
+            Ys := TStringList.Create;
+            Try
+            RegionPointsSplit(PointsStr, Xs, Ys);
             If ArcsStr = '' Then
             Begin
                 Contour := Region.MainContour.Replicate;
                 Contour.Count := NPts;
                 For I := 1 To NPts Do
                 Begin
-                    Contour.X[I] := OrgX + CoordFromUnits(
-                        StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), UnitsStr);
-                    Contour.Y[I] := OrgY + CoordFromUnits(
-                        StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), UnitsStr);
+                    Contour.X[I] := OrgX + CoordFromUnits(StrToFloatDef(Xs[I - 1], 0), UnitsStr);
+                    Contour.Y[I] := OrgY + CoordFromUnits(StrToFloatDef(Ys[I - 1], 0), UnitsStr);
                 End;
                 Region.SetOutlineContour(Contour);
             End
@@ -3727,10 +3740,8 @@ Begin
                 For I := 1 To NPts Do
                 Begin
                     Seg := TPolySegment;
-                    Seg.vx := OrgX + CoordFromUnits(
-                        StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), UnitsStr);
-                    Seg.vy := OrgY + CoordFromUnits(
-                        StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), UnitsStr);
+                    Seg.vx := OrgX + CoordFromUnits(StrToFloatDef(Xs[I - 1], 0), UnitsStr);
+                    Seg.vy := OrgY + CoordFromUnits(StrToFloatDef(Ys[I - 1], 0), UnitsStr);
                     If RegionArcField(ArcsStr, I, 0) <> '' Then
                     Begin
                         Seg.Kind := ePolySegmentArc;
@@ -3753,6 +3764,10 @@ Begin
                 For I := 0 To Region.ShapeSegmentCount - 1 Do
                     If Region.ShapeSegments[I].Kind = ePolySegmentArc Then
                         Inc(ArcEdges);
+            End;
+            Finally
+                Xs.Free;
+                Ys.Free;
             End;
 
             If KeepWanted Then

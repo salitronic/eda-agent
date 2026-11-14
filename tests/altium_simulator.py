@@ -267,6 +267,9 @@ def _next_batch_op(remaining: str) -> tuple[str, str]:
         sep = remaining.find("~~")
         if sep < 0:
             return remaining, ""
+        # Exactly three tildes: a value ending in "~", then the separator.
+        if remaining[sep + 2:sep + 3] == "~" and remaining[sep + 3:sep + 4] != "~":
+            sep += 1
         op, remaining = remaining[:sep], remaining[sep + 2:]
         if op:
             return op, remaining
@@ -2113,6 +2116,7 @@ class AltiumSimulator:
                                 {"designator": comp.designator, "pin": pad, "net": net})
                 placed += 1
             data = ('{"placed":' + str(placed) + ',"failed":' + str(failed) +
+                    ',"label_layers_unknown":0' +
                     ',"total":' + str(placed + failed) + '}')
             return _build_success_response(rid, data)
 

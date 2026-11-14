@@ -1108,8 +1108,9 @@ def register_generic_tools(mcp):
         Args:
             action: "fit" (Fit All Objects, which can cut a sheet's frame
                 off), "document" (a schematic's Fit Document: the whole
-                sheet with its frame), "board" (the board alone, not
-                parts parked beside it; a schematic fits as "fit"),
+                sheet with its frame), "board" (the board outline with
+                a margin, not parts parked beside it; a schematic fits
+                as "fit"),
                 "selection" (zoom to selected objects) or "point" (zoom
                 to x, y)
             x, y: the point for "point", in mils (a footprint's frame in

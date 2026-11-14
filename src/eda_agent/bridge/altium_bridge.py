@@ -497,9 +497,10 @@ def maintenance_in_progress(workspace_dir: Path) -> bool:
     return age < _MAINTENANCE_FRESH_S
 
 
-#: Set to 1 to fit the board (or sheet) in view after each command that
-#: changes the design, so whoever watches Altium always sees the whole
-#: board. Off by default: it moves the view, which a user zoomed in on one
+#: Set to 1 to fit the board outline, with a margin (or a sheet's objects),
+#: in view after each command that changes the design, so whoever watches
+#: Altium always sees the whole board, however many parts are parked off
+#: it. Off by default: it moves the view, which a user zoomed in on one
 #: corner would not want.
 KEEP_IN_VIEW_ENV = "EDA_AGENT_KEEP_BOARD_IN_VIEW"
 _KEEP_IN_VIEW_EVERY_S = 2.0
@@ -2064,7 +2065,7 @@ class AltiumBridge:
             try:
                 await loop.run_in_executor(
                     _executor, self._execute_command,
-                    "generic.zoom", {"action": "fit"}, 10.0)
+                    "generic.zoom", {"action": "board"}, 10.0)
             except Exception:  # a view nicety never fails the call it follows
                 pass
         return result

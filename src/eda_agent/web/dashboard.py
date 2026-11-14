@@ -684,11 +684,9 @@ def _hot_reload_render_modules() -> None:
 #: rebinding is.
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", ""})
 
-#: Escape hatch for a deliberate non-loopback bind. Comma separated
-#: hostnames, no ports. Sharing the dashboard is already gated behind an
-#: explicit --host and a printed warning; this lets that case name the
-#: address it will actually be reached by.
-_ALLOWED_HOSTS_ENV = "EDA_AGENT_DASHBOARD_ALLOWED_HOSTS"
+#: The addresses the dashboard may listen on. It is for the person at
+#: this computer only: it is never served to another machine.
+LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")
 
 
 def _hostname_of(value: str) -> str:
@@ -709,14 +707,6 @@ def _hostname_of(value: str) -> str:
             return value[:end + 1]
         return value
     return value.split(":")[0]
-
-
-def _allowed_hostnames() -> frozenset:
-    import os
-
-    extra = os.environ.get(_ALLOWED_HOSTS_ENV, "")
-    names = {n.strip().lower() for n in extra.split(",") if n.strip()}
-    return frozenset(_LOOPBACK_NAMES | names)
 
 
 def install_origin_guard(app) -> None:
@@ -750,7 +740,7 @@ def install_origin_guard(app) -> None:
 
     @app.before_request
     def _reject_foreign_origin():
-        allowed = _allowed_hostnames()
+        allowed = _LOOPBACK_NAMES
 
         host = _hostname_of(request.headers.get("Host", ""))
         if host not in allowed:
@@ -761,9 +751,7 @@ def install_origin_guard(app) -> None:
                     f"dashboard is unauthenticated and reachable only as "
                     f"localhost, because every endpoint can drive the "
                     f"EDA application. A Host that is not a loopback name "
-                    f"is how a DNS rebinding attack arrives. Set "
-                    f"{_ALLOWED_HOSTS_ENV} if you are deliberately serving "
-                    f"this to another machine."),
+                    f"is how a DNS rebinding attack arrives."),
             }), 403
 
         # Origin is absent on same-origin GETs and on direct navigation,
@@ -2204,7 +2192,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         prog="eda-agent dashboard",
         description="Local web dashboard for the EDA Agent MCP bridge.",
     )
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1", choices=LOOPBACK_BINDS,
+                        help="A loopback address; the dashboard is never "
+                             "served to another machine.")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument(
         "--workspace", type=Path, default=None,
@@ -2218,14 +2208,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
-
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            "binding to %s exposes the dashboard (live design data, and "
-            "endpoints that drive Altium) to the network with no "
-            "authentication; use 127.0.0.1 unless you mean to share it.",
-            args.host,
-        )
 
     app = create_app(workspace_dir=args.workspace)
 

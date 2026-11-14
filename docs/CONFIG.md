@@ -28,7 +28,7 @@ changes a setting itself, and never works around one.
 
 | Setting | Choices | What it does |
 |---|---|---|
-| Keep board in view | Off / On | On fits the window to the whole board or sheet after each edit, at most every 2 seconds. |
+| Keep board in view | Off / On | On fits the window to the board outline, with a margin of a twentieth of its larger side, or to the sheet after each edit, at most every 2 seconds. Parts parked off the board do not zoom the view out. |
 | Lengths in | mil / mm | The unit a new AI session gives and reads lengths in. A session may switch its own, and every reply says its unit. |
 | Component value format | None / 4K7 2u2 / 4.7k 2.2u / with unit | How a value is written when it is cleaned up. None leaves values as they are. |
 | Dialogs | Auto / Manual | Manual leaves the dialogs a tool opens (change orders, teardrops) for the user to answer. |

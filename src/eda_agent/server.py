@@ -820,168 +820,6 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     return 0
 
 
-def _run_review(args) -> int:
-    """Handle ``eda-agent review <file>`` -- offline fallback review.
-
-    This is the opt-in, no-Altium fallback (component-level checks only); it
-    is NOT the preferred review path. It is disabled unless the caller passes
-    ``--offline`` or sets ``EDA_AGENT_HEADLESS_REVIEW=1``.
-
-    Exit code: 0 clean, 1 if any finding at/above ``--fail-on`` (so CI fails
-    the build), 2 if disabled or the file could not be read.
-    """
-    from .fileio.review import (
-        ERROR,
-        HEADLESS_DISABLED_MESSAGE,
-        headless_review_enabled,
-        review_project_file,
-        to_sarif,
-    )
-
-    if not (getattr(args, "offline", False) or headless_review_enabled()):
-        print(f"ERROR: {HEADLESS_DISABLED_MESSAGE}", file=sys.stderr)
-        return 2
-
-    try:
-        report = review_project_file(args.file)
-    except (ValueError, OSError) as e:
-        print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
-        return 2
-
-    if getattr(args, "sarif", False):
-        import json as _json
-        from . import __version__ as _ver
-        print(_json.dumps(to_sarif(report, tool_version=_ver), indent=2))
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps(report, indent=2))
-    else:
-        s = report["summary"]
-        print(f"Reviewed {report['file']}")
-        if "sheet_count" in report:  # project review
-            print(f"  {report['sheet_count']} sheet(s), "
-                  f"{report['component_count']} components")
-        elif "document" in report:  # single schematic sheet
-            doc = report["document"]
-            print(f"  {doc.get('title') or '(untitled)'}  "
-                  f"rev {doc.get('revision') or '-'}  --  "
-                  f"{report['component_count']} components, "
-                  f"{len(report.get('net_names', []))} named nets")
-        else:  # library review
-            print(f"  {report['component_count']} library components")
-        print(f"  {s.get('error', 0)} error(s), {s.get('warning', 0)} "
-              f"warning(s), {s.get('info', 0)} info")
-        for f in report["findings"]:
-            tag = f["designator"] or "-"
-            sheet = f" ({f['sheet']})" if f.get("sheet") else ""
-            print(f"  [{f['severity'].upper():7}] {tag:6} {f['check']}: "
-                  f"{f['message']}{sheet}")
-    # Gating: exit 1 if any finding at or above the --fail-on threshold.
-    # Default "error" preserves the prior behavior.
-    fail_on = getattr(args, "fail_on", "error")
-    order = {"info": 0, "warning": 1, "error": 2}
-    if fail_on == "never":
-        return 0
-    threshold = order.get(fail_on, 2)
-    s = report["summary"]
-    triggered = sum(
-        s.get(sev, 0) for sev, rank in order.items() if rank >= threshold
-    )
-    return 1 if triggered > 0 else 0
-
-
-def _offline_gate_ok(args) -> bool:
-    """Shared opt-in check for the offline (no-Altium) CLI fallbacks."""
-    from .fileio.review import (
-        HEADLESS_DISABLED_MESSAGE,
-        headless_review_enabled,
-    )
-    if getattr(args, "offline", False) or headless_review_enabled():
-        return True
-    print(f"ERROR: {HEADLESS_DISABLED_MESSAGE}", file=sys.stderr)
-    return False
-
-
-def _run_bom(args) -> int:
-    """Handle ``eda-agent bom <file>`` -- offline consolidated BOM.
-
-    Opt-in, no-Altium fallback. Exit 0 on success, 2 if disabled/unreadable.
-    """
-    if not _offline_gate_ok(args):
-        return 2
-    from .fileio.bom import bom_from_file, bom_to_csv
-
-    try:
-        lines = bom_from_file(args.file)
-    except (ValueError, OSError) as e:
-        print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
-        return 2
-    if not lines:
-        from .fileio.bom import EMPTY_BOM_WARNING
-        print(f"WARNING: {args.file}: {EMPTY_BOM_WARNING}", file=sys.stderr)
-
-    if getattr(args, "csv", False):
-        print(bom_to_csv(lines), end="")
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps(lines, indent=2))
-    else:
-        parts = sum(ln["quantity"] for ln in lines)
-        print(f"BOM for {args.file}: {len(lines)} line(s), {parts} parts")
-        for ln in lines:
-            print(f"  {ln['quantity']:3}x  {', '.join(ln['designators']):24}  "
-                  f"{ln['value'] or '-':10}  {ln['mpn'] or '-'}")
-    return 0
-
-
-def _run_netlist(args) -> int:
-    """Handle ``eda-agent netlist <file>`` -- offline netlist + connectivity.
-
-    Opt-in, no-Altium fallback. Reconstructs the netlist geometrically and
-    runs connectivity ERC. Exit 0 clean, 1 if any connectivity finding at/
-    above ``--fail-on``, 2 if disabled/unreadable.
-    """
-    if not _offline_gate_ok(args):
-        return 2
-    from .fileio.netlist_solver import solve_schematic_nets
-    from .fileio.review import review_connectivity
-
-    try:
-        solved = solve_schematic_nets(args.file)
-    except (ValueError, OSError, KeyError) as e:
-        print(f"ERROR: cannot solve {args.file}: {e}", file=sys.stderr)
-        return 2
-
-    findings = review_connectivity(solved)
-    if getattr(args, "sarif", False):
-        import json as _json
-        from . import __version__ as _ver
-        from .fileio.review import to_sarif
-        report = {"file": str(args.file), "findings": findings}
-        print(_json.dumps(to_sarif(report, tool_version=_ver), indent=2))
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps({"nets": {n: [f"{m['component']}.{m['pin']}"
-                                        for m in v]
-                                    for n, v in solved["nets"].items()},
-                           "findings": findings}, indent=2))
-    else:
-        print(f"Netlist for {args.file}: {len(solved['nets'])} nets, "
-              f"{len(solved['pin_nets'])} pins")
-        for f in findings:
-            tag = f["designator"] or "-"
-            print(f"  [{f['severity'].upper():7}] {tag:6} {f['check']}: "
-                  f"{f['message']}")
-
-    fail_on = getattr(args, "fail_on", "error")
-    if fail_on == "never":
-        return 0
-    order = {"info": 0, "warning": 1, "error": 2}
-    threshold = order.get(fail_on, 2)
-    triggered = any(order.get(f["severity"], 2) >= threshold for f in findings)
-    return 1 if triggered else 0
-
-
 def main() -> int:
     """CLI entry point.
 
@@ -1177,7 +1015,10 @@ def main() -> int:
             "auto-launches this server's URL via a workspace sentinel."
         ),
     )
-    dash_p.add_argument("--host", default="127.0.0.1")
+    dash_p.add_argument("--host", default="127.0.0.1",
+                        choices=("127.0.0.1", "localhost", "::1"),
+                        help="A loopback address; the dashboard is never "
+                             "served to another machine.")
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
@@ -1222,69 +1063,6 @@ def main() -> int:
               "Use this when the dashboard was launched detached by the "
               "Altium script and you want to kill it without rebooting."),
     )
-
-    # review -- OFFLINE FALLBACK, opt-in schematic review (no Altium).
-    # Not the preferred path: the live-Altium tools see connectivity this
-    # reader can't. Disabled unless --offline / EDA_AGENT_HEADLESS_REVIEW=1.
-    review_p = subparsers.add_parser(
-        "review",
-        help=(
-            "Offline FALLBACK design review of a .SchDoc/.PrjPcb -- parses "
-            "the file directly (no running Altium, no license) for the "
-            "component-level subset only (missing MPN / datasheet, "
-            "placeholder values, designator collisions). NOT the preferred "
-            "path -- prefer the live tools when Altium is available. Opt-in: "
-            "requires --offline (or EDA_AGENT_HEADLESS_REVIEW=1)."
-        ),
-    )
-    review_p.add_argument("file", type=Path,
-                          help="Path to a .SchDoc sheet or a .PrjPcb project "
-                               "(reviews all its sheets).")
-    review_p.add_argument("--offline", action="store_true",
-                          help="Opt in to the no-Altium file-reader review. "
-                               "Required (this review is off by default); the "
-                               "live-Altium tools are preferred when a session "
-                               "is available.")
-    review_p.add_argument("--json", action="store_true",
-                          help="Emit the full report as JSON.")
-    review_p.add_argument("--sarif", action="store_true",
-                          help="Emit SARIF 2.1.0 (for GitHub code scanning / "
-                               "PR annotations).")
-    review_p.add_argument("--fail-on", dest="fail_on", default="error",
-                          choices=["error", "warning", "info", "never"],
-                          help="Exit non-zero when a finding at or above this "
-                               "severity exists (default: error).")
-
-    # bom -- offline consolidated BOM (opt-in, no Altium).
-    bom_p = subparsers.add_parser(
-        "bom",
-        help=("Offline consolidated BOM from a .SchDoc/.PrjPcb (no running "
-              "Altium). Opt-in: requires --offline (or "
-              "EDA_AGENT_HEADLESS_REVIEW=1). Prefer live proj_get_bom."))
-    bom_p.add_argument("file", type=Path, help="A .SchDoc or .PrjPcb.")
-    bom_p.add_argument("--offline", action="store_true",
-                       help="Opt in to the no-Altium reader (required).")
-    bom_p.add_argument("--csv", action="store_true", help="Emit CSV.")
-    bom_p.add_argument("--json", action="store_true", help="Emit JSON.")
-
-    # netlist -- offline geometric netlist + connectivity ERC (opt-in).
-    net_p = subparsers.add_parser(
-        "netlist",
-        help=("Offline netlist reconstruction + connectivity ERC "
-              "(single_pin_net, net_short) from a .SchDoc (no running "
-              "Altium). Opt-in: requires --offline. Prefer live "
-              "proj_get_nets/proj_run_erc."))
-    net_p.add_argument("file", type=Path, help="A .SchDoc sheet.")
-    net_p.add_argument("--offline", action="store_true",
-                       help="Opt in to the no-Altium solver (required).")
-    net_p.add_argument("--json", action="store_true", help="Emit JSON.")
-    net_p.add_argument("--sarif", action="store_true",
-                       help="Emit SARIF 2.1.0 (GitHub code scanning / PR "
-                            "annotations).")
-    net_p.add_argument("--fail-on", dest="fail_on", default="error",
-                       choices=["error", "warning", "info", "never"],
-                       help="Exit non-zero on a finding at/above this "
-                            "severity (default: error).")
 
     # calc -- the offline engineering calculators, without an MCP client.
     calc_p = subparsers.add_parser(
@@ -1444,12 +1222,6 @@ def main() -> int:
         else:
             print(sdk_reach.report(rows, args.detail))
         return 0
-    if args.command == "review":
-        return _run_review(args)
-    if args.command == "bom":
-        return _run_bom(args)
-    if args.command == "netlist":
-        return _run_netlist(args)
     if args.command == "calc":
         return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
     if args.command in ("health", "doctor"):

@@ -40,6 +40,10 @@ from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
+#: What pcb_place_components passes on for a part's designator ("name_")
+#: and comment ("comment_") text.
+_LABEL_FIELDS = ("shown", "layer", "height", "stroke", "angle", "mirror", "x", "y")
+
 #: The dump and the apply pass of pcb_apply_geometry_map each walk every
 #: free primitive of a board, tens of thousands on a large one.
 _GEOMETRY_MAP_TIMEOUT = 1800.0
@@ -8432,6 +8436,55 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_place_polygon(
+        points: list[Any],
+        net: str = "",
+        layer: str = "TopLayer",
+        name: str = "",
+        pour_over: bool = True,
+        remove_dead: bool = True,
+        pour: bool = True,
+    ) -> dict[str, Any]:
+        """Drop a copper polygon pour on an outline of straight edges.
+
+        As pcb_place_polygon_rect, on any shape: a zone from another tool,
+        an L-shaped plane. The pour keeps its clearance from other nets
+        by the board's rules.
+
+        Args:
+            points: The outline, three or more ``[x, y]`` (or ``{x, y}``)
+                in mils, in order; it closes by itself.
+            net: Net of the pour; it must exist on the board.
+            layer: Copper layer (default "TopLayer").
+            name: The pour's name, to pour or find it again by.
+            pour_over: Pour over same-net objects (default True).
+            remove_dead: Remove islands joined to nothing (default True).
+            pour: Pour it now (default True); False leaves it for one
+                pcb_repour_polygons after the rest of the board is drawn.
+
+        Returns:
+            ``placed``, ``vertices`` read back, ``name``, ``layer``,
+            ``net``, ``poured`` and ``repour_mode``.
+        """
+        try:
+            verts = [(float(p["x"]), float(p["y"])) if isinstance(p, dict)
+                     else (float(p[0]), float(p[1])) for p in points or []]
+        except (KeyError, IndexError, TypeError, ValueError):
+            return {"ok": False, "reason": "each point is [x, y] or {x, y} in mils"}
+        while len(verts) > 1 and verts[0] == verts[-1]:
+            verts.pop()
+        if len(verts) < 3:
+            return {"ok": False, "reason": "an outline needs three or more points"}
+        params = {"points": "/".join(f"{_mils(x)},{_mils(y)}" for x, y in verts),
+                  "net": net, "layer": layer,
+                  "pour_over": "true" if pour_over else "false",
+                  "remove_dead": "true" if remove_dead else "false",
+                  "pour": "true" if pour else "false"}
+        if name:
+            params["name"] = name
+        return await get_bridge().send_command_async("pcb.place_polygon_rect", params)
+
+    @mcp.tool()
     async def pcb_keepout_board_outline(width_mils: float = 20) -> dict[str, Any]:
         """Draw the board outline on the Keep-Out layer.
 
@@ -10719,10 +10772,17 @@ def register_pcb_tools(mcp):
                 rotation, layer, unique_id, and pad_nets
                 (``{pad_name: net_name}``); omit unique_id/pad_nets for
                 geometry-only, include them for a synced placement.
+                The designator and comment texts: ``name_shown`` /
+                ``comment_shown`` (bool), then optionally ``_layer``,
+                ``_height``, ``_stroke`` (mils), ``_angle``, ``_mirror``
+                (bool) and ``_x``, ``_y`` (mils, where the middle of the
+                text lands), e.g. ``name_height``. Without ``*_shown`` the
+                text keeps the footprint's defaults.
             board_path: Absolute .PcbDoc path to place onto (optional).
 
         Returns:
-            Dict with ``placed`` (count), ``failed`` (count), ``total``.
+            Dict with ``placed`` (count), ``failed`` (count), ``total``,
+            ``label_layers_unknown`` (texts whose layer was not found).
         """
         recs: list[str] = []
         for p in placements:
@@ -10740,6 +10800,18 @@ def register_pcb_tools(mcp):
             fields.append(f"y=={_mils(p.get('y', 0))}")
             if p.get("rotation") is not None:
                 fields.append(f"rotation=={p.get('rotation')}")
+            for text in ("name", "comment"):
+                if p.get(f"{text}_shown") is None:
+                    continue
+                for part in _LABEL_FIELDS:
+                    v = p.get(f"{text}_{part}")
+                    if v is None or v == "":
+                        continue
+                    if isinstance(v, bool):
+                        v = "1" if v else "0"
+                    elif part in ("x", "y", "height", "stroke"):
+                        v = _mils(v)
+                    fields.append(f"{text}_{part}=={str(v).strip()}")
             pn = p.get("pad_nets")
             if pn:
                 pn_str = "|".join(

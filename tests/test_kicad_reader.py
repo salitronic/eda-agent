@@ -179,10 +179,11 @@ def test_footprint_shapes_are_read():
     assert {"pad", "track", "circle", "text"} <= kinds
 
 
-def test_custom_pad_shape_is_reported_not_silently_squared():
+def test_a_custom_pad_without_primitives_is_its_anchor():
     comp = read_kicad_footprint(
         _MOD.replace("smd rect", "smd custom", 1))
-    assert any("custom" in w for w in comp.warnings)
+    pad = next(s for s in comp.footprint.shapes if s.kind == "pad")
+    assert (pad.shape, pad.custom_outlines) == ("RECT", [])
 
 
 # ------------------------- the whole point ---------------------------
@@ -461,25 +462,41 @@ def _plan_warnings(mod_text):
     return build_altium_plan(comp, "T.SchLib", "T.PcbLib")["warnings"]
 
 
-def test_a_slotted_hole_is_reported_not_quietly_rounded():
-    """The pad payload carries one hole_size and no slot length.
+def _plan_pads(mod_text):
+    from eda_agent.libimport.easyeda.altium import build_altium_plan
+    from eda_agent.libimport.easyeda.document import EasyEdaComponent
 
-    So the hole comes out the right diameter and the wrong shape, and a
-    rectangular lead will not fit. Nothing downstream would reveal it,
-    which is what makes silence the wrong answer here.
-    """
+    comp = EasyEdaComponent(
+        mpn="X", footprint=read_kicad_footprint(mod_text).footprint)
+    plan = build_altium_plan(comp, "T.SchLib", "T.PcbLib")
+    step = next(s for s in plan["steps"] if s["tool"] == "lib_add_footprint_pads")
+    return step["args"]["pads"]
+
+
+def test_a_slotted_hole_keeps_its_length():
+    """A round hole of the slot's width would not take a rectangular lead."""
     mod = ('(footprint "S" (layer "F.Cu")\n'
            '  (pad "1" thru_hole oval (at 0 0) (size 2 3)\n'
            '    (drill oval 0.8 1.6) (layers "*.Cu")))')
-    assert any("SLOT" in w.upper() for w in _plan_warnings(mod))
+    pad = _plan_pads(mod)[0]
+    assert (pad["hole_size"], pad["hole_length"]) == (31, 63)
 
 
-def test_an_unplated_pad_is_reported_not_quietly_plated():
+def test_an_unplated_pad_stays_unplated():
     """Emitting it plated puts copper in a hole meant to have none."""
     mod = ('(footprint "S" (layer "F.Cu")\n'
            '  (pad "1" np_thru_hole circle (at 0 0) (size 2 2)\n'
            '    (drill 1.5) (layers "*.Cu")))')
-    assert any("UNPLATED" in w.upper() for w in _plan_warnings(mod))
+    assert _plan_pads(mod)[0]["plated"] is False
+
+
+def test_a_numberless_mounting_hole_is_drilled():
+    """KiCad's mounting holes have no pad number; the board still needs them."""
+    mod = ('(footprint "H" (layer "F.Cu")\n'
+           '  (pad "" np_thru_hole circle (at 0 0) (size 3.2 3.2)\n'
+           '    (drill 3.2) (layers "*.Cu" "*.Mask")))')
+    pad = _plan_pads(mod)[0]
+    assert (pad["designator"], pad["plated"], pad["hole_size"]) == ("", False, 126)
 
 
 def test_an_ordinary_footprint_collects_no_such_warnings():
@@ -831,13 +848,10 @@ def test_an_aperture_never_becomes_altium_copper():
     assert all(p["layer"] in ("TopLayer", "BottomLayer") for p in pads)
 
 
-def test_apertures_are_reported_as_apertures_not_as_nameless_copper():
-    """The advice has to match what the geometry is.
-
-    The blank-designator warning says "add them by hand if they are real
-    copper". For an aperture that instruction produces exactly the short
-    this conversion must avoid, so apertures get their own message.
-    """
+def test_apertures_become_regions_on_their_layer_not_copper():
+    """A paste or mask opening has no copper, and an Altium pad always
+    does: it is drawn as a region on the paste or mask layer, never as a
+    pad that would short the pads it subdivides."""
     from eda_agent.libimport.easyeda.altium import build_altium_plan
     from eda_agent.libimport.easyeda.document import EasyEdaComponent
 
@@ -846,11 +860,13 @@ def test_apertures_are_reported_as_apertures_not_as_nameless_copper():
         EasyEdaComponent(mpn="AP", footprint=comp.footprint),
         "T.SchLib", "T.PcbLib")
 
-    note = [w for w in plan["warnings"] if "APERTURE" in w]
-    assert note, f"apertures went unreported: {plan['warnings']}"
-    assert "2 solder-paste / mask APERTURE" in note[0]
-    # And they must NOT be blamed on a missing designator.
-    assert not [w for w in plan["warnings"] if "carry no pad number" in w]
+    pads = next((s["args"]["pads"] for s in plan["steps"]
+                 if s["tool"] == "lib_add_footprint_pads"), [])
+    assert all(p["layer"] in ("TopLayer", "BottomLayer") for p in pads)
+    regions = [r for s in plan["steps"] if s["tool"] == "lib_add_footprint_regions"
+               for r in s["args"]["regions"]
+               if r["layer"] in ("TopPaste", "BottomPaste", "TopSolder", "BottomSolder")]
+    assert len(regions) == 2, regions
 
 
 # --------------- absolute layer checks (not round trips) --------------

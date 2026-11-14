@@ -14027,9 +14027,11 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_PlacePolygonRect - Drop a copper polygon pour on a rectangular area     }
+{ PCB_PlacePolygonRect - Drop a copper polygon pour on a rectangular area,    }
+{ or on the outline in points.                                                }
 { Params: x1,y1,x2,y2 in mils, net=<name>, layer=<layer>, pour_over=<bool>,  }
-{ pour=<bool> (false places the outline unpoured).                           }
+{ pour=<bool> (false places the outline unpoured), points (x,y pairs in mils }
+{ joined by "/", three or more, in place of the rectangle), name.            }
 {..............................................................................}
 
 Function PCB_PlacePolygonRect(Params : String; RequestId : String) : String;
@@ -14038,7 +14040,9 @@ Var
     Polygon : IPCB_Polygon;
     X1, Y1, X2, Y2, TmpF : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    NetStr, LayerStr, PourOverStr, DeadStr : String;
+    NetStr, LayerStr, PourOverStr, DeadStr, PointsStr, NameStr : String;
+    NPts, I : Integer;
+    Xs, Ys : TStringList;
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
     TargetLayer : TLayer;
@@ -14059,6 +14063,19 @@ Begin
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
     PourOverStr := ExtractJsonValue(Params, 'pour_over');
+    PointsStr := Trim(ExtractJsonValue(Params, 'points'));
+    NameStr := ExtractJsonValue(Params, 'name');
+    NPts := 0;
+    If PointsStr <> '' Then
+    Begin
+        NPts := RegionPointCount(PointsStr);
+        If NPts < 3 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_POINTS',
+                'points must be three or more x,y pairs in mils joined by "/"');
+            Exit;
+        End;
+    End;
 
     If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
     If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
@@ -14104,14 +14121,36 @@ Begin
           "Undeclared identifier: Kind" in the script engine. IPCB_Polygon has
           no SetOutlineContour (that is a region-only method), so Segments is
           the only path. Whole-record writes (Segments[i] := Seg) are fine. }
-        Polygon.PointCount := 4;
         Seg := TPolySegment;
         Seg.Kind := ePolySegmentLine;
-        Seg.vx := Cx1;  Seg.vy := Cy1;  Polygon.Segments[0] := Seg;
-        Seg.vx := Cx2;  Seg.vy := Cy1;  Polygon.Segments[1] := Seg;
-        Seg.vx := Cx2;  Seg.vy := Cy2;  Polygon.Segments[2] := Seg;
-        Seg.vx := Cx1;  Seg.vy := Cy2;  Polygon.Segments[3] := Seg;
-        ClosePolySegments(Polygon, 4);
+        If NPts > 0 Then
+        Begin
+            Polygon.PointCount := NPts;
+            Xs := TStringList.Create;
+            Ys := TStringList.Create;
+            Try
+                RegionPointsSplit(PointsStr, Xs, Ys);
+                For I := 0 To NPts - 1 Do
+                Begin
+                    Seg.vx := MilsToCoordF(StrToFloatDef(Xs[I], 0));
+                    Seg.vy := MilsToCoordF(StrToFloatDef(Ys[I], 0));
+                    Polygon.Segments[I] := Seg;
+                End;
+            Finally
+                Xs.Free;
+                Ys.Free;
+            End;
+            ClosePolySegments(Polygon, NPts);
+        End
+        Else
+        Begin
+            Polygon.PointCount := 4;
+            Seg.vx := Cx1;  Seg.vy := Cy1;  Polygon.Segments[0] := Seg;
+            Seg.vx := Cx2;  Seg.vy := Cy1;  Polygon.Segments[1] := Seg;
+            Seg.vx := Cx2;  Seg.vy := Cy2;  Polygon.Segments[2] := Seg;
+            Seg.vx := Cx1;  Seg.vy := Cy2;  Polygon.Segments[3] := Seg;
+            ClosePolySegments(Polygon, 4);
+        End;
 
         { Assign net if specified. }
         If NetStr <> '' Then
@@ -14144,6 +14183,10 @@ Begin
         { Altium names a pour when it pours it; one left without a name is  }
         { given its default name, so it can be poured later by name. Set    }
         { before the polygon joined the board, the name stayed empty.       }
+        If NameStr <> '' Then
+        Begin
+            Try Polygon.Name := NameStr; Except NoteWriteFailed('polygon Name'); End;
+        End;
         Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except NoteWriteFailed('polygon default Name'); End;
     Finally
         PcbEndEdit(0);
@@ -14152,7 +14195,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,'
+        '{"placed":true,"vertices":' + IntToStr(Polygon.PointCount) + ','
         + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"remove_dead":' + BoolToJsonStr(Polygon.RemoveDead) + ','
@@ -14663,6 +14706,7 @@ Var
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
     NPts, I, K, NBack, ArcEdges : Integer;
+    Xs, Ys : TStringList;
     Seg : TPolySegment;
     ArcsOk, HasArc : Boolean;
 Begin
@@ -14749,16 +14793,18 @@ Begin
         { IPCB_Region uses MainContour + SetOutlineContour (NOT the polygon
           Segments API). Note that the contour X[I]/Y[I] arrays are
           1-based (not 0-based). }
+        Xs := TStringList.Create;
+        Ys := TStringList.Create;
+        Try
+        RegionPointsSplit(PointsStr, Xs, Ys);
         Contour := Region.MainContour.Replicate;
         If NPts >= 3 Then
         Begin
             Contour.Count := NPts;
             For I := 1 To NPts Do
             Begin
-                Contour.X[I] := MilsToCoordF(
-                    StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0));
-                Contour.Y[I] := MilsToCoordF(
-                    StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0));
+                Contour.X[I] := MilsToCoordF(StrToFloatDef(Xs[I - 1], 0));
+                Contour.Y[I] := MilsToCoordF(StrToFloatDef(Ys[I - 1], 0));
             End;
         End
         Else
@@ -14780,8 +14826,8 @@ Begin
             For I := 1 To NPts Do
             Begin
                 Seg := TPolySegment;
-                Seg.vx := MilsToCoordF(StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0));
-                Seg.vy := MilsToCoordF(StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0));
+                Seg.vx := MilsToCoordF(StrToFloatDef(Xs[I - 1], 0));
+                Seg.vy := MilsToCoordF(StrToFloatDef(Ys[I - 1], 0));
                 If RegionArcField(ArcsStr, I, 0) <> '' Then
                 Begin
                     Seg.Kind := ePolySegmentArc;
@@ -14801,6 +14847,10 @@ Begin
             For I := 0 To Region.ShapeSegmentCount - 1 Do
                 If Region.ShapeSegments[I].Kind = ePolySegmentArc Then
                     Inc(ArcEdges);
+        End;
+        Finally
+            Xs.Free;
+            Ys.Free;
         End;
         If NameStr <> '' Then Region.Name := NameStr;
 
@@ -15403,6 +15453,58 @@ End;
 { handler. Records separated by '~~'; fields key==value;;key==value.          }
 {..............................................................................}
 
+{ One placed part's designator (Key 'name') or comment (Key 'comment') as   }
+{ the placement asks: <key>_shown 1 or 0, then optionally <key>_layer,      }
+{ _height and _stroke in mils, _angle, _mirror 1 or 0, and _x, _y in mils:  }
+{ the point the middle of the text lands on, read from its box after the    }
+{ restyle. Nothing is touched when <key>_shown is absent. Returns False     }
+{ when the layer is unknown.                                                }
+Function PlaceLabel(Board : IPCB_Board; Comp : IPCB_Component; Op, Key : String) : Boolean;
+Var
+    Txt : IPCB_Text;
+    Shown, LayerStr, XStr, YStr : String;
+    H, W : Double;
+    LayerId : Integer;
+    Box : TCoordRect;
+    DX, DY : Integer;
+Begin
+    Result := True;
+    Shown := GetPlacementField(Op, Key + '_shown');
+    If Shown = '' Then Exit;
+    If Key = 'name' Then Txt := Comp.Name Else Txt := Comp.Comment;
+    If Key = 'name' Then Comp.NameOn := Shown = '1' Else Comp.CommentOn := Shown = '1';
+    If Txt = Nil Then Exit;
+    LayerStr := GetPlacementField(Op, Key + '_layer');
+    H := StrToFloatDef(GetPlacementField(Op, Key + '_height'), 0);
+    W := StrToFloatDef(GetPlacementField(Op, Key + '_stroke'), 0);
+    LayerId := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        LayerId := ResolveLayerId(Board, LayerStr);
+        If LayerId = eNoLayer Then Result := False;
+    End;
+    Txt.BeginModify;
+    Txt.UseTTFonts := False;
+    If LayerId <> eNoLayer Then Txt.Layer := LayerId;
+    If H > 0 Then Txt.Size := MilsToCoordF(H);
+    If W > 0 Then Txt.Width := MilsToCoordF(W);
+    Txt.Rotation := StrToFloatDef(GetPlacementField(Op, Key + '_angle'), 0);
+    Txt.MirrorFlag := GetPlacementField(Op, Key + '_mirror') = '1';
+    Txt.EndModify;
+    XStr := GetPlacementField(Op, Key + '_x');
+    YStr := GetPlacementField(Op, Key + '_y');
+    If (XStr = '') Or (YStr = '') Then Exit;
+    If Key = 'name' Then Comp.ChangeNameAutoposition(eAutoPos_Manual)
+    Else Comp.ChangeCommentAutoposition(eAutoPos_Manual);
+    Box := Txt.BoundingRectangle;
+    DX := MilsToCoordF(StrToFloatDef(XStr, 0)) - (Box.Left + Box.Right) Div 2;
+    DY := MilsToCoordF(StrToFloatDef(YStr, 0)) - (Box.Bottom + Box.Top) Div 2;
+    Txt.BeginModify;
+    Txt.XLocation := Txt.XLocation + DX;
+    Txt.YLocation := Txt.YLocation + DY;
+    Txt.EndModify;
+End;
+
 Function PCB_PlaceComponents(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -15413,13 +15515,14 @@ Var
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
-    PlacedCount, FailedCount, SepPos : Integer;
+    PlacedCount, FailedCount, SepPos, LabelsOff : Integer;
     X, Y : Double;
     Rotation : Double;
     CompLayer : TLayer;
 Begin
     BoardPathStr  := ExtractJsonValue(Params, 'board_path');
     PlacementsStr := ExtractJsonValue(Params, 'placements');
+    LabelsOff := 0;
     Board := ResolvePCBBoard(BoardPathStr);
     If Board = Nil Then
     Begin
@@ -15531,6 +15634,11 @@ Begin
                 Comp.GroupIterator_Destroy(GrpIter);
             End;
 
+            Comp.BeginModify;
+            If Not PlaceLabel(Board, Comp, OnePlace, 'name') Then Inc(LabelsOff);
+            If Not PlaceLabel(Board, Comp, OnePlace, 'comment') Then Inc(LabelsOff);
+            Comp.EndModify;
+
             PlacedCount := PlacedCount + 1;
         End;
     Finally
@@ -15543,6 +15651,7 @@ Begin
         '{"placed":' + IntToStr(PlacedCount)
         + ',"failed":' + IntToStr(FailedCount)
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
+        + ',"label_layers_unknown":' + IntToStr(LabelsOff)
         + ',"total":' + IntToStr(PlacedCount + FailedCount) + '}');
 End;
 

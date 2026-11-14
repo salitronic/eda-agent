@@ -543,12 +543,9 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent relaunch [--restart] [--force] [--dry-run]` | Have the running Altium start the polling loop from the installed script project; `--restart` stops the running loop after its current command and starts it again (after `install-scripts`), and other sessions' calls wait through it |
 | `eda-agent update [--check] [--yes] [--no-relaunch]` | Show the new commits on the repository and, once you agree, update this clone, the Altium scripts and the polling loop |
 | `eda-agent easyeda-extension path\|build [--out DIR]` | Print where the EasyEDA extension source is, or build the `.eext` to import into EasyEDA Pro (needs Node.js) |
-| `eda-agent dashboard [--host H] [--port P]` | Start the local web dashboard on its own (`http://127.0.0.1:8766`) |
+| `eda-agent dashboard [--port P]` | Start the local web dashboard on its own (`http://127.0.0.1:8766`); it listens on this computer only |
 | `eda-agent stop-dashboard` | Stop a dashboard that was launched detached |
 | `eda-agent calc [NAME] [KEY=VALUE...] [--json]` | Run an engineering calculator; with no name, list them |
-| `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
-| `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
-| `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
 | `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
 | `eda-agent altium365-logout` | Forget the saved Nexar login |
 | `eda-agent sdk-reach [--detail N] [--json]` | How many of the properties Altium's SDK declares on each object type `obj_query` and `obj_modify` reach (needs the SDK index in `reference/altium_sdk`) |
@@ -607,7 +604,7 @@ eda-agent/
 │   ├── layout/, placement/, route/   Board geometry, rules, placement and routing engines
 │   ├── libimport/          Part providers and vendor library import
 │   ├── render/, export/    Drawing designs to SVG/PNG; file-format exporters
-│   ├── fileio/, sim/       Offline readers (opt-in fallback); simulation results and settings
+│   ├── fileio/, sim/       Library file readers; simulation results and settings
 │   ├── ui/                 Windows UI automation for dialogs and menus
 │   ├── web/                Local web dashboard
 │   ├── diag/               Health and doctor checks

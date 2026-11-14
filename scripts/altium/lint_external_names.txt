@@ -34,6 +34,7 @@ eAutoPos_BottomRight
 eAutoPos_CenterCenter
 eAutoPos_CenterLeft
 eAutoPos_CenterRight
+eAutoPos_Manual
 eAutoPos_TopCenter
 eAutoPos_TopLeft
 eAutoPos_TopRight

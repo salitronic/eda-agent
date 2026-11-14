@@ -373,7 +373,7 @@ def test_every_polygon_writer_rewrites_the_closing_vertex():
             assert writes and writes[-1] < close, (
                 f"{name}: {obj} writes a segment after it is closed")
             writers += 1
-    assert writers == 9
+    assert writers == 10
     helper = (scripts / "PCBGeneric.pas").read_text(encoding="ascii")
     helper = helper[helper.index("Procedure ClosePolySegments("):]
     helper = helper[:helper.index("End;") + 4]

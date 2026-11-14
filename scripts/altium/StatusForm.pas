@@ -550,8 +550,9 @@ Begin
         + 'Altium. EDA_AGENT_UI_AUTOMATION=0 in the AI client''s config also '
         + 'turns it off, whatever this says.';
     SetTip(lbl_CfgAuto, Tip);  SetTip(opt_AutoOn, Tip);  SetTip(opt_AutoOff, Tip);
-    Tip := 'Fit the board or sheet in the window after each edit the AI '
-        + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
+    Tip := 'Fit the board outline, with a margin, or the sheet in the window '
+        + 'after each edit the AI makes. Parts parked off the board do not '
+        + 'zoom the view out. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
     Tip := 'The unit the AI gives and reads lengths in: coordinates, widths, '
@@ -1055,7 +1056,7 @@ Begin
         PaintOption(opt_ViewOn, KeepInViewMode = 'on');
         If KeepInViewMode = 'on' Then
             lbl_CfgViewHint.Caption := 'After each edit the window is fitted '
-                + 'to the whole board or sheet, at most every 2 seconds.'
+                + 'to the board outline or the sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
         PaintOption(opt_UnitsMil, LengthUnits <> 'mm');

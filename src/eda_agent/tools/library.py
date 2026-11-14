@@ -608,18 +608,20 @@ def _unchecked_lands(footprint_name: str, count: int,
           "build the lands another way.")}
 
 
-async def _footprint_pads(bridge, footprint_name: str, near: str = ""
-                          ) -> tuple[Optional[list[dict[str, Any]]], str]:
+async def _footprint_pads(bridge, footprint_name: str, near: str = "",
+                          docs: Any = None) -> tuple[Optional[list[dict[str, Any]]], str]:
     """The pads of ``footprint_name`` from the first open .PcbLib that
     holds it, and that library; ``(None, "")`` when none does. Libraries
     in the folder of ``near`` (the symbol's SchLib) are tried first, so
-    other open libraries are only read when the footprint is not there."""
+    other open libraries are only read when the footprint is not there.
+    ``docs`` is the open-document list when the caller has read it."""
     from ..bridge.exceptions import AltiumError
 
-    try:
-        docs = await bridge.send_command_async("application.get_open_documents", {})
-    except AltiumError:
-        return None, ""
+    if docs is None:
+        try:
+            docs = await bridge.send_command_async("application.get_open_documents", {})
+        except AltiumError:
+            return None, ""
     docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
     folder = os.path.dirname(near).lower() if near else ""
     libs = sorted({str(d.get("file_path") or "") for d in docs
@@ -637,6 +639,124 @@ async def _footprint_pads(bridge, footprint_name: str, near: str = ""
                 str(got.get("name") or footprint_name).lower() == footprint_name.lower()):
             return got["pads"], lib
     return None, ""
+
+
+async def _link_footprint(component_name: str, footprint_name: str, replace: bool,
+                          pads_of: Optional[dict[str, tuple]] = None) -> dict[str, Any]:
+    """lib_link_footprint for one symbol. ``pads_of`` holds footprints'
+    pads already read (``_footprint_pads`` answers by name), so a list of
+    links reads each footprint once instead of a trip to its PcbLib per
+    link."""
+    from ..preferences import check_on, check_skipped
+    bridge = get_bridge()
+    checking = check_on("pins_pads")
+    parity = None
+    if checking:
+        if pads_of is not None and footprint_name in pads_of:
+            pads, where = pads_of[footprint_name]
+        else:
+            # Pads first: reading them brings their PcbLib forward, so the
+            # SchLib in front is put back afterwards.
+            schlib = await _front_schlib(bridge)
+            pads, where = await _footprint_pads(bridge, footprint_name, schlib)
+            if schlib:
+                await _focus_document(bridge, schlib)
+        if pads is None:
+            return {"success": False, "check": "pins_pads",
+                "if_the_user_insists": if_the_user_insists("pins_pads"), "reason": (
+                f"no open .PcbLib holds {footprint_name!r}, so its pads "
+                "cannot be compared with the symbol's pins: open the "
+                "library that holds it and link again")}
+        await _bring_schlib_forward(bridge)
+        pins = await bridge.send_command_async(
+            "library.get_pin_list",
+            {"component_name": component_name} if str(component_name).strip() else {})
+        from ..design.pin_pad_parity import parity_reason, pin_pad_parity
+        parity = pin_pad_parity(
+            (pins or {}).get("pins") or [] if isinstance(pins, dict) else [], pads)
+        parity["footprint_library"] = where
+        if not parity["ok"]:
+            return {"success": False, "check": "pins_pads",
+                "if_the_user_insists": if_the_user_insists("pins_pads"),
+                    "pin_pad_parity": parity,
+                    "reason": parity_reason(parity, footprint_name)}
+    await _bring_schlib_forward(bridge)
+    result = await bridge.send_command_async(
+        "library.link_footprint",
+        {
+            "component_name": component_name,
+            "footprint_name": footprint_name,
+            # footprint_library is deliberately NOT sent: nothing on
+            # the Pascal side reads it, and the only place it could
+            # go is the datafile link location, which wedges AD26.
+            "replace": "true" if replace else "false",
+        },
+    )
+    if component_name and isinstance(result, dict) and result.get("success"):
+        from ..bridge.exceptions import AltiumError
+        try:
+            details = await bridge.send_command_async(
+                "library.get_component_details",
+                {"component_name": component_name})
+        except AltiumError:
+            details = None
+        models = (details or {}).get("models") if isinstance(details, dict) else None
+        if isinstance(models, list):
+            result = {**result, "footprints": [
+                m.get("model_name") for m in models
+                if isinstance(m, dict)
+                and str(m.get("model_type", "")).upper() == "PCBLIB"]}
+    if isinstance(result, dict):
+        if parity is not None:
+            result = {**result, "pin_pad_parity": parity}
+        elif not checking:
+            result = {**result, "unchecked": check_skipped("pins_pads")}
+    return result
+
+
+async def _front_schlib(bridge) -> str:
+    """The .SchLib in front, or '' when something else is."""
+    from ..bridge.exceptions import AltiumError
+    try:
+        front = await bridge.send_command_async("application.get_active_document", {}) or {}
+    except AltiumError:
+        front = {}
+    schlib = str(front.get("file_path") or "") if isinstance(front, dict) else ""
+    return schlib if schlib.lower().endswith(".schlib") else ""
+
+
+async def _links_together(items: list, shared: dict) -> Optional[dict[str, Any]]:
+    """lib_link_footprint for a list: every footprint's pads read in one
+    visit to the PcbLibs, then the links one after another in order."""
+    from ..preferences import check_on
+    calls = [{**shared, **i} for i in items if isinstance(i, dict)]
+    if len(calls) != len(items) or any(not str(c.get("footprint_name") or "").strip()
+                                       for c in calls):
+        return None
+    bridge = get_bridge()
+    pads_of: dict[str, tuple] = {}
+    if check_on("pins_pads"):
+        from ..bridge.exceptions import AltiumError
+        schlib = await _front_schlib(bridge)
+        try:
+            docs = await bridge.send_command_async("application.get_open_documents", {})
+        except AltiumError:
+            return None
+        for name in dict.fromkeys(str(c["footprint_name"]) for c in calls):
+            pads_of[name] = await _footprint_pads(bridge, name, schlib, docs)
+        if schlib:
+            await _focus_document(bridge, schlib)
+    out = []
+    for c in calls:
+        try:
+            out.append(await _link_footprint(str(c.get("component_name") or ""),
+                                             str(c["footprint_name"]),
+                                             bool(c.get("replace", True)), pads_of))
+        except Exception as exc:  # noqa: BLE001 - reported per item
+            out.append({"success": False, "error": str(exc) or type(exc).__name__})
+    failed = sum(1 for r in out if not (isinstance(r, dict) and r.get("success")))
+    return {"bulk": True, "count": len(out), "succeeded": len(out) - failed,
+            "failed": failed, "items": out}
 
 
 def _lands_skipped(footprint_name: str) -> Optional[dict[str, str]]:
@@ -662,8 +782,10 @@ def _pads_payload(pads: list[dict[str, Any]],
     checking against the real parser rather than a reading of it.
 
     Returns ``(payload, skipped_invalid)``. A pad with a blank
-    designator is dropped -- the Pascal requires one -- and counted so
-    the loss is reported instead of silently absorbed.
+    designator is dropped, as a designator left out by mistake, and
+    counted so the loss is reported instead of silently absorbed; an
+    unplated hole, or a pad marked ``unnumbered`` (a fiducial), keeps it
+    blank.
     """
     op_strs: list[str] = []
     skipped_invalid = 0
@@ -673,7 +795,8 @@ def _pads_payload(pads: list[dict[str, Any]],
         # payload and lands the pad somewhere else.
         desig = _payload_safe(str(p.get("designator", "")).strip())
         # A non-plated mounting hole carries no designator in a land pattern.
-        if not desig and not (p.get("hole_size") and _unplated(p.get("plated"))):
+        if not desig and not p.get("unnumbered") and not (
+                p.get("hole_size") and _unplated(p.get("plated"))):
             skipped_invalid += 1
             continue
         fields = [
@@ -1116,7 +1239,8 @@ def _bodies_payload(bodies: list[dict[str, Any]]) -> tuple[str, list[str]]:
 
 
 def _pins_payload(pins: list[dict[str, Any]],
-                  pins_on_part: Optional[int] = None) -> tuple[str, int]:
+                  pins_on_part: Optional[int] = None,
+                  grid: int = _SCHEMATIC_GRID_MILS) -> tuple[str, int]:
     """Build the ``pins`` batch payload, and count what was dropped.
 
     Extracted so the exact string Pascal will parse can be produced
@@ -1141,9 +1265,9 @@ def _pins_payload(pins: list[dict[str, Any]],
         fields = [
             f"designator={desig}",
             f"name={name}",
-            f"x={_snap(round(p.get('x', 0)))}",
-            f"y={_snap(round(p.get('y', 0)))}",
-            f"length={_snap(round(p.get('length', 200)))}",
+            f"x={_snap_grid(round(p.get('x', 0)), grid)}",
+            f"y={_snap_grid(round(p.get('y', 0)), grid)}",
+            f"length={_snap_grid(round(p.get('length', 200)), grid)}",
             f"rotation={round(p.get('rotation', 0))}",
             f"electrical_type="
             f"{_payload_safe(p.get('electrical_type', 'passive'))}",
@@ -2511,6 +2635,7 @@ def register_library_tools(mcp):
         pins: list[dict[str, Any]],
         pins_on_part: Optional[int] = None,
         datasheet: Optional[dict[str, Any]] = None,
+        grid: int = _SCHEMATIC_GRID_MILS,
     ) -> dict[str, Any]:
         """Add MANY pins to the current symbol in ONE call (there is no
         single-pin variant).
@@ -2552,6 +2677,8 @@ def register_library_tools(mcp):
             datasheet: ``{path, page}`` of the pin table. Needed for pins
                 going into a symbol lib_create_symbol has just made: they
                 are checked as lib_create_ic_symbol checks its pins.
+            grid: mils the pins' x, y and length snap to (default 100);
+                1 keeps them exactly as given.
 
         Returns:
             Dict with added, failed, total counts.
@@ -2569,7 +2696,7 @@ def register_library_tools(mcp):
             if refusal:
                 return {**refusal, "added": 0, "total": len(pins),
                         "symbol": _NEW_SYMBOL[0]}
-        payload, skipped_invalid = _pins_payload(pins, pins_on_part)
+        payload, skipped_invalid = _pins_payload(pins, pins_on_part, grid)
 
         if not payload:
             return {
@@ -2606,6 +2733,7 @@ def register_library_tools(mcp):
         line_width: Optional[int] = None,
         is_solid: Optional[bool] = None,
         owner_part_id: Optional[int] = None,
+        grid: int = _SCHEMATIC_GRID_MILS,
     ) -> dict[str, Any]:
         """Add a rectangle to the current symbol body.
 
@@ -2626,6 +2754,8 @@ def register_library_tools(mcp):
                 fill colour makes it solid.
             owner_part_id: the part of a multi-part symbol it belongs to;
                 omit for the current part.
+            grid: mils the corners snap to (default 100); 1 keeps them
+                exactly as given.
 
         Returns:
             Dictionary confirming rectangle addition, with the style it
@@ -2635,10 +2765,10 @@ def register_library_tools(mcp):
         if line_width is not None and line_width not in (0, 1, 2, 3):
             return {"success": False, "error": "line_width is 0 to 3"}
         params: dict[str, Any] = {
-            "x1": _snap(int(x1)),
-            "y1": _snap(int(y1)),
-            "x2": _snap(int(x2)),
-            "y2": _snap(int(y2)),
+            "x1": _snap_grid(round(x1), grid),
+            "y1": _snap_grid(round(y1), grid),
+            "x2": _snap_grid(round(x2), grid),
+            "y2": _snap_grid(round(y2), grid),
             "fill_color": fill_color,
             "border_color": border_color,
         }
@@ -2656,6 +2786,7 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_add_symbol_text(
         texts: list[dict[str, Any]],
+        grid: int = _SCHEMATIC_GRID_MILS,
     ) -> dict[str, Any]:
         """Add MANY body-text items to the current symbol in ONE call.
 
@@ -2672,6 +2803,7 @@ def register_library_tools(mcp):
                 - bold, italic (bool, default False)
                 - owner_part_id (int, optional): as in ``lib_add_pins``,
                   1..part_count picks a sub-part, 0 shares it
+            grid: mils x and y snap to (default 100); 1 keeps them.
 
         Returns:
             Dict with ``added``, ``failed``, ``total`` counts.
@@ -2683,8 +2815,8 @@ def register_library_tools(mcp):
                 continue
             fields = [
                 f"text={content}",
-                f"x={_snap(round(item.get('x', 0)))}",
-                f"y={_snap(round(item.get('y', 0)))}",
+                f"x={_snap_grid(round(item.get('x', 0)), grid)}",
+                f"y={_snap_grid(round(item.get('y', 0)), grid)}",
                 f"rotation={round(item.get('rotation', 0))}",
                 f"font_size={int(item.get('font_size', 10))}",
                 f"font_name={_payload_safe(item.get('font_name', 'Arial'))}",
@@ -2714,8 +2846,8 @@ def register_library_tools(mcp):
         Args:
             lines: list of dicts, each with keys ``x1``, ``y1``,
                 ``x2``, ``y2`` (mils, int), ``width`` (int 0-3,
-                default 1) and an optional ``color`` (Altium colour
-                integer).
+                default 1), an optional ``color`` (Altium colour
+                integer) and ``owner_part_id`` (as in ``lib_add_pins``).
             grid: snap grid (mils) for the line endpoints. Glyph lines do
                 NOT need the 100-mil pin grid (rule 15), so the default is
                 a finer 25 mils for clean glyph detail; pass 100 for the
@@ -2735,6 +2867,8 @@ def register_library_tools(mcp):
             ]
             if line.get("color") is not None:
                 fields.append(f"color={int(line['color'])}")
+            if line.get("owner_part_id") is not None:
+                fields.append(f"owner_part_id={int(line['owner_part_id'])}")
             op_strs.append(";".join(fields))
         if not op_strs:
             return {"error": "No lines provided", "added": 0}
@@ -3856,6 +3990,7 @@ def register_library_tools(mcp):
                   slot's turn from the pad's X axis; left out, the slot
                   runs along the pad's longer side),
                   plated (false = NPTH, which may have no designator),
+                  unnumbered (true: copper with no designator, a fiducial),
                   paste_expansion, mask_expansion (minus the larger side
                   closes the paste); refused writes show in
                   ``property_failures``
@@ -4671,6 +4806,7 @@ def register_library_tools(mcp):
         )
 
     @mcp.tool()
+    @bulk_items_by(_links_together)
     async def lib_link_footprint(
         component_name: str,
         footprint_name: str,
@@ -4702,76 +4838,7 @@ def register_library_tools(mcp):
             not redrawn after a scripted link and can show the previous
             part; this list is the link as stored.
         """
-        from ..preferences import check_on, check_skipped
-        bridge = get_bridge()
-        checking = check_on("pins_pads")
-        parity = None
-        if checking:
-            # Pads first: reading them brings their PcbLib forward, so the
-            # SchLib in front is put back afterwards.
-            from ..bridge.exceptions import AltiumError
-            try:
-                front = await bridge.send_command_async(
-                    "application.get_active_document", {}) or {}
-            except AltiumError:
-                front = {}
-            schlib = str(front.get("file_path") or "") if isinstance(front, dict) else ""
-            if not schlib.lower().endswith(".schlib"):
-                schlib = ""
-            pads, where = await _footprint_pads(bridge, footprint_name, schlib)
-            if schlib:
-                await _focus_document(bridge, schlib)
-            if pads is None:
-                return {"success": False, "check": "pins_pads",
-                    "if_the_user_insists": if_the_user_insists("pins_pads"), "reason": (
-                    f"no open .PcbLib holds {footprint_name!r}, so its pads "
-                    "cannot be compared with the symbol's pins: open the "
-                    "library that holds it and link again")}
-            await _bring_schlib_forward(bridge)
-            pins = await bridge.send_command_async(
-                "library.get_pin_list",
-                {"component_name": component_name} if str(component_name).strip() else {})
-            from ..design.pin_pad_parity import parity_reason, pin_pad_parity
-            parity = pin_pad_parity(
-                (pins or {}).get("pins") or [] if isinstance(pins, dict) else [], pads)
-            parity["footprint_library"] = where
-            if not parity["ok"]:
-                return {"success": False, "check": "pins_pads",
-                    "if_the_user_insists": if_the_user_insists("pins_pads"),
-                        "pin_pad_parity": parity,
-                        "reason": parity_reason(parity, footprint_name)}
-        await _bring_schlib_forward(bridge)
-        result = await bridge.send_command_async(
-            "library.link_footprint",
-            {
-                "component_name": component_name,
-                "footprint_name": footprint_name,
-                # footprint_library is deliberately NOT sent: nothing on
-                # the Pascal side reads it, and the only place it could
-                # go is the datafile link location, which wedges AD26.
-                "replace": "true" if replace else "false",
-            },
-        )
-        if component_name and isinstance(result, dict) and result.get("success"):
-            from ..bridge.exceptions import AltiumError
-            try:
-                details = await bridge.send_command_async(
-                    "library.get_component_details",
-                    {"component_name": component_name})
-            except AltiumError:
-                details = None
-            models = (details or {}).get("models") if isinstance(details, dict) else None
-            if isinstance(models, list):
-                result = {**result, "footprints": [
-                    m.get("model_name") for m in models
-                    if isinstance(m, dict)
-                    and str(m.get("model_type", "")).upper() == "PCBLIB"]}
-        if isinstance(result, dict):
-            if parity is not None:
-                result = {**result, "pin_pad_parity": parity}
-            elif not checking:
-                result = {**result, "unchecked": check_skipped("pins_pads")}
-        return result
+        return await _link_footprint(component_name, footprint_name, replace)
 
     @mcp.tool()
     async def lib_link_3d_model(
