@@ -157,10 +157,27 @@ def test_a_datum_callout_row_and_the_points_kept():
     assert (p["text_x"], p["text_y"]) == ("10.0000", "-280.0000")
 
 
-@pytest.mark.parametrize("kind", ["radial", "linear_diameter", "radial_diameter"])
+@pytest.mark.parametrize("kind", ["linear_diameter", "radial_diameter"])
 def test_arc_bound_kinds_are_refused(kind):
     with pytest.raises(ValueError, match="bound"):
         dimensions.params_for(kind, [[0, 0], [1, 1]])
+
+
+def test_a_radius_is_drawn_as_a_leader_from_the_arc_labelled_with_it():
+    # Tip on the arc, a bend out along the radius, the label end beside it.
+    p = dimensions.params_for("radial", [[1000, 1000], [1250, 1000]])
+    assert p["kind"] == "leader" and p["label"] == "R 250.00"
+    assert p["points"] == "1250.0000,1000.0000/1475.0000,1000.0000/1675.0000,1000.0000"
+    # From a centre and radius alone the leader leaves at 45 degrees.
+    p = dimensions.params_for("radial", [[0, 0]], radius=100)
+    tip = p["points"].split("/")[0].split(",")
+    assert tip == ["70.7107", "70.7107"]
+    # The label follows the unit and precision asked for.
+    p = dimensions.params_for("radial", [[0, 0]], radius=100, label_unit="mm",
+                              label_precision=3)
+    assert p["label"] == "R 2.540"
+    with pytest.raises(ValueError, match="radius"):
+        dimensions.params_for("radial", [[0, 0]])
 
 
 def test_too_few_points_are_refused():
@@ -229,8 +246,12 @@ def test_edit_points_take_the_kind_from_the_board(monkeypatch):
     assert params["text_locations"] == "500.0000,300.0000"
 
 
-def test_create_refuses_a_radial_without_calling_altium(monkeypatch):
-    reply, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial",
+def test_create_sends_a_radial_as_a_leader_and_refuses_a_diameter(monkeypatch):
+    _, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial",
+                    points=[[0, 0], [10, 0]])
+    assert sent[0][0] == "pcb.create_dimension"
+    assert sent[0][1]["kind"] == "leader" and sent[0][1]["label"] == "R 10.00"
+    reply, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial_diameter",
                         points=[[0, 0], [10, 0]])
     assert reply["ok"] is False and sent == []
 

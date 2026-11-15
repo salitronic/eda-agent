@@ -10784,15 +10784,19 @@ def register_pcb_tools(mcp):
 
         Its ends are FREE points: they do not follow a pad that moves later
         (a script cannot bind them; dragging an end onto a pad in Altium
-        does). A radial or diameter needs that binding (free, it draws 0)
-        and is refused: use a leader labelled with the radius.
+        does). A radial needs that binding (free, it draws 0), so a radius
+        is drawn as a leader from the arc labelled "R <radius>": right when
+        placed, not following the arc after. A diameter is refused.
 
         Args:
-            kind: linear, angular, leader, datum, baseline, center, original.
+            kind: linear, angular, radial, leader, datum, baseline, center,
+                original.
             points: [x, y] pairs. linear: the two points. angular: vertex,
-                one point on each line. leader: tip, bends, end. datum:
-                origin, then each point. baseline: base, then each point.
-                center: the centre. original: start, end.
+                one point on each line. radial: the arc's centre, and the
+                point on the arc to call out from unless radius is given.
+                leader: tip, bends, end. datum: origin, then each point.
+                baseline: base, then each point. center: the centre.
+                original: start, end.
             layer: Layer to draw on (default TopOverlay).
             angle: Measuring direction in degrees (linear, datum, baseline;
                 the cross's turn on a center).
@@ -10801,7 +10805,7 @@ def register_pcb_tools(mcp):
             spacing: Distance between a baseline's lines.
             label, shape: A leader's text and frame (none, round, square).
             radius, sector: An angular's arc radius and which of the four
-                angles (1-4).
+                angles (1-4); the radius a radial calls out.
             size: A center mark's size.
             text_height, line_width, unit (mil, mm, deg), precision,
                 prefix, suffix: The callout's style.
@@ -10812,7 +10816,8 @@ def register_pcb_tools(mcp):
         """
         try:
             params = dimensions.params_for(kind, points, angle=angle, offset=offset,
-                                           spacing=spacing, radius=radius)
+                                           spacing=spacing, radius=radius,
+                                           label_unit=unit, label_precision=precision)
             params.update(_dimension_values(
                 angle=angle, label=label or None,
                 shape=shape if kind.strip().lower() == "leader" else None,
@@ -10824,7 +10829,14 @@ def register_pcb_tools(mcp):
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
         params["layer"] = layer
-        return await get_bridge().send_command_async("pcb.create_dimension", params)
+        reply = await get_bridge().send_command_async("pcb.create_dimension", params)
+        if kind.strip().lower() == "radial" and isinstance(reply, dict) \
+                and reply.get("created"):
+            reply["note"] = ("drawn as a leader labelled with the radius: Altium "
+                             "binds a radial dimension to an arc only when it is "
+                             "placed by hand, so this label does not follow the "
+                             "arc if its radius changes")
+        return reply
 
     @mcp.tool()
     async def pcb_edit_dimension(

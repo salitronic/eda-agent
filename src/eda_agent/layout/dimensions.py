@@ -14,6 +14,8 @@ Points per kind:
 
 * ``linear``: the two measured points.
 * ``angular``: the vertex, then one point on each line.
+* ``radial``: the arc's centre, and the point on the arc to call out from
+  unless a radius is given. Drawn as a leader labelled with the radius.
 * ``leader``: the arrow tip, any bends, the end where the label sits.
 * ``datum``: the origin, then each point called out from it.
 * ``baseline``: the base, then each point measured from it.
@@ -26,16 +28,17 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-KINDS = ("linear", "angular", "leader", "datum", "baseline", "center", "original")
+KINDS = ("linear", "angular", "radial", "leader", "datum", "baseline", "center",
+         "original")
 
 #: Points each kind needs at least.
-MIN_POINTS = {"linear": 2, "angular": 3, "leader": 2, "datum": 2,
+MIN_POINTS = {"linear": 2, "angular": 3, "radial": 1, "leader": 2, "datum": 2,
               "baseline": 2, "center": 1, "original": 2}
 
-#: A radial or diameter takes its value from the arc it is bound to and
-#: reads 0 when free (a radial made by script draws "R 0.00"), so none is
-#: made here.
-BOUND_ONLY_KINDS = ("radial", "linear_diameter", "radial_diameter")
+#: A diameter takes its value from the arc it is bound to, so none is made
+#: here. A radial does too (made by script it draws "R 0.00"), so a radius
+#: is drawn as a leader labelled with it (radial_callout).
+BOUND_ONLY_KINDS = ("linear_diameter", "radial_diameter")
 
 #: TDimensionUnit values seen in Altium's own files.
 UNITS = {"mil": 0, "mils": 0, "mm": 2, "millimeters": 2, "deg": 4, "degrees": 4}
@@ -88,9 +91,45 @@ def baseline_lines(points: list[tuple[float, float]], angle: float,
     return out
 
 
+def radial_callout(points: list[tuple[float, float]], radius: Optional[float],
+                   unit: str = "", precision: Optional[int] = None
+                   ) -> tuple[tuple[float, float], tuple[float, float],
+                              tuple[float, float], str]:
+    """A radius called out by a leader: its tip on the arc, a bend out along
+    the radius, the end where the label sits, and the label ("R 250.00").
+
+    ``points`` are the centre and, optionally, the point on the arc the
+    leader touches (default: at 45 degrees). The radius is the one given,
+    else the distance between the two points, in mils; the label shows it
+    in mm when ``unit`` says so.
+    """
+    if not points:
+        raise ValueError("radial needs the arc's centre")
+    cx, cy = points[0]
+    if radius is None and len(points) > 1:
+        radius = math.dist(points[0], points[1])
+    if radius is None or float(radius) <= 0:
+        raise ValueError("radial needs the arc's centre and its radius, or a "
+                         "second point on the arc")
+    r = float(radius)
+    if len(points) > 1 and math.dist(points[0], points[1]) > 1e-9:
+        d = math.dist(points[0], points[1])
+        ux, uy = (points[1][0] - cx) / d, (points[1][1] - cy) / d
+    else:
+        ux = uy = math.sqrt(0.5)
+    tip = (cx + r * ux, cy + r * uy)
+    out = 0.5 * r + 100.0
+    bend = (tip[0] + out * ux, tip[1] + out * uy)
+    end = (bend[0] + (200.0 if ux >= 0 else -200.0), bend[1])
+    shown = r * 0.0254 if unit.strip().lower() in ("mm", "millimeters") else r
+    digits = 2 if precision is None else max(0, int(precision))
+    return tip, bend, end, f"R {shown:.{digits}f}"
+
+
 def params_for(kind: str, points: Any, *, angle: float = 0.0,
                offset: Optional[float] = 300.0, spacing: Optional[float] = 300.0,
-               radius: Optional[float] = None) -> dict[str, str]:
+               radius: Optional[float] = None, label_unit: str = "",
+               label_precision: Optional[int] = None) -> dict[str, str]:
     """The geometry parameters of ``pcb.create_dimension`` / ``edit_dimension``.
 
     ``offset`` sets how far the line (linear), the callout row (datum) or the
@@ -117,6 +156,9 @@ def params_for(kind: str, points: Any, *, angle: float = 0.0,
             radius = 0.6 * min(math.dist(v, pts[1]), math.dist(v, pts[2]))
         out["radius"] = f"{float(radius):.4f}"
         return out
+    if kind == "radial":
+        tip, bend, end, label = radial_callout(pts, radius, label_unit, label_precision)
+        return {"kind": "leader", "points": _text([tip, bend, end]), "label": label}
     out["points"] = _text(pts if kind != "center" else pts[:1])
     if kind == "linear" and offset is not None:
         x, y = pts[0]

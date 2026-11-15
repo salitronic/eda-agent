@@ -15801,8 +15801,10 @@ Begin
     K := DimKindFromName(ExtractJsonValue(Params, 'kind'));
     If (K < 1) Or (K = 3) Or (K = 9) Or (K = 10) Then
     Begin
-        { MEASURED on AD 26: a radial made here, from a centre and radius }
-        { or from two free references, draws "R 0.00".                    }
+        { MEASURED on AD 26: a radial made here draws "R 0.00" from a centre }
+        { and radius and from two free references, and a reference given an }
+        { arc and any anchor from 1 to 4 does not bind. The tool draws a     }
+        { radius as a leader labelled with it.                               }
         Result := BuildErrorResponse(RequestId, 'KIND_NOT_SUPPORTED',
             'kind is linear, angular, leader, datum, baseline, center or original. '
             + 'A radial or diameter takes its value from the arc it is bound to, '
