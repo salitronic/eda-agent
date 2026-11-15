@@ -30,6 +30,11 @@ alone: ``width`` is mils on a track and pixels on a rendered picture,
 ``offset`` is a page offset on a listing. ``LENGTH_KEYS`` is the
 vocabulary; ``NOT_LENGTHS`` and ``ADDED`` correct it tool by tool, and a
 test fails any numeric argument no list accounts for.
+
+A tool that takes a length as a whole number of mils (an ``int``
+argument) is handed the converted value rounded to the nearest mil:
+1 mm reaches it as 39 mils, where 39.37 would be refused as not a whole
+number.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from .units import MILS_PER_MM, MM_PER_MIL, normalise_units
+from .units import MILS_PER_MM, MM_PER_MIL, format_length, normalise_units
 
 #: The argument a call gives to use another unit for itself alone.
 OVERRIDE = "length_units"
@@ -130,8 +135,9 @@ NO_LENGTHS = frozenset({
 NOT_LENGTHS: dict[str, frozenset[str]] = {
     # Degrees covered.
     "pcb_place_ring": frozenset({"span"}),
-    # Border width as a size code, 0 to 3.
+    # Line width as a size code, 0 to 3 (a line's own, in ``lines``).
     "lib_add_symbol_arc": frozenset({"width"}),
+    "lib_add_symbol_lines": frozenset({"width"}),
     # Font size in points.
     "obj_get_font_id": frozenset({"size"}),
     # Percent.
@@ -157,10 +163,36 @@ ADDED: dict[str, frozenset[str]] = {
     "easyeda_create_standard_footprint": frozenset({"corner_radius"}),
     "easyeda_add_pad": frozenset({"corner_radius"}),
     "pcb_view": frozenset({"left", "bottom", "right", "top"}),
+    # An arc's centre and radius, a text's height.
+    "lib_get_footprint_primitives": frozenset({"xc", "yc", "r", "size"}),
     # Containers of lengths keyed by name: pin, net, constraint.
     "easyeda_emit_template_connections": frozenset({"pin_positions"}),
     "pcb_calc_length_match": frozenset({"lengths"}),
     "kicad_set_design_rules": frozenset({"constraints"}),
+}
+
+#: Lists of vertices ``[x, y]`` or ``[x, y, sweep]``, by tool and name (a
+#: name with a unit by its stem): x and y are lengths, the sweep is
+#: degrees. A vertex given as a dict says which is which by its keys
+#: (#375).
+ARC_VERTICES: dict[str, frozenset[str]] = {
+    "pcb_place_region": frozenset({"points", "shape"}),
+    "lib_get_footprint_primitives": frozenset({"shape"}),
+}
+
+#: Arguments that are lengths written as text, numbers joined by commas
+#: (``"x1,y1,x2,y2"``), by tool.
+LENGTH_STRINGS: dict[str, frozenset[str]] = {
+    "lib_add_symbol_polygon": frozenset({"vertices"}),
+    "pcb_apply_geometry_map": frozenset({"bounds"}),
+}
+
+#: Names with a unit that a tool takes inside its lists, in the one
+#: spelling it takes them: the same length given in the other unit is
+#: renamed and converted to it.
+NESTED_NAMES: dict[str, frozenset[str]] = {
+    # The guard a lib_get_pad_geometry read gives (x_mils in a mil session).
+    "lib_set_pad_geometry": frozenset({"x_mm", "y_mm"}),
 }
 
 #: Tools whose ``value`` arguments are a length for some kinds only.
@@ -200,7 +232,7 @@ MM_NATIVE = frozenset({
     "lib_create_footprint_from_package", "lib_audit_footprint_vs_datasheet",
     "lib_audit_footprint_vs_package", "lib_create_3d_model",
     "lib_export_kicad_symbol", "lib_export_kicad_footprint",
-    "lib_get_footprint_primitives",
+    "lib_get_footprint_primitives", "lib_select_footprint_primitives",
     "easyeda_create_footprint_from_package", "easyeda_audit_footprint_vs_datasheet",
     "easyeda_audit_footprint_vs_package",
 })
@@ -285,46 +317,98 @@ def _suffix_for(unit: str, spelled: str = "mils") -> str:
 _EDGES = frozenset({"left", "right", "top", "bottom", "l", "r", "t", "b"})
 
 
+def _vertices(value: Any, k: float, walk: Callable[[dict], Any]) -> Any:
+    """A list of vertices, ``[x, y]`` or ``[x, y, sweep]``, scaled by
+    ``k``: the sweep is degrees and stays as it is. A list of such lists
+    (holes) is taken the same way; a vertex given as a dict goes to
+    ``walk``, which knows its sweep by name."""
+    if not isinstance(value, list):
+        return value
+    out = []
+    for v in value:
+        if isinstance(v, list) and v and all(
+                isinstance(n, (int, float)) and not isinstance(n, bool) for n in v):
+            out.append(_scale(v[:2], k) + v[2:])
+        elif isinstance(v, list):
+            out.append(_vertices(v, k, walk))
+        elif isinstance(v, dict):
+            out.append(walk(v))
+        else:
+            out.append(v)
+    return out
+
+
 def _walk(obj: Any, keys: frozenset[str], k: float, name_for: Callable[[str, "re.Match"], str],
-          in_points: bool = False) -> Any:
+          in_points: bool = False, arcs: frozenset[str] = frozenset()) -> Any:
     """``obj`` with its lengths scaled by ``k`` and its names with a unit
-    renamed by ``name_for`` (converted to the unit the new name says)."""
+    renamed by ``name_for`` (converted to the unit the new name says).
+    ``arcs`` names the lists of vertices that may carry a sweep."""
     if isinstance(obj, list):
         if in_points and _numbers(obj):
             return _scale(obj, k)
-        return [_walk(v, keys, k, name_for, in_points) for v in obj]
+        return [_walk(v, keys, k, name_for, in_points, arcs) for v in obj]
     if not isinstance(obj, dict):
         return obj
     here = keys | _EDGES if in_points else keys
     out: dict[str, Any] = {}
     renamed: dict[str, Any] = {}
+
+    def vertex(v: dict) -> Any:
+        return _walk(v, keys, k, name_for, True, arcs)
+
     for key, value in obj.items():
         m = _SUFFIX.match(key) if isinstance(key, str) else None
         if m and not _NOT_LINEAR.search(m.group("stem")):
             new = name_for(key, m)
             if new != key and new not in obj and _all_numbers(value):
-                renamed[new] = _scale(value, _factor(_unit_of(m.group("unit")),
-                                                     _unit_of(new.rsplit("_", 1)[1])))
+                f = _factor(_unit_of(m.group("unit")), _unit_of(new.rsplit("_", 1)[1]))
+                renamed[new] = _vertices(value, f, vertex) \
+                    if m.group("stem") in arcs else _scale(value, f)
                 continue
             # The name says the unit of all it holds.
             out[key] = value
+        elif key in arcs and isinstance(value, list):
+            out[key] = _vertices(value, k, vertex)
         elif key in POINT_KEYS and isinstance(value, (list, dict)):
             # A list or a box; a bare number under such a name is not a
             # point (``points`` is a sample count on a simulation).
             out[key] = _scale(value, k) if _numbers(value) \
-                else _walk(value, keys, k, name_for, in_points=True)
+                else _walk(value, keys, k, name_for, True, arcs)
         elif key in here and _numbers(value):
             out[key] = _scale(value, k)
         elif key in here and isinstance(value, (list, dict)):
             # A range ({min, nom, max}), a pair, or lengths keyed by name.
-            out[key] = _walk(value, keys, k, name_for, in_points=True)
+            out[key] = _walk(value, keys, k, name_for, True, arcs)
         elif in_points and not (isinstance(key, str) and _NOT_IN_LENGTHS.search(key)):
             out[key] = _scale(value, k) if _numbers(value) \
-                else _walk(value, keys, k, name_for, in_points=True)
+                else _walk(value, keys, k, name_for, True, arcs)
         else:
-            out[key] = _walk(value, keys, k, name_for)
+            out[key] = _walk(value, keys, k, name_for, False, arcs)
     out.update(renamed)
     return out
+
+
+def _length_text(text: str, k: float) -> str:
+    """Lengths written as numbers joined by commas, scaled by ``k``; text
+    that is not that is left as it is, for the tool to refuse."""
+    if k == 1.0:
+        return text
+    try:
+        return ",".join(format_length(_tidy(float(part) * k))
+                        for part in text.split(","))
+    except ValueError:
+        return text
+
+
+def _whole_mils(converted: dict, given: dict, whole: frozenset[str]) -> dict:
+    """``converted`` with each whole-number length that the conversion
+    made fractional rounded to the nearest whole unit; a fraction the
+    call gave itself is left for the tool to refuse."""
+    for key in whole:
+        value = converted.get(key)
+        if isinstance(value, float) and given.get(key) != value:
+            converted[key] = int(round(value))
+    return converted
 
 
 def _named(target: str) -> Callable[[str, "re.Match"], str]:
@@ -352,17 +436,20 @@ def _taken(params: set, native: str) -> Callable[[str, "re.Match"], str]:
 
 
 def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
-            _item: bool = False) -> dict:
+            _item: bool = False, whole: Iterable[str] = ()) -> dict:
     """A call's arguments, given in ``unit``, as ``tool`` takes them.
-    ``items`` are each converted as a call of their own."""
+    ``items`` are each converted as a call of their own. ``whole`` names
+    the arguments the tool takes as whole numbers."""
     if not converts(tool) or not isinstance(args, dict):
         return args
     names = set(params)
+    whole = frozenset(whole)
     native = native_unit(tool)
+    taken = _taken(names | NESTED_NAMES.get(tool, frozenset()), native)
     out = {}
     for key, value in args.items():
         if key == "items" and isinstance(value, list) and not _item:
-            out[key] = [args_in(tool, v, unit, names, _item=True)
+            out[key] = [args_in(tool, v, unit, names, _item=True, whole=whole)
                         if isinstance(v, dict) else v for v in value]
         else:
             out[key] = value
@@ -370,12 +457,17 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
         # Given beside the items, the unit applies to every one of them.
         if "units" in names and "units" not in out and not _item:
             out["units"] = unit
-        return _walk(out, frozenset(), 1.0, _taken(names, native))
+        return _whole_mils(_walk(out, frozenset(), 1.0, taken), out, whole)
     items = out.pop("items", None)
     documents = {key: _document(out.pop(key), unit, LENGTH_DOCUMENTS[key])
                  for key in list(out) if key in LENGTH_DOCUMENTS}
-    converted = _walk(out, plain_lengths(tool, out), _factor(unit, native),
-                      _taken(names, native))
+    k = _factor(unit, native)
+    converted = _walk(out, plain_lengths(tool, out), k, taken,
+                      arcs=ARC_VERTICES.get(tool, frozenset()))
+    for key in LENGTH_STRINGS.get(tool, frozenset()):
+        if isinstance(out.get(key), str):
+            converted[key] = _length_text(out[key], k)
+    converted = _whole_mils(converted, out, whole)
     converted.update(documents)
     if items is not None:
         converted["items"] = items
@@ -407,7 +499,8 @@ def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None) -> A
     if tool in SELF_CONVERTING:
         # They work in the unit they were given, replies included.
         source = normalise_units((args or {}).get("units", "")) or source
-    out = _walk(reply, plain_lengths(tool, args), _factor(source, unit), _named(unit))
+    out = _walk(reply, plain_lengths(tool, args), _factor(source, unit), _named(unit),
+                arcs=ARC_VERTICES.get(tool, frozenset()))
     if isinstance(out, dict):
         out = {**out, OVERRIDE: unit}
     return out

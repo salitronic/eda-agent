@@ -5900,7 +5900,7 @@ def register_pcb_tools(mcp):
             name: Dump only polygons of this name (exact, or a prefix
                 ending in ``*``); other kinds are not affected.
             bounds: Dump only objects whose box touches this area,
-                ``"x1,y1,x2,y2"`` in mils.
+                ``"x1,y1,x2,y2"``.
             nets, selected, name and bounds only decide what is written
             of the walk: the ordinals still count every walked object, so
             the apply pass needs nothing for them.

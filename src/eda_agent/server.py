@@ -382,10 +382,8 @@ def add_update_notice(result, news):
     return (out, structured) if isinstance(result, tuple) else out
 
 
-def _tool_params(server, name: str) -> Optional[set]:
-    """The argument names ``name`` takes, or None for an unknown tool."""
-    import inspect
-    fn = None
+def _tool_fn(server, name: str):
+    """The function behind tool ``name``, or None for an unknown tool."""
     try:
         tool = server._tool_manager.get_tool(name)
         fn = tool.fn if tool is not None else None
@@ -394,12 +392,38 @@ def _tool_params(server, name: str) -> Optional[set]:
     if fn is None:
         spec = (getattr(server, "hidden", {}) or {}).get(name)
         fn = getattr(spec, "fn", None)
+    return fn
+
+
+def _tool_params(server, name: str) -> Optional[set]:
+    """The argument names ``name`` takes, or None for an unknown tool."""
+    import inspect
+    fn = _tool_fn(server, name)
     if fn is None:
         return None
     try:
         return set(inspect.signature(fn).parameters)
     except (TypeError, ValueError):
         return None
+
+
+def _whole_params(server, name: str) -> set:
+    """The arguments ``name`` takes as whole numbers (``int``, optional or
+    not), which a converted length reaches rounded."""
+    import inspect
+    import re
+    fn = _tool_fn(server, name)
+    try:
+        params = inspect.signature(fn).parameters.values() if fn else ()
+    except (TypeError, ValueError):
+        return set()
+    whole = set()
+    for p in params:
+        text = p.annotation if isinstance(p.annotation, str) else repr(p.annotation)
+        if re.search(r"\bint\b", text) \
+                and not re.search(r"float|bool|list|dict|tuple|Any|str", text):
+            whole.add(p.name)
+    return whole
 
 
 def _lengths_in(server, name: str, arguments: dict):
@@ -417,7 +441,8 @@ def _lengths_in(server, name: str, arguments: dict):
         bad = lengths.unknown_unit_names(args, params)
         if bad:
             raise ValueError(f"{tool} takes no {', '.join(bad)}")
-        return lengths.args_in(tool, args, unit, params)
+        return lengths.args_in(tool, args, unit, params,
+                               whole=_whole_params(server, tool))
 
     if name == "tool_invoke" and isinstance(arguments.get("arguments"), dict):
         inner = str(arguments.get("name") or "")
