@@ -44,7 +44,7 @@ def test_the_write_is_read_back():
 
 
 def test_the_property_is_wired_into_get_and_set_on_components_only():
-    get = _units()["GetSchProperty"]
+    get = _units()["GetSchPropertyGated"]
     assert "Else If PropName = 'DisplayModeNames' Then Result := ReadDisplayModeNames(Comp)" in get
     put = _units()["SetSchProperty"]
     branch = put[put.index("Or (PropName = 'DisplayModeNames') Then"):]
@@ -55,7 +55,7 @@ def test_the_property_is_wired_into_get_and_set_on_components_only():
 def test_helpers_come_before_their_callers_and_take_parameters():
     raw = _GENERIC.read_text(encoding="utf-8-sig")
     for name in ("ReadDisplayModeNames(", "WriteDisplayModeNames("):
-        assert raw.index("Function " + name) < raw.index("Function GetSchProperty(")
+        assert raw.index("Function " + name) < raw.index("Function GetSchPropertyGated(")
 
 
 def test_the_tool_documents_it():

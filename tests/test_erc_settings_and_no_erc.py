@@ -73,7 +73,7 @@ def test_every_creator_makes_a_no_erc_suppress_all():
 
 def test_the_mode_is_readable_and_writable_only_on_a_no_erc():
     gen = load(_ALTIUM / "Generic.pas")
-    for func in ("GetSchProperty", "SetSchProperty"):
+    for func in ("GetSchPropertyGated", "SetSchProperty"):
         body = gen[func]
         i = body.index("(PropName = 'SuppressAll')")
         assert "Obj.ObjectId = eNoERC" in body[i - 80:i], func

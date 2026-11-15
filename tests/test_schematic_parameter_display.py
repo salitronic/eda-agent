@@ -49,7 +49,7 @@ def _branch(fn: str) -> str:
 
 
 def test_the_get_side_checks_the_type_before_it_reads():
-    part = _branch("GetSchProperty")
+    part = _branch("GetSchPropertyGated")
     assert re.search(r"\(\(PropName = 'ShowName'\) Or IsSchParamDisplayProp\(PropName\)\)"
                      r"\s+And SchHasParamDisplay\(Obj\) Then\s+"
                      r"Result := ReadSchParamDisplayProp\(Obj, PropName\)", part)
@@ -66,7 +66,7 @@ def test_the_set_side_checks_the_type_and_refuses_other_objects():
 
 
 def test_a_pin_keeps_its_own_show_name():
-    body = GENERIC["GetSchProperty"]
+    body = GENERIC["GetSchPropertyGated"]
     # The parameter branch comes first but cannot catch a pin: the type test.
     assert body.index("SchHasParamDisplay(Obj)") < body.index("ReadSchPinProp(Obj, PropName)")
     assert "ePin" not in GENERIC["SchHasParamDisplay"]

@@ -208,7 +208,7 @@ def test_a_parts_database_link_is_readable_and_never_silently_empty():
     from pathlib import Path
     code = (Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas").read_text(
         encoding="utf-8", errors="replace")
-    start = code.index("Function GetSchProperty(")
+    start = code.index("Function GetSchPropertyGated(")
     body = code[start:code.index("Function SetSchProperty(", start)]
     branch = body[body.index("(PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName')"):]
     branch = branch[:branch.index("Else If PropName")]

@@ -56,13 +56,66 @@ def test_the_access_is_gated_by_type(prop):
                 for m in re.finditer(r"\bObj\." + prop + r"\b", code)]
     assert accesses, f"no Obj.{prop} access found; has the getter moved?"
 
+    # SchQuickRead reads by a code, and its type check is where the code is
+    # given out: test_a_quick_code_is_given_only_behind_its_type_check.
+    quick = code.index("Function SchQuickRead(")
+    quick_end = code.index("\nEnd;", quick)
+
     for at in accesses:
+        if quick < at < quick_end:
+            continue
         window = code[max(0, at - 400):at]
         assert guard in window or "ObjectId" in window, (
             f"Obj.{prop} at offset {at} is reached without a type check. "
             f"On a type that lacks it this raises an undeclared identifier, "
             f"which is a modal that stalls the polling loop and which "
             f"Try/Except cannot contain")
+
+
+_QUICK_GUARDS = {"110": ("Text", "If SchObjectHasText(Obj) Then"),
+                 "111": ("Name", "If SchObjectHasName(Obj) Then"),
+                 "112": ("Designator", "If Obj.ObjectId = ePin Then"),
+                 "120": ("IsHidden", "If SchObjectHasIsHidden(Obj) Then"),
+                 "121": ("Orientation", "If SchObjectHasOrientation(Obj) Then")}
+
+
+def _quick(name: str) -> str:
+    code = _decommented(_source())
+    start = code.index(f"Function {name}(")
+    return code[start:code.index("\nEnd;", start)]
+
+
+@pytest.mark.parametrize("number", sorted(_QUICK_GUARDS))
+def test_a_quick_code_is_given_only_behind_its_type_check(number):
+    """SchQuickRead reads Obj.<member> for a code with no check of its own,
+    so the code must be given only to a type that has the member."""
+    member, guard = _QUICK_GUARDS[number]
+    giver = _quick("SchQuickCode")
+    given = [m.start() for m in re.finditer(rf"Result := {number}\b", giver)]
+    assert len(given) == 1, number
+    assert re.search(re.escape(guard) + rf"\s+Result := {number};", giver), number
+    reader = _quick("SchQuickRead")
+    assert re.search(rf"Code = {number} Then(?:\s+Begin\s+If|\s+Result :=)[^;]*\bObj\.{member}\b",
+                     reader), number
+    # Each member is read under one code only.
+    assert len(re.findall(rf"\bObj\.{member}\b", reader)) == 1, member
+
+
+def test_the_quick_reader_is_handed_only_codes_the_giver_gave():
+    """A code reaches SchQuickRead from the list SchQuickCode filled for the
+    object's own type, and that list is filled again when the type differs."""
+    code = _decommented(_source())
+    calls = re.findall(r"SchQuickRead\(([^)]*)\)", code)
+    assert sorted(calls) == ["Obj : ISch_GraphicalObject; Code : Integer",
+                             "Obj, Extra", "Obj, Extra"]
+    for walk, kept in (("QueryObjectBody", "GateId"), ("MatchesSplitFilter", "FilterId")):
+        body = _quick(walk)
+        assert f"If (Id <> {kept}) Or (Gates.Count <> Names.Count) Then" in body, walk
+        fill = body.index("SchQuickCode(Obj, Names[I], Gate,")
+        assert fill < body.index(f"{kept} := Id;") < body.index("Extra := StrToInt(Extras[I]);")
+        assert "If Extra > 100 Then" in body, walk
+    giver = _quick("SchQuickCode")
+    assert "If (Gate = 0) Or (Extra <> 0) Then Exit;" in giver
 
 
 def test_a_port_is_excluded():
@@ -188,7 +241,7 @@ def _assert_property_contract(code: str, prop: str, guard: str, rejected: str,
     else:
         assert re.search(rf"Obj\.ObjectId\s*(?:=|<>)\s*{rejected}\b", capability)
     assert "Result := False" in capability
-    for routine, diagnostic in (("GetSchProperty", "unreadable"),
+    for routine, diagnostic in (("GetSchPropertyGated", "unreadable"),
                                 ("SetSchProperty", "unknown")):
         body = _routine(code, routine)
         start = re.search(rf"Else If PropName = '{prop}'\s+Then", body)
@@ -197,7 +250,7 @@ def _assert_property_contract(code: str, prop: str, guard: str, rejected: str,
         branch = re.split(r"\bElse If PropName\b", tail, maxsplit=1)[0]
         assert f"If {guard}(Obj) Then" in branch
         assert branch.index(guard) < branch.index(f"Obj.{prop}")
-        if routine == "GetSchProperty":
+        if routine == "GetSchPropertyGated":
             assert f"NotePropertyDiag('{diagnostic}', PropName)" in branch
             assert "Result := ''" in body[:start.start()]
         else:
@@ -224,7 +277,7 @@ def test_property_regression_detects_removed_guards(prop, guard, rejected, allow
     """Mutate only an in-memory copy; each original crash must be detected."""
     source = _source()
     _assert_property_contract(source, prop, guard, rejected, allowed)
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         original = _routine(source, routine)
         broken = original.replace(f"If {guard}(Obj) Then", "If True Then")
         assert broken != original

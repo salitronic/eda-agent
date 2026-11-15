@@ -92,7 +92,7 @@ def test_transparent_and_line_style_are_asked_only_of_the_allowed_types():
         "eBlanket", "ePolygon", "eRectangle", "eEllipse"}
     assert _types(_routine(code, "SchObjectHasLineStyle")) == {
         "eBlanket", "eLine", "eRectangle"}
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         body = _routine(code, routine)
         for prop, guard in (("Transparent", "SchObjectHasTransparent(Obj)"),
                             ("LineStyle", "SchObjectHasLineStyle(Obj)")):

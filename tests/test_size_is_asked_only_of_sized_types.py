@@ -38,7 +38,7 @@ def test_the_allowlist_holds_the_sized_types_and_no_image():
 
 
 def test_the_getter_asks_first():
-    branch = _branch(_units()["GetSchProperty"])
+    branch = _branch(_units()["GetSchPropertyGated"])
     assert branch.index("If Not SchObjectHasSize(Obj) Then") < branch.index("Obj.XSize")
     assert branch.index("If Not SchObjectHasSize(Obj) Then") < branch.index("Obj.YSize")
     assert "NotePropertyDiag('unreadable', PropName)" in branch
@@ -52,7 +52,7 @@ def test_the_setter_asks_first():
 
 
 def test_no_unguarded_size_access_is_left_in_the_generic_property_code():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         body = _units()[name]
         for m in re.finditer(r"Obj\.[XY]Size", body):
             before = body[max(0, m.start() - 320):m.start()]
@@ -61,4 +61,4 @@ def test_no_unguarded_size_access_is_left_in_the_generic_property_code():
 
 def test_the_gate_is_defined_before_its_callers():
     raw = _GENERIC.read_text(encoding="utf-8-sig")
-    assert raw.index("Function SchObjectHasSize(") < raw.index("Function GetSchProperty(")
+    assert raw.index("Function SchObjectHasSize(") < raw.index("Function GetSchPropertyGated(")

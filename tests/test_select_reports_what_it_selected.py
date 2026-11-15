@@ -62,5 +62,5 @@ def test_the_selection_is_read_back():
     assert re.search(r"ProcessActiveDoc\([^;]*'query'", body)
     # The schematic read-back filters on Selection, so the getter has to
     # answer it or every schematic select would read back as none.
-    getter = _routine("GetSchProperty")
+    getter = _routine("GetSchPropertyGated")
     assert re.search(r"PropName\s*=\s*'Selection'\s*Then\s*Result\s*:=", getter)

@@ -40,7 +40,7 @@ def test_the_allowlist_holds_the_filled_shapes_and_no_line():
 
 
 def test_the_getter_asks_first():
-    branch = _branch(_units()["GetSchProperty"])
+    branch = _branch(_units()["GetSchPropertyGated"])
     assert branch.index("If SchObjectHasIsSolid(Obj) Then") < branch.index("Obj.IsSolid")
     assert "NotePropertyDiag('unreadable', PropName);" in branch
 
@@ -52,7 +52,7 @@ def test_the_setter_asks_first():
 
 
 def test_no_unguarded_issolid_read_is_left_in_the_generic_property_code():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         body = _units()[name]
         for m in re.finditer(r"Obj\.IsSolid", body):
             before = body[max(0, m.start() - 160):m.start()]
@@ -61,4 +61,4 @@ def test_no_unguarded_issolid_read_is_left_in_the_generic_property_code():
 
 def test_the_gate_is_defined_before_its_callers():
     raw = _GENERIC.read_text(encoding="utf-8-sig")
-    assert raw.index("Function SchObjectHasIsSolid(") < raw.index("Function GetSchProperty(")
+    assert raw.index("Function SchObjectHasIsSolid(") < raw.index("Function GetSchPropertyGated(")

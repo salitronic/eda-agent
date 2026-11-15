@@ -49,7 +49,7 @@ def test_a_sheet_symbol_is_a_filled_shape():
 
 
 def test_symbol_type_reads_and_writes_on_a_sheet_symbol_only():
-    get = _branch(_routine("GetSchProperty"), "PropName = 'SymbolType'")
+    get = _branch(_routine("GetSchPropertyGated"), "PropName = 'SymbolType'")
     assert get.index("If Obj.ObjectId = eSheetSymbol Then") < get.index("SymObj := Obj;")
     assert "SheetSymbolTypeToStr(SymObj.SymbolType)" in get
     assert "NotePropertyDiag('unreadable', PropName);" in get
@@ -62,7 +62,7 @@ def test_symbol_type_reads_and_writes_on_a_sheet_symbol_only():
 
 def test_entry_style_kind_and_harness_read_and_write_on_an_entry_only():
     head = "(PropName = 'TextStyle') Or (PropName = 'ArrowKind')"
-    get = _branch(_routine("GetSchProperty"), head)
+    get = _branch(_routine("GetSchPropertyGated"), head)
     assert get.index("If Obj.ObjectId = eSheetEntry Then") < get.index("EntryObj := Obj;")
     for call in ("BusTextStyleToStr(EntryObj.TextStyle)",
                  "ArrowKindToStr(EntryObj.ArrowKind)",
@@ -90,7 +90,7 @@ def test_an_entry_side_or_distance_write_puts_it_on_the_edge():
 
 
 def test_no_new_property_is_asked_of_the_base_interface():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         body = _routine(name)
         for member in ("SymbolType", "TextStyle", "ArrowKind", "HarnessType",
                        "OwnerSheetSymbol"):

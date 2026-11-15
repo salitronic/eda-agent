@@ -21,7 +21,7 @@ def _assert_textcolor_access(code):
     assert set(re.findall(r"Obj\.ObjectId = (e\w+)", capability)) == {
         "ePort", "eSheetEntry", "eHarnessEntry", "eTextFrame", "eNote"}
     # A typed local must be declared and assigned AFTER the capability check.
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         body = _routine(code, routine)
         branch = body.split("Else If PropName = 'TextColor' Then", 1)[1]
         branch = re.split(r"\bElse If PropName\b", branch, maxsplit=1)[0]
@@ -33,7 +33,7 @@ def _assert_textcolor_access(code):
                                  ("FrameObj", "ISch_TextFrame")):
             assert f"{local} : {interface}" in body
             assert guard < branch.index(f"{local} := Obj") < branch.index(f"{local}.TextColor")
-        if routine == "GetSchProperty":
+        if routine == "GetSchPropertyGated":
             assert "NotePropertyDiag('unreadable', PropName)" in branch
         else:
             assert "Matched := False" in branch
@@ -52,7 +52,7 @@ def test_textcolor_guard_detects_the_original_defect(mutation):
     elif mutation == "raw_read":
         code = code.replace("IntToStr(PortObj.TextColor)", "IntToStr(Obj.TextColor)", 1)
     else:
-        routine = "GetSchProperty" if mutation == "read_guard" else "SetSchProperty"
+        routine = "GetSchPropertyGated" if mutation == "read_guard" else "SetSchProperty"
         start = code.index(f"Function {routine}(")
         code = code[:start] + code[start:].replace(
             "If SchObjectHasTextColor(Obj) Then", "If True Then", 1)

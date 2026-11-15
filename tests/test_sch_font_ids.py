@@ -34,7 +34,7 @@ def _branch(routine: str, prop: str) -> str:
 
 
 def test_reads_and_writes_go_through_the_gate():
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         fontid = _branch(routine, "FontId")
         assert fontid.index("SchObjectHasFontId(Obj)") < fontid.index("Obj.FontId")
         entry = _branch(routine, "TextFontId")

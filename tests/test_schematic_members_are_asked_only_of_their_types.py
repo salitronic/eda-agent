@@ -67,21 +67,38 @@ def test_a_member_is_in_one_row_only():
     assert len(seen) == len(set(seen))
 
 
-@pytest.mark.parametrize("routine", ["GetSchProperty", "SetSchProperty"])
+@pytest.mark.parametrize("routine", ["GetSchPropertyGated", "SetSchProperty"])
 def test_the_gate_is_asked_before_the_object_is_touched(routine):
+    """The reader is handed the gate's answer as Gate; the writer asks it."""
     body = _decommented(_units()[routine])
-    gate = body.index("If SchMemberGate(Obj, PropName) = 0 Then")
+    reads = routine == "GetSchPropertyGated"
+    gate = body.index("If Gate = 0 Then" if reads
+                      else "If SchMemberGate(Obj, PropName) = 0 Then")
     assert gate < body.index("Try")
     refusal = body[gate:body.index("Try")]
-    word = "unreadable" if routine == "GetSchProperty" else "unknown"
+    word = "unreadable" if reads else "unknown"
     assert "NotePropertyDiag('%s', PropName);" % word in refusal
     assert "Exit;" in refusal
+
+
+def test_every_caller_hands_the_reader_the_gates_own_answer():
+    """Gate is only as good as what is passed in: the plain reader and both
+    walks pass SchMemberGate's answer for the object and the name."""
+    units = _units()
+    assert "SchMemberGate(Obj, PropName), SchExtraOwner(PropName));" in units["GetSchProperty"]
+    for walk in ("QueryObjectBody", "MatchesSplitFilter"):
+        code = _decommented(units[walk])
+        assert "Gate := SchMemberGate(Obj, Names[I]);" in code, walk
+        assert "Gates.Add(IntToStr(Gate));" in code, walk
+        assert "StrToInt(Gates[I])" in code, walk
+    raw = _decommented(_GENERIC.read_text(encoding="utf-8-sig"))
+    assert raw.count("GetSchPropertyGated(") == 4      # its definition and the three callers
 
 
 def test_the_gate_is_defined_before_its_callers():
     raw = _GENERIC.read_text(encoding="utf-8-sig")
     at = raw.index("Function SchMemberGate(")
-    assert at < raw.index("Function GetSchProperty(")
+    assert at < raw.index("Function GetSchPropertyGated(")
     assert at < raw.index("Function SetSchProperty(")
 
 
@@ -93,7 +110,7 @@ def test_no_hand_written_gate_is_left():
         assert old not in raw, old
 
 
-@pytest.mark.parametrize("routine", ["GetSchProperty", "SetSchProperty"])
+@pytest.mark.parametrize("routine", ["GetSchPropertyGated", "SetSchProperty"])
 @pytest.mark.parametrize("member", sorted(sm.TYPES_BY_MEMBER))
 def test_a_member_is_reached_only_under_its_own_name(routine, member):
     """The gate looks at PropName, so a member read in another property's

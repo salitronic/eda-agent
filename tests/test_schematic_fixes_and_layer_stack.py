@@ -415,7 +415,7 @@ def test_a_line_answers_its_two_ends_as_vertices():
     body = _routine("Generic.pas", "SchLineEndProperty")
     assert "Segment.Location" in body and "Segment.Corner" in body
     assert "Result := '2'" in body
-    getter = _routine("Generic.pas", "GetSchProperty")
+    getter = _routine("Generic.pas", "GetSchPropertyGated")
     assert "SchLineEndProperty(Obj, PropName)" in getter
     # Every name a line answers has to reach it: a prefix of 'VERTE' let
     # VerticesCount fall through to the polyline call, which faulted live.

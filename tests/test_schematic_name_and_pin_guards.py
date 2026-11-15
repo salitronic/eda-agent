@@ -34,7 +34,7 @@ def test_free_text_and_net_labels_never_reach_name():
 
 
 def test_name_reads_and_writes_both_check_the_allowlist():
-    get = _gen("GetSchProperty")
+    get = _gen("GetSchPropertyGated")
     branch = get[get.index("PropName = 'Name'"):][:300]
     assert "SchObjectHasName(Obj)" in branch
     text = _decommented(_src("Generic.pas"))

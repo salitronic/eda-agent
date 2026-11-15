@@ -33,7 +33,7 @@ def _branch(body: str) -> str:
 
 
 def test_the_getter_reads_both_radii_through_the_typed_interface():
-    branch = _branch(_units()["GetSchProperty"])
+    branch = _branch(_units()["GetSchPropertyGated"])
     assert "If Obj.ObjectId = eRoundRectangle Then" in branch
     assert branch.index("RR := Obj;") < branch.index("RR.CornerXRadius")
     assert "CoordToMilsF(RR.CornerXRadius)" in branch
@@ -52,18 +52,18 @@ def test_the_setter_writes_both_radii_through_the_typed_interface():
 
 def test_the_typed_local_is_a_round_rectangle_in_both():
     raw = _GENERIC.read_text(encoding="utf-8-sig")
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         at = raw.index("Function %s(" % name)
         head = raw[at:raw.index("Begin", at)]
         assert re.search(r"RR\s*:\s*ISch_RoundRectangle;", head), name
 
 
 def test_no_radius_is_asked_of_the_base_interface():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         assert not re.search(r"Obj\.Corner[XY]Radius", _units()[name]), name
 
 
 def test_an_unknown_name_is_recorded_not_left_blank():
-    body = _units()["GetSchProperty"]
+    body = _units()["GetSchPropertyGated"]
     tail = body[body.index("PropName = 'Selection'"):]
     assert re.search(r"Else\s+NotePropertyDiag\('unknown', PropName\);", tail)

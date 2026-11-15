@@ -60,7 +60,7 @@ def test_placement_chooses_the_named_model_and_warns_on_a_miss():
 
 
 def test_the_component_properties_are_gated_to_components():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         body = _body(name)
         branch = body[body.index("(PropName = 'DisplayMode') Or"):]
         branch = branch[:branch.index("Else If PropName = 'FontId'")] \
@@ -116,7 +116,7 @@ end.
 
 def test_the_helpers_are_defined_before_their_first_use():
     text = GENERIC.read_text(encoding="utf-8", errors="replace")
-    first_use = text.index("Function GetSchProperty(")
+    first_use = text.index("Function GetSchPropertyGated(")
     for name in ("CurrentFootprintImpl", "ChooseFootprintModel",
                  "WriteFootprintPinMap", "ReadFootprintPinMap"):
         assert text.index(f"Function {name}(") < first_use, name

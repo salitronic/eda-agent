@@ -28,7 +28,7 @@ def test_the_names_read_are_the_names_written():
 def test_the_property_is_gated_read_and_written_on_components_only():
     gate = _routine("UnsupportedSchProperty")
     assert "(PropName = 'ComponentKind'))\n                    And (Obj.ObjectId <> eSchComponent)" in gate
-    getter = _routine("GetSchProperty")
+    getter = _routine("GetSchPropertyGated")
     assert "Result := ComponentKindName(Comp.ComponentKind)" in getter
     setter = _routine("SetSchProperty")
     branch = setter[setter.index("Else If PropName = 'ComponentKind' Then"):]

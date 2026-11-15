@@ -2413,7 +2413,11 @@ Begin
     Result := Desc;
 End;
 
-Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+{ Gate is SchMemberGate's answer for this object and property and Extra is   }
+{ SchExtraOwner's, passed in so a walk of one object type asks each once    }
+{ per property and not once per object.                                     }
+Function GetSchPropertyGated(Obj : ISch_GraphicalObject; PropName : String;
+    Gate : Integer; Extra : Integer) : String;
 Var
     R : ISch_Rectangle;
     L : ISch_Line;
@@ -2433,14 +2437,14 @@ Begin
     Result := '';
     { A member only some types carry: asked of any other, it stops the     }
     { script, so the table in SchMemberGate answers first.                 }
-    If SchMemberGate(Obj, PropName) = 0 Then
+    If Gate = 0 Then
     Begin
         NotePropertyDiag('unreadable', PropName);
         Exit;
     End;
     Try
         // Identity
-        If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName)
+        If Extra > 0 Then Result := SchGetExtra(Obj, PropName)
         Else If PropName = 'ObjectId'    Then Result := IntToStr(Obj.ObjectId)
         // Read only, on any schematic object: Altium's description and
         // identifier of it, and the compile error it carries (empty when
@@ -3038,6 +3042,12 @@ Begin
     Except
         Result := '';
     End;
+End;
+
+Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    Result := GetSchPropertyGated(Obj, PropName,
+        SchMemberGate(Obj, PropName), SchExtraOwner(PropName));
 End;
 
 { A parameter whose name or value Altium keeps for itself. A port's CrossRef  }
@@ -3945,6 +3955,189 @@ Begin
     End;
 End;
 
+{ The properties most queries and filters ask for can be read without the   }
+{ call into GetSchProperty, which costs more than the read. SchQuickCode    }
+{ answers once for an object type: Extra unchanged when PropName goes       }
+{ through GetSchProperty, else the code SchQuickRead reads it by. A code is }
+{ given only where GetSchProperty reads the property with one statement on  }
+{ this type, and SchQuickRead holds that statement. 101 to 109 and 120 up   }
+{ are numbers, whose text needs no escaping; 110 to 119 are text.           }
+Function SchQuickCode(Obj : ISch_GraphicalObject; PropName : String;
+    Gate : Integer; Extra : Integer) : Integer;
+Begin
+    Result := Extra;
+    If (Gate = 0) Or (Extra <> 0) Then Exit;
+    If PropName = 'ObjectId' Then Result := 101
+    Else If PropName = 'Location.X' Then Result := 102
+    Else If PropName = 'Location.Y' Then Result := 103
+    Else If PropName = 'Text' Then
+    Begin
+        If SchObjectHasText(Obj) Then Result := 110;
+    End
+    Else If PropName = 'Name' Then
+    Begin
+        If SchObjectHasName(Obj) Then Result := 111;
+    End
+    Else If PropName = 'Designator' Then
+    Begin
+        If Obj.ObjectId = ePin Then Result := 112;
+    End
+    Else If PropName = 'UniqueId' Then Result := 113
+    Else If PropName = 'IsHidden' Then
+    Begin
+        If SchObjectHasIsHidden(Obj) Then Result := 120;
+    End
+    Else If PropName = 'Orientation' Then
+    Begin
+        If SchObjectHasOrientation(Obj) Then Result := 121;
+    End
+    Else If PropName = 'OwnerPartId' Then Result := 122
+    Else If PropName = 'OwnerPartDisplayMode' Then Result := 123
+    Else If PropName = 'Color' Then Result := 124
+    Else If PropName = 'LineWidth' Then Result := 125
+    Else If PropName = 'Style' Then Result := 126;
+End;
+
+Function SchQuickRead(Obj : ISch_GraphicalObject; Code : Integer) : String;
+Var
+    Coord : Integer;
+Begin
+    Result := '';
+    Try
+        If Code = 101 Then Result := IntToStr(Obj.ObjectId)
+        Else If (Code = 102) Or (Code = 103) Then
+        Begin
+            If Code = 102 Then Coord := Obj.Location.X
+            Else Coord := Obj.Location.Y;
+            { A whole number of mils is written as FloatToStr writes it, }
+            { with no fraction.                                           }
+            If Coord Mod 10000 = 0 Then Result := IntToStr(Coord Div 10000)
+            Else Result := FloatToJsonStr(CoordToMilsF(Coord));
+        End
+        Else If Code = 110 Then Result := Obj.Text
+        Else If Code = 111 Then Result := Obj.Name
+        Else If Code = 112 Then Result := Obj.Designator
+        Else If Code = 113 Then Result := Obj.UniqueId
+        Else If Code = 120 Then
+        Begin
+            If Obj.IsHidden Then Result := 'true' Else Result := 'false';
+        End
+        Else If Code = 121 Then Result := IntToStr(Obj.Orientation)
+        Else If Code = 122 Then Result := IntToStr(Obj.OwnerPartId)
+        Else If Code = 123 Then Result := IntToStr(Obj.OwnerPartDisplayMode)
+        Else If Code = 124 Then Result := IntToStr(Obj.Color)
+        Else If Code = 125 Then Result := IntToStr(Obj.LineWidth)
+        Else If Code = 126 Then Result := IntToStr(Obj.Style);
+    Except
+        Result := '';
+    End;
+End;
+
+{ A filter split once for a whole walk, as MatchesFilter splits it for one  }
+{ object: the name, operator and expected value of each condition. False    }
+{ when a condition is not Name=Value, and the walk then uses MatchesFilter. }
+Function SplitSchFilter(FilterStr : String; Names : TStringList;
+    Ops : TStringList; Wanted : TStringList) : Boolean;
+Var
+    Remaining, Condition, Op : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := True;
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Condition := Remaining;
+            Remaining := '';
+        End;
+        If Trim(Condition) = '' Then Continue;
+        EqPos := FilterOpPos(Condition);
+        Op := FilterOpText(Condition);
+        If (EqPos < 2) Or (Op = '') Then
+        Begin
+            Result := False;
+            Exit;
+        End;
+        Names.Add(Copy(Condition, 1, EqPos - 1));
+        Ops.Add(Op);
+        Wanted.Add(Copy(Condition, EqPos + Length(Op), Length(Condition)));
+    End;
+End;
+
+{ MatchesFilter for a filter SplitSchFilter has split. What depends only on }
+{ the object's type (whether it has the property, and what SchMemberGate    }
+{ and SchExtraOwner say) is kept in Unsup, Gates and Extras for objects of  }
+{ FilterId's type, and worked out again when the type differs.              }
+Function MatchesSplitFilter(Obj : ISch_GraphicalObject; Names : TStringList;
+    Ops : TStringList; Wanted : TStringList; Unsup : TStringList;
+    Gates : TStringList; Extras : TStringList; Var FilterId : Integer) : Boolean;
+Var
+    I, Id, Gate, Extra : Integer;
+    Actual, Op : String;
+    Equal : Boolean;
+Begin
+    Result := True;
+    Id := Obj.ObjectId;
+    If (Id <> FilterId) Or (Gates.Count <> Names.Count) Then
+    Begin
+        While Unsup.Count > 0 Do Unsup.Delete(0);
+        While Gates.Count > 0 Do Gates.Delete(0);
+        While Extras.Count > 0 Do Extras.Delete(0);
+        For I := 0 To Names.Count - 1 Do
+        Begin
+            { 1 the type lacks the property, 2 its values compare as       }
+            { numbers (FilterValueMatchesSch), 0 as text.                  }
+            If UnsupportedSchProperty(Obj, Names[I] + '=' + Wanted[I]) <> '' Then
+                Unsup.Add('1')
+            Else If IsSchNumberProperty(Names[I]) Then
+                Unsup.Add('2')
+            Else
+                Unsup.Add('0');
+            Gate := SchMemberGate(Obj, Names[I]);
+            Gates.Add(IntToStr(Gate));
+            Extras.Add(IntToStr(SchQuickCode(Obj, Names[I], Gate,
+                SchExtraOwner(Names[I]))));
+        End;
+        FilterId := Id;
+    End;
+    For I := 0 To Names.Count - 1 Do
+    Begin
+        If Unsup[I] = '1' Then
+        Begin
+            NotePropertyDiag('unreadable', Names[I]);
+            Result := False;
+            Exit;
+        End;
+        Extra := StrToInt(Extras[I]);
+        If Extra > 100 Then Actual := SchQuickRead(Obj, Extra)
+        Else Actual := GetSchPropertyGated(Obj, Names[I], StrToInt(Gates[I]), Extra);
+        { Equality is FilterValueMatchesSch's answer, asked only where it  }
+        { can differ from the plain comparison, and only the = and !=      }
+        { operators use it.                                                }
+        Op := Ops[I];
+        If (Op = '=') Or (Op = '!=') Then
+        Begin
+            Equal := (Actual = Wanted[I]);
+            If (Not Equal) And (Unsup[I] = '2') Then
+                Equal := FilterNumbersEqual(Actual, Wanted[I]);
+            If Op = '=' Then Result := Equal Else Result := Not Equal;
+            If Not Result Then Exit;
+        End
+        Else If Not FilterOpHolds(Op, Actual, Wanted[I], False) Then
+        Begin
+            Result := False;
+            Exit;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { Parse comma-separated property names into JSON for one object              }
 {..............................................................................}
@@ -3981,6 +4174,79 @@ Begin
     End;
 
     Result := Result + '}';
+End;
+
+{ The property names of a query, split once for the whole walk as            }
+{ BuildObjectJson splits them for one object. Keys gets each name as the    }
+{ JSON it is written with, up to the opening quote of its value.            }
+Procedure SplitQueryProps(PropsStr : String; Names : TStringList; Keys : TStringList);
+Var
+    Remaining, PropName : String;
+    CommaPos : Integer;
+Begin
+    Remaining := PropsStr;
+    While Remaining <> '' Do
+    Begin
+        CommaPos := Pos(',', Remaining);
+        If CommaPos > 0 Then
+        Begin
+            PropName := Copy(Remaining, 1, CommaPos - 1);
+            Remaining := Copy(Remaining, CommaPos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            PropName := Remaining;
+            Remaining := '';
+        End;
+        Names.Add(PropName);
+        Keys.Add('"' + EscapeJsonString(PropName) + '":"');
+    End;
+End;
+
+{ One object's properties as the inside of a JSON object, the same text     }
+{ BuildObjectJson puts between its braces. Gates holds what SchMemberGate   }
+{ says for each name on objects of GateId's type and Extras what            }
+{ SchQuickCode says; both are asked again only when the object's type       }
+{ differs.                                                                  }
+Function QueryObjectBody(Obj : ISch_GraphicalObject; Names : TStringList;
+    Keys : TStringList; Gates : TStringList; Extras : TStringList;
+    Var GateId : Integer) : String;
+Var
+    I, Id, Gate, Extra : Integer;
+    Value : String;
+Begin
+    Result := '';
+    Id := Obj.ObjectId;
+    If (Id <> GateId) Or (Gates.Count <> Names.Count) Then
+    Begin
+        While Gates.Count > 0 Do Gates.Delete(0);
+        While Extras.Count > 0 Do Extras.Delete(0);
+        For I := 0 To Names.Count - 1 Do
+        Begin
+            Gate := SchMemberGate(Obj, Names[I]);
+            Extra := SchQuickCode(Obj, Names[I], Gate, SchExtraOwner(Names[I]));
+            Gates.Add(IntToStr(Gate));
+            Extras.Add(IntToStr(Extra));
+        End;
+        GateId := Id;
+    End;
+    For I := 0 To Names.Count - 1 Do
+    Begin
+        Extra := StrToInt(Extras[I]);
+        If Extra > 100 Then
+        Begin
+            Value := SchQuickRead(Obj, Extra);
+            If (Extra >= 110) And (Extra < 120) And (Value <> '') Then
+                Value := EscapeJsonString(Value);
+        End
+        Else
+        Begin
+            Value := GetSchPropertyGated(Obj, Names[I], StrToInt(Gates[I]), Extra);
+            If Value <> '' Then Value := EscapeJsonString(Value);
+        End;
+        If I > 0 Then Result := Result + ',' + Keys[I] + Value + '"'
+        Else Result := Keys[I] + Value + '"';
+    End;
 End;
 
 {..............................................................................}
@@ -4416,8 +4682,7 @@ Begin
     Try ModeNo := Pin.OwnerPartDisplayMode; Except End;
     Try PX := Pin.Location.X; Except End;
     Try PY := Pin.Location.Y; Except End;
-    Result := Des + '|' + IntToStr(PartNo) + '|' + IntToStr(ModeNo) + '|'
-        + IntToStr(PX) + '|' + IntToStr(PY);
+    Result := Format('%s|%d|%d|%d|%d', [Des, PartNo, ModeNo, PX, PY]);
 End;
 
 { The pins of one placed part that it does not show, as SchPinKey keys.   }
@@ -4430,10 +4695,13 @@ Procedure AddUnshownPins(Comp : ISch_Component; Unshown : TStringList);
 Var
     Walk : ISch_Iterator;
     Pin : ISch_Pin;
-    DrawnMode, OwnMode : Integer;
+    DrawnMode, OwnMode, Owner, PartId : Integer;
 Begin
     DrawnMode := 0;
     Try DrawnMode := Comp.DisplayMode; Except DrawnMode := 0; End;
+    { PinShownOn's test, with the part read once for all the pins. }
+    PartId := 0;
+    Try PartId := Comp.CurrentPartID; Except End;
     Walk := Comp.SchIterator_Create;
     Try
         Walk.AddFilter_ObjectSet(MkSet(ePin));
@@ -4442,7 +4710,9 @@ Begin
         Begin
             OwnMode := DrawnMode;
             Try OwnMode := Pin.OwnerPartDisplayMode; Except OwnMode := DrawnMode; End;
-            If (OwnMode <> DrawnMode) Or (Not PinShownOn(Comp, Pin)) Then
+            Owner := 0;
+            Try Owner := Pin.OwnerPartId; Except End;
+            If (OwnMode <> DrawnMode) Or ((Owner <> 0) And (Owner <> PartId)) Then
                 Unshown.Add(SchPinKey(Pin));
             Pin := Walk.NextSchObject;
         End;
@@ -4491,6 +4761,11 @@ Var
     ScopeComp : ISch_Component;
     WantPart, ObjPart, ObjMode, CompMode : Integer;
     ObjRef : String;
+    Pieces, PropNames, PropKeys, PropGates, PropExtras : TStringList;
+    ObjHead, ObjBody, Joined : String;
+    GateId, FilterId : Integer;
+    NoFilter, SplitFilter : Boolean;
+    FltNames, FltOps, FltWanted, FltUnsup, FltGates, FltExtras : TStringList;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -4709,7 +4984,43 @@ Begin
     If (ObjTypeInt = ePin) And (Not IsLibDoc) And (Not ParamsOfSymbol) Then
         If Pos('OwnerPart', FilterStr) = 0 Then OnlyShown := True;
     UnshownPins := TStringList.Create;
+    { Sorted, so each pin is looked up by a binary search: a sheet holds    }
+    { thousands of unshown pins, and every pin walked is looked up.         }
+    UnshownPins.Sorted := True;
+    UnshownPins.Duplicates := dupIgnore;
     If OnlyShown Then CollectHiddenPinKeys(SchDoc, UnshownPins);
+
+    { What every object of a query shares is worked out once: the property  }
+    { names and their JSON keys, and the start of each object (the symbol   }
+    { and the document). Objects are kept as pieces and joined at the end,  }
+    { since appending to one string copies the reply so far each time.      }
+    Pieces := TStringList.Create;
+    PropNames := TStringList.Create;
+    PropKeys := TStringList.Create;
+    PropGates := TStringList.Create;
+    PropExtras := TStringList.Create;
+    GateId := -1;
+    NoFilter := (FilterStr = '');
+    { The filter is split once as well. One that does not split is left to  }
+    { MatchesFilter, object by object.                                      }
+    FltNames := TStringList.Create;
+    FltOps := TStringList.Create;
+    FltWanted := TStringList.Create;
+    FltUnsup := TStringList.Create;
+    FltGates := TStringList.Create;
+    FltExtras := TStringList.Create;
+    FilterId := -1;
+    SplitFilter := False;
+    If Not NoFilter Then
+        SplitFilter := SplitSchFilter(FilterStr, FltNames, FltOps, FltWanted);
+    If Mode = 'query' Then
+    Begin
+        SplitQueryProps(PropsStr, PropNames, PropKeys);
+        ObjHead := '{';
+        If SymbolRef <> '' Then
+            ObjHead := ObjHead + '"_symbol":"' + EscapeJsonString(SymbolRef) + '",';
+        ObjHead := ObjHead + '"_doc":"' + EscapeJsonString(DocPath) + '"';
+    End;
 
     Obj := Iterator.FirstSchObject;
     While Obj <> Nil Do
@@ -4742,21 +5053,23 @@ Begin
             If ObjRef <> LibScopeName Then Counted := False;
         End;
 
-        If Counted And MatchesFilter(Obj, FilterStr) Then
+        If Counted And (Not NoFilter) Then
+        Begin
+            If SplitFilter Then
+                Counted := MatchesSplitFilter(Obj, FltNames, FltOps, FltWanted,
+                    FltUnsup, FltGates, FltExtras, FilterId)
+            Else
+                Counted := MatchesFilter(Obj, FilterStr);
+        End;
+        If Counted Then
         Begin
             If Mode = 'query' Then
             Begin
-                ObjJson := BuildObjectJson(Obj, PropsStr);
-                If Length(ObjJson) <= 2 Then
-                    ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
-                Else
-                    ObjJson := Copy(ObjJson, 1, 1) + '"_doc":"' + EscapeJsonString(DocPath) + '",' + Copy(ObjJson, 2, Length(ObjJson));
-                { Which symbol answered, so a caller can tell. }
-                If SymbolRef <> '' Then
-                    ObjJson := Copy(ObjJson, 1, 1) + '"_symbol":"' + EscapeJsonString(SymbolRef) + '",' + Copy(ObjJson, 2, Length(ObjJson));
-                If Not First Then Result := Result + ',';
-                First := False;
-                Result := Result + ObjJson;
+                { ObjHead names the symbol that answered, and the document. }
+                ObjBody := QueryObjectBody(Obj, PropNames, PropKeys,
+                    PropGates, PropExtras, GateId);
+                If ObjBody = '' Then Pieces.Add(ObjHead + '}')
+                Else Pieces.Add(ObjHead + ',' + ObjBody + '}');
             End
             Else If Mode = 'modify' Then
             Begin
@@ -4786,6 +5099,23 @@ Begin
     Else
         SchDoc.SchIterator_Destroy(Iterator);
     UnshownPins.Free;
+
+    If Pieces.Count > 0 Then
+    Begin
+        Joined := LmJoinPieces(Pieces);
+        If First Then Result := Joined Else Result := ',' + Joined;
+    End;
+    Pieces.Free;
+    PropNames.Free;
+    PropKeys.Free;
+    PropGates.Free;
+    PropExtras.Free;
+    FltNames.Free;
+    FltOps.Free;
+    FltWanted.Free;
+    FltUnsup.Free;
+    FltGates.Free;
+    FltExtras.Free;
 
     If Mode = 'modify' Then
         SchEndEdit(SchDoc, 'Edit');

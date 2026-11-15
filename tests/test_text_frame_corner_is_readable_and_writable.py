@@ -38,7 +38,7 @@ def _frame_part(branch: str) -> str:
 
 
 def test_the_getter_reads_a_text_frames_corner_through_a_typed_local():
-    part = _frame_part(_corner_branch(_units()["GetSchProperty"]))
+    part = _frame_part(_corner_branch(_units()["GetSchPropertyGated"]))
     assert "FrameObj := Obj;" in part
     assert "Crn := FrameObj.Corner;" in part
     assert "Have := True;" in part
@@ -54,18 +54,18 @@ def test_the_setter_writes_both_axes_of_a_text_frames_corner():
 
 
 def test_the_frame_local_is_a_text_frame_in_both():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         assert "FrameObj : ISch_TextFrame;" in _units()[name], name
 
 
 def test_corner_is_still_never_asked_of_the_base_interface():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         branch = _corner_branch(_units()[name])
         assert "Obj.Corner" not in branch.replace("FrameObj.Corner", ""), name
 
 
 def test_other_types_stay_outside_the_corner_branch():
-    for name in ("GetSchProperty", "SetSchProperty"):
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
         branch = _corner_branch(_units()[name])
         for t in ("eRectangle", "eRoundRectangle", "eLine", "eTextFrame", "eNote"):
             assert "Obj.ObjectId = %s" % t in branch, (name, t)

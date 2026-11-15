@@ -112,7 +112,7 @@ def test_placed_component_labels_can_be_shown_and_moved() -> None:
     reported the name as unknown, and a library template that hid the
     designator left placed parts without one."""
     set_body = GENERIC["SetSchProperty"]
-    get_body = GENERIC["GetSchProperty"]
+    get_body = GENERIC["GetSchPropertyGated"]
     # One parser answers every label name, sheet symbols' too; it is run by
     # fpc on these names in test_labels_are_autopositioned.
     assert "SchLabelPropWhich(PropName) <> ''" in set_body

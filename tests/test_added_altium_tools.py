@@ -796,8 +796,11 @@ def test_pin_functions_count_from_one():
 def test_schematic_extras_go_to_their_own_type():
     text = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
     assert "Or ((SchExtraOwner(PropName) > 0) And (Not SchExtraFits(Obj, PropName))) Then" in text
-    get = _body("Generic.pas", "GetSchProperty")
-    assert "If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName)" in get
+    get = _body("Generic.pas", "GetSchPropertyGated")
+    assert "If Extra > 0 Then Result := SchGetExtra(Obj, PropName)" in get
+    # Extra is SchExtraOwner's answer, handed in by every caller.
+    assert "SchMemberGate(Obj, PropName), SchExtraOwner(PropName));" in _body(
+        "Generic.pas", "GetSchProperty")
     put = _body("Generic.pas", "SetSchProperty")
     assert "WroteOK := SchSetExtra(Obj, PropName, Value);" in put
     fits = _body("Generic.pas", "SchExtraFits")
