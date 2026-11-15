@@ -147,13 +147,18 @@ def _rotate(x: int, y: int, rotation: int) -> tuple[int, int]:
 
 
 def place_symbol_pins(designator: str, lib_pins: Iterable[dict], x: int, y: int,
-                      rotation: int = 0, part: int = 1) -> list[PinEnd]:
+                      rotation: int = 0, part: int = 1,
+                      mirror: bool = False) -> list[PinEnd]:
     """Sheet positions of a symbol's pins once placed at (x, y), rotated.
 
     ``lib_pins`` are rows as lib_get_pin_list returns them: designator,
     name, x, y (the pin's body-side root, symbol-local), orientation and
     length. Alternate display modes and hidden pins are skipped, and so
     are the pins of every part but ``part``: the sheet shows that one.
+
+    ``mirror`` reflects the rotated symbol about the vertical line through
+    (x, y), as Altium's own Mirrored does to a placed part: a pin on the
+    right moves to the left and points the other way.
     """
     if rotation % 90:
         raise TemplateError(f"{designator}: rotation must be 0, 90, 180 or 270")
@@ -168,6 +173,9 @@ def place_symbol_pins(designator: str, lib_pins: Iterable[dict], x: int, y: int,
             continue
         rx, ry = _rotate(int(p.get("x", 0)), int(p.get("y", 0)), rotation)
         orient = (int(p.get("orientation", 0)) + turns) % 4
+        if mirror:
+            rx = -rx
+            orient = {0: 2, 2: 0}.get(orient, orient)
         length = int(p.get("length", 0))
         dx, dy = _DIRS[orient]
         out.append(PinEnd(designator, str(p.get("designator", "")),

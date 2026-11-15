@@ -16,7 +16,7 @@ from html import unescape
 from pathlib import Path
 
 from ..bridge import get_bridge
-from ..fileio import pcblib_models
+from .. import footprint_export
 
 PROCESS = "FootprintWizard:BatchPCBLibCreate"
 
@@ -173,11 +173,13 @@ async def generate_ipc_batch(input_file: str, output_dir: str, *,
             if not saved.get("saved"):
                 return {**result, "stage": "save", "reason": "AD did not confirm saving the generated library"}
             if require_step:
-                extracted = await asyncio.to_thread(pcblib_models.extract_embedded_models,
-                    path, out / "STEP" / path.stem, per_record_directory=True)
+                extracted = await footprint_export.extract_models(
+                    bridge, str(path), out / "STEP" / path.stem,
+                    footprints=[fp["name"] for fp in footprints],
+                    per_footprint_directory=True)
                 library["step_export"] = extracted
                 if not extracted.get("ok") or any(not m.get("step_header") for m in extracted.get("written", [])):
-                    return {**result, "stage": "3d_export", "reason": "Embedded STEP extraction or checksum verification failed"}
+                    return {**result, "stage": "3d_export", "reason": "Altium exported no embedded STEP file for a footprint"}
         if expected is not None and count != expected:
             return {**result, "stage": "count", "reason": f"Expected {expected} footprints, read {count}"}
         result.update(ok=True, stage="complete", footprint_count=count,
@@ -240,7 +242,7 @@ def register_ipc_batch_tools(mcp):
         folders = ipc_templates.template_folders()
         if not folders:
             return {"ok": False, "reason": "no IPC Footprint Generator templates are "
-                    "installed under ProgramData\Altium; the IPC Footprint Generator "
+                    "installed under ProgramData\\Altium; the IPC Footprint Generator "
                     "extension is part of Altium Designer's installation"}
         if not family.strip():
             return {"ok": True, "folder": str(folders[0]),

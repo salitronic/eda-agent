@@ -14,6 +14,7 @@ from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
+from ..sch_members import member_refusals
 from .library import _mils
 from ..units import format_length
 from .pin_hints import pin_location_hint
@@ -21,6 +22,8 @@ from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_co
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
+from .bulk import bulk_items_by
+from ..prjpcb import removals_together
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -201,6 +204,19 @@ async def _refuse_manual_sheet_layout(
     }
 
 
+def typed_line_breaks(text: str, typed_breaks: bool = True) -> str:
+    """A text frame's text with each typed backslash-n made a newline.
+
+    A caller that cannot send a newline types the two characters instead.
+    Only a text holding no real newline is converted: one that already has
+    newlines was written with them, and its backslash-n is text (a path
+    such as C:\\new\\board, a regex). The script stores backslash-n as sent.
+    """
+    if not typed_breaks or "\n" in text or "\r" in text:
+        return text
+    return text.replace("\\n", "\n")
+
+
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 # Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
@@ -247,7 +263,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
     if _FILTER_NAME.fullmatch(cond.strip()):
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
-                     "Name=Value conditions joined by |, each matched exactly "
+                     "Name=Value conditions joined by |, each matched exactly, "
+                     "a number property as a number "
                      "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
                      "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
@@ -376,6 +393,22 @@ async def _send_rule_aware(tool: str, object_types: list[str],
     if not any(is_rule_type(t) for t in object_types):
         return await run()
     return await logged_rule_edit(get_bridge(), tool, params, run)
+
+
+def _hex_to_bgr(colour: str) -> Optional[int]:
+    """"#RRGGBB" as Altium's packed blue-green-red integer; None if malformed."""
+    hexpart = colour.strip().lstrip("#")
+    if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+        return None
+    r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+    return r_ | (g_ << 8) | (b_ << 16)
+
+
+def _bgr_to_hex(bgr: Any) -> Any:
+    """Altium's packed blue-green-red integer as "#RRGGBB"; else unchanged."""
+    if not isinstance(bgr, int) or isinstance(bgr, bool) or not 0 <= bgr <= 0xFFFFFF:
+        return bgr
+    return "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF)
 
 
 def _cursor_to_view_centre() -> bool:
@@ -560,11 +593,14 @@ def register_generic_tools(mcp):
                 mils), "IslandAreaThreshold" (square mils),
                 "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
                 and the read-only "PourIndex,Poured"; nothing repours.
-                Lengths are decimal mils.
 
-                A board type returns EVERY primitive of that type;
-                filter "InComponent=false|InPolygon=false" for free
-                copper. Mechanical-layer tracks have no net.
+                A board type returns EVERY primitive of that type
+                ("InComponent=false|InPolygon=false": free copper).
+                Mechanical-layer tracks have no net. On a board only an
+                exact Net=,
+                Component= or BoundsLeft/BoundsBottom (X1/Y1) is indexed;
+                any other condition (X=, Y=) is checked on every object
+                (Layer=: one layer's).
             scope: "active_doc" (default); "project" (every sheet of the
                 focused project); "doc:PATH" or the bare path (that sheet,
                 no focus change); "project:PATH"; "lib_component:NAME" (a
@@ -572,21 +608,21 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
-                length matches as a number in mils ('.' or ',' decimal).
-                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
-                (a value that is not a number matches no < > <= >=);
+                "Text=VCC" or "Designator.Text=R1"; "" matches all.
+                Numbers match as numbers ('.' or ','): Location.Y=9000.0
+                meets 9000; text matches exactly.
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
                 character, case ignored), "Net!~VCC*" excludes by one. A
-                PCB Layer (Layer1, Layer2) takes the internal name
-                ("Mechanical21") or the board's own name ("FluidGon"), in
-                any case; a ~ pattern meets either, and a name that is no
-                layer is refused. The same grammar holds for obj_modify,
-                obj_delete and obj_select.
-            limit: Maximum number of objects to return (0 = unlimited)
+                PCB Layer takes the internal name ("Mechanical21") or the
+                board's own, any case; ~ meets either; no layer: refused.
+                Same grammar in obj_modify, obj_delete, obj_select, obj_count.
+            limit: Most objects to return (0 = all); it also ends the
+                search early, and count is then the number returned.
 
         Returns:
-            Dictionary with "objects" array and "count"
+            "objects", "count"; "not_on_this_type": properties the type
+            lacks.
         """
         bad = filter_problem(filter)
         if bad:
@@ -630,6 +666,11 @@ def register_generic_tools(mcp):
         untrusted = untrusted_text_note(properties)
         if untrusted and isinstance(result, dict):
             result["_untrusted_content"] = untrusted
+        # A member the type does not carry reads blank; say why, from the
+        # same table the script's gate is generated from.
+        refused = member_refusals(object_type, properties.split(","))
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
         return result
 
     @mcp.tool()
@@ -716,9 +757,9 @@ def register_generic_tools(mcp):
 
         When each object needs a DIFFERENT value (10 pins to 10 positions,
         distinct designators), give ``items``: a list of
-        {scope, object_type, filter, set} dicts, one per filter. They run in
-        ONE Altium transaction (one undo step); arguments given beside
-        ``items`` apply to every item. No rollback: items before a failure
+        {scope, object_type, filter, set} dicts, one per filter: ONE
+        request, but each item is its own search and edit (its own undo
+        step); arguments given beside ``items`` apply to every item. No rollback: items before a failure
         stay applied. After a designator list, check the netlist: duplicate
         designators merge nets silently (proj_annotate renumbers without
         duplicates). With items a value in ``set`` may hold ';' but no
@@ -797,9 +838,9 @@ def register_generic_tools(mcp):
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
-                selected for you).
+                selected for you). A board type takes only the default:
+                any other is refused (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
-
             items: Several filter+set operations at once (see above).
 
         Returns:
@@ -859,6 +900,9 @@ def register_generic_tools(mcp):
         if (isinstance(result, dict) and object_type in ("eParameter", "eDesignator")
                 and re.search(r"(^|\|)\s*GraphicallyLocked\s*=", set)):
             result["note"] = _PARAMETER_LOCK_DOES_NOT_SAVE
+        refused = member_refusals(object_type, [a.split("=", 1)[0] for a in set.split("|")])
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
         return result
 
     @mcp.tool()
@@ -936,16 +980,19 @@ def register_generic_tools(mcp):
         with an empty filter needs confirm_delete_all, or nothing is sent.
         Arguments given beside ``items`` apply to every item.
 
-        A PCB type deletes from the active board and also matches
-        footprint primitives and polygon hatching unless the filter says
-        "InComponent=false|InPolygon=false". To take up routing use
-        ``pcb_unroute``.
+        A PCB type deletes from the active board (with a library or sheet
+        in front: the only open board, brought forward; in a footprint use
+        lib_delete_footprint_primitives). It also
+        matches footprint primitives and polygon hatching unless the
+        filter says "InComponent=false|InPolygon=false". To take up
+        routing use ``pcb_unroute``.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
             scope: "active_doc", "project", "doc:PATH", or
                 "lib_component:NAME" (a named symbol in the active SchLib).
-                A PCB type takes only "active_doc".
+                A PCB type takes only "active_doc"; any other is refused
+                (SCOPE_NOT_SUPPORTED) and nothing is deleted.
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
@@ -1079,7 +1126,11 @@ def register_generic_tools(mcp):
         """Select objects matching a filter on the active document.
 
         Sets the selection state on matching schematic or PCB objects for
-        visual highlighting. Use `obj_deselect_all` to clear.
+        visual highlighting. Use `obj_deselect_all` to clear. On a board
+        it ignores Altium's Selection Filter and searches twice (select,
+        then read back): an indexed filter (see `obj_query`) keeps that
+        quick. With a library or sheet in front a PCB type acts on the
+        only open board.
 
         Args:
             object_type: Altium object type (schematic or PCB)
@@ -1128,8 +1179,9 @@ def register_generic_tools(mcp):
         Args:
             action: "fit" (Fit All Objects, which can cut a sheet's frame
                 off), "document" (a schematic's Fit Document: the whole
-                sheet with its frame), "board" (the board alone, not
-                parts parked beside it; a schematic fits as "fit"),
+                sheet with its frame), "board" (the board outline with
+                a margin, not parts parked beside it; a schematic fits
+                as "fit"),
                 "selection" (zoom to selected objects) or "point" (zoom
                 to x, y)
             x, y: the point for "point", in mils (a footprint's frame in
@@ -1154,7 +1206,7 @@ def register_generic_tools(mcp):
         )
         # Fit All Objects in a symbol library leaves no margin: the top pin
         # row sits under the editor's floating toolbar. One Zoom Out step
-        # (AdvSch.rcs PLSch:ZoomOut) clears it.
+        # clears it.
         if (action == "fit" and isinstance(result, dict)
                 and str(result.get("document_kind") or "").upper() == "SCHLIB"):
             await bridge.send_command_async(
@@ -1643,7 +1695,9 @@ def register_generic_tools(mcp):
                 "ObjectKind=Document|FileName=C:\\path\\to\\file.SchDoc"
 
         Returns:
-            Dictionary with execution result
+            Dictionary with execution result. Success means the process
+            was dispatched: Altium accepts an unknown process silently,
+            so read the design back to see what it did.
         """
         refusal = refuse_process(process_name)
         if refusal is not None:
@@ -1874,6 +1928,9 @@ def register_generic_tools(mcp):
     async def obj_clear_highlights() -> dict[str, Any]:
         """Clear all net highlights in the active schematic or PCB document.
 
+        On a schematic a highlight is a selection, so the whole sheet is
+        deselected (no count is reported).
+
         Returns:
             Dictionary confirming highlights were cleared
         """
@@ -1914,6 +1971,9 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    @bulk_items_by(removals_together(
+        "generic.delete_sheet",
+        lambda a: {"file_path": a["file_path"]} if a.get("file_path") else None))
     async def proj_delete_sheet(
         file_path: str,
     ) -> dict[str, Any]:
@@ -1921,9 +1981,9 @@ def register_generic_tools(mcp):
 
         Safety check: refuses to remove the last remaining schematic sheet.
         The file is removed from the project but not deleted from disk, and
-        closed unless it has unsaved edits. The project file is saved, its
-        leftover sections taken out and read back, as proj_remove_document
-        does.
+        closed unless it has unsaved edits. The project file is saved and
+        read back, and Altium writes it fresh when its save left the
+        sheet in it, as proj_remove_document does.
 
         Args:
             file_path: Full path to the .SchDoc file to remove
@@ -1937,10 +1997,8 @@ def register_generic_tools(mcp):
             "generic.delete_sheet",
             {"file_path": file_path},
         )
-        from ..config import get_config
         from ..prjpcb import finish_removal
-        return finish_removal(
-            result, str(get_config().workspace_dir / "backups" / "prjpcb"))
+        return await finish_removal(bridge, result)
 
     @mcp.tool()
     async def obj_switch_view(
@@ -2854,12 +2912,18 @@ def register_generic_tools(mcp):
         scope: str = "active_doc",
         filter: str = "",
     ) -> dict[str, Any]:
-        """Quick count of objects by type, faster than `obj_query` when you only need the count.
+        """Count objects of a type without reading their properties.
+
+        On a board with NO filter Altium's own counter answers at once;
+        with a filter it searches like `obj_query` (an indexed filter keeps
+        that quick, see there).
 
         Args:
             object_type: Altium object type constant (see `obj_query` for options)
             scope: "active_doc" (default), "project", or
                 "doc:C:\\path\\Sheet.SchDoc" for a specific loaded sheet.
+                A PCB type counts the active board and takes no other
+                scope (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
@@ -3325,6 +3389,8 @@ def register_generic_tools(mcp):
         directive_y: float | None = None,
         line_style: int | None = None,
         collapsed: bool | None = None,
+        color: int | None = None,
+        area_color: int | None = None,
         parameter_list: list[dict[str, Any]] | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:
@@ -3346,12 +3412,17 @@ def register_generic_tools(mcp):
                 Altium reads a blanket's directive from.
             line_style: Outline style, as Altium's integer.
             collapsed: Draw the blanket collapsed.
+            color, area_color: Border and fill, Altium's BGR integers;
+                omitted, the user's blanket defaults. The fill is always
+                see-through: the blanket is drawn above what it encloses,
+                and Altium keeps no opaque blanket fill on save.
 
         Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
         Coverage: sch_get_blankets after a compile.
 
         Returns:
-            ``vertices`` and the ``directive`` read back.
+            ``vertices``, ``color``, ``area_color``, ``transparent``,
+            ``line_style`` and the ``directive`` read back.
         """
         if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
             return {"success": False, "error": {
@@ -3388,6 +3459,10 @@ def register_generic_tools(mcp):
             args["line_style"] = str(int(line_style))
         if collapsed is not None:
             args["collapsed"] = "true" if collapsed else "false"
+        if color is not None:
+            args["color"] = str(int(color))
+        if area_color is not None:
+            args["area_color"] = str(int(area_color))
         bridge = get_bridge()
         return await bridge.send_command_async("generic.place_blanket", args)
 
@@ -3997,12 +4072,22 @@ def register_generic_tools(mcp):
         text: str,
         align: str = "left",
         font_id: int = 0,
+        fill: str = "",
+        border_color: str = "",
+        text_color: str = "",
+        show_border: Optional[bool] = None,
+        text_margin: Optional[float] = None,
+        word_wrap: Optional[bool] = None,
+        clip_to_rect: Optional[bool] = None,
+        typed_breaks: bool = True,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. A newline, or a typed ``\\n``, becomes Altium's own line
-        break.
+        text. A newline becomes Altium's own line break; a text with no
+        newline may type ``\\n`` for one instead. The style is set before
+        the frame is placed, so a table of filled cells needs no search
+        and restyle afterwards.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
@@ -4010,23 +4095,53 @@ def register_generic_tools(mcp):
             align: Horizontal alignment "left", "center", or "right".
             font_id: The frame's font. 0 takes the font the sheet's text
                 frames already use, else its net labels' font.
+            fill: "#RRGGBB" fills the frame with that colour; empty leaves
+                it unfilled.
+            border_color, text_color: "#RRGGBB"; empty keeps the default.
+            show_border, word_wrap, clip_to_rect: None keeps the default
+                (all three on).
+            text_margin: Gap between border and text in mils; None keeps
+                the default.
+            typed_breaks: False keeps a typed ``\\n`` as text, as in the
+                path ``C:\\new``.
 
         Returns:
-            The placement: the frame's corners and the ``font_id`` it got.
+            The placement: the frame's corners, the ``font_id`` it got and
+            ``style`` read back off the frame (colours as "#RRGGBB").
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.place_text_frame",
-            {
-                "x1": _mils(x1),
-                "y1": _mils(y1),
-                "x2": _mils(x2),
-                "y2": _mils(y2),
-                "text": text,
-                "align": align,
-                "font_id": str(int(font_id)),
-            },
-        )
+        params: dict[str, Any] = {
+            "x1": _mils(x1),
+            "y1": _mils(y1),
+            "x2": _mils(x2),
+            "y2": _mils(y2),
+            "text": typed_line_breaks(text, typed_breaks),
+            "align": align,
+            "font_id": str(int(font_id)),
+        }
+        for key, value in (("area_color", fill), ("color", border_color),
+                           ("text_color", text_color)):
+            if value.strip():
+                bgr = _hex_to_bgr(value)
+                if bgr is None:
+                    return {"ok": False, "reason": f"{value!r} is not #RRGGBB"}
+                params[key] = str(bgr)
+        for key, flag in (("show_border", show_border), ("word_wrap", word_wrap),
+                          ("clip_to_rect", clip_to_rect)):
+            if flag is not None:
+                params[key] = "true" if flag else "false"
+        if text_margin is not None:
+            if text_margin < 0:
+                return {"ok": False, "reason": "text_margin is 0 or more"}
+            params["text_margin"] = _mils(text_margin)
+        reply = await get_bridge().send_command_async(
+            "generic.place_text_frame", params)
+        style = reply.get("style") if isinstance(reply, dict) else None
+        if isinstance(style, dict):
+            for key in ("area_color", "color", "text_color"):
+                if key in style:
+                    style[key + "_bgr"] = style[key]
+                    style[key] = _bgr_to_hex(style[key])
+        return reply
 
     @mcp.tool()
     async def sch_generate_toc(

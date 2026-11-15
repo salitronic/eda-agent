@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.11.04';
+    SCRIPT_VERSION = '2026.11.15.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -56,6 +56,7 @@ Const
     CONFIG_FILE = 'mcp_config.json';
     SAVING_FILE = 'saving.json';
     PREFS_FILE = 'preferences.json';
+    PROJECT_LISTED_FILE = 'project_members.txt';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -116,6 +117,12 @@ Var
     { a compile only while it has not moved.                             }
     WriteSerial : Integer;
     CompiledAtSerial : Integer;
+    { Bumped by every command that does more than look (CommandOnlyLooks), }
+    { counted where every command passes; with LoopStartTick it tells a   }
+    { reader whether a board it read may have changed (the stamp section  }
+    { of pcb.get_layout_model).                                            }
+    CommandSerial : Integer;
+    LoopStartTick : Cardinal;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
@@ -133,6 +140,12 @@ Var
     { Full paths of the OutJobs proj_run_outjob opened, each
       wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
     RunOutJobsOpened : String;
+    { What each open project's file names, as far as the bridge knows. One
+      record per project: Chr(1) PATH Chr(2) file age Chr(2) member file
+      names Chr(3), the path upper case, each name upper case and wrapped
+      in '|'. Kept in PROJECT_LISTED_FILE too. See ProjectListedNames. }
+    ProjectListed : String;
+    ProjectListedRead : String;
     { Documents the current save pass has already handled, wrapped in '|'.
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
@@ -173,6 +186,16 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageMode 'on' counts each tool call's token cost (the Python side  }
+    { does the counting). Default off.                                    }
+    UsageMode : String;
+    { RoutingMode is the routing discipline: 'enforced' (the default),    }
+    { 'advisory' or 'off'. The Python side holds the router to it.        }
+    RoutingMode : String;
+    { Basic3dMode 'allowed' lets a footprint keep extruded, cylinder or   }
+    { sphere bodies as its 3D model; 'not_allowed' (the default) has the  }
+    { Python side report them and ask before replacing them.              }
+    Basic3dMode : String;
     { ChecksOff lists the checks switched off on the Config tab, by name,  }
     { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
     { model_body, spice_model, fab_export). Empty, the default, keeps    }
@@ -338,6 +361,12 @@ Begin
             Remaining := '';
             Exit;
         End;
+        { A field always starts with its key, so a run of exactly three  }
+        { tildes is a value ending in '~' (KiCad's empty field) and then }
+        { the separator: the value keeps its tilde.                      }
+        If (SepPos + 2 <= Length(Remaining)) And (Remaining[SepPos + 2] = '~') Then
+            If Not ((SepPos + 3 <= Length(Remaining)) And (Remaining[SepPos + 3] = '~')) Then
+                SepPos := SepPos + 1;
         Result := Copy(Remaining, 1, SepPos - 1);
         Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
         If Result <> '' Then Exit;
@@ -1511,19 +1540,131 @@ End;
 { panel showed the project modified while its document read Modified      }
 { false, and app_save_all left the file naming a sheet that no longer     }
 { existed (#291, measured on AD 26.11). So every member with a file must  }
-{ be named by a [DocumentN] entry of the file on disk; a renamed sheet's  }
-{ new name, or an added document, is not. Entries are not checked the     }
-{ other way: Altium leaves sections of removed documents in the file, so  }
-{ a stale entry stays after any save. Members with no file (the project's }
-{ ActiveBOM.VirtualBOM) are not counted.                                  }
+{ be among the names the project file was written with; a renamed sheet's }
+{ new name, or an added document, is not. Names are not checked the other }
+{ way: Altium leaves sections of removed documents in the file, so a      }
+{ removal alone asks for no save here. Members with no file (the          }
+{ project's ActiveBOM.VirtualBOM) are not counted.                        }
+{                                                                         }
+{ The project file is never opened for this. What it names is what the    }
+{ project held when the file was last written: see ProjectListedNames.    }
+
+{ The file names of a project's members that have a file, upper case,     }
+{ each wrapped in '|'.                                                    }
+Function ProjectMemberNames(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Entry, Names : String;
+Begin
+    Names := '|';
+    If Project <> Nil Then
+        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(J);
+            If Doc = Nil Then Continue;
+            Entry := '';
+            Try Entry := Doc.DM_FullPath; Except End;
+            If (Entry = '') Or (Not FileExists(Entry)) Then Continue;
+            Entry := UpperCase(ExtractFileName(Entry));
+            If Pos('|' + Entry + '|', Names) = 0 Then Names := Names + Entry + '|';
+        End;
+    Result := Names;
+End;
+
+{ The member names a project's file was written with, as ProjectMemberNames }
+{ gives them.                                                               }
+{                                                                           }
+{ Altium writes every member when it writes the project file, and loads     }
+{ every one the file names. So the names are recorded the first time a      }
+{ project is seen and again whenever its file's time has changed, and they  }
+{ stand until the file is written again. NoteOpenProjects records each open }
+{ project before every command, so a change made after that is measured     }
+{ against the record. The records are kept in the workspace folder too, and }
+{ one whose file time still matches is used after a restart of the loop.    }
+{                                                                           }
+{ A file time has a two second step: a project file written twice within it }
+{ keeps the first record, and reads as needing a save until the next write. }
+Function ProjectListedNames(Project : IProject) : String;
+Var
+    Path, Key, Rec, Names, Rest : String;
+    P, Age : Integer;
+    Store : TStringList;
+Begin
+    Names := '';
+    Path := '';
+    If Project <> Nil Then Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path <> '') And FileExists(Path) Then
+    Begin
+        If ProjectListedRead <> 'yes' Then
+        Begin
+            ProjectListedRead := 'yes';
+            ProjectListed := '';
+            Store := TStringList.Create;
+            Try
+                If (WorkspaceDir <> '') And LoadTextFile(Store, WorkspaceDir + PROJECT_LISTED_FILE) Then
+                    ProjectListed := Store.Text;
+            Finally
+                Store.Free;
+            End;
+        End;
+        Age := -1;
+        Try Age := FileAge(Path); Except Age := -1; End;
+        Key := Chr(1) + UpperCase(Path) + Chr(2);
+        P := Pos(Key, ProjectListed);
+        If P > 0 Then
+        Begin
+            Rest := Copy(ProjectListed, P + Length(Key), Length(ProjectListed));
+            Rec := Copy(Rest, 1, Pos(Chr(3), Rest) - 1);
+            If Copy(Rec, 1, Pos(Chr(2), Rec) - 1) = IntToStr(Age) Then
+                Names := Copy(Rec, Pos(Chr(2), Rec) + 1, Length(Rec))
+            Else
+            Begin
+                ProjectListed := Copy(ProjectListed, 1, P - 1)
+                    + Copy(Rest, Length(Rec) + 2, Length(Rest));
+                P := 0;
+            End;
+        End;
+        If P = 0 Then
+        Begin
+            Names := ProjectMemberNames(Project);
+            If Length(ProjectListed) > 200000 Then ProjectListed := '';
+            ProjectListed := ProjectListed + Key + IntToStr(Age) + Chr(2) + Names + Chr(3);
+            If WorkspaceDir <> '' Then
+            Begin
+                Store := TStringList.Create;
+                Try
+                    Store.Text := ProjectListed;
+                    Try Store.SaveToFile(WorkspaceDir + PROJECT_LISTED_FILE); Except { kept in memory } End;
+                Finally
+                    Store.Free;
+                End;
+            End;
+        End;
+    End;
+    Result := Names;
+End;
+
+{ Record what every open project's file names, before a command can change }
+{ a project. See ProjectListedNames.                                        }
+Procedure NoteOpenProjects(Dummy : Integer);
+Var
+    Workspace : IWorkspace;
+    I : Integer;
+Begin
+    Try
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then Exit;
+        For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            ProjectListedNames(Workspace.DM_Projects(I));
+    Except { a project that cannot be read is recorded when it can } End;
+End;
+
 Function ProjectFileNeedsSave(Project : IProject) : Boolean;
 Var
-    J, Eq : Integer;
     ProjDoc : IServerDocument;
-    Doc : IDocument;
-    Path, Line, Entry : String;
-    Lines, Listed : TStringList;
-    InDocument : Boolean;
+    Path, Listed, Names, One : String;
+    Needs : Boolean;
 Begin
     Result := False;
     If Project = Nil Then Exit;
@@ -1533,46 +1674,21 @@ Begin
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
-    Try Result := ProjDoc.Modified; Except End;
-    If Result Then Exit;
-    Lines := TStringList.Create;
-    Listed := TStringList.Create;
-    Try
-        Listed.Sorted := True;
-        Listed.Duplicates := dupIgnore;
-        If Not LoadTextFile(Lines, Path) Then Exit;
-        InDocument := False;
-        For J := 0 To Lines.Count - 1 Do
+    Needs := False;
+    Try Needs := ProjDoc.Modified; Except End;
+    If Not Needs Then
+    Begin
+        Listed := ProjectListedNames(Project);
+        Names := ProjectMemberNames(Project);
+        Names := Copy(Names, 2, Length(Names));
+        While Names <> '' Do
         Begin
-            Line := Trim(Lines[J]);
-            If Copy(Line, 1, 1) = '[' Then
-            Begin
-                InDocument := UpperCase(Copy(Line, 1, 9)) = '[DOCUMENT';
-                Continue;
-            End;
-            If Not InDocument Then Continue;
-            If UpperCase(Copy(Line, 1, 13)) <> 'DOCUMENTPATH=' Then Continue;
-            Eq := Pos('=', Line);
-            Entry := Trim(Copy(Line, Eq + 1, Length(Line)));
-            If Entry <> '' Then Listed.Add(UpperCase(ExtractFileName(Entry)));
+            One := Copy(Names, 1, Pos('|', Names) - 1);
+            Names := Copy(Names, Pos('|', Names) + 1, Length(Names));
+            If (One <> '') And (Pos('|' + One + '|', Listed) = 0) Then Needs := True;
         End;
-        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            Doc := Project.DM_LogicalDocuments(J);
-            If Doc = Nil Then Continue;
-            Entry := '';
-            Try Entry := Doc.DM_FullPath; Except End;
-            If (Entry = '') Or (Not FileExists(Entry)) Then Continue;
-            If Listed.IndexOf(UpperCase(ExtractFileName(Entry))) < 0 Then
-            Begin
-                Result := True;
-                Exit;
-            End;
-        End;
-    Finally
-        Lines.Free;
-        Listed.Free;
     End;
+    Result := Needs;
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -2815,6 +2931,9 @@ Begin
     KeepInViewMode := 'off';
     LengthUnits := 'mil';
     DialogMode := 'auto';
+    UsageMode := 'off';
+    RoutingMode := 'enforced';
+    Basic3dMode := 'not_allowed';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
@@ -2830,7 +2949,11 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
     If LowerCase(ExtractJsonValue(Content, 'length_units')) = 'mm' Then LengthUnits := 'mm';
-    ChecksOff := LowerCase(ExtractJsonValue(Content, 'checks_off'));
+    If LowerCase(ExtractJsonValue(Content, 'usage')) = 'on' Then UsageMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'advisory' Then RoutingMode := 'advisory';
+    If LowerCase(ExtractJsonValue(Content, 'routing')) = 'off' Then RoutingMode := 'off';
+    If LowerCase(ExtractJsonValue(Content, 'basic_3d_models')) = 'allowed' Then Basic3dMode := 'allowed';
+    ChecksOff :=LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2842,6 +2965,9 @@ Begin
         + '","keep_in_view":"' + KeepInViewMode
         + '","length_units":"' + LengthUnits
         + '","dialogs":"' + DialogMode
+        + '","usage":"' + UsageMode
+        + '","routing":"' + RoutingMode
+        + '","basic_3d_models":"' + Basic3dMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
 
@@ -3343,6 +3469,8 @@ Begin
     DocOwners := '';
     WriteSerial := 0;
     CompiledAtSerial := -1;
+    CommandSerial := 0;
+    LoopStartTick := GetTickCount;
     HoldStartTick := 0;
     LastDoneTick := 0;
     JustPicked := False;

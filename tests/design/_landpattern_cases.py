@@ -488,7 +488,7 @@ def bga80() -> PackageSpec:
     populated (80 balls). Example land: 0.235-0.265 (0.25) NSMD."""
     src = ti("msp430f5529", "Rev. P")
     return PackageSpec(
-        family="bga", name="NFBGA-80 (ZXH)", rows=9, cols=9, pitch=0.5,
+        family="bga", name="NFBGA-80 (ZXH)", pins=80, rows=9, cols=9, pitch=0.5,
         ball_diameter=(0.25, 0.35), depopulated=("C3",),
         body_x=(4.9, 5.1), body_y=(4.9, 5.1), height=(0.0, 1.0),
         standoff=(0.15, 0.25),
@@ -509,7 +509,7 @@ def bme280_lga() -> PackageSpec:
                    url=("https://www.bosch-sensortec.com/media/boschsensortec/"
                         "downloads/datasheets/bst-bme280-ds002.pdf"))
     return PackageSpec(
-        family="lga", name="BME280 LGA-8", rows=4, cols=2,
+        family="lga", name="BME280 LGA-8", pins=8, rows=4, cols=2,
         pitch=1.95, pitch_y=0.65, lead_width=(0.32, 0.38),
         lead_length=(0.32, 0.38), body_x=(2.45, 2.55), body_y=(2.45, 2.55),
         height=(0.86, 1.00),

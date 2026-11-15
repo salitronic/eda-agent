@@ -35,6 +35,7 @@ NO_BULK = frozenset({
     "pcb_autoroute_apply", "pcb_autoplace", "pcb_autoplace_apply",
     "pcb_repour_polygons", "pcb_save_copy_as", "pcb_build_from_project",
     "sim_run", "sim_run_deck", "review_design", "proj_convert_to_kicad",
+    "proj_import_from_kicad",
     "length_units",
 })
 
@@ -75,7 +76,7 @@ DOCUMENT_ARGS = frozenset({
 
 ITEMS_DESCRIPTION = (
     "Several at once: a list of this tool's arguments, one dict per item. "
-    "Altium runs them as one edit and one undo step. Other arguments given "
+    "Altium runs up to 200 as one edit (one undo step). Other arguments given "
     "apply to every item.")
 
 

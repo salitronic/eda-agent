@@ -89,6 +89,9 @@ def test_register_exposes_route_tools(tools):
         "route_plan_repairs",
         "pcb_autoroute",
         "pcb_autoroute_apply",
+        "pcb_route_brief",
+        "pcb_route_round",
+        "pcb_route_simulate",
         "pcb_autoplace",
         "pcb_autoplace_apply",
     }

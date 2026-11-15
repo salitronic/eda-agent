@@ -7,9 +7,10 @@ ALREADY have this part? Every other provider proposes something to
 import, and importing a part you own produces a duplicate symbol with a
 slightly different name, which is how a library rots.
 
-No network, no login, no rate limit, and no third party. It reads the
-``.SchLib`` files on disk directly through ``fileio.altium_schlib``, so
-it works with Altium closed and the polling loop down.
+No network, no login, no rate limit, and no third party. Altium reads
+each ``.SchLib`` it finds (``library.get_components``, Altium's own
+library reader, which needs no library open), so it needs Altium and the
+polling loop running; the files are never opened here.
 
 There is nothing to download. A hit here is already in Altium's own
 format, so ``fetch`` returns the library path and the component name
@@ -76,8 +77,8 @@ class AltiumLocalProvider:
     description = (
         "The .SchLib libraries already on this machine. Answers whether "
         "you ALREADY own a part, which no other source can. No network "
-        "and no login; reads the OLE files directly, so it works with "
-        "Altium closed. Nothing to download: a hit is already an Altium "
+        "and no login; Altium reads the libraries, so it needs Altium "
+        "running. Nothing to download: a hit is already an Altium "
         "symbol. Set EDA_AGENT_ALTIUM_LIBRARIES to point it elsewhere.")
 
     #: Nothing is fetched, so no convertible format is offered. This is
@@ -93,8 +94,6 @@ class AltiumLocalProvider:
     native_to = ("altium",)
 
     def _components(self) -> Iterable[tuple[Path, dict[str, Any]]]:
-        from eda_agent.fileio.altium_schlib import read_schlib_components
-
         libs = _schlibs()
         if not libs:
             raise ProviderUnavailable(
@@ -102,14 +101,24 @@ class AltiumLocalProvider:
                 + ", ".join(str(r) for r in _roots())
                 + ". Set EDA_AGENT_ALTIUM_LIBRARIES to a path-separated "
                   "list of library folders.")
+        from eda_agent.bridge import get_bridge
+        bridge = get_bridge()
+        if not bridge.is_altium_running():
+            raise ProviderUnavailable(
+                "Altium is not running; this source has Altium read the "
+                "libraries it finds")
         for lib in libs:
             try:
-                for comp in read_schlib_components(lib):
-                    yield lib, comp
-            except (ValueError, OSError):
+                reply = bridge.send_command(
+                    "library.get_components", {"library_path": str(lib)},
+                    timeout=60.0) or {}
+            except Exception:                         # noqa: BLE001
                 # One unreadable library must not hide the rest. A
                 # corrupt or in-use file is common on a shared drive.
                 continue
+            for comp in reply.get("components") or []:
+                if isinstance(comp, dict):
+                    yield lib, comp
 
     def search(self, query: str, limit: int = 20) -> list[PartHit]:
         needle = (query or "").strip().lower()

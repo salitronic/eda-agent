@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..bridge import get_bridge
+from ..bridge.path_spelling import same_file
 from ..preferences import if_the_user_insists
 from ..sim.sdf import SdfError, latest_charts, read_sdf, summarise
 from ..sim.simcfg import (ANALYSES, DEFAULT_NAME, SimCfgError, analysis_changes,
@@ -222,7 +223,7 @@ async def _change_simcfg(bridge, project_path: str, changes: dict) -> dict[str, 
         return {"success": False, "error": "NOT_WRITTEN",
                 "message": f"cannot write {simcfg}: {exc}"}
 
-    if created or not any(str(d.get("file_path", "")).lower() == simcfg.lower()
+    if created or not any(same_file(str(d.get("file_path", "")), str(simcfg))
                           for d in docs):
         added = await bridge.send_command_async(
             "project.add_document",

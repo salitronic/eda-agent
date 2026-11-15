@@ -10,6 +10,7 @@ not land where the template expected or the wiring would short two nets.
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,7 +23,8 @@ from ..design import sch_template as st
 
 #: Keys a template part may carry.
 PART_KEYS = frozenset({"designator", "lib_reference", "library_path", "x", "y",
-                       "rotation", "value", "footprint", "part", "unique_id"})
+                       "rotation", "mirror", "value", "footprint", "part",
+                       "unique_id"})
 
 
 async def _keep_unique_ids(bridge, ids: dict[str, str], document_path: str) -> dict:
@@ -143,31 +145,50 @@ def _part_problems(template: Any) -> list[str]:
         seen.add((ref, raw_part))
         if int(p.get("rotation", 0) or 0) % 90:
             problems.append(f"parts[{i}]: rotation must be 0, 90, 180 or 270")
+        if not isinstance(p.get("mirror", False), bool):
+            problems.append(f"parts[{i}]: mirror must be true or false")
+        elif p.get("mirror") and len([q for q in template.get("parts") or []
+                                      if isinstance(q, dict)
+                                      and str(q.get("designator", "")).strip() == ref]) > 1:
+            problems.append(f"parts[{i}]: {ref} is a multi-part symbol; a mirrored "
+                            "part of one is not supported")
     return problems
 
 
 async def _symbol_pins(bridge, parts: list[dict]) -> tuple[dict, list[str]]:
-    """Each part's pins on the sheet, read from its library symbol."""
+    """Each part's pins on the sheet, read from its library symbol: each
+    library is brought forward once and all its symbols read together."""
+    from .library import read_pin_lists
+
     cache: dict[tuple[str, str], list[dict]] = {}
     problems: list[str] = []
+    by_library: dict[str, list[str]] = {}
     for p in parts:
-        key = (str(p.get("library_path", "")).strip(), str(p["lib_reference"]).strip())
-        if key in cache:
-            continue
-        lib, ref = key
+        lib = str(p.get("library_path", "")).strip()
+        ref = str(p["lib_reference"]).strip()
+        refs = by_library.setdefault(lib, [])
+        if ref not in refs:
+            refs.append(ref)
+    # The library in front first, before any other is brought forward.
+    for lib in sorted(by_library, key=lambda name: name != ""):
+        refs = by_library[lib]
         if lib:
             focus = await _focus(bridge, lib)
             if _failed(focus):
                 problems.append(f"could not open {lib}: {focus.get('error')}")
-                cache[key] = []
+                for ref in refs:
+                    cache[(lib, ref)] = []
                 continue
-        reply = await _send(bridge, "library.get_pin_list", {"component_name": ref})
-        pins = reply.get("pins") if isinstance(reply, dict) else None
-        if not isinstance(pins, list):
-            problems.append(f"no pins read for {ref}"
-                            + ("" if lib else " (give library_path)") + f": {reply}")
-            pins = []
-        cache[key] = pins
+        replies = await read_pin_lists(bridge, refs)
+        for ref in refs:
+            reply = replies.get(ref)
+            pins = reply.get("pins") if isinstance(reply, dict) else None
+            if not isinstance(pins, list):
+                problems.append(f"no pins read for {ref}"
+                                + ("" if lib else " (give library_path)")
+                                + f": {reply}")
+                pins = []
+            cache[(lib, ref)] = pins
     out: dict[str, list] = {}
     for p in parts:
         key = (str(p.get("library_path", "")).strip(), str(p["lib_reference"]).strip())
@@ -175,7 +196,8 @@ async def _symbol_pins(bridge, parts: list[dict]) -> tuple[dict, list[str]]:
         # anchor like U2.B22 finds the pin on whichever part shows it.
         out.setdefault(str(p["designator"]), []).extend(st.place_symbol_pins(
             str(p["designator"]), cache[key], int(p.get("x", 0)), int(p.get("y", 0)),
-            int(p.get("rotation", 0) or 0), st.part_number(p)))
+            int(p.get("rotation", 0) or 0), st.part_number(p),
+            mirror=bool(p.get("mirror", False))))
     return out, problems
 
 
@@ -240,9 +262,9 @@ def register_sch_template_tools(mcp):
              "nets": {"VIN": ["U1.PVIN", "C1.1"]}}
 
         A path point is [x, y] or a pin anchor "U1.11" / "U1.EN" (the pin's
-        wire end, worked out from the symbol, so you never compute it).
-        Two points off-axis get one corner, horizontal first ("corner":
-        "vh" for vertical first). Altium adds the junction dots itself
+        wire end, from the symbol). Two points off-axis get one corner,
+        horizontal first ("corner": "vh" for vertical first). A part's
+        ``"mirror": true`` flips it left to right. Altium adds the junction dots itself
         where a wire ends on another; do not plan any. Ports default to
         style "bar" pointing up, or "gnd_power" pointing down for a net
         containing GND. ``nets`` is the netlist the sheet must produce,
@@ -254,7 +276,7 @@ def register_sch_template_tools(mcp):
         sets it and reads it back (``unique_ids``), so the board stays
         linked; without it the redrawn parts are new to the board.
 
-        A MULTI-PART symbol (an MCU split into sections) takes one entry per
+        A MULTI-PART symbol takes one entry per
         part on this sheet, the same designator and symbol with ``"part": 2``
         and so on (absent means 1). Anchors name the designator only:
         "U2.B22" finds the pin on whichever drawn part shows it. With plan
@@ -404,6 +426,21 @@ def register_sch_template_tools(mcp):
             return {"ok": False, "stage": "placement", "placed": placed, "errors": [
                 f"not every part was placed ({placed.get('failed_refdes', '')}); "
                 "nothing was wired. Check the parts on the sheet."]}
+        # Every mirror in one request (one edit), each part's reply its own.
+        to_mirror = [str(p["designator"]) for p in parts if p.get("mirror")]
+        if to_mirror:
+            from ..bridge import bulk as bridge_bulk
+            replies, _ = await bridge_bulk.run_items(bridge, [
+                functools.partial(_send, bridge, "generic.mirror_component", {
+                    "designator": ref, "doc_path": document_path, "mirrored": "true"})
+                for ref in to_mirror])
+            for ref, mirrored in zip(to_mirror, replies):
+                if isinstance(mirrored, BaseException):
+                    mirrored = {"success": False, "error": str(mirrored)}
+                if _failed(mirrored):
+                    return {"ok": False, "stage": "placement", "placed": placed, "errors": [
+                        f"{ref} could not be mirrored: {mirrored.get('error')}; "
+                        "nothing was wired."]}
 
         after = await _send(bridge, "generic.get_sch_doc_pins", {"sheet_path": document_path})
         real = st.pins_from_sheet((after or {}).get("pins", []))

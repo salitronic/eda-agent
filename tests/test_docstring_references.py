@@ -51,6 +51,8 @@ ALLOWED_NON_MCP_REFS = {
     "PreProcess", "PostProcess", "Begin", "End", "SchServer", "PCBServer",
     "GetCurrentPCBBoard", "GetCurrentSchDocument", "BoardIterator_Create",
     "SchIterator_Create", "GroupIterator_Create",
+    # Reply keys whose names start like a tool's
+    "sch_libs", "pcb_libs",
     # Common internal helpers that aren't @mcp.tool decorated
     "get_bridge", "tag_response", "_bundled_script_version",
     "_check_disconnected", "BulkHintTracker",

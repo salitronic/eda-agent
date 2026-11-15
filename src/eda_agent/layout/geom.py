@@ -68,6 +68,29 @@ def capsule(x1: float, y1: float, x2: float, y2: float, width: float) -> Shape:
     return Shape("segment", ((x1, y1), (x2, y2)), width / 2.0)
 
 
+def stroke_outline(x1: float, y1: float, x2: float, y2: float, width: float) -> list[Point]:
+    """A round-pen stroke as a polygon, its ends half octagons round the
+    end points: it holds every point of the real stroke."""
+    r = width / 2.0 / math.cos(math.pi / 8)
+    a = math.atan2(y2 - y1, x2 - x1) if (x1, y1) != (x2, y2) else 0.0
+    pts = []
+    for cx, cy, start in ((x2, y2, a - math.pi / 2), (x1, y1, a + math.pi / 2)):
+        for i in range(5):
+            t = start + i * math.pi / 4
+            pts.append((cx + r * math.cos(t), cy + r * math.sin(t)))
+    return pts
+
+
+def outline(s: Shape) -> list[Point]:
+    """A shape's outline as one ring, for drawing (a polygon's rounding left
+    out)."""
+    if s.kind == "poly":
+        return list(s.pts)
+    a = s.pts[0]
+    b = s.pts[-1]
+    return stroke_outline(a[0], a[1], b[0], b[1], 2 * s.r)
+
+
 def polygon(pts, holes=()) -> Shape:
     pts = tuple((float(x), float(y)) for x, y in pts)
     if len(pts) >= 2 and pts[0] == pts[-1]:

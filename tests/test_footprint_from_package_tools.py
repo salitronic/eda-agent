@@ -159,9 +159,11 @@ def altium(monkeypatch):
     return run, box
 
 
-#: The last call a footprint build makes, by the 3D body it got.
-_BODY_COMMAND = {"step": "library.link_3d_model",
-                 "extruded": "library.add_footprint_bodies"}
+#: The last call a footprint build makes, by the 3D body it got. With no
+#: STEP writer installed and basic 3D models not allowed, it gets none.
+_BODY_COMMAND = {"step": ["library.link_3d_model"],
+                 "extruded": ["library.add_footprint_bodies"],
+                 "none": []}
 
 
 def test_soic8_is_created_written_in_mm_and_read_back(altium):
@@ -177,10 +179,11 @@ def test_soic8_is_created_written_in_mm_and_read_back(altium):
         "library.add_footprint_tracks", "library.add_footprint_arc",
         "library.add_footprint_text", "library.set_footprint_height",
         "library.get_pad_geometry", "generic.switch_view",
-        _BODY_COMMAND[out["model_3d"]["kind"]]]
+        *_BODY_COMMAND[out["model_3d"]["kind"]]]
     name = out["footprint"]
     assert name == "SOIC-8 (D)"
-    writes = [(c, p) for c, p in bridge.calls[4:-3]
+    read_back = bridge.commands().index("library.get_pad_geometry")
+    writes = [(c, p) for c, p in bridge.calls[4:read_back]
               if not c.startswith(("application.", "generic."))]
     for command, params in writes:
         target = params.get("footprint_name") or params.get("component_name")
@@ -189,7 +192,7 @@ def test_soic8_is_created_written_in_mm_and_read_back(altium):
             assert params.get("units") == "mm", command
     # The reads are aimed at the library the writes went to.
     assert bridge.calls[2][1]["library_path"] == "scratch.PcbLib"
-    assert bridge.calls[-3][1]["library_path"] == "scratch.PcbLib"
+    assert bridge.calls[read_back][1]["library_path"] == "scratch.PcbLib"
     assert out["layers"]["assembly"]["layer"] == "Mechanical13"
     assert out["layers"]["courtyard"]["layer"] == "Mechanical15"
     text = bridge.calls[9][1]
@@ -555,8 +558,12 @@ def test_the_3d_body_is_a_step_model_from_the_drawing_first(altium, monkeypatch)
 
 
 def test_with_no_step_writer_the_body_falls_back_to_an_extruded_box(altium, monkeypatch):
+    from eda_agent import preferences
     from eda_agent.design import models3d
     monkeypatch.setattr(models3d, "available_writers", lambda: [])
+    # The fallback is a basic 3D model, so the Config tab has to allow it.
+    monkeypatch.setattr(preferences, "basic_3d_models_allowed",
+                        lambda workspace=None: True)
     run, box = altium
     out = run(package=cases.soic8().to_dict())
     assert out["model_3d"]["kind"] == "extruded"

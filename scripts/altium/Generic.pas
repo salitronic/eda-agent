@@ -700,6 +700,94 @@ Begin
     Result := (Obj.ObjectId = eSheetSymbol) Or (Obj.ObjectId = eHarnessConnector);
 End;
 
+{ BEGIN GENERATED SchMemberGate: scripts/altium/gen_sch_members.py }
+{ SchMemberGate - may Obj be asked for PropName? 1 yes, 0 no (its type   }
+{ lacks the member, and asking would stop the script), -1 the table does }
+{ not govern PropName. Generated from src/eda_agent/sch_members.py.      }
+Function SchMemberGate(Obj : ISch_GraphicalObject; PropName : String) : Integer;
+Var
+    Id : Integer;
+Begin
+    Result := -1;
+    If (PropName = 'LibReference') Or (PropName = 'SourceLibraryName')
+        Or (PropName = 'DesignItemId')
+        Or (PropName = 'ComponentDescription')
+        Or (PropName = 'CurrentPartID') Or (PropName = 'PartCount') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eSchComponent) Or (Id = eHarnessComponent) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Electrical') Or (PropName = 'PinLength') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePin) Or (Id = eHarnessPin) Then
+            Result := 1;
+    End
+    Else If (PropName = 'IOType') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePort) Or (Id = eSheetEntry) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Alignment') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePort) Or (Id = eTextFrame) Or (Id = eNote) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Style') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePort) Or (Id = ePowerObject) Or (Id = eCrossSheetConnector)
+        Or (Id = eSheetEntry) Or (Id = eParameterSet) Or (Id = eProbe) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Justification') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eLabel) Or (Id = eNetLabel) Or (Id = eParameter)
+        Or (Id = eDesignator) Or (Id = eSheetName) Or (Id = eSheetFileName)
+        Or (Id = ePowerObject) Or (Id = eCrossSheetConnector) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Width') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePort) Then
+            Result := 1;
+    End
+    Else If (PropName = 'LineWidth') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eLine) Or (Id = ePolyline) Or (Id = ePolygon)
+        Or (Id = eRectangle) Or (Id = eRoundRectangle) Or (Id = eArc)
+        Or (Id = eEllipticalArc) Or (Id = eEllipse) Or (Id = eBezier)
+        Or (Id = eWire) Or (Id = eBus) Or (Id = eBusEntry)
+        Or (Id = eSignalHarness) Or (Id = eHarnessWire) Or (Id = eBlanket)
+        Or (Id = eCompileMask) Or (Id = eImage) Or (Id = eSheetSymbol)
+        Or (Id = eHarnessConnector) Or (Id = eTextFrame) Or (Id = eNote) Then
+            Result := 1;
+    End;
+End;
+{ END GENERATED SchMemberGate }
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2306,6 +2394,25 @@ Begin
     Else If N = 'jumper' Then Result := eComponentKind_Jumper;
 End;
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness   }
+{ wire, splice or cable has no Name property of its own; this is its name.  }
+Function HarnessNameFromDescription(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
@@ -2317,12 +2424,20 @@ Var
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     RR : ISch_RoundRectangle;
+    ArcObj : ISch_Arc;
     SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
 Begin
     Result := '';
+    { A member only some types carry: asked of any other, it stops the     }
+    { script, so the table in SchMemberGate answers first.                 }
+    If SchMemberGate(Obj, PropName) = 0 Then
+    Begin
+        NotePropertyDiag('unreadable', PropName);
+        Exit;
+    End;
     Try
         // Identity
         If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName)
@@ -2335,8 +2450,9 @@ Begin
         Else If PropName = 'ErrorString' Then Result := Obj.ErrorString
 
         // Coordinates (returned in mils). Corner is declared only on
-        // ISch_Rectangle and ISch_Line (ISch_RoundRectangle inherits from
-        // ISch_Rectangle), NOT on the base ISch_GraphicalObject. The
+        // ISch_Rectangle, ISch_Line and ISch_TextFrame (ISch_RoundRectangle
+        // inherits from ISch_Rectangle, a note is a text frame), NOT on the
+        // base ISch_GraphicalObject. The
         // DelphiScript compiler rejects any textual reference to
         // 'Obj.Corner' when Obj is typed ISch_GraphicalObject, regardless
         // of the assignment target. The only compile-safe path is to
@@ -2358,6 +2474,14 @@ Begin
             Begin
                 L := Obj;
                 Crn := L.Corner;
+                Have := True;
+            End
+            { A text frame's (and a note's) far corner sets its size, the  }
+            { same member Gen_PlaceTextFrame writes through ISch_TextFrame. }
+            Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+            Begin
+                FrameObj := Obj;
+                Crn := FrameObj.Corner;
                 Have := True;
             End;
             If Have Then
@@ -2385,6 +2509,24 @@ Begin
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
+        { An arc's radius and angles live on ISch_Arc only: the same       }
+        { narrowing, read in mils and degrees.                             }
+        Else If (PropName = 'Radius') Or (PropName = 'StartAngle')
+            Or (PropName = 'EndAngle') Then
+        Begin
+            If Obj.ObjectId = eArc Then
+            Begin
+                ArcObj := Obj;
+                If PropName = 'Radius' Then
+                    Result := FloatToJsonStr(CoordToMilsF(ArcObj.Radius))
+                Else If PropName = 'StartAngle' Then
+                    Result := FloatToJsonStr(ArcObj.StartAngle)
+                Else
+                    Result := FloatToJsonStr(ArcObj.EndAngle);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
 
         // String properties (late-bound across all types, primitives only)
         Else If PropName = 'Text'        Then
@@ -2405,13 +2547,20 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
+                { A harness wire, splice or cable: its name is in its    }
+                { description, so a Name filter finds it too.            }
                 Result := '';
+                Try Result := HarnessNameFromDescription(Obj.GetState_DescriptionString); Except End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
-        Else If PropName = 'LibReference'       Then Result := Obj.LibReference
-        Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
-        Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
+        Else If (PropName = 'LibReference') Or (PropName = 'SourceLibraryName')
+             Or (PropName = 'DesignItemId') Then
+        Begin
+            If PropName = 'LibReference' Then Result := Obj.LibReference
+            Else If PropName = 'SourceLibraryName' Then Result := Obj.SourceLibraryName
+            Else If PropName = 'DesignItemId' Then Result := Obj.DesignItemId;
+        End
 
         { A managed (Workspace) part's identity, read only. It has no
           library path; LibIdentifierKind and LibraryIdentifier are what
@@ -2502,7 +2651,8 @@ Begin
         // A pin's own description (issue #75), not the component's.
         Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
             Result := ReadSchPinProp(Obj, 'Description')
-        Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
+        Else If PropName = 'ComponentDescription' Then
+            Result := Obj.ComponentDescription
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
         { What a No-ERC marker suppresses. Guarded on the type: these names  }
         { exist only on ISch_NoERC, and an undeclared one halts the loop.   }
@@ -2589,10 +2739,10 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
-        Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
-        Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
-        Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
+        Else If PropName = 'LineWidth' Then Result := IntToStr(Obj.LineWidth)
+        Else If PropName = 'Style' Then Result := IntToStr(Obj.Style)
+        Else If PropName = 'IOType' Then Result := IntToStr(Obj.IOType)
+        Else If PropName = 'Alignment' Then Result := IntToStr(Obj.Alignment)
         { NAME, NOT ORDINAL, so reading and writing use one spelling.
           This returned the raw enum while obj_modify takes a name and
           lib_get_pin_list reports one, so a caller that read a pin and
@@ -2600,7 +2750,8 @@ Begin
           as 'input'. ElectricalOrdinal accepts both, so no writer breaks;
           only the reader changes, and it now agrees with lib_get_pin_list.
           Reported GH #11, 2026-09-22. }
-        Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
+        Else If PropName = 'Electrical' Then
+            Result := PinElectricalToStr(Obj.Electrical)
         { Pin swapping groups (GetState_SwapId*), read through a              }
         { pin-typed local: the declared type decides the dispatch.            }
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
@@ -2726,8 +2877,10 @@ Begin
         End
 
         // Coord properties (returned in mils)
-        Else If PropName = 'Width'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
-        Else If PropName = 'PinLength'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
+        Else If PropName = 'Width' Then
+            Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
+        Else If PropName = 'PinLength' Then
+            Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
 
         // ConnectionX / ConnectionY: the pin's ELECTRICAL end, i.e. the
         // point a wire or net label must sit on to attach. Pin.Location is
@@ -3014,6 +3167,12 @@ Begin
     Result := 0;
     Matched := True;
     WroteOK := True;
+    { As in GetSchProperty: the table answers before any member is touched. }
+    If SchMemberGate(Obj, PropName) = 0 Then
+    Begin
+        NotePropertyDiag('unknown', PropName);
+        Exit;
+    End;
     Try
         If SchExtraOwner(PropName) > 0 Then
         Begin
@@ -3064,7 +3223,8 @@ Begin
             Else
                 Obj.Location := Loc;
         End
-        // Corner lives on ISch_Rectangle and ISch_Line only (not on the base
+        // Corner lives on ISch_Rectangle, ISch_Line and ISch_TextFrame (a
+        // note is a text frame) only (not on the base
         // ISch_GraphicalObject, the compiler rejects Obj.Corner regardless
         // of assignment target). Dispatch on ObjectId and narrow to a typed
         // local before touching Corner. See GetSchProperty for the read side.
@@ -3089,6 +3249,16 @@ Begin
                 Else
                     Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
                 L.Corner := Crn;
+            End
+            Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+            Begin
+                FrameObj := Obj;
+                Crn := FrameObj.Corner;
+                If PropName = 'Corner.X' Then
+                    Crn.X := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+                FrameObj.Corner := Crn;
             End;
         End
         // A round rectangle's corner radii, decimal mils, on that type only
@@ -3132,13 +3302,19 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'LibReference'       Then Obj.LibReference := Value
+        Else If PropName = 'LibReference' Then
+        Begin
+            Obj.LibReference := Value;
+        End
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
         // but had no write case, so obj_modify / batch_modify silently no-oped
         // (recorded only as an "unknown property"). Clearing it to '' is the
         // canonical way to detach a part from a stale source-library binding.
-        Else If PropName = 'SourceLibraryName'  Then Obj.SourceLibraryName := Value
+        Else If PropName = 'SourceLibraryName' Then
+        Begin
+            Obj.SourceLibraryName := Value;
+        End
         // DesignItemId is the library ITEM the placed part re-matches
         // against ("Design Item ID" in the UI). It is a component
         // PROPERTY, not a parameter: stamping a parameter named
@@ -3146,7 +3322,10 @@ Begin
         // write case here obj_modify silently no-oped while reporting
         // matched. A stale DesignItemId after a library re-link is what
         // produces the <Not Found> state in the Properties panel.
-        Else If PropName = 'DesignItemId'       Then Obj.DesignItemId := Value
+        Else If PropName = 'DesignItemId' Then
+        Begin
+            Obj.DesignItemId := Value;
+        End
         // `Description` is the natural name (matches get_component_info /
         // BOM column / lib_set_component_description); `ComponentDescription`
         // is what ISch_Component actually exposes -- both accepted.
@@ -3378,7 +3557,10 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
+        Else If PropName = 'LineWidth' Then
+        Begin
+            Obj.LineWidth := StrToIntDef(Value, 1);
+        End
         Else If PropName = 'Style'       Then
         Begin
             If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
@@ -3391,9 +3573,18 @@ Begin
             Else
                 Obj.Style := StrToIntDef(Value, 0);
         End
-        Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
-        Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
-        Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
+        Else If PropName = 'IOType' Then
+        Begin
+            Obj.IOType := StrToIntDef(Value, 0);
+        End
+        Else If PropName = 'Alignment' Then
+        Begin
+            Obj.Alignment := StrToIntDef(Value, 0);
+        End
+        Else If PropName = 'Electrical' Then
+        Begin
+            Obj.Electrical := ElectricalOrdinal(Value);
+        End
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
                 (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
         Begin
@@ -3436,8 +3627,14 @@ Begin
         Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
 
         // Coord properties (expected in mils)
-        Else If PropName = 'Width'       Then Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
+        Else If PropName = 'Width' Then
+        Begin
+            Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0));
+        End
+        Else If PropName = 'PinLength' Then
+        Begin
+            Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0));
+        End
         Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
         Begin
             If Not SchObjectHasSize(Obj) Then
@@ -3643,6 +3840,50 @@ Begin
     RefreshSchObjectRender(Comp);
 End;
 
+{ Whether GetSchProperty reads PropName from a NUMBER: a length in mils   }
+{ (Location.X, Corner.Y, XSize, Vertex2.X ...) or an integer (a colour,   }
+{ an orientation, a font id, an enum ordinal). Only these compare as      }
+{ numbers in a filter; a text, a name or a designator stays exact.        }
+Function IsSchNumberProperty(PropName : String) : Boolean;
+Var
+    U : String;
+Begin
+    U := UpperCase(PropName);
+    Result := (U = 'LOCATION.X') Or (U = 'LOCATION.Y') Or
+        (U = 'CORNER.X') Or (U = 'CORNER.Y') Or
+        (U = 'CORNERXRADIUS') Or (U = 'CORNERYRADIUS') Or
+        (U = 'WIDTH') Or (U = 'PINLENGTH') Or
+        (U = 'CONNECTIONX') Or (U = 'CONNECTIONY') Or
+        (U = 'XSIZE') Or (U = 'YSIZE') Or (U = 'DISTANCEFROMTOP') Or
+        (U = 'BOUNDINGRECTANGLE.X1') Or (U = 'BOUNDINGRECTANGLE.Y1') Or
+        (U = 'BOUNDINGRECTANGLE.X2') Or (U = 'BOUNDINGRECTANGLE.Y2') Or
+        (U = 'COLOR') Or (U = 'AREACOLOR') Or (U = 'TEXTCOLOR') Or
+        (U = 'ORIENTATION') Or (U = 'JUSTIFICATION') Or
+        (U = 'FONTID') Or (U = 'TEXTFONTID') Or
+        (U = 'LINEWIDTH') Or (U = 'LINESTYLE') Or (U = 'STYLE') Or
+        (U = 'IOTYPE') Or (U = 'ALIGNMENT') Or (U = 'SIDE') Or
+        (U = 'OWNERPARTID') Or (U = 'OWNERPARTDISPLAYMODE') Or
+        (U = 'DISPLAYMODE') Or (U = 'DISPLAYMODECOUNT') Or
+        (U = 'CURRENTPARTID') Or (U = 'PARTCOUNT') Or
+        (U = 'OBJECTID') Or (U = 'VERTICESCOUNT');
+    { Vertex.1.X, Vertex2.Y, VertexLast.X: one coordinate each. Vertices }
+    { (the whole x,y;x,y list) is a text and stays exact.                }
+    If (Not Result) And (Copy(U, 1, 6) = 'VERTEX') Then
+        Result := (Copy(U, Length(U) - 1, 2) = '.X') Or
+            (Copy(U, Length(U) - 1, 2) = '.Y');
+End;
+
+{ Whether one filter value matches what GetSchProperty read: exactly, or, }
+{ for a property read from a number, as that number. Location.Y=9000.0    }
+{ matched nothing when the getter read 9000, and said nothing either.     }
+Function FilterValueMatchesSch(PropName, Actual, Expected : String) : Boolean;
+Begin
+    Result := (Actual = Expected);
+    If Result Then Exit;
+    If Not IsSchNumberProperty(PropName) Then Exit;
+    Result := FilterNumbersEqual(Actual, Expected);
+End;
+
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
 Var
     Remaining, Condition, PropName, Expected, Actual, Op : String;
@@ -3695,7 +3936,8 @@ Begin
 
         // Compare
         Actual := GetSchProperty(Obj, PropName);
-        If Not FilterOpHolds(Op, Actual, Expected, Actual = Expected) Then
+        If Not FilterOpHolds(Op, Actual, Expected,
+                FilterValueMatchesSch(PropName, Actual, Expected)) Then
         Begin
             Result := False;
             Exit;
@@ -3832,6 +4074,7 @@ Begin
                 MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
+            NoteSchWriteLanded(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -3861,8 +4104,18 @@ Begin
         { Already applied above as part of the coalesced positional write. }
         If (PropName = 'Location.X') Or (PropName = 'Location.Y') Then Continue;
 
-        SetSchProperty(Obj, PropName, PropValue);
+        If SetSchProperty(Obj, PropName, PropValue) = 1 Then NoteSchWriteLanded(0);
     End;
+End;
+
+{ What a schematic write call says it changed. A modify that matched     }
+{ objects but landed no write (every property unknown, refused or kept   }
+{ by Altium, or the whole set rejected up front) changed nothing.        }
+Function SchCallModified(IsMutating : Boolean; TotalMatched : Integer; Mode : String) : Boolean;
+Begin
+    Result := IsMutating And ((TotalMatched > 0) Or (Mode = 'create'));
+    If Result And (Mode = 'modify') And (SchWritesLanded(0) = 0) Then
+        Result := False;
 End;
 
 {..............................................................................}
@@ -4696,7 +4949,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4763,7 +5016,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4843,6 +5096,33 @@ Begin
         'Not a scope: "' + Scope + '". Use active_doc, project, '
         + 'doc:PATH, project:PATH or lib_component:NAME. Nothing was read or '
         + 'changed.');
+End;
+
+{..............................................................................}
+{ A BOARD TYPE CANNOT HONOUR A SCOPE. The PCB path acts on the board in      }
+{ front, or the only open board, whatever the scope says, so a scope naming  }
+{ another document, the project or a library symbol is refused: a delete     }
+{ scoped to one board must never land on another.                            }
+{ Refused before ApplyLibComponentScope, which moves the SchLib in front to  }
+{ the named symbol. A type the schematic resolver knows keeps its scope:     }
+{ "component" is the schematic part. Verb names the action in the message.  }
+{ Returns an empty string when the call may go on. Gen_QueryObjects keeps   }
+{ its own, stricter check.                                                   }
+{..............................................................................}
+
+Function BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr,
+    Verb : String) : String;
+Begin
+    Result := '';
+    If ScopeType = 'active_doc' Then Exit;
+    If ObjectTypeFromString(ObjTypeStr) <> -1 Then Exit;
+    If ObjectTypeFromStringPCB(ObjTypeStr) = -1 Then Exit;
+    Result := BuildErrorResponse(RequestId, 'SCOPE_NOT_SUPPORTED',
+        'A PCB object type cannot be scoped with "' + Scope + '". A board '
+        + 'type is always ' + Verb + ' on the active board, so a document, '
+        + 'project or lib_component scope would be ignored. Bring the board '
+        + 'you mean to the front and use the default scope. Nothing was '
+        + Verb + '.');
 End;
 
 {..............................................................................}
@@ -5027,6 +5307,8 @@ Begin
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
     If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'modified');
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5173,6 +5455,8 @@ Begin
 
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'deleted');
     If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
@@ -5468,6 +5752,31 @@ Begin
     Result := (Kind = 'SCH') Or (Kind = 'SCHLIB') Or (Kind = 'HARNESSWIRINGDIAGRAM');
 End;
 
+{ Fits BOARD's view to its outline grown by a twentieth of the larger side; }
+{ False when there is no board or its outline has no size.                 }
+Function ZoomOnBoardOutline(Board : IPCB_Board) : Boolean;
+Var
+    BR : TCoordRect;
+    L, B, R, T, M : TCoord;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try
+        BR := Board.BoardOutline.BoundingRectangle;
+    Except
+        Exit;
+    End;
+    L := BR.Left;
+    B := BR.Bottom;
+    R := BR.Right;
+    T := BR.Top;
+    If (R <= L) Or (T <= B) Then Exit;
+    M := (R - L) Div 20;
+    If (T - B) Div 20 > M Then M := (T - B) Div 20;
+    Board.GraphicalView_ZoomOnRect(L - M, B - M, R + M, T + M);
+    Result := True;
+End;
+
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
     Action, FocusedKind, ZoomProcess : String;
@@ -5512,8 +5821,23 @@ Begin
                 'document zooms to a whole schematic sheet; on a board use board or fit');
             Exit;
         End;
+        { "board" on a board fits the window to the board outline with a     }
+        { margin of a twentieth of its larger side all round, so parts       }
+        { parked off the board never pull the view out. Fit Board below is   }
+        { the fallback when the outline cannot be read.                      }
+        If (Action = 'board') And (FocusedKind = 'PCB') Then
+        Begin
+            Board := GetPCBBoardAnywhere(0);
+            If ZoomOnBoardOutline(Board) Then
+            Begin
+                Result := BuildSuccessResponse(RequestId, '{"action":"board",'
+                    + '"document_kind":"PCB","dispatched":true,'
+                    + '"fitted_to":"board_outline"}');
+                Exit;
+            End;
+        End;
         ResetParameters;
-        { "board" is View > Fit Board (AdvPcb.rcs PLPCB:ViewFitBoard): the  }
+        { "board" is View > Fit Board (Action=Document, Target=Board): the  }
         { board alone, not the parts parked beside it. A schematic has no   }
         { board, so it fits the sheet's objects as "fit" does.              }
         If (Action = 'board') And (FocusedKind = 'PCB') Then
@@ -5982,8 +6306,6 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Net : IPCB_Net;
-    SchIter : ISch_Iterator;
-    Obj : ISch_GraphicalObject;
     Cleared : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -6025,34 +6347,16 @@ Begin
 
     If SchDoc <> Nil Then
     Begin
-        { Deselect all connective primitives on the active sheet.          }
-        SchBeginEdit(SchDoc, '');
-        Try
-            SchIter := SchDoc.SchIterator_Create;
-            Try
-                SchIter.AddFilter_ObjectSet(MkSet(eWire, eNetLabel, ePowerObject,
-                    ePort, ePin, eSheetEntry));
-                Obj := SchIter.FirstSchObject;
-                While Obj <> Nil Do
-                Begin
-                    Try
-                        If Obj.Selection Then
-                        Begin
-                            Obj.Selection := False;
-                            Cleared := Cleared + 1;
-                        End;
-                    Except NoteWriteFailed('deselect'); End;
-                    Obj := SchIter.NextSchObject;
-                End;
-            Finally
-                SchDoc.SchIterator_Destroy(SchIter);
-            End;
-        Finally
-            SchEndEdit(SchDoc, 'Edit');
-        End;
+        { A schematic net highlight is a selection (Gen_HighlightNet). Clear }
+        { it through the process, as Gen_DeselectAll does: reading or        }
+        { writing Selection object by object faults on sub-objects in a      }
+        { modal Try/Except cannot catch (see SchDeselectAllObjects), and     }
+        { pins and sheet entries are sub-objects. No count: counting would   }
+        { need that same read.                                               }
+        SchDeselectAllObjects(SchDoc);
         Try SchDoc.GraphicallyInvalidate; Except End;
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"context":"schematic","cleared":' + IntToStr(Cleared) + '}');
+            '{"success":true,"context":"schematic","deselected":"all"}');
         Exit;
     End;
 
@@ -7932,24 +8236,6 @@ Begin
     Else If Id = eHarnessBundle Then Result := 'bundle';
 End;
 
-{ The name a harness object gives in its description: the word after its    }
-{ kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
-Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
-Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
-End;
-
 { An Altium colour (blue in the high byte) as #RRGGBB. }
 Function HarnessColourHex(C : Integer) : String;
 Begin
@@ -9767,7 +10053,15 @@ End;
 {         parameters 'Name=Value|Name=Value' (optional: a bare blanket);    }
 {         directive_x, directive_y (default: the first vertex, on the edge, }
 {         where Altium reads a blanket's directive from);                   }
-{         line_style (integer), collapsed (true/false).                      }
+{         line_style (integer), collapsed (true/false);                    }
+{         color, area_color (Altium's BGR integers). Without them the      }
+{         blanket takes the user's own blanket defaults (Preferences >     }
+{         Schematic > Defaults), as one drawn in the editor does. A new    }
+{         object is drawn above what is already on the sheet and no        }
+{         scripted call reorders a sheet, so the fill is always written    }
+{         transparent; an opaque fill would hide every wire and label it   }
+{         encloses. Altium does not keep an opaque blanket fill on save    }
+{         anyway (it reads back opaque, but is transparent after reopen).  }
 Function Gen_PlaceBlanket(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
@@ -9775,10 +10069,13 @@ Var
     ParamSet : ISch_ParameterSet;
     Xs, Ys : TStringList;
     VertStr, ParamList, StyleStr, CollStr, DxStr, DyStr, DirJson, Problem : String;
+    ColorStr, AreaStr : String;
     DX, DY : Double;
     I : Integer;
 Begin
     VertStr := ExtractJsonValue(Params, 'vertices');
+    ColorStr := ExtractJsonValue(Params, 'color');
+    AreaStr := ExtractJsonValue(Params, 'area_color');
     ParamList := ExtractJsonValue(Params, 'parameters');
     StyleStr := ExtractJsonValue(Params, 'line_style');
     CollStr := LowerCase(ExtractJsonValue(Params, 'collapsed'));
@@ -9815,6 +10112,13 @@ Begin
                 'directive_x and directive_y must be numbers in mils. Nothing was placed.');
             Exit;
         End;
+        If ((ColorStr <> '') And (Not IsIntStr(ColorStr))) Or ((AreaStr <> '') And (Not IsIntStr(AreaStr))) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+                'color and area_color must be Altium colour integers (BGR, e.g. 255 = red). '
+                + 'Nothing was placed.');
+            Exit;
+        End;
 
         DX := StrToFloatDef(Xs[0], 0);
         DY := StrToFloatDef(Ys[0], 0);
@@ -9834,7 +10138,8 @@ Begin
             End;
         End;
 
-        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_Default);
+        { The user's blanket defaults, as the editor's Place > Blanket. }
+        Blanket := SchServer.SchObjectFactory(eBlanket, eCreate_GlobalCopy);
         If Blanket = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create blanket');
@@ -9852,6 +10157,15 @@ Begin
         Begin
             Try Blanket.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('Blanket.Collapsed'); End;
         End;
+        If ColorStr <> '' Then
+        Begin
+            Try Blanket.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Blanket.Color'); End;
+        End;
+        If AreaStr <> '' Then
+        Begin
+            Try Blanket.AreaColor := StrToIntDef(AreaStr, 0); Except NoteWriteFailed('Blanket.AreaColor'); End;
+        End;
+        Try Blanket.Transparent := True; Except NoteWriteFailed('Blanket.Transparent'); End;
 
         SchBeginEdit(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(Blanket);
@@ -9870,6 +10184,10 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{"placed":true,"vertices_count":' + IntToStr(Blanket.VerticesCount)
             + ',"vertices":"' + GetSchVertexProperty(Blanket, 'Vertices') + '"'
+            + ',"color":' + IntToStr(Blanket.Color)
+            + ',"area_color":' + IntToStr(Blanket.AreaColor)
+            + ',"transparent":' + BoolToJsonStr(Blanket.Transparent)
+            + ',"line_style":' + IntToStr(Blanket.LineStyle)
             + ',"directive":' + DirJson + '}');
     Finally
         Ys.Free;
@@ -10964,6 +11282,8 @@ Begin
     Scope := ExtractJsonValue(Params, 'scope');
     ParseScope(Scope, ScopeType, ScopePath);
     Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
+    Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'counted');
     If Result <> '' Then Exit;
 
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
@@ -16047,6 +16367,7 @@ Var
     SrvDoc : IServerDocument;
     FpBefore, FpAfter, FpMissed : String;
     FpApplied : Integer;
+    Matched : TStringList;
 Begin
     StampsStr := ExtractJsonValue(Params, 'stamps');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -16072,6 +16393,7 @@ Begin
     { Build parallel arrays: designator -> raw op string.                     }
     DesigList := TStringList.Create;
     OpsList := TStringList.Create;
+    Matched := TStringList.Create;
     Try
         Remaining := StampsStr;
         OpCount := 0;
@@ -16163,6 +16485,10 @@ Begin
                             End;
                         End;
                         Inc(Updated);
+                        { A multi-part symbol is one designator over several }
+                        { parts: count the stamp once, not once per part.    }
+                        If Matched.IndexOf(Comp.Designator.Text) < 0 Then
+                            Matched.Add(Comp.Designator.Text);
                     End;
                     Obj := Iter.NextSchObject;
                 End;
@@ -16174,10 +16500,11 @@ Begin
             SchDoc.GraphicallyInvalidate;
         End;
 
-        Failed := OpCount - Updated;
+        Failed := OpCount - Matched.Count;
     Finally
         DesigList.Free;
         OpsList.Free;
+        Matched.Free;
     End;
 
     { Through the one helper, so the edit is recorded as well as flagged: }
@@ -16213,7 +16540,7 @@ Var
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
-    DesigList, OpsList : TStringList;
+    DesigList, OpsList, Matched : TStringList;
     Loc : TLocation;
     SrvDoc : IServerDocument;
 Begin
@@ -16239,6 +16566,7 @@ Begin
 
     DesigList := TStringList.Create;
     OpsList := TStringList.Create;
+    Matched := TStringList.Create;
     Try
         Remaining := PosStr;
         OpCount := 0;
@@ -16300,6 +16628,8 @@ Begin
                             SchEndModify(Comp.Comment);
                         End;
                         Inc(Updated);
+                        If Matched.IndexOf(Comp.Designator.Text) < 0 Then
+                            Matched.Add(Comp.Designator.Text);
                     End;
                     Obj := Iter.NextSchObject;
                 End;
@@ -16310,10 +16640,11 @@ Begin
             SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
         End;
-        Failed := OpCount - Updated;
+        Failed := OpCount - Matched.Count;
     Finally
         DesigList.Free;
         OpsList.Free;
+        Matched.Free;
     End;
 
     { Through the one helper, so the edit is recorded as well as flagged: }
@@ -17459,7 +17790,9 @@ Begin
             Else If Obj.ObjectId = ePadObject Then
             Begin
                 Pad := Obj;
-                ShapeStr := 'Round';
+                { A shape none of these names, or one that cannot be read, is   }
+                { Unknown, not Round: readers then draw the pad's whole box.   }
+                ShapeStr := 'Unknown';
                 Try
                     If Pad.TopShape = eRounded Then ShapeStr := 'Round'
                     Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
@@ -17964,10 +18297,67 @@ Begin
         '{"success":true,"pins_modified":' + IntToStr(Count) + '}');
 End;
 
+{ A colour argument of place_text_frame: -1 when absent, -2 when it is not a }
+{ colour (Altium's packed blue-green-red, 0 .. 16777215). The text is       }
+{ checked character by character first: StrToIntDef raises on a number past }
+{ 32 bits instead of falling back to its default.                           }
+Function TextFrameColorArg(Params : String; Key : String) : Integer;
+Var
+    S : String;
+    I : Integer;
+Begin
+    S := Trim(ExtractJsonValue(Params, Key));
+    Result := -1;
+    If S = '' Then Exit;
+    Result := -2;
+    If Length(S) > 8 Then Exit;
+    For I := 1 To Length(S) Do
+        If (S[I] < '0') Or (S[I] > '9') Then Exit;
+    I := StrToIntDef(S, -2);
+    If (I < 0) Or (I > 16777215) Then Exit;
+    Result := I;
+End;
+
+{ A switch argument of place_text_frame: -1 absent, 0 false, 1 true, -2 not }
+{ a switch.                                                                 }
+Function TextFrameFlagArg(Params : String; Key : String) : Integer;
+Var
+    S : String;
+Begin
+    S := LowerCase(Trim(ExtractJsonValue(Params, Key)));
+    If S = '' Then Result := -1
+    Else If (S = 'true') Or (S = '1') Then Result := 1
+    Else If (S = 'false') Or (S = '0') Then Result := 0
+    Else Result := -2;
+End;
+
+{ The style of a placed text frame as JSON members, read off the frame, not }
+{ echoed from the request. A read that fails leaves its member out.         }
+Function TextFrameStyleJson(TF : ISch_TextFrame) : String;
+Var
+    Parts : String;
+Begin
+    Parts := '';
+    Try Parts := Parts + JsonBool('is_solid', TF.IsSolid) + ','; Except End;
+    Try Parts := Parts + JsonInt('area_color', TF.AreaColor) + ','; Except End;
+    Try Parts := Parts + JsonInt('color', TF.Color) + ','; Except End;
+    Try Parts := Parts + JsonInt('text_color', TF.TextColor) + ','; Except End;
+    Try Parts := Parts + JsonBool('show_border', TF.ShowBorder) + ','; Except End;
+    Try Parts := Parts + JsonBool('word_wrap', TF.WordWrap) + ','; Except End;
+    Try Parts := Parts + JsonBool('clip_to_rect', TF.ClipToRect) + ','; Except End;
+    Try Parts := Parts + JsonFloat('text_margin', CoordToMilsF(TF.TextMargin)) + ','; Except End;
+    Result := '"style":{' + Copy(Parts, 1, Length(Parts) - 1) + '}';
+End;
+
 {..............................................................................}
 { Gen_PlaceTextFrame - Place a multi-line schematic text frame (note block).  }
-{ Params: x1,y1,x2,y2 (mils, the two rectangle corners), text (use \n for     }
-{         line breaks), align ("left"/"center"/"right", optional)             }
+{ Params: x1,y1,x2,y2 (mils, the two rectangle corners), text (a newline     }
+{         breaks a line), align ("left"/"center"/"right", optional)           }
+{ Style, all optional, applied before the frame is registered (absent = the  }
+{ frame's default, so older callers see no change): area_color (fill; makes  }
+{ the frame solid), color (border), text_color (packed BGR integers),        }
+{ show_border, word_wrap, clip_to_rect (true/false), text_margin (mils).     }
+{ The reply reads every one of them back off the placed frame.               }
 {..............................................................................}
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
@@ -17976,8 +18366,11 @@ Var
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     TF : ISch_TextFrame;
-    TextStr, AlignStr : String;
+    TextStr, AlignStr, MarginStr : String;
     FontPick, FontRead : Integer;
+    WantFill, WantBorderColor, WantTextColor : Integer;
+    WantShowBorder, WantWrap, WantClip : Integer;
+    WantMargin : Double;
 Begin
     X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
@@ -17985,15 +18378,46 @@ Begin
     Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     TextStr := ExtractJsonValue(Params, 'text');
     AlignStr := LowerCase(ExtractJsonValue(Params, 'align'));
-    { A line break arrives as a newline or as a typed backslash-n, and the  }
-    { second was stored and printed as the two characters. Altium's own    }
-    { break in a text frame is CR LF; every spelling becomes that.          }
-    TextStr := StringReplace(TextStr, '\' + 'n', #10, MkSet(rfReplaceAll));
+    { The break in a text frame is CR LF; every newline spelling becomes    }
+    { that. The text arrives JSON-unescaped, so a break the caller meant is }
+    { a real newline by now. A backslash followed by n is TEXT here (a path }
+    { such as C:\new\board) and stays as sent: sch_place_text_frame turns a }
+    { typed backslash-n into a newline before it sends.                     }
     TextStr := StringReplace(TextStr, #13 + #10, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #13, #10, MkSet(rfReplaceAll));
     TextStr := StringReplace(TextStr, #10, #13 + #10, MkSet(rfReplaceAll));
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+
+    { The style is read and checked before anything is made: a bad value  }
+    { places nothing.                                                      }
+    WantFill := TextFrameColorArg(Params, 'area_color');
+    WantBorderColor := TextFrameColorArg(Params, 'color');
+    WantTextColor := TextFrameColorArg(Params, 'text_color');
+    WantShowBorder := TextFrameFlagArg(Params, 'show_border');
+    WantWrap := TextFrameFlagArg(Params, 'word_wrap');
+    WantClip := TextFrameFlagArg(Params, 'clip_to_rect');
+    MarginStr := Trim(ExtractJsonValue(Params, 'text_margin'));
+    WantMargin := -1;
+    If MarginStr <> '' Then WantMargin := StrToFloatDef(MarginStr, -2);
+    If (WantFill = -2) Or (WantBorderColor = -2) Or (WantTextColor = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_COLOR',
+            'area_color, color and text_color are packed BGR integers 0..16777215');
+        Exit;
+    End;
+    If (WantShowBorder = -2) Or (WantWrap = -2) Or (WantClip = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FLAG',
+            'show_border, word_wrap and clip_to_rect are true or false');
+        Exit;
+    End;
+    If (MarginStr <> '') And (WantMargin < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_MARGIN',
+            'text_margin is a length in mils, 0 or more');
+        Exit;
+    End;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -18027,6 +18451,25 @@ Begin
     Begin
         Try TF.FontId := FontPick; Except NoteWriteFailed('TextFrame.FontId'); End;
     End;
+    { The asked style, over the defaults above. A fill makes the frame     }
+    { solid: AreaColor alone draws nothing on an unfilled frame.           }
+    If WantFill >= 0 Then
+    Begin
+        Try TF.IsSolid := True; Except NoteWriteFailed('TextFrame.IsSolid'); End;
+        Try TF.AreaColor := WantFill; Except NoteWriteFailed('TextFrame.AreaColor'); End;
+    End;
+    If WantBorderColor >= 0 Then
+    Begin Try TF.Color := WantBorderColor; Except NoteWriteFailed('TextFrame.Color'); End; End;
+    If WantTextColor >= 0 Then
+    Begin Try TF.TextColor := WantTextColor; Except NoteWriteFailed('TextFrame.TextColor'); End; End;
+    If WantShowBorder >= 0 Then
+    Begin Try TF.ShowBorder := (WantShowBorder = 1); Except NoteWriteFailed('TextFrame.ShowBorder'); End; End;
+    If WantWrap >= 0 Then
+    Begin Try TF.WordWrap := (WantWrap = 1); Except NoteWriteFailed('TextFrame.WordWrap'); End; End;
+    If WantClip >= 0 Then
+    Begin Try TF.ClipToRect := (WantClip = 1); Except NoteWriteFailed('TextFrame.ClipToRect'); End; End;
+    If WantMargin >= 0 Then
+    Begin Try TF.TextMargin := MilsToCoordF(WantMargin); Except NoteWriteFailed('TextFrame.TextMargin'); End; End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
@@ -18047,7 +18490,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
-        + JsonInt('font_id', FontRead) + '}');
+        + JsonInt('font_id', FontRead) + ',' + TextFrameStyleJson(TF) + '}');
 End;
 
 {..............................................................................}

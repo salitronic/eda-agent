@@ -4,7 +4,8 @@
 
 The Altium script refuses its own saves while the switch is off. This covers
 the few places the server writes a design file itself (the project file
-cleanup after a removal, the simulation settings file, a checkpoint restore)
+cleanup after a removal, the simulation settings file, a checkpoint restore,
+a new OutJob)
 and the interface tools that could reach File > Save, a Save button or
 Ctrl+S. The state lives in ``saving.json`` in the workspace, written by the
 dashboard; no file, or one that does not say off, means saving is allowed.

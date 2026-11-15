@@ -1264,6 +1264,9 @@ def next_batch_op(remaining: str) -> tuple[str, str]:
         sep = remaining.find("~~")
         if sep < 0:
             return remaining, ""
+        # Exactly three tildes: a value ending in "~", then the separator.
+        if remaining[sep + 2:sep + 3] == "~" and remaining[sep + 3:sep + 4] != "~":
+            sep += 1
         op = remaining[:sep]
         remaining = remaining[sep + 2:]
         if op != "":
@@ -1406,6 +1409,11 @@ def generate_batch_field_cases():
         ("BatchFieldSweep", ["designator=1~~~~designator=2", "designator"]),
         ("BatchFieldSweep", ["designator=1;name=~A~~designator=2;name=~B",
                              "name"]),
+        # A last value of '~' (KiCad's empty field) meets the separator.
+        ("BatchFieldSweep", ["designator=C1;Datasheet=~~~designator=C2;Datasheet=~",
+                             "designator"]),
+        ("BatchFieldSweep", ["designator=C1;Datasheet=~~~designator=C2;Datasheet=~",
+                             "Datasheet"]),
         ("BatchFieldSweep", ["a=1", "a"]),
         # The set field is read to the end, so its text keeps a ';'.
         ("GetBatchTail", ["scope=active_doc;object_type=eLabel;"

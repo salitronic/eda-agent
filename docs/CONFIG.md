@@ -5,6 +5,12 @@ changes. They are stored in `preferences.json` in the workspace, and each one
 takes effect on the next command, with no restart of Altium, the bridge or
 the AI client.
 
+The Help button at the top right of the window opens a help page written for
+the user: labelled pictures of each part of the window, then every setting explained
+(`src/eda_agent/web/dashboard_static/help/config.html`, also served by the
+dashboard at `/help/config`). Point the user to it when they ask what a
+setting does.
+
 An agent reads this page when a setting stops something the user asked for.
 Its job is to tell the user which setting it is and what it does. It never
 changes a setting itself, and never works around one.
@@ -22,7 +28,8 @@ changes a setting itself, and never works around one.
 
 | Setting | Choices | What it does |
 |---|---|---|
-| Keep board in view | Off / On | On fits the window to the whole board or sheet after each edit, at most every 2 seconds. |
+| Keep board in view | Off / On | On fits the window to the board outline, with a margin of a twentieth of its larger side, or to the sheet after each edit, at most every 2 seconds. Parts parked off the board do not zoom the view out. |
+| Lengths in | mil / mm | The unit a new AI session gives and reads lengths in. A session may switch its own, and every reply says its unit. |
 | Component value format | None / 4K7 2u2 / 4.7k 2.2u / with unit | How a value is written when it is cleaned up. None leaves values as they are. |
 | Dialogs | Auto / Manual | Manual leaves the dialogs a tool opens (change orders, teardrops) for the user to answer. |
 
@@ -58,3 +65,30 @@ which says what to do next:
 Never pass a check by another route: not a different tool, not pads or pins
 placed one by one, not an edit after the build. That gives the user the part
 without the record that it differs from its source.
+
+## Routing
+
+| Setting | Choices | What it does |
+|---|---|---|
+| Routing discipline | Enforced / Advisory / Off | Enforced, the default: the router leaves out a critical net (a differential pair, clock, switching node, high-current path or antenna feed) until the AI gives it a routing brief entry with its source, and `pcb_autoroute_apply` writes a round only once the AI has answered every finding of its review. Advisory: those nets are routed and named, and the findings are listed but nothing waits for an answer. Off: neither is asked for. |
+
+At every level the router obeys the brief the AI did give (layers, widths,
+regions, keep-outs, areas), and the review still measures the copper. Routes
+you draw yourself in Altium are never checked or blocked by any of this.
+
+## Diagnostics
+
+| Setting | Choices | What it does |
+|---|---|---|
+| Token count | Off / On | On counts what each tool call costs the AI in tokens (an estimate from the size of its text and pictures) and how long it takes. The totals show on the dashboard's Tools panel and with `eda-agent usage`. Nothing is added to what the AI reads. `EDA_AGENT_USAGE_OFF=1` in the AI client's config keeps it off. |
+
+## 3D models
+
+| Setting | Choices | What it does |
+|---|---|---|
+| Basic 3D models | Not allowed / Allowed | A basic 3D model is a footprint whose bodies are only extruded boxes, cylinders or spheres, with no STEP model among them. Not allowed, the default: the footprint checks (`lib_check_pcblib`, `lib_audit_footprint_policies`) and `pcb_get_components` name each such footprint under `basic_3d_models`, and the AI tells the user and asks whether to replace them. Each one the user agrees to is rebuilt as a STEP model from the part's datasheet drawing (`lib_create_3d_model`), and a board takes it with `pcb_update_footprints_from_library`. A new footprint gets no extruded box when its STEP model cannot be built; the reply says why. Allowed: basic models are kept and not reported. |
+
+Bodies added with `lib_add_footprint_bodies` are still added either way,
+because a clearance or keep-in volume is a body too. When basic models are
+not allowed, the reply reminds the AI to ask the user if those bodies are
+standing in for the part.

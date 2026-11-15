@@ -27,43 +27,23 @@ KEYS = {
 }
 
 #: Roles that are the package body rather than its terminals.
-BODY_ROLES = ("body", "ceramic", "lens", "white", "pin1")
+BODY_ROLES = ("body", "ceramic", "lens", "white", "pin1", "ceramic_ivory",
+              "nickel", "seal_ring", "silicon", "backside_coat", "substrate",
+              "pcb_green", "lcp_white", "ink", "laser")
 
 
 def _extent(s: Any) -> tuple[float, float, float, float, float]:
-    """(xmin, xmax, ymin, ymax, ztop) of one solid."""
-    g = s.get if isinstance(s, dict) else (lambda k, d=0.0: getattr(s, k, d))
-    kind = str(g("kind", "box")).lower()
-    axis = str(g("axis", "z") or "z").lower()
-    f = lambda k: float(g(k, 0.0) or 0.0)  # noqa: E731
-    if kind == "box":
-        return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
-                min(f("y0"), f("y1")), max(f("y0"), f("y1")), max(f("z0"), f("z1")))
-    if kind == "sphere":
-        r = f("r")
-        return f("cx") - r, f("cx") + r, f("cy") - r, f("cy") + r, f("cz") + r
-    if kind == "cylinder":
-        r = f("r")
-        if axis == "x":
-            return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
-                    f("cy") - r, f("cy") + r, f("cz") + r)
-        if axis == "y":
-            return (f("cx") - r, f("cx") + r, min(f("y0"), f("y1")),
-                    max(f("y0"), f("y1")), f("cz") + r)
-        return f("cx") - r, f("cx") + r, f("cy") - r, f("cy") + r, max(f("z0"), f("z1"))
-    if kind == "prism":
-        prof = [(float(u), float(z)) for u, z in (g("profile", []) or [])]
-        us = [u for u, _ in prof] or [0.0]
-        top = max((z for _, z in prof), default=0.0)
-        if axis == "x":
-            return (min(f("x0"), f("x1")), max(f("x0"), f("x1")),
-                    min(us), max(us), top)
-        return min(us), max(us), min(f("y0"), f("y1")), max(f("y0"), f("y1")), top
-    return 0.0, 0.0, 0.0, 0.0, 0.0
+    """(xmin, xmax, ymin, ymax, ztop) of one solid, where it is placed."""
+    from .models3d import solid_bounds
+
+    x0, x1, y0, y1, _z0, z1 = solid_bounds(s)
+    return x0, x1, y0, y1, z1
 
 
 def _bounds(solids: Iterable[Any]) -> Optional[tuple[float, float, float]]:
-    ext = [_extent(s) for s in solids]
+    from .models3d import _drawn
+
+    ext = [_extent(s) for s in solids if _drawn(s)]
     if not ext:
         return None
     return (max(e[1] for e in ext) - min(e[0] for e in ext),

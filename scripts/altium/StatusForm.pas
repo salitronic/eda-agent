@@ -550,8 +550,9 @@ Begin
         + 'Altium. EDA_AGENT_UI_AUTOMATION=0 in the AI client''s config also '
         + 'turns it off, whatever this says.';
     SetTip(lbl_CfgAuto, Tip);  SetTip(opt_AutoOn, Tip);  SetTip(opt_AutoOff, Tip);
-    Tip := 'Fit the board or sheet in the window after each edit the AI '
-        + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
+    Tip := 'Fit the board outline, with a margin, or the sheet in the window '
+        + 'after each edit the AI makes. Parts parked off the board do not '
+        + 'zoom the view out. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
     Tip := 'The unit the AI gives and reads lengths in: coordinates, widths, '
@@ -563,6 +564,28 @@ Begin
         + 'it as the tool was asked, then reads the result back. Manual: the '
         + 'dialog waits for you.';
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
+    Tip := 'Count the tokens each AI tool call costs, as an estimate from the '
+        + 'size of its text and pictures. The totals show on the dashboard''s '
+        + 'Tools panel and with eda-agent usage. Nothing is added to what the '
+        + 'AI reads.';
+    SetTip(lbl_CfgUsage, Tip);  SetTip(opt_UsageOff, Tip);  SetTip(opt_UsageOn, Tip);
+    Tip := 'How strictly the router holds the AI to routing discipline. '
+        + 'Enforced: a critical net (pair, clock, switching node, antenna '
+        + 'feed) needs a sourced routing brief first, and a round is written '
+        + 'only once the AI has answered every finding. Advisory: findings are '
+        + 'reported but nothing waits. Off: neither. The rules the AI gives '
+        + 'are obeyed at every level, and your own routing is never blocked.';
+    SetTip(lbl_CfgRouting, Tip);  SetTip(opt_RouteEnforced, Tip);
+    SetTip(opt_RouteAdvisory, Tip);  SetTip(opt_RouteOff, Tip);
+    Tip := 'Whether a footprint may keep a basic 3D model: extruded boxes, '
+        + 'cylinders or spheres instead of a STEP model of the part. Not '
+        + 'allowed: the AI reports each footprint that has one, asks you '
+        + 'whether to replace it, and builds the replacement from the '
+        + 'datasheet drawing.';
+    SetTip(lbl_CfgBasic3d, Tip);  SetTip(opt_Basic3dNotAllowed, Tip);
+    SetTip(opt_Basic3dAllowed, Tip);
+    SetTip(btn_Help, 'Open the help page in your browser: labelled pictures '
+        + 'of each part of this window, then every setting on the Config tab explained.');
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
         + 'update it; it tells you what is new first.');
     SetTip(btn_Sponsor, 'Open github.com/sponsors/salitronic in your browser.');
@@ -820,6 +843,7 @@ Begin
     OwnPanelColours(pnl_Sponsor);   OwnPanelColours(pnl_SponsorEdge);
     OwnPanelColours(btn_Sponsor);   OwnPanelColours(btn_SponsorClose);
     OwnPanelColours(btn_SponsorHeart); OwnPanelColours(btn_Update);
+    OwnPanelColours(btn_Help);
     OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
     OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
     OwnPanelColours(opt_FmtSiUnit);
@@ -834,6 +858,12 @@ Begin
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
     OwnPanelColours(sep_Cfg6);
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
+    OwnPanelColours(sep_Cfg8);
+    OwnPanelColours(opt_UsageOff);  OwnPanelColours(opt_UsageOn);
+    OwnPanelColours(sep_Cfg9);      OwnPanelColours(opt_RouteEnforced);
+    OwnPanelColours(opt_RouteAdvisory);  OwnPanelColours(opt_RouteOff);
+    OwnPanelColours(sep_Cfg10);     OwnPanelColours(opt_Basic3dNotAllowed);
+    OwnPanelColours(opt_Basic3dAllowed);
 End;
 
 
@@ -1026,7 +1056,7 @@ Begin
         PaintOption(opt_ViewOn, KeepInViewMode = 'on');
         If KeepInViewMode = 'on' Then
             lbl_CfgViewHint.Caption := 'After each edit the window is fitted '
-                + 'to the whole board or sheet, at most every 2 seconds.'
+                + 'to the board outline or the sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
         PaintOption(opt_UnitsMil, LengthUnits <> 'mm');
@@ -1045,6 +1075,34 @@ Begin
         Else
             lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
                 + 'open: change orders, teardrops.';
+        PaintOption(opt_UsageOff, UsageMode <> 'on');
+        PaintOption(opt_UsageOn, UsageMode = 'on');
+        If UsageMode = 'on' Then
+            lbl_CfgUsageHint.Caption := 'Each tool call''s token cost is '
+                + 'counted, for the dashboard and eda-agent usage.'
+        Else
+            lbl_CfgUsageHint.Caption := 'Tool calls are not counted.';
+        PaintOption(opt_RouteEnforced, (RoutingMode <> 'advisory') And (RoutingMode <> 'off'));
+        PaintOption(opt_RouteAdvisory, RoutingMode = 'advisory');
+        PaintOption(opt_RouteOff, RoutingMode = 'off');
+        If RoutingMode = 'off' Then
+            lbl_CfgRoutingHint.Caption := 'No brief is asked for and nothing '
+                + 'waits on findings. The AI''s rules are still obeyed.'
+        Else If RoutingMode = 'advisory' Then
+            lbl_CfgRoutingHint.Caption := 'Findings are reported; nothing waits '
+                + 'for the AI to answer them.'
+        Else
+            lbl_CfgRoutingHint.Caption := 'Critical nets need a sourced brief; '
+                + 'each finding is answered before a round is written.';
+        PaintOption(opt_Basic3dNotAllowed, Basic3dMode <> 'allowed');
+        PaintOption(opt_Basic3dAllowed, Basic3dMode = 'allowed');
+        If Basic3dMode = 'allowed' Then
+            lbl_CfgBasic3dHint.Caption := 'A footprint may keep extruded boxes, '
+                + 'cylinders or spheres as its 3D model.'
+        Else
+            lbl_CfgBasic3dHint.Caption := 'Footprints with only extruded boxes, '
+                + 'cylinders or spheres are reported, and you are asked before '
+                + 'each is replaced with a STEP model from its drawing.';
         PaintChecks(0);
     Except End;
 End;
@@ -1108,7 +1166,7 @@ Procedure ShowStatusForm(Dummy : Integer);
 Var
     NewLeft, NewTop : Integer;
     AvailL, AvailT, AvailW, AvailH : Integer;
-    Margin : Integer;
+    Margin, TaskbarH : Integer;
 Begin
     Try
         EnsureStatusBuffers(0);
@@ -1156,6 +1214,16 @@ Begin
         Except End;
         NewLeft := AvailL + AvailW - StatusForm.Width  - Margin;
         NewTop  := AvailT + AvailH - StatusForm.Height - Margin;
+        { An auto-hidden taskbar reserves no work area: the whole screen  }
+        { is reported, and the taskbar covers the window's foot when it   }
+        { slides up. The window then ends a taskbar's height above the    }
+        { screen's foot (48 px at 96 dpi on Windows 11), no margin more.  }
+        If AvailT + AvailH >= Screen.Height Then
+        Begin
+            TaskbarH := 48;
+            Try TaskbarH := (48 * Screen.PixelsPerInch) Div 96; Except End;
+            NewTop := AvailT + AvailH - StatusForm.Height - TaskbarH;
+        End;
         If NewLeft < AvailL Then NewLeft := AvailL;
         If NewTop  < AvailT Then NewTop  := AvailT;
         Try StatusForm.Left := NewLeft; Except End;
@@ -1532,6 +1600,27 @@ Begin
     Except End;
 End;
 
+{ Open the help page in the browser, on a setting when one is named. The }
+{ server or the dashboard, whichever takes the link file first, opens it; }
+{ with neither running, it opens once one starts.                         }
+Procedure OpenConfigHelp(Setting : String);
+Begin
+    Try
+        WriteFileContent(WorkspaceDir + 'open_dashboard.url', 'help:' + Setting);
+        ShowNotice('');
+    Except End;
+End;
+
+{ The Help button at the top right of the window: the help page, which }
+{ opens on labelled pictures of the window and explains every setting. }
+Procedure btn_HelpClick(Sender : TObject);
+Begin OpenConfigHelp(''); End;
+Procedure btn_HelpEnter(Sender : TObject);
+Begin Try btn_Help.Color := COLOR_BG_HOVER; Except End; End;
+Procedure btn_HelpLeave(Sender : TObject);
+Begin Try btn_Help.Color := COLOR_BG_ELEVATED; Except End; End;
+
+
 { A value format chosen on the Config tab is stored at once, so the server }
 { and a restart see it. Only SI takes a unit.                             }
 Procedure ChooseValueFormat(Choice : String; UnitChoice : String);
@@ -1568,7 +1657,10 @@ Begin
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
         Else If Setting = 'length_units' Then LengthUnits := Choice
-        Else If Setting = 'dialogs' Then DialogMode := Choice;
+        Else If Setting = 'dialogs' Then DialogMode := Choice
+        Else If Setting = 'usage' Then UsageMode := Choice
+        Else If Setting = 'routing' Then RoutingMode := Choice
+        Else If Setting = 'basic_3d_models' Then Basic3dMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1616,6 +1708,27 @@ Begin ChooseAgentSetting('length_units', 'mil'); End;
 
 Procedure opt_UnitsMmClick(Sender : TObject);
 Begin ChooseAgentSetting('length_units', 'mm'); End;
+
+Procedure opt_UsageOffClick(Sender : TObject);
+Begin ChooseAgentSetting('usage', 'off'); End;
+
+Procedure opt_UsageOnClick(Sender : TObject);
+Begin ChooseAgentSetting('usage', 'on'); End;
+
+Procedure opt_RouteEnforcedClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'enforced'); End;
+
+Procedure opt_RouteAdvisoryClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'advisory'); End;
+
+Procedure opt_RouteOffClick(Sender : TObject);
+Begin ChooseAgentSetting('routing', 'off'); End;
+
+Procedure opt_Basic3dNotAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('basic_3d_models', 'not_allowed'); End;
+
+Procedure opt_Basic3dAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('basic_3d_models', 'allowed'); End;
 
 { A check switched on or off on the Config tab, stored at once. }
 Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);
@@ -1963,6 +2076,7 @@ Begin
     End;
 
     ResetItemState(0);
+    NoteOpenProjects(0);
     Result := SavingRefusal(Command, Params, RequestId);
     If Result <> '' Then Exit;
     Case Category Of
@@ -2459,6 +2573,7 @@ Begin
           way through may well have written something first, and that is
           exactly when a cached netlist is worth least. }
         If Not CommandIsReadOnly(Command) Then InvalidateCompileCache(0);
+        If Not CommandOnlyLooks(Command) Then CommandSerial := CommandSerial + 1;
 
         If ResponseContent = '' Then
         Begin
@@ -2611,8 +2726,8 @@ Begin
     { Measured 2026-09-16: with the timer pump, closing Altium while        }
     { attached no longer hangs it. Altium ran its whole shutdown through to }
     { "Application Finalized" and exited, and Windows logged neither a hang }
-    { nor a crash. What it DID raise was an Access Violation in             }
-    { ScriptingSystem.DLL (read of FFFFFFFFFFFFFFFF) during teardown.       }
+    { nor a crash. What it DID raise was an access violation in the         }
+    { scripting engine during teardown.                                     }
     {                                                                       }
     { The two steps below are how you earn that: HideStatusForm touches a   }
     { form Altium is in the middle of destroying, and CleanupMCPServer      }
@@ -2634,10 +2749,9 @@ Begin
     { DO NOT CALL CleanupMCPServer HERE. Its Application.ProcessMessages   }
     { pumps the message loop from inside this form's OWN timer handler,    }
     { while that same form is being hidden, which re-enters the form as it }
-    { tears down. Measured 2026-09-18: pressing Detach raised "Access      }
-    { violation ... in module 'ScriptingSystem.DLL'. Read of address       }
-    { FFFFFFFFFFFFFFFF", the same signature the quit path produced before  }
-    { it stopped pumping. The old blocking loop ran this from              }
+    { tears down. Measured 2026-09-18: pressing Detach raised an access    }
+    { violation in the scripting engine, the same one the quit path        }
+    { produced before it stopped pumping. The old blocking loop ran this from              }
     { StartMCPServer's exit rather than from a timer event on the form,    }
     { which is why it only appeared once dispatch moved onto the timer.    }
     {                                                                      }

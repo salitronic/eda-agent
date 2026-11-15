@@ -42,13 +42,14 @@ def test_a_pdf_held_open_stops_the_run_before_altium_does(tmp_path, monkeypatch)
     pdf = out / "Fabrication.pdf"
     pdf.write_bytes(b"%PDF")
     outjob = tmp_path / "Fab.OutJob"
-    outjob.write_text("[OutputGroup1]\nOutputMedium1=PDF\n\n[PublishSettings]\n"
-                      "OutputBasePath1=Outputs\n", encoding="utf-8")
+    outjob.write_text("", encoding="utf-8")
     sent = []
 
     class _B:
         async def send_command_async(self, command, params=None, timeout=None):
             sent.append(command)
+            if command == "project.get_outjob_containers":
+                return {"containers": [{"name": "PDF", "output_dir": str(out) + "\\"}]}
             return {}
 
     k = ctypes.windll.kernel32

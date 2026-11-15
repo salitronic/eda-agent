@@ -7,8 +7,9 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from .tools import (
@@ -272,14 +273,23 @@ def build_server_instructions(
         "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
         "arguments, one dict per item, with arguments given beside it\n"
         "applying to all. Twenty arcs, ten pin renames or a column of net\n"
-        + ("labels are one call and one undo step in Altium, not twenty.\n"
-           "The reply gives each item's result in order and says which\n"
-           "failed; items run before a failure stay applied.\n"
+        + ("labels are one call and one undo step in Altium, not twenty\n"
+           "(up to 200 items a request). The reply gives each item's result\n"
+           "in order and says which failed; items run before a failure stay\n"
+           "applied. A tool named in the plural (pcb_place_arcs) takes its\n"
+           "list directly.\n"
            if altium else
            "labels are one call, not twenty. The reply lists each item's\n"
            "result in order.\n")
         + "A single call works as it always has.\n"
-        "\n")
+        "\n"
+        + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
+           "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
+           "goes straight to its objects; any other condition (X=, Y=, Name)\n"
+           "is checked on every object of the type, seconds on a busy board.\n"
+           "pcb_get_copper reads one layer's copper in bulk. tool_guide names\n"
+           "the quick route for a task.\n"
+           "\n" if altium else ""))
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -287,10 +297,18 @@ def build_server_instructions(
         "either, by the object type it is given (eTrackObject acts on the\n"
         "active board). A board tool aimed at a library does not always\n"
         "fail. It can resolve some other open board and report success for\n"
-        "work you never asked for.\n"
+        "work you never asked for."
+        + (" (pcb_layer_view, pcb_pad_relief and\n"
+           "pcb_renumber_pads also act on a .PcbLib in front.)"
+           if altium else "")
+        + "\n"
         "\n"
         f"Before concluding that this server cannot do something, {reach}\n"
-        "with what you are trying to do. It answers three separate things:\n"
+        "with what you are trying to do"
+        + (',\nand backend="altium" (without it the dead ends of the other EDA\n'
+           "backends come back too)"
+           if (backend or DEFAULT_BACKEND).strip().lower() == "altium" else "")
+        + ". It answers three separate things:\n"
         "the tool and what it needs first, the tool you were probably\n"
         "reaching for and why it acts on a different document, and the\n"
         "short list of things that are genuinely impossible with the\n"
@@ -515,10 +533,17 @@ class _CompactFastMCP(FastMCP):
         # Its commands to Altium take one turn together (Main.pas
         # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
+        outermost = plan is not None
+        given = arguments
+        started = time.monotonic()
         token = lengths.enter()
         try:
             with tool_call(name):
                 result = await super().call_tool(name, arguments)
+        except BaseException:
+            if outermost:
+                _count_usage(name, given, None, time.monotonic() - started, ok=False)
+            raise
         finally:
             lengths.leave(token)
         if plan is not None:
@@ -531,10 +556,30 @@ class _CompactFastMCP(FastMCP):
         if news:
             result = add_update_notice(result, news)
         if isinstance(result, tuple):
-            return (compact_text_blocks(result[0]), result[1])
-        if isinstance(result, list):
-            return compact_text_blocks(result)
+            result = (compact_text_blocks(result[0]), result[1])
+        elif isinstance(result, list):
+            result = compact_text_blocks(result)
+        if outermost:
+            _count_usage(name, given, result, time.monotonic() - started)
         return result
+
+
+def _count_usage(name: str, arguments: Any, result: Any, seconds: float,
+                 ok: bool = True) -> None:
+    """One line of diag/usage for a call the client made. tool_invoke is
+    counted under the tool it ran as well."""
+    try:
+        from .diag import usage
+        if not usage.enabled():
+            return
+        from .bridge.altium_bridge import _SESSION_TAG
+        member = ""
+        if name == "tool_invoke" and isinstance(arguments, dict):
+            member = str(arguments.get("name") or arguments.get("tool") or "")
+        usage.record(name, arguments, result, seconds, session=_SESSION_TAG,
+                     member=member, ok=ok)
+    except Exception:  # noqa: BLE001 - a count never breaks a tool
+        pass
 
 
 # Create global FastMCP instance, named for the backend so a client that
@@ -775,168 +820,6 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     return 0
 
 
-def _run_review(args) -> int:
-    """Handle ``eda-agent review <file>`` -- offline fallback review.
-
-    This is the opt-in, no-Altium fallback (component-level checks only); it
-    is NOT the preferred review path. It is disabled unless the caller passes
-    ``--offline`` or sets ``EDA_AGENT_HEADLESS_REVIEW=1``.
-
-    Exit code: 0 clean, 1 if any finding at/above ``--fail-on`` (so CI fails
-    the build), 2 if disabled or the file could not be read.
-    """
-    from .fileio.review import (
-        ERROR,
-        HEADLESS_DISABLED_MESSAGE,
-        headless_review_enabled,
-        review_project_file,
-        to_sarif,
-    )
-
-    if not (getattr(args, "offline", False) or headless_review_enabled()):
-        print(f"ERROR: {HEADLESS_DISABLED_MESSAGE}", file=sys.stderr)
-        return 2
-
-    try:
-        report = review_project_file(args.file)
-    except (ValueError, OSError) as e:
-        print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
-        return 2
-
-    if getattr(args, "sarif", False):
-        import json as _json
-        from . import __version__ as _ver
-        print(_json.dumps(to_sarif(report, tool_version=_ver), indent=2))
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps(report, indent=2))
-    else:
-        s = report["summary"]
-        print(f"Reviewed {report['file']}")
-        if "sheet_count" in report:  # project review
-            print(f"  {report['sheet_count']} sheet(s), "
-                  f"{report['component_count']} components")
-        elif "document" in report:  # single schematic sheet
-            doc = report["document"]
-            print(f"  {doc.get('title') or '(untitled)'}  "
-                  f"rev {doc.get('revision') or '-'}  --  "
-                  f"{report['component_count']} components, "
-                  f"{len(report.get('net_names', []))} named nets")
-        else:  # library review
-            print(f"  {report['component_count']} library components")
-        print(f"  {s.get('error', 0)} error(s), {s.get('warning', 0)} "
-              f"warning(s), {s.get('info', 0)} info")
-        for f in report["findings"]:
-            tag = f["designator"] or "-"
-            sheet = f" ({f['sheet']})" if f.get("sheet") else ""
-            print(f"  [{f['severity'].upper():7}] {tag:6} {f['check']}: "
-                  f"{f['message']}{sheet}")
-    # Gating: exit 1 if any finding at or above the --fail-on threshold.
-    # Default "error" preserves the prior behavior.
-    fail_on = getattr(args, "fail_on", "error")
-    order = {"info": 0, "warning": 1, "error": 2}
-    if fail_on == "never":
-        return 0
-    threshold = order.get(fail_on, 2)
-    s = report["summary"]
-    triggered = sum(
-        s.get(sev, 0) for sev, rank in order.items() if rank >= threshold
-    )
-    return 1 if triggered > 0 else 0
-
-
-def _offline_gate_ok(args) -> bool:
-    """Shared opt-in check for the offline (no-Altium) CLI fallbacks."""
-    from .fileio.review import (
-        HEADLESS_DISABLED_MESSAGE,
-        headless_review_enabled,
-    )
-    if getattr(args, "offline", False) or headless_review_enabled():
-        return True
-    print(f"ERROR: {HEADLESS_DISABLED_MESSAGE}", file=sys.stderr)
-    return False
-
-
-def _run_bom(args) -> int:
-    """Handle ``eda-agent bom <file>`` -- offline consolidated BOM.
-
-    Opt-in, no-Altium fallback. Exit 0 on success, 2 if disabled/unreadable.
-    """
-    if not _offline_gate_ok(args):
-        return 2
-    from .fileio.bom import bom_from_file, bom_to_csv
-
-    try:
-        lines = bom_from_file(args.file)
-    except (ValueError, OSError) as e:
-        print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
-        return 2
-    if not lines:
-        from .fileio.bom import EMPTY_BOM_WARNING
-        print(f"WARNING: {args.file}: {EMPTY_BOM_WARNING}", file=sys.stderr)
-
-    if getattr(args, "csv", False):
-        print(bom_to_csv(lines), end="")
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps(lines, indent=2))
-    else:
-        parts = sum(ln["quantity"] for ln in lines)
-        print(f"BOM for {args.file}: {len(lines)} line(s), {parts} parts")
-        for ln in lines:
-            print(f"  {ln['quantity']:3}x  {', '.join(ln['designators']):24}  "
-                  f"{ln['value'] or '-':10}  {ln['mpn'] or '-'}")
-    return 0
-
-
-def _run_netlist(args) -> int:
-    """Handle ``eda-agent netlist <file>`` -- offline netlist + connectivity.
-
-    Opt-in, no-Altium fallback. Reconstructs the netlist geometrically and
-    runs connectivity ERC. Exit 0 clean, 1 if any connectivity finding at/
-    above ``--fail-on``, 2 if disabled/unreadable.
-    """
-    if not _offline_gate_ok(args):
-        return 2
-    from .fileio.netlist_solver import solve_schematic_nets
-    from .fileio.review import review_connectivity
-
-    try:
-        solved = solve_schematic_nets(args.file)
-    except (ValueError, OSError, KeyError) as e:
-        print(f"ERROR: cannot solve {args.file}: {e}", file=sys.stderr)
-        return 2
-
-    findings = review_connectivity(solved)
-    if getattr(args, "sarif", False):
-        import json as _json
-        from . import __version__ as _ver
-        from .fileio.review import to_sarif
-        report = {"file": str(args.file), "findings": findings}
-        print(_json.dumps(to_sarif(report, tool_version=_ver), indent=2))
-    elif getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps({"nets": {n: [f"{m['component']}.{m['pin']}"
-                                        for m in v]
-                                    for n, v in solved["nets"].items()},
-                           "findings": findings}, indent=2))
-    else:
-        print(f"Netlist for {args.file}: {len(solved['nets'])} nets, "
-              f"{len(solved['pin_nets'])} pins")
-        for f in findings:
-            tag = f["designator"] or "-"
-            print(f"  [{f['severity'].upper():7}] {tag:6} {f['check']}: "
-                  f"{f['message']}")
-
-    fail_on = getattr(args, "fail_on", "error")
-    if fail_on == "never":
-        return 0
-    order = {"info": 0, "warning": 1, "error": 2}
-    threshold = order.get(fail_on, 2)
-    triggered = any(order.get(f["severity"], 2) >= threshold for f in findings)
-    return 1 if triggered else 0
-
-
 def main() -> int:
     """CLI entry point.
 
@@ -1132,7 +1015,10 @@ def main() -> int:
             "auto-launches this server's URL via a workspace sentinel."
         ),
     )
-    dash_p.add_argument("--host", default="127.0.0.1")
+    dash_p.add_argument("--host", default="127.0.0.1",
+                        choices=("127.0.0.1", "localhost", "::1"),
+                        help="A loopback address; the dashboard is never "
+                             "served to another machine.")
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
@@ -1147,6 +1033,16 @@ def main() -> int:
         "altium365-logout",
         help="Forget the saved Nexar login of altium365-login.",
     )
+
+    # usage -- estimated tokens and time per tool
+    usage_p = subparsers.add_parser(
+        "usage",
+        help=("Estimated tokens and time per tool over the last days, "
+              "heaviest first (EDA_AGENT_USAGE_OFF=1 stops the recording)."),
+    )
+    usage_p.add_argument("--days", type=int, default=7)
+    usage_p.add_argument("--top", type=int, default=25)
+    usage_p.add_argument("--json", action="store_true")
 
     # sdk-reach -- how much of Altium's SDK the property tools reach
     sdk_p = subparsers.add_parser(
@@ -1167,69 +1063,6 @@ def main() -> int:
               "Use this when the dashboard was launched detached by the "
               "Altium script and you want to kill it without rebooting."),
     )
-
-    # review -- OFFLINE FALLBACK, opt-in schematic review (no Altium).
-    # Not the preferred path: the live-Altium tools see connectivity this
-    # reader can't. Disabled unless --offline / EDA_AGENT_HEADLESS_REVIEW=1.
-    review_p = subparsers.add_parser(
-        "review",
-        help=(
-            "Offline FALLBACK design review of a .SchDoc/.PrjPcb -- parses "
-            "the file directly (no running Altium, no license) for the "
-            "component-level subset only (missing MPN / datasheet, "
-            "placeholder values, designator collisions). NOT the preferred "
-            "path -- prefer the live tools when Altium is available. Opt-in: "
-            "requires --offline (or EDA_AGENT_HEADLESS_REVIEW=1)."
-        ),
-    )
-    review_p.add_argument("file", type=Path,
-                          help="Path to a .SchDoc sheet or a .PrjPcb project "
-                               "(reviews all its sheets).")
-    review_p.add_argument("--offline", action="store_true",
-                          help="Opt in to the no-Altium file-reader review. "
-                               "Required (this review is off by default); the "
-                               "live-Altium tools are preferred when a session "
-                               "is available.")
-    review_p.add_argument("--json", action="store_true",
-                          help="Emit the full report as JSON.")
-    review_p.add_argument("--sarif", action="store_true",
-                          help="Emit SARIF 2.1.0 (for GitHub code scanning / "
-                               "PR annotations).")
-    review_p.add_argument("--fail-on", dest="fail_on", default="error",
-                          choices=["error", "warning", "info", "never"],
-                          help="Exit non-zero when a finding at or above this "
-                               "severity exists (default: error).")
-
-    # bom -- offline consolidated BOM (opt-in, no Altium).
-    bom_p = subparsers.add_parser(
-        "bom",
-        help=("Offline consolidated BOM from a .SchDoc/.PrjPcb (no running "
-              "Altium). Opt-in: requires --offline (or "
-              "EDA_AGENT_HEADLESS_REVIEW=1). Prefer live proj_get_bom."))
-    bom_p.add_argument("file", type=Path, help="A .SchDoc or .PrjPcb.")
-    bom_p.add_argument("--offline", action="store_true",
-                       help="Opt in to the no-Altium reader (required).")
-    bom_p.add_argument("--csv", action="store_true", help="Emit CSV.")
-    bom_p.add_argument("--json", action="store_true", help="Emit JSON.")
-
-    # netlist -- offline geometric netlist + connectivity ERC (opt-in).
-    net_p = subparsers.add_parser(
-        "netlist",
-        help=("Offline netlist reconstruction + connectivity ERC "
-              "(single_pin_net, net_short) from a .SchDoc (no running "
-              "Altium). Opt-in: requires --offline. Prefer live "
-              "proj_get_nets/proj_run_erc."))
-    net_p.add_argument("file", type=Path, help="A .SchDoc sheet.")
-    net_p.add_argument("--offline", action="store_true",
-                       help="Opt in to the no-Altium solver (required).")
-    net_p.add_argument("--json", action="store_true", help="Emit JSON.")
-    net_p.add_argument("--sarif", action="store_true",
-                       help="Emit SARIF 2.1.0 (GitHub code scanning / PR "
-                            "annotations).")
-    net_p.add_argument("--fail-on", dest="fail_on", default="error",
-                       choices=["error", "warning", "info", "never"],
-                       help="Exit non-zero on a finding at/above this "
-                            "severity (default: error).")
 
     # calc -- the offline engineering calculators, without an MCP client.
     calc_p = subparsers.add_parser(
@@ -1346,6 +1179,24 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
+    if args.command == "usage":
+        import json as _json
+        from .diag import usage
+        report = usage.summary(args.days, top=args.top)
+        if args.json:
+            print(_json.dumps(report, indent=2))
+            return
+        tot = report["total"]
+        print(f"Last {args.days} day(s): {tot['calls']} calls, about "
+              f"{tot['tokens']:,} tokens ({tot['in']:,} written, {tot['out']:,} read"
+              f"{', ' + format(tot['images'], ',') + ' in images' if tot['images'] else ''})"
+              + ("" if report["enabled"] else "  [recording is off]"))
+        print(f"{'tool':44} {'calls':>6} {'tokens':>10} {'avg':>7} {'avg ms':>7}")
+        for r in report["tools"]:
+            print(f"{r['tool'][:44]:44} {r['calls']:>6} {r['tokens']:>10,} "
+                  f"{r['avg_tokens']:>7,} {r['avg_ms']:>7,}")
+        return
+
     if args.command == "altium365-logout":
         from .altium365 import forget_login, read_environment
         path = read_environment().saved_login
@@ -1371,12 +1222,6 @@ def main() -> int:
         else:
             print(sdk_reach.report(rows, args.detail))
         return 0
-    if args.command == "review":
-        return _run_review(args)
-    if args.command == "bom":
-        return _run_bom(args)
-    if args.command == "netlist":
-        return _run_netlist(args)
     if args.command == "calc":
         return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
     if args.command in ("health", "doctor"):

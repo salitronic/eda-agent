@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""With EDA_AGENT_KEEP_BOARD_IN_VIEW set, an edit is followed by Fit Board.
+"""With EDA_AGENT_KEEP_BOARD_IN_VIEW set, an edit fits the board outline in view.
 
 A demo video of a round LED board had the board half out of view for
 most of its layout: the agent placed and routed without ever zooming.
@@ -54,3 +54,21 @@ def test_zoom_board_is_fit_board_on_a_pcb():
     body = body[:body.index("\nFunction ", 10)]
     assert "(Action = 'board') And (FocusedKind = 'PCB')" in body
     assert "AddStringParameter('Target', 'Board')" in body
+
+
+def test_the_fit_after_an_edit_asks_for_the_board():
+    src = Path(ab.__file__).read_text(encoding="utf-8")
+    assert '"generic.zoom", {"action": "board"}' in src
+    assert '{"action": "fit"}' not in src
+
+
+def test_zoom_board_fits_the_outline_with_a_margin():
+    pas = _GENERIC.read_text(encoding="utf-8")
+    helper = pas[pas.index("Function ZoomOnBoardOutline("):]
+    helper = helper[:helper.index("\nFunction ", 10)]
+    assert "Board.BoardOutline.BoundingRectangle" in helper
+    assert "M := (R - L) Div 20;" in helper
+    assert "Board.GraphicalView_ZoomOnRect(L - M, B - M, R + M, T + M);" in helper
+    body = pas[pas.index("Function Gen_Zoom("):]
+    body = body[:body.index("\nFunction ", 10)]
+    assert body.index("ZoomOnBoardOutline(Board)") < body.index("RunProcess(ZoomProcess)")

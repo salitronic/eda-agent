@@ -34,6 +34,12 @@ if sync_rules.main(['--check']):
           file=sys.stderr)
     sys.exit(1)
 
+import gen_sch_members
+if gen_sch_members.main(['--check']):
+    print('\nbuild aborted: run python scripts/altium/gen_sch_members.py first.',
+          file=sys.stderr)
+    sys.exit(1)
+
 if '--skip-lint' not in sys.argv:
     from lint import run_lint
     error_count = run_lint([os.path.join(SCRIPT_DIR, f) for f in FILES])

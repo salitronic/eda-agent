@@ -48,10 +48,11 @@ def test_a_removal_saves_the_project_and_reads_the_file():
     body = load(_ALT / "Project.pas")["Proj_RemoveDocument"]
     remove = body.index("Project.DM_RemoveSourceDocument(DocumentPath);")
     save = body.index("ProjSaved := SaveProjectFile(Project);")
-    check = body.index("Entry := ProjectFileEntryFor(ProjPath, DocumentPath);", save)
+    load_back = body.index("FileList := ProjectFileDocumentList(ProjPath, FileLoaded);", save)
+    check = body.index("Entry := ProjectListEntryFor(FileList, DocumentPath);", load_back)
     # Measured live: Altium's writer leaves [DocumentN] sections past the
-    # new count, so the file is read back and a leftover is reported.
-    assert remove < save < check
+    # new count, so Altium loads the saved file and a leftover is reported.
+    assert remove < save < load_back < check
     assert '"in_project_file":true' in body
 
 
@@ -72,10 +73,10 @@ def test_every_membership_change_writes_the_project_file():
     assert "WorkspaceManager:CloseObject" not in delete
 
 
-def test_the_file_check_reads_documentpath_lines():
-    body = load(_ALT / "Project.pas")["ProjectFileEntryFor"]
-    assert "LoadTextFile(SL, ProjPath)" in body
-    assert "'DOCUMENTPATH='" in body
+def test_the_file_check_matches_on_the_file_name():
+    body = load(_ALT / "Project.pas")["ProjectListEntryFor"]
+    assert "Want := UpperCase(ExtractFileName(DocPath));" in body
+    assert "(UpperCase(ExtractFileName(One)) = Want)" in body
 
 
 class _Mcp:

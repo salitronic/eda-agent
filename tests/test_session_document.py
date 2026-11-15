@@ -177,6 +177,30 @@ def test_the_server_carries_its_document_from_call_to_call(wired):
     assert pins == ["", r"C:\A\a.PcbDoc", "", "", r"C:\A\a.PcbDoc"]
 
 
+def test_a_restarted_server_carries_on_with_the_sessions_document(wired, monkeypatch):
+    # A reconnect restarts the server mid-session; its first board command
+    # then ran on whatever another session had in front.
+    bridge, box = wired
+    box.replies = [_reply(data={"file_path": r"C:\A\a.PcbDoc"})]
+    bridge._execute_command("application.set_active_document",
+                            {"file_path": r"C:\A\a.PcbDoc"}, 5)
+    again = ab.AltiumBridge.__new__(ab.AltiumBridge)
+    ab.AltiumBridge.__init__(again)
+    monkeypatch.setattr(again.config, "workspace_dir", bridge.config.workspace_dir, raising=False)
+    monkeypatch.setattr(again, "_publish_request", lambda r: box.sent.append(r.to_dict()))
+    monkeypatch.setattr(again, "_poll_response", lambda i, t: box.replies.pop(0))
+    monkeypatch.setattr(again, "_reshow_hidden_frame", lambda c, i: [])
+    box.replies = [_reply(data={}), _reply(data={}, session_document={"missing": r"C:\A\a.PcbDoc"}),
+                   _reply(data={})]
+    again._execute_command("pcb.unroute", {}, 5)
+    assert box.sent[-1]["session_doc_path"] == r"C:\A\a.PcbDoc"
+    # Closed: forgotten here and for the next server too.
+    again._execute_command("pcb.get_nets", {}, 5)
+    assert ab.read_session_doc(bridge.config.workspace_dir)[0] == ""
+    again._execute_command("pcb.get_nets", {}, 5)
+    assert "session_doc_path" not in box.sent[-1]
+
+
 def test_the_public_tool_asks_for_what_is_really_in_front(monkeypatch):
     from eda_agent.tools import application as app_tools
 

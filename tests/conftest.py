@@ -240,6 +240,14 @@ def _fresh_bulk_hint_counts():
 
 
 @pytest.fixture(autouse=True)
+def _no_usage_records(monkeypatch):
+    """Tool calls made by tests are not counted (diag/usage would write
+    them into the real workspace's usage folder). A test of the counting
+    turns it back on for itself."""
+    monkeypatch.setenv("EDA_AGENT_USAGE_OFF", "1")
+
+
+@pytest.fixture(autouse=True)
 def _restore_active_backend():
     """Undo any backend a test registers, so the next one starts clean.
 

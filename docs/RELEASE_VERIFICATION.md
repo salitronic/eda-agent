@@ -1,4 +1,4 @@
-# Release verification: 2026.11.11.04
+# Release verification: 2026.11.15.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -248,10 +248,14 @@ works elsewhere cannot be an undeclared identifier:
 | 64, layer move | `IntelliMoveLayerUp`, `IntelliMoveLayerDown` on the Layer Stack Manager's editor | no, nowhere | medium, reorders the stack; ran live down and back up, tracks stayed on their layers |
 | 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
-| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
+| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | yes, `Gen_PlaceBlanket` (sch_place_blanket) | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
 | 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
 | 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
+| 78, text frame style | `AreaColor`, `TextColor`, `TextMargin` on a new text frame | yes, `SetSchProperty` (obj_modify on placed frames) | low, display only; ran live on a scratch sheet, read back |
+| 79, frame corner and part | `Corner` on a text frame, `SetState_CurrentPartID` before a DbLib part joins the sheet | yes, `SetSchProperty` | low; the corner ran live on a scratch sheet and read back, the DbLib part was not measured here |
+| 79, dimension texts | `TextSuffix` on a dimension, read back after the write | yes, `PCBSetExtra` | low, display only; ran live on a scratch board, read back |
+| 82, footprint label text | `UseTTFonts`, `MirrorFlag`, `ChangeNameAutoposition` on a placed part's designator and comment | yes, `PCBGeneric.pas` | low, display only; ran live on an imported board, heights read back at KiCad's 0.8 and 1 mm |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -344,8 +348,7 @@ source, which is not the same as having watched it work.
 | `app_context` can see unsaved work | It filtered the open-document list on a `modified` key the handler never emitted, so the list was always empty and every session opened reporting itself clean | Edit any sheet without saving, then `app_context`. `unsaved` must name it |
 
 `pcb_set_via_soldermask_relief` refuses on this build rather than being
-fixed. The write raises an access violation inside
-`ScriptingSystem.DLL` on AD 26.10.1.6, measured twice on a scratch
+fixed. The write crashes the scripting engine on AD 26.10.1.6, measured twice on a scratch
 board with three vias and nothing else, once through `BeginModify` and
 once through `SendMessageToRobots`. Because the fault lands between
 `PreProcess` and `PostProcess` it also leaves an open transaction
@@ -427,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.11.04`, `version_match` =
+Expect `altium_script_version` = `2026.11.15.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -1060,10 +1063,8 @@ long to diagnose.
 
 **THIS TOOL HAS ALREADY CRASHED ALTIUM ONCE.** The first build set
 Layer, x, y and StandoffHeight on the body before adding it to the
-board, and the PCB engine went down with "Access violation ... Read of
-address 0x20" inside ADVPCB.DLL. A null dereference at a small field
-offset is a property setter reaching for state that an owning board
-provides. It also assigned x and y directly, where the reference and
+board, and the PCB editor crashed: a property setter reaching for state
+that an owning board provides. It also assigned x and y directly, where the reference and
 `Lib_Link3DModel` both use `MoveByXY` after the add.
 
 Both are corrected: add, register, then Layer, then MoveByXY, then
@@ -1379,6 +1380,113 @@ Then the tools that use them, on a public example board opened in Altium
   A difference is a finding about the engine's DRC or its board read;
   write it down with the rule it came from.
 
+Then routing in rounds under a brief, on the same kind of board:
+
+    pcb_route_brief      expect_file=<the board's full path>
+    pcb_route_brief      expect_file=<same> add=[{"nets": [<a critical net>],
+                         "layers": [<its pad layer>], "max_vias": 0,
+                         "source": <the datasheet page you read>}]
+    pcb_route_round      expect_file=<same>
+    design_job_result    job_id=<from the reply>        once done
+    pcb_autoroute_apply  job_id=<same> expect_file=<same>
+    pcb_route_round      expect_file=<same>             the next round
+
+* The first `pcb_route_brief` names the board's critical nets in
+  `needed`, each with what to read; `pcb_route_round` before the brief
+  answers `brief_needed` and starts no job.
+* A brief entry naming a layer none of the net's surface pads is on, or
+  a width under the board's width rule, comes back in `errors` and is
+  not saved.
+* The round's result routes only that round's nets, on the brief's
+  layers, with no more vias than it allows; `review.picture` opens and
+  shows them; `review.obeyed` lists the briefed nets.
+* After the apply, the next round leaves the first round's copper as it
+  is, and any track drawn by hand between the two rounds as well.
+* A net blocked on purpose (a keep_out across its only way) comes back
+  unrouted with `review.advice` options, each saying whether its trial
+  routed it; applying the one that routes and running the round again
+  routes the net.
+* A round's tracks reach each surface pad straight along one of its axes
+  and end on its centre; `review.findings` has no `pad_entry:` finding
+  for a net the round routed, and any piece off the 45 degree grid comes
+  back as an `angle:` finding.
+* On a board with a radio (an antenna part, or a net named RF or ANT),
+  `needed` names the feed; it is satisfied only by a sourced entry and an
+  area of kind antenna that allows it. With the area set, the next rounds
+  route every other net round it, and a pour already inside it comes
+  back as an `area:` finding asking for a polygon cutout.
+* A brief entry with `max_length` under the net's real length, or a
+  `reference` net with no copper next to the route, gives a `length:` or
+  `reference:` finding. `pcb_autoroute_apply` without `accept` answers
+  `unanswered` and writes nothing; with `accept=[{id, reason}]` it
+  writes, and lists the answer in `decisions`. Routing the same round
+  again gives the same finding, which then needs no new answer.
+* The Config tab's Routing discipline shows Enforced, Advisory and Off,
+  with Enforced lit on a new workspace. Set to Advisory, a round with a
+  critical net lacking an entry is routed, naming it in
+  `routed_without_brief`, and `pcb_autoroute_apply` without `accept`
+  writes and lists the findings in `unanswered`. Set to Off, neither is
+  named. Every reply then carries `routing_discipline`. Back on Enforced,
+  the next call refuses again, with no restart.
+* The window has a Help button at the top right, after the version. With
+  the AI client or the dashboard running, clicking it opens the help page
+  in the browser, one tab per click: labelled pictures of each part of the window
+  (picture included, with no dashboard running), then every setting.
+  The dashboard serves the same page at `/help/config`.
+* An entry with `apart_from` a noisy net (a switch node, a clock) and a
+  `spacing` routes the net at least that far from the other's copper on
+  each layer, measured in Altium with the measure tool; with
+  `max_parallel` and `parallel_gap` set short, a run beside it comes back
+  as an `apart:` finding.
+* On a board with a switching regulator, `pcb_route_brief` with no
+  changes lists its input loop in `loops_found`. Given as a loop with a
+  `max_area` under its size, the next round's `review.loops` gives the
+  area over the routed copper and a `loop:` finding; moving the input
+  capacitor next to the chip and routing again clears it.
+* A barrier round a mains net (or its net class) with a `creepage`
+  routes every other net at least that far from it, measured in Altium.
+  A low-voltage part placed closer gives a `barrier:` finding naming the
+  layer; a board cutout drawn between the two, and the round routed
+  again, clears the creepage finding but not a `clearance` one.
+* An `assembly` rule with `via_to_pad` routes no via closer than that to
+  any surface pad (the net's own included), and with `vias_under_parts`
+  false none under a part's body; a BGA's or exposed pad's part still
+  takes its vias. A pair of the round's parts closer than its part gap
+  gives an `assembly:gap:` finding. An `orient` rule over a row of
+  diodes turned unlike gives an `orient:` finding per odd one out, and a
+  `pins` entry for a cathode on the wrong net names the pin.
+* A clock entry with `terminate`, `driver` and a `max_stub`, routed with
+  a load hanging off the line, gives a `termination:` finding naming the
+  pad and its stub; routed as a daisy chain through the loads it does
+  not. A `guard` of GND with a guard track on one side only gives a
+  `guard:` finding. `apart_from` a net class with `max_broadside` gives
+  an `apart:` finding for a track run over one of its nets on the next
+  layer.
+* A `pdn` rule for an MCU with its rails and `max_distance` gives a
+  `pdn:` finding per power pin whose capacitor is further, and with
+  `min_vias` per pin or return pad short of vias. `pcb_route_simulate`
+  with what pdn and the capacitors' datasheet models runs ngspice and
+  writes the rail's impedance to a result file; what impedance writes an
+  openEMS model and script of the net (and runs it where openEMS is
+  installed, else says how to install it).
+* A second routing tool on the same board, with nothing changed between,
+  starts at once: the board read is kept while its stamp (commands that
+  wrote, object counts, part places) is unchanged. A write from any
+  session, or a part moved by hand, makes the next tool read it again.
+  On the Bluetooth Sentinel example (10,000 copper objects) a kept read
+  answers without the wait of a full one.
+* The board's tracks and arcs are read from Altium's own text of the
+  board, the rest through the script. On a board with a pour, a plane and
+  copper on Mechanical17 or above, a routing tool's board matches
+  `pcb_get_copper` object for object; a script older than this one reads
+  everything through the script, as before.
+* A brief loop's nets are routed inside the loop's pads where they can
+  be: a route that would go round the outside of the loop goes the
+  inside way.
+* An entry with an `impedance` and no width is refused, naming the width
+  each allowed layer needs on the board's stack; `pcb_get_layer_stackup`
+  reports the dielectrics the Layer Stack Manager shows, not 0.
+
 Taking the routing up first, on a saved copy of a public example board:
 
     obj_count  object_type=eTrackObject  filter=InComponent=false|InPolygon=false|Layer=TopLayer
@@ -1600,9 +1708,9 @@ part. Four new bridge commands in Library.pas read it: `get_dblib_info`,
 `query_dblib`, `get_dblib_record` and `place_dblib_component`, behind
 `lib_dblib_info`, `lib_dblib_search`, `lib_dblib_get_record` and
 `sch_place_dblib_component`. `lib_search` now searches every installed
-DbLib too. The table definitions are read from the .DbLib file inside the
-handler; the rows are read over ADO, which nothing in this codebase has
-used before.
+DbLib too. The table definitions come from Altium's own database library
+document (step 86); the rows are read over ADO, which nothing in this
+codebase has used before.
 
 **This is the highest-risk step in the release.** Every ADO member below is
 new here and comes from one reference script
@@ -1622,14 +1730,13 @@ Access .mdb or .accdb is the simplest), one key value from it, and a
 scratch schematic sheet. Item 6 writes to that sheet: `app_checkpoint`
 first.
 
-1. **File only, no ADO.** `lib_dblib_info library_path=<dblib>
+1. **Altium only, no ADO.** `lib_dblib_info library_path=<dblib>
    with_fields=false`. Expect every table the DbLib editor shows, with its
    `enabled` flag; `connection.kind` and `provider` right for the database;
    `has_password` true only if the connection has one, and
    `connection.redacted` showing `***` where it was; `connected: null`.
-   Record each table's `key_field_source` and the keys under `settings`:
-   the file keys for the key column (`Key`, `UserWhere`) are inferred, not
-   documented, and this is where the guess is checked. `app_ping`.
+   Each table's `key_field` is the column the DbLib editor marks as the
+   lookup key, with `key_field_source: "key_setting"`. `app_ping`.
 2. **ADO connection (highest risk).** The same call without `with_fields`.
    Expect `connected: true` and each enabled table's `fields` listing the
    columns the DbLib editor's field mappings show, `key_field_found: true`,
@@ -2109,7 +2216,7 @@ Scratch documents only.
    (`app_list_open_dialogs` reads none), `mode` "batch", `drc_confirmed`
    true, `report_path` in the bridge workspace, the focus unchanged, and
    the report's Rule Violations total equals `violation_count`. Recorded
-   2026-10-23 on AD 26.11.1.5, scratch board: 0.45 s, 3 violations
+   2026-10-23 on AD 26.11.1.5, scratch board: 3 violations
    (Un-Routed Net), report 14 KB HTML.
 2. **Managed (Workspace) placement.** Needs a signed-in Workspace and
    an open sheet that already carries one managed part, since the
@@ -2137,11 +2244,7 @@ Scratch documents only.
    Component Models" for R1. A part with no footprint model lands in
    `footprints_not_applied`.
 
-Python only: `design_bom_file` on a `.PcbDoc` or a missing path is an
-error, and a project never compiled (no `.PrjPcbStructure`) is an error
-saying so; a sheet with no parts returns an empty BOM with a `warning`.
-`design_review_file` refuses the same three. Under WSL,
-`design_plan_from_sheet` on a Windows sheet path names the sheet by its
+Python only: under WSL, `design_plan_from_sheet` on a Windows sheet path names the sheet by its
 file, so a re-emit lands on the same sheet.
 
 Not run yet: none of this has executed in Altium on this build.
@@ -2214,8 +2317,8 @@ wheel; `validate_requirement` returns board-intent questions in `notes`
 without failing; SECURITY.md and the templates match the repository.
 
 Recorded on AD 26.10.1.6 with the previous script build, scratch board: item 3
-(class of two nets: both listed, `member_count` 2, `probe_errors` 0, 0.04 s
-either way on a board this small), item 4 (`route` "InternalPlaneNetName",
+(class of two nets: both listed, `member_count` 2, `probe_errors` 0, no
+difference in wait either way on a board this small), item 4 (`route` "InternalPlaneNetName",
 read back), item 6 (the pad reads 7 under both names; `Name=` is not
 written and the pad keeps 7, reported under `properties.failed`), item 8
 (`_session_start` then `_tick_first`, no `_arm_failed`) and item 10:
@@ -2459,8 +2562,8 @@ Recorded on AD 26.11.1.5 with the three builds before this one, scratch
 documents: items 1 to 9, except the pin `Description` write in item 6
 (the build before this one wrote and read it back; earlier ones
 reported it `unknown` without a fault). Before item 10's fix, the miss
-took 6.6 s and saved the file, while two symbols created earlier in the
-session were found in 0.05 s without a save. Item 1 left one open copy; before the fix the same steps left two
+saved the file and made the call wait, while two symbols created earlier
+in the session were found at once without a save. Item 1 left one open copy; before the fix the same steps left two
 and the pad was "not found". Items 2 and 3 were also read with the flag
 written back the other way. Nothing here was saved and reopened.
 
@@ -2558,8 +2661,8 @@ report. `IPCB_Model.SetState` was then measured on a scratch copy: writing
 Double; Dz : TCoord)`, and only `Body.Model := Model` after it makes it
 save. `IPCB_Model.Rotation` reads the 2D rotation (0 with 10/20/30 set),
 and no getter for the 3D ones is known. So on a STEP body (`ModelType` 1)
-`standoff_height` now writes the model's Z offset with the rotations the
-SAVED file holds, read by `pcblib_models.saved_body_models`. In the test
+`standoff_height` now writes the model's Z offset with the rotations
+Altium's export of the footprint holds (`library.footprint_export`). In the test
 library most STEP models sit at a non-zero rotation (90/0/90, -90/180/0),
 so writing zeros there would have tipped them over. A body whose saved
 record is missing, or names another model file, or a footprint whose
@@ -2618,7 +2721,7 @@ read a STEP model's 3D rotations (step 40's file read stays).
    Altium's Open CASCADE re-encoding (117 KB from a 268 KB original),
    not the vendor's bytes. `body_index=2` is refused with `NO_BODY`.
 3. **Board STEP.** `proj_export_step` on a scratch board: `route`
-   `exporter`, `dialogs_answered` empty, a valid 7 MB STEP file in 17 s.
+   `exporter`, `dialogs_answered` empty, a valid 7 MB STEP file.
    Again with `overwrite=True`: the same, and no dialog is left open.
 4. **Impedance profiles.** `pcb_get_impedance_profiles` on three boards:
    `profile_count` 0, `read_errors` 0 on each.
@@ -3862,15 +3965,14 @@ Altium's script time; a change that holds still for one poll re-reads
 only its sections, then the checks run. Its calls follow the front
 (`following_front`): they neither put a document back nor adopt one.
 
-Measured 2026-11-05 on AD 26.11.1.5 with this build, on a scratch copy of
+Recorded 2026-11-05 on AD 26.11.1.5 with this build, on a scratch copy of
 a 146-part, 2,095-copper board:
 
-* First read 16 to 17 s, fast checks 2 s, slow ones 2 s; 153 located
-  findings. Counting poll about 0.2 s in Altium, walking poll about 0.9 s;
-  on an 11,084-copper board the walk took 5 s, so above 4,000 objects
-  the copper is counted, not walked.
-* A part moved 100 mil: parts and pads re-read (9 s), findings updated
-  14 s after the move, no copper re-read.
+* First read, then the fast and the slow checks: 153 located findings.
+  The counting poll is the lighter of the two; above 4,000 objects the
+  copper is counted, not walked.
+* A part moved 100 mil: parts and pads re-read, findings updated after
+  the move, no copper re-read.
 * A part and a net selected in Altium appeared in the state; clicking a
   part selected it and zoomed to it, a net was highlighted, a finding
   zoomed Altium to it; the focus stayed on the board throughout.
@@ -3968,6 +4070,310 @@ With the scripts deployed, on scratch libraries:
    `fab="OSH Park"` and a 4 mil track on the board it is refused naming the
    track, the board it examined and OSH Park's quote; with
    `fab="JLCPCB"` it runs and the reply carries `fab_check`.
+
+## 78. Stacks, member gates, heights, connectivity and library reads
+
+Measured live on AD 26.11.1.5 with this release's script unless marked.
+Scratch copies only, closed without saving.
+
+1. `pcb_layer_stack_manager` on a one-stack board: one call to the script,
+   no `stacks`. On a rigid-flex board (`stacks_count` 2): a second call
+   reads the model, `stacks` lists both with their own layers and spans,
+   and `drill_pairs` are the board's own (one pair, not a copy of the
+   first). `pcb_physical_stack` gives the same `stacks_count`.
+2. A stack write below AD 22 (not measured here): its `stack_manager`
+   sync answers `skipped` with the reason and the write stands.
+3. Schematic members: on a sheet with one object of each kind,
+   `obj_query` reads Style on a port, power port, cross-sheet connector
+   and probe, LineWidth on wires, notes, text frames and signal
+   harnesses, IOType / Alignment / Width on ports, part members on a
+   component and Electrical / PinLength on pins. IOType on a wire,
+   LineWidth on a pin or probe and Width on a net label answer blank,
+   `not_on_this_type` says why, and `app_ping` still answers after each.
+   `build.py` refuses to build when `scripts/altium/gen_sch_members.py
+   --check` fails.
+4. `pcb_get_components`: `height_mils` is the footprint's Height field and
+   `model_height_mils` the tallest 3D body (null without one), with
+   `height_mismatch`; `body_heights="all"` adds `bodies`. Generic
+   `Height` and `ModelHeight` on `eComponentObject` agree with them.
+5. `pcb_replicate_layout` on a channel whose parts sit on an inner layer
+   of a rigid-flex board finds its internal net and copies its routing.
+6. `proj_get_connectivity` / `_many` list `sheets`; `pins` and
+   `connected_only` trim the pins and say `pins_left_out`. A multi-part
+   component placed across sheets takes each pin's net from the sheet
+   its part is on (not measured here: needs such a project).
+7. `lib_extract_intlib` on an IntLib that would raise the Open
+   Integrated Library prompt: no prompt, and `sch_libs` / `pcb_libs` list
+   the sources extracted (in capitals, as FindFiles gives them).
+8. `sch_place_text_frame` with fill, border and text colours and a
+   margin reads them back in `style`; `C:\new\board` stays text with a
+   real newline beside it or with `typed_breaks=False`.
+9. A DbLib with `QuoteTableNames=0` sends its table names bare (FPC
+   tests; not measured against a database here).
+10. An unreadable pad shape in the board geometry reads `Unknown` and is
+    drawn as its whole box.
+
+## 79. Pull requests of 2026-11-13
+
+Measured live on AD 26.11.1.5 with the previous release's script on scratch copies,
+`app_ping` answering after every call, unless marked.
+
+1. Justification: a text frame answers blank (unreadable), a net label
+   reads it; both from the member table.
+2. A text frame's `Corner.X` / `Corner.Y` read and write (1500 to 1700
+   and read back).
+3. Filters compare numbers as numbers: `Location.Y=5000.0` finds a net
+   label at 5000; `Text=NL1.0` does not find `NL1`.
+4. A schematic rectangle's corners read; `obj_clear_highlights` on a
+   sheet answers `deselected: all`.
+5. `proj_set_document_parameter` answers `saved: false` and
+   `pending_save: true`.
+6. `lib_split_pin_functions` with a sheet in front is refused, naming
+   the library tool it is.
+7. `lib_copy_component` of the only symbol of a library copies all of
+   its pins (4 of 4).
+8. `lib_add_footprint_vias` with `mask_expansion` reports the via
+   `masked`.
+9. A dimension's `TextSuffix` written through `obj_modify` reads back;
+   a value Altium does not keep is refused (offline tests).
+10. Not measured here: a multi-part DbLib symbol placed as part 1 (no
+    DbLib), short paths sent in their long spelling (8.3 names are off on
+    this disk), Replicate of a region in `pcb_replicate_layout`.
+
+## 80. Basic 3D models on the Config tab
+
+No new Altium identifiers: a body's `Model.ModelType` is already read by
+`Lib_GetFootprintPrimitives` and `ComponentBodyKind`.
+
+1. The Config tab shows a 3D MODELS group under Routing, with "Basic 3D
+   models" at Not allowed on a fresh workspace. Choosing Allowed and back
+   is kept as `basic_3d_models` in `preferences.json`, and the log says so.
+2. `lib_audit_footprint_policies` and `lib_check_pcblib` on a PcbLib with
+   one extruded-only footprint and one STEP footprint name only the first
+   under `basic_3d_models`; each footprint in the geometry read carries
+   `step_bodies`.
+3. `pcb_get_components` gives `step_body_count` per part, and
+   `basic_3d_models` names the footprints and designators that have only
+   extruded bodies.
+4. With Allowed, none of the three replies carries `basic_3d_models`.
+
+## 81. Keep board in view fits the board outline
+
+No new Altium identifiers: `BoardOutline.BoundingRectangle` and
+`GraphicalView_ZoomOnRect` are already used by `PCB_View` and others.
+
+1. On a board with parts parked well outside the outline, `obj_zoom` with
+   action `board` answers `fitted_to` = `board_outline`, and the window
+   shows the outline with a small margin, not the parked parts.
+2. With Keep board in view On, a `pcb_move_components` call leaves the
+   view fitted the same way.
+3. With a schematic in front, Keep board in view still fits the sheet's
+   objects.
+
+## 82. A KiCad project rebuilt in Altium, and polygon outlines
+
+No new Altium identifiers: `pcb.place_polygon_rect` takes a `points` outline
+through `RegionPointsSplit`, shared with `library.add_footprint_regions`,
+and `Polygon.Name`; `pcb.place_components` restyles each part's designator
+and comment text (`Size`, `Width`, `Rotation`, `Layer`, `MirrorFlag`,
+`UseTTFonts`) and sets its autoposition to manual; the component stamp
+counts each designator once with a `TStringList`. `obj_query` reads a
+symbol arc's `Radius`, `StartAngle` and `EndAngle` through `ISch_Arc`,
+narrowed by `ObjectId` as `Corner` is. `NextBatchOp` reads exactly three
+tildes as a value's `~` and then the separator.
+
+Verified live with steps 1 to 4 and 6: ecc83 imported with
+`libraries.same` True (6 symbols, 6 footprints), `nets.same` True and 33
+pads in place.
+
+1. `proj_import_from_kicad` on KiCad's `ecc83` demo, `dry_run` True, lists
+   6 symbols and 6 footprints, every sheet with no `errors`, and touches no
+   document.
+2. The same with `dry_run` False and an empty output folder finishes every
+   stage with `ok`: `nets.same` True (9 KiCad nets, 9 Altium, no
+   differences) and `board.pads.same` True. The SchLib and PcbLib sit in
+   the output folder and belong to the new project; no other library is
+   opened or written.
+3. In that SchLib, R's pins wire at (0, ±150) and are 50 mil long; its body
+   is 80 by 200 mil, unfilled; its pin numbers and names are not drawn.
+   ECC83 has three parts, each with its own drawing.
+4. On the sheet, U1's three parts share one designator, and the drawing
+   stage reports no `values` failure.
+5. `pcb_place_polygon` with a five-point outline places a pour with five
+   vertices and the given `name`; without `points` it places the rectangle
+   as before.
+6. The live import reports `libraries.same` True with `checked` 6 and 6.
+   Copy the ecc83 demo to a scratch folder, change R's pin 1 length in its
+   `.kicad_sch` from 1.27 to 2.54 and import that copy: the library stage
+   builds the longer pin, the check still matches it, and `ok` stays True;
+   the check's handling of a real difference is covered offline.
+7. `obj_query` on `sch_arc` with scope `lib_component:ECC83@1` reads
+   `Radius` 200 and `StartAngle` / `EndAngle` near 0.25 and 179.75 for the
+   envelope's top; on an `eLine` the three come back unreadable without
+   stopping the script.
+8. `sch_set_components_parameters` with two stamps whose last field is
+   `Datasheet=~` updates both parts (`failed` 0).
+9. With a document named like the import's own (another
+   `ecc83-pp.SchLib`) open, a live import refuses at once and names it in
+   `open_with_the_same_name`.
+10. On the imported ecc83 board, each designator has the height and layer
+    of its KiCad reference text, a reference KiCad hides is not shown, and
+    `label_layers_unknown` is 0.
+
+## 83. A removed document stays out of the project file
+
+No new Altium identifiers: `project.rewrite_file` saves the project with
+`DoSafeChangeFileNameAndSave`, as `project.rename_document` does, and
+`project.file_documents` reads the `[DocumentN]` sections of the saved
+project file. No dialog is raised.
+
+Verified live with steps 1 to 4: the file went from A, C, D, D to A, C
+with no dialog open, the copy was gone, and the reopened project listed
+A and C.
+
+1. In a scratch project with sheets A, B, C and D, `proj_remove_document`
+   with items B and D (default `save_project`): both `success` True,
+   `in_project_file` False, `stale_sections.after` lists A and C, and
+   `app_list_open_dialogs` reads none.
+2. No `.eda-rewrite.PrjPcb` file is left beside the project.
+3. `proj_close`, `proj_open`, `proj_list_documents`: A and C only.
+4. Put any file at `<project>.eda-rewrite.PrjPcb` and remove another
+   sheet: `stale_sections.reason` names `COPY_EXISTS`, the file is left
+   as it was, and the project file is not deleted.
+5. `proj_delete_sheet` on a middle sheet of a three-sheet project: the
+   reopened project lists the other two.
+
+## 84. Checkpoints and the board backup are written by Altium
+
+No new Altium identifiers: `application.save_document_copy` opens a
+document with `Client.OpenDocument` and saves it under another name with
+`SetFileName` and `DoFileSave`, as `pcb.save_copy_as` does. No dialog is
+raised.
+
+Verified live on AD 26.11.1.5 on a scratch
+project with a sheet, a board and an OutJob: the checkpoint held all three
+as Altium wrote them and the project file as bytes; a second checkpoint
+opened nothing; the board, edited and saved (160,768 to 963,072 bytes),
+was 160,768 bytes again after the restore, the project was reopened, and
+the second `pcb_save_copy_as` left a `.bak` of 160,768 bytes.
+
+1. `app_checkpoint` on a scratch project: `not_written` is empty, and
+   `app_list_documents` shows no snapshot left open.
+2. `app_checkpoint` again with nothing changed: it returns at once.
+3. Edit and save the board, then `app_restore_checkpoint`: `restored` 1,
+   `unchanged` the rest, `reopened` True, `were_open` names the project's
+   documents, no `.ckpt-old` file is left beside the board, and the edit
+   is gone when the board is opened.
+4. `pcb_save_copy_as` twice to the same target: the second reply's
+   `backup` is `<target>.bak`, and that file opens in Altium.
+
+## 85. Altium loads a saved project file; the bridge does not open it
+
+New Altium identifiers: `IWorkspace.DM_LoadProjectHidden` and
+`IWorkspace.DM_CloseProject`. To learn what a saved project file holds,
+the bridge copies it beside itself as `<name>.eda-read.PrjPcb`, Altium
+loads the copy as a hidden project, the bridge reads that project's
+documents, and the copy and its `.PrjPcbStructure` are deleted. No dialog
+is raised and the Projects panel does not change.
+
+`app_save_all` no longer reads project files either. The bridge records
+each open project's member file names before every command and again when
+the project file's time changes (`project_members.txt` in the bridge
+workspace), and a project whose members are not all in its record has its
+file written.
+
+Verified live on AD 26.11.1.5 on a scratch
+project with sheets A to D: the load took under a second with the project
+open; after B was removed and saved the loaded copy held A, C, D and the
+reopened project listed A, C, D; after D was removed and saved the loaded
+copy still held A, C, D, the project file was rewritten, the loaded copy
+then held A, C and the reopened project listed A, C. No `.eda-read` file
+was left in the folder. A copy loaded from another folder listed no
+documents, which is why it is made beside the original.
+
+1. `proj_remove_document` on the last sheet of a scratch project:
+   `stale_sections.before` names the removed sheet, `after` does not, and
+   `rewritten` is True.
+2. `proj_close` then `proj_open` and `proj_list_documents`: the removed
+   sheet is not listed.
+3. The project folder holds no `.eda-read.PrjPcb` and no
+   `.eda-read.PrjPcbStructure`.
+4. `app_exit_active_command` with only saved projects open: `dirty_before`
+   is 0.
+5. Rename a sheet in the Projects panel, then `app_save_all`: the project
+   file is written (`still_dirty` 0), and the reopened project lists the
+   new name.
+
+## 86. Altium answers for a database library; the bridge does not open the .DbLib
+
+New Altium identifiers, all on the document that
+`IntegratedLibraryManager.GetAvailableDBLibDocAtPath` gives:
+`GetConnectionString`, `GetLibrarySearchPath`, `GetTableCount`,
+`GetTableNameAt`, `TableEnabled`, `GetFieldCount`, `GetFieldNameAt`,
+`GetParameterNameAt`, `IsParameterDatabaseKey`, `GetFilterText` and
+`GetCommandString`. `lib_dblib_info`, `lib_dblib_search`,
+`lib_dblib_get_record` and the DbLib placement tools take the connection,
+the tables, each table's columns, the parameter each column maps to and
+the key column from that document. The quote characters are read off the
+filter text Altium writes for a column and a table's schema off the query
+Altium writes for that table. The rows are still read over ADO (step 25).
+
+Altium gives that document only for a library among its available ones. A
+library that is not installed is installed for the read and uninstalled
+after it; one that was installed already is left installed.
+
+Verified live on AD 26.11.1.5 on a scratch
+DbLib over a SQLite file through ODBC, with one mapped table and one
+table the DbLib does not map: `lib_dblib_info` listed both tables, the
+ten columns of the first, `key_field` on the column the DbLib looks parts
+up by, and the [Library Ref], [Library Path], [Footprint Ref] and
+[Footprint Path] columns; the search found a part by its description and
+the record call returned its ten values. With the library uninstalled the
+same calls answered the same and the installed list did not hold it
+afterwards. A text file renamed to .DbLib answered with no connection and
+no tables and was not left installed. Not measured: an Access source, a
+schema-qualified table and a DbLib whose table names are not quoted.
+
+1. With a DbLib installed: `lib_dblib_info library_path=<dblib>
+   with_fields=false`. The tables, their `enabled` flags and each
+   `key_field` match the DbLib editor. `app_ping`.
+2. `lib_dblib_search` and `lib_dblib_get_record` on a known part: the
+   same answers as step 25, items 3 and 4. `app_ping`.
+3. `lib_uninstall_library` on it, then item 1 again: the same reply, and
+   `lib_get_installed_libraries` does not list the DbLib afterwards.
+4. `lib_dblib_info` on a text file renamed to .DbLib: `table_count` 0 and
+   an empty `connection.provider`, and `lib_get_installed_libraries` does
+   not list it afterwards. `app_ping`.
+
+## 87. A new OutJob is the file Altium saved
+
+No new Altium identifiers and no script change: `proj_create_outjob`
+stages its copy in the bridge workspace and has Altium save it as the
+project's file with `application.save_document_copy` (step 84). The
+staged file is removed afterwards. When Altium does not save, the project
+gets no OutJob and the reply says so. With the dashboard's Saving switch
+off the tool is refused before anything is staged.
+
+Verified live on AD 26.11.1.5 on scratch
+copies. A copy of Altium's shipped Fabrication OutJob, saved by Altium,
+kept every line the tool sets (each container's folder and file path,
+release-managed off, the copper layer set, a relative and an absolute
+output document); Altium changed only the job group's name and the
+target printer. On a scratch project the tool returned `ok` true, the
+OutJob was a member of the project, Altium read its containers back with
+the new folder, the staging folder was empty and no scratch document was
+left open. Not measured: an OutJob with a variant, and a save Altium
+refuses.
+
+1. On a scratch project with a board and a sheet: `proj_create_outjob
+   project_path=<prjpcb> source_outjob=<an OutJob> outjob_name=Check`.
+   `ok` true, `containers_read_by_altium` lists the source's containers
+   with `output_dir` under the project, and `proj_list_documents` lists
+   `Check.OutJob`. `app_ping`.
+2. With no board in front, item 1 again under another name: `ok` true and
+   `copper_layers_note` says the layer set is the template's own.
+3. Saving switched off on the dashboard, item 1 again: `SAVING_OFF`, no
+   file in the project folder. Switch it back on.
 
 ## Still open, and not blocking
 

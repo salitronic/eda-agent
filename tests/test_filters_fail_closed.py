@@ -162,9 +162,12 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
     value = "\n".join([_routine(_code("Utils.pas"), "IsFloatStr"),
                        _routine(_code("Utils.pas"), "StrToFloatDef"),
                        _routine(_code("Utils.pas"), "FilterWildMatch"),
+                       _routine(_code("Utils.pas"), "FilterNumbersEqual"),
                        _routine(_code("Utils.pas"), "FilterOpHolds"),
                        _routine(_code("PCBGeneric.pas"), "IsLengthProperty"),
-                       _routine(_code("PCBGeneric.pas"), "FilterValueMatchesPCB")])
+                       _routine(_code("PCBGeneric.pas"), "FilterValueMatchesPCB"),
+                       _routine(_code("Generic.pas"), "IsSchNumberProperty"),
+                       _routine(_code("Generic.pas"), "FilterValueMatchesSch")])
     checks = [(f, b) for f, b in [
         ("", ""), ("Layer=TopLayer", ""), ("Text=a=b", ""), ("Layer=TopLayer|", ""),
         ("Designator.Text=PWR IN", ""), (QUERY, QUERY), ("IsDesignator", "IsDesignator"),

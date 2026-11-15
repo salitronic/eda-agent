@@ -29,7 +29,8 @@ pipeline, because the integrity lives server-side.
    so the user can watch the board change, and record each decision with
    its reason before acting on it (`design_live_note`).
 2. If a project is open or will be modified, checkpoint first so the whole
-   run is revertible in one step: `app_checkpoint("before autonomous run")`
+   run is revertible in one step:
+   `app_checkpoints(action="make", args={"label": "before autonomous run"})`
    on Altium, `easyeda_checkpoint` on EasyEDA.
 3. Loop: `design_next_action(session_id)` and act on `status`:
    - **proceed / retry**: do the stage using its `suggested_tools` until the
@@ -86,4 +87,6 @@ truth.
 The surface is several hundred tools. Use `tool_catalog(category=, maturity=,
 interaction=, query=)` to find the right one without loading every schema;
 `interaction="modal"` and `"partial"` flag tools that need a human or leave
-work incomplete. Run a discovered tool by name with `tool_invoke`.
+work incomplete. Run a discovered tool by name with `tool_invoke`. To find
+the quick route for a task (and the tool that looks right but acts on
+another document), ask `tool_guide` with the task and the backend.

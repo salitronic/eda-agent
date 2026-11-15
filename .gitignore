@@ -108,3 +108,6 @@ extensions/easyeda/dist/
 
 extensions/easyeda/verified.json
 extensions/easyeda/*.eext
+
+# The Rust route core's build output
+route-core/target/

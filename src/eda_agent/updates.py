@@ -231,6 +231,32 @@ def _from_index() -> bool:
         return False
 
 
+def _installer() -> str:
+    """What installed this copy into an environment of its own: "pipx" or
+    "uv" (each keeps a tool in a folder named after it), else "pip"."""
+    parts = [x.lower() for x in Path(sys.prefix).parts]
+    for i, part in enumerate(parts[:-1]):
+        if part == "pipx" and parts[i + 1] == "venvs":
+            return "pipx"
+        if part == "uv" and parts[i + 1] == "tools":
+            return "uv"
+    return "pip"
+
+
+def _upgrade_how(from_index: bool) -> str:
+    """How the user upgrades this copy, with what installed it."""
+    tool = _installer()
+    if tool == "pipx":
+        return "update it with: pipx upgrade eda-agent"
+    if tool == "uv":
+        return "update it with: uv tool upgrade eda-agent"
+    if from_index:
+        return ("this copy was installed from PyPI; update it with: "
+                "python -m pip install --upgrade eda-agent")
+    return (f"this copy was installed as a package, not from a clone; update "
+            f"it with: python -m pip install --upgrade git+{REPO_URL}")
+
+
 def _pypi_version() -> str:
     """The latest version on PyPI."""
     with urllib.request.urlopen(PYPI_URL, timeout=15) as reply:
@@ -297,11 +323,7 @@ def _check_package(force: bool) -> dict[str, Any]:
     info: dict[str, Any] = {
         "kind": "package", "installed": installed, "checked_at": time.time(),
         "source": "pypi" if from_index else "github",
-        "how": ("this copy was installed from PyPI; update it with: "
-                "python -m pip install --upgrade eda-agent" if from_index else
-                f"this copy was installed as a package, not from a clone; "
-                f"update it with: python -m pip install --upgrade "
-                f"git+{REPO_URL}")}
+        "how": _upgrade_how(from_index)}
     try:
         info["latest"] = _pypi_version() if from_index else _published_version()
     except (OSError, ValueError) as exc:

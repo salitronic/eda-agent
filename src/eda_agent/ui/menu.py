@@ -189,6 +189,27 @@ def _name_at(x: int, y: int) -> str:
         return ""
 
 
+def _rescaled_point(hwnd: int, x: int, y: int, expect: str):
+    """(x, y) converted between the window's logical and physical
+    coordinates, whichever way puts the item named ``expect`` under it;
+    None when neither does or the point does not move."""
+    user32 = _u()
+    for convert in ("LogicalToPhysicalPointForPerMonitorDPI",
+                    "PhysicalToLogicalPointForPerMonitorDPI"):
+        point = wintypes.POINT(int(x), int(y))
+        try:
+            if not getattr(user32, convert)(wintypes.HWND(hwnd), byref(point)):
+                continue
+        except (AttributeError, OSError):         # pragma: no cover - old Windows
+            continue
+        if (point.x, point.y) == (x, y):
+            continue
+        under = _name_at(point.x, point.y)
+        if under and _same(under, expect):
+            return point.x, point.y
+    return None
+
+
 def _visible_rect(node):
     try:
         rect = node.accLocation(_self())
@@ -272,8 +293,17 @@ def _click(pid: int, x: int, y: int, after: float = 0.3, expect: str = "",
     if expect:
         under = _name_at(x, y)
         if under and not _same(under, expect):
-            user32.SetCursorPos(*origin)
-            return f"the pointer is over {under!r}, not {expect!r}"
+            # Altium is system DPI aware: on a monitor scaled unlike the
+            # main one, a position it reports can be in its own scaled
+            # coordinates. The point converted either way is tried, and
+            # taken only where the expected item is found.
+            moved = _rescaled_point(hwnd, x, y, expect)
+            if moved is None:
+                user32.SetCursorPos(*origin)
+                return f"the pointer is over {under!r}, not {expect!r}"
+            x, y = moved
+            user32.SetCursorPos(x, y)
+            win.wait_until(_arrived, 0.2)
     # Re-checked after the pointer move: moving the cursor over another
     # application can raise it, and the press below would then land
     # there. The cursor is restored in the finally so a refusal here

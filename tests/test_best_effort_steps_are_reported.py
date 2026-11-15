@@ -6,12 +6,11 @@ Two tools do something helpful before their real work and carry on if it
 fails. Carrying on is right. Not mentioning it is not, because in both
 cases the thing that failed is the thing the caller asked for.
 
-``app_checkpoint(save_first=True)`` flushes dirty documents so the
-snapshot includes in-editor changes. If that flush fails it still
-snapshots the on-disk state, which is better than nothing, but the
-checkpoint is then missing exactly the unsaved work it was taken to
-protect. A checkpoint is an undo, and one that quietly holds less than
-the caller believes is worse than a failure they can see.
+``app_checkpoint(save_first=True)`` saves the project so its file holds
+what Altium holds. If that save fails it still snapshots, which is better
+than nothing, but the project file in the checkpoint is then the one on
+disk. A checkpoint is an undo, and one that quietly holds less than the
+caller believes is worse than a failure they can see.
 
 ``design_review_snapshot(force_recompile=True)`` refreshes connectivity
 before reading it. If that fails the sections still return, drawn from
@@ -112,7 +111,7 @@ async def test_a_failed_save_is_reported_by_the_checkpoint(
         "a checkpoint taken after a failed save must not look like one "
         "taken after a successful save")
     assert out["save_error"]
-    assert "not in it" in out["note"].lower()
+    assert "on disk" in out["note"].lower()
     # The checkpoint is still taken: something beats nothing.
     assert "checkpoint" in out
 

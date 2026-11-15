@@ -267,6 +267,9 @@ def _next_batch_op(remaining: str) -> tuple[str, str]:
         sep = remaining.find("~~")
         if sep < 0:
             return remaining, ""
+        # Exactly three tildes: a value ending in "~", then the separator.
+        if remaining[sep + 2:sep + 3] == "~" and remaining[sep + 3:sep + 4] != "~":
+            sep += 1
         op, remaining = remaining[:sep], remaining[sep + 2:]
         if op:
             return op, remaining
@@ -284,6 +287,26 @@ def _iter_batch_ops(payload: str):
         if not remaining:
             return
 
+
+
+_PAD_SHAPES = ("round", "rectangular", "octagonal", "roundrect")
+
+
+def _pad_shape_word(raw: str) -> str:
+    """Mirrors CanonicalPadShape: the shape word, "" when none was given,
+    or "?" and the word as given when it is not a pad shape."""
+    s = str(raw or "").strip().lower()
+    if s in ("roundrectangle", "roundedrect", "rounded_rectangular"):
+        s = "roundrect"
+    if s == "" or s in _PAD_SHAPES:
+        return s
+    return "?" + str(raw).strip()
+
+
+def _pad_shape_refusal(words: str) -> str:
+    """Mirrors PadShapeRefusal."""
+    return ("shape must be round, rectangular, octagonal or roundrect "
+            "(got: %s)" % words)
 
 
 def _int_or_zero(text: str) -> int:
@@ -1251,6 +1274,17 @@ class AltiumSimulator:
             if not params.get("pads"):
                 return _build_error_response(rid, "MISSING_PARAM",
                                              "pads is required")
+            # An unknown shape word refuses the whole batch before any pad
+            # is made, as the Pascal does.
+            bad: list[str] = []
+            for op in _iter_batch_ops(params.get("pads", "")):
+                word = _pad_shape_word(_get_batch_field(op, "shape"))
+                if word.startswith("?") and word[1:] not in bad:
+                    bad.append(word[1:])
+            if bad:
+                return _build_error_response(
+                    rid, "INVALID_SHAPE",
+                    _pad_shape_refusal(", ".join(bad)) + "; no pad was added")
             if not self.lib_has_pcblib:
                 return _build_error_response(rid, "NO_PCBLIB",
                                              "No PCB library is active")
@@ -1366,6 +1400,11 @@ class AltiumSimulator:
             )
 
         elif action == "add_footprint_pad":
+            word = _pad_shape_word(params.get("shape", ""))
+            if word.startswith("?"):
+                return _build_error_response(
+                    rid, "INVALID_SHAPE",
+                    _pad_shape_refusal(word[1:]) + "; no pad was added")
             designator = params.get("designator", "")
             return _build_success_response(
                 rid,
@@ -1919,6 +1958,11 @@ class AltiumSimulator:
                              % _escape_json_string(d) for d in matched))))
 
         if action == "get_components":
+            mode = (params.get("body_heights") or "max").strip().lower()
+            if mode not in ("max", "all"):
+                return _build_error_response(
+                    rid, "BAD_BODY_HEIGHTS",
+                    'body_heights must be max or all, got "%s"' % mode)
             items = []
             for c in board.components:
                 x1, y1 = c.x - c.width // 2, c.y - c.height // 2
@@ -1932,6 +1976,9 @@ class AltiumSimulator:
                     '"footprint":"' + _escape_json_string(c.footprint) + '",'
                     '"source_designator":"' + _escape_json_string(c.designator) + '",'
                     '"height_mils":' + str(c.height_mils) + ','
+                    # The simulated board carries no 3D bodies.
+                    '"model_height_mils":null,"height_mismatch":false,'
+                    '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
                     '"bbox":{"x1":' + str(x1) + ',"y1":' + str(y1) +
                     ',"x2":' + str(x2) + ',"y2":' + str(y2) +
                     ',"width":' + str(c.width) + ',"height":' + str(c.height) + '}}'
@@ -2069,6 +2116,7 @@ class AltiumSimulator:
                                 {"designator": comp.designator, "pin": pad, "net": net})
                 placed += 1
             data = ('{"placed":' + str(placed) + ',"failed":' + str(failed) +
+                    ',"label_layers_unknown":0' +
                     ',"total":' + str(placed + failed) + '}')
             return _build_success_response(rid, data)
 

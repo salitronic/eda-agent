@@ -503,9 +503,37 @@ Begin
         Else If PropName = 'TextPosition' Then Dim.TextPosition := N
         Else If PropName = 'TextDimensionUnit' Then Dim.TextDimensionUnit := N
         Else If PropName = 'TextPrecision' Then Dim.TextPrecision := N
-        Else If PropName = 'TextFormat' Then Dim.TextFormat := Value
-        Else If PropName = 'TextPrefix' Then Dim.TextPrefix := Value
-        Else If PropName = 'TextSuffix' Then Dim.TextSuffix := Value
+        { The texts are read back: Altium keeps its own diameter sign as   }
+        { the prefix of a radial- or linear-diameter dimension and takes    }
+        { the assignment without a word, so an unread write was reported    }
+        { as made. A value it did not keep is refused.                      }
+        Else If PropName = 'TextFormat' Then
+        Begin
+            Dim.TextFormat := Value;
+            If Dim.TextFormat <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
+        Else If PropName = 'TextPrefix' Then
+        Begin
+            Dim.TextPrefix := Value;
+            If Dim.TextPrefix <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
+        Else If PropName = 'TextSuffix' Then
+        Begin
+            Dim.TextSuffix := Value;
+            If Dim.TextSuffix <> Value Then
+            Begin
+                Result := -1;
+                Exit;
+            End;
+        End
         Else If PropName = 'ArrowSize' Then Dim.ArrowSize := MilsToCoordF(F)
         Else If PropName = 'ArrowLineWidth' Then Dim.ArrowLineWidth := MilsToCoordF(F)
         Else If PropName = 'ArrowLength' Then Dim.ArrowLength := MilsToCoordF(F)
@@ -687,8 +715,8 @@ End;
 {                                                                            }
 { THE MASK IS REACHED THROUGH IPCB_Pad. IPCB_Via does not expose the cache;   }
 { casting the via to a pad and that to the primitive does (issue #60).       }
-{ Assigning Via.SolderMaskExpansion directly on a board via faults in         }
-{ ScriptingSystem.DLL (PCB_SetViaSoldermaskRelief); the cache route is the    }
+{ Assigning Via.SolderMaskExpansion directly on a board via crashes the       }
+{ scripting engine (PCB_SetViaSoldermaskRelief); the cache route is the       }
 { one that works.                                                            }
 { SolderMaskExpansion is the TOP value once SolderMaskSeparate is true (the   }
 { two sides unlinked); with it false that one value serves both sides and    }
@@ -1071,6 +1099,92 @@ Begin
     Else Obj.SetState_UnionIndex := UIndex;
 End;
 
+{ A PLACED COMPONENT HAS TWO HEIGHTS, and neither is chosen for the caller. }
+{ Height is the footprint's Height field, typed by hand (often 0, or out of }
+{ step with the model); ModelHeight is its tallest 3D body, STEP and       }
+{ extruded alike (cylinders and spheres too). Either can be the wrong one   }
+{ for a part, so both are reported.                                         }
+
+{ T3DModelType of a body's model: 0 extruded, 1 STEP (measured), 2         }
+{ cylinder, 3 sphere. Anything else is named by its number.                }
+Function ComponentBodyKind(Body : IPCB_ComponentBody) : String;
+Var
+    Model : IPCB_Model;
+    Kind  : Integer;
+Begin
+    Result := 'unknown';
+    Model := Nil;
+    Try Model := Body.Model; Except Model := Nil; End;
+    If Model = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Model.ModelType; Except Kind := -1; End;
+    If Kind = 0 Then Result := 'extruded'
+    Else If Kind = 1 Then Result := 'step'
+    Else If Kind = 2 Then Result := 'cylinder'
+    Else If Kind = 3 Then Result := 'sphere'
+    Else If Kind >= 0 Then Result := 'type_' + IntToStr(Kind);
+End;
+
+{ Walks the component's 3D bodies: MaxOverall = the tallest OverallHeight, }
+{ Count = how many, StepCount = how many are STEP models. With WantList the }
+{ result is the bodies as JSON objects (comma separated, no brackets),     }
+{ else ''.                                                                 }
+Function ComponentBodyScan(Comp : IPCB_Component; WantList : Boolean; Var MaxOverall : Integer; Var Count : Integer; Var StepCount : Integer) : String;
+Var
+    GIter : IPCB_GroupIterator;
+    Body  : IPCB_ComponentBody;
+    Overall, Standoff : Integer;
+    Ident, LayerName, Kind : String;
+Begin
+    Result := '';
+    MaxOverall := 0;
+    Count := 0;
+    StepCount := 0;
+    GIter := Comp.GroupIterator_Create;
+    Try
+        GIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        GIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Body := GIter.FirstPCBObject;
+        While Body <> Nil Do
+        Begin
+            Overall := 0;
+            Try Overall := Body.OverallHeight; Except Overall := 0; End;
+            If (Count = 0) Or (Overall > MaxOverall) Then MaxOverall := Overall;
+            Inc(Count);
+            Kind := ComponentBodyKind(Body);
+            If Kind = 'step' Then Inc(StepCount);
+            If WantList Then
+            Begin
+                Standoff := 0;
+                Try Standoff := Body.StandoffHeight; Except Standoff := 0; End;
+                Ident := '';
+                Try Ident := Body.Identifier; Except Ident := ''; End;
+                LayerName := '';
+                Try LayerName := LayerDisplayName(Body.Layer); Except LayerName := ''; End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '{"identifier":"' + EscapeJsonString(Ident)
+                    + '","kind":"' + Kind
+                    + '","layer":"' + EscapeJsonString(LayerName)
+                    + '","standoff_mils":' + FloatToJsonStr(CoordToMilsF(Standoff))
+                    + ',"overall_mils":' + FloatToJsonStr(CoordToMilsF(Overall)) + '}';
+            End;
+            Body := GIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GIter);
+    End;
+End;
+
+{ The component's tallest 3D body in mils as JSON, '' when it has none.  }
+Function ComponentModelHeightJson(Comp : IPCB_Component) : String;
+Var
+    MaxOverall, Count, StepCount : Integer;
+Begin
+    ComponentBodyScan(Comp, False, MaxOverall, Count, StepCount);
+    If Count > 0 Then Result := FloatToJsonStr(CoordToMilsF(MaxOverall))
+    Else Result := '';
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -1424,9 +1538,20 @@ Begin
         { A text's height and stroke width under the names a caller reaches  }
         { for (Altium's own are Size and Width), and whether it is a        }
         { component's designator or comment, so a filter can pick those out. }
+        { On a component Height is the footprint's Height field and        }
+        { ModelHeight its tallest 3D body ('' with none): both, unchosen.  }
         Else If PropName = 'Height' Then
         Begin
-            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End;
+            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End
+            Else If Oid = eComponentObject Then
+            Begin
+                Comp := Obj;
+                Result := FloatToJsonStr(CoordToMilsF(Comp.Height));
+            End;
+        End
+        Else If PropName = 'ModelHeight' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := ComponentModelHeightJson(Comp); End;
         End
         Else If PropName = 'StrokeWidth' Then
         Begin
@@ -1585,6 +1710,7 @@ Begin
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
+        (PropName = 'ModelHeight') Or
         (PropName = 'Size') Or (PropName = 'BotXSize') Or
         (PropName = 'BotYSize') Or (PropName = 'HoleWidth') Or
         (PropName = 'SizeTop') Or (PropName = 'SizeMid') Or
@@ -2170,26 +2296,16 @@ End;
 { without saying why. A comma is read as the decimal point, both sides are   }
 { vetted by IsFloatStr before the locale-safe StrToFloatDef parses them, so  }
 { nothing here can raise, and they must agree to half a coordinate unit      }
-{ (0.00005 mil). Every other property is still matched exactly.             }
+{ (0.00005 mil). An angle (Rotation=90.0 against 90) and a union index    }
+{ are numbers too. Every other property is still matched exactly.         }
 Function FilterValueMatchesPCB(PropName, Actual, Expected : String) : Boolean;
-Var
-    Want, Ch : String;
-    I : Integer;
 Begin
     Result := (Actual = Expected);
     If Result Then Exit;
-    If Not IsLengthProperty(PropName) Then Exit;
-    Want := '';
-    For I := 1 To Length(Expected) Do
-    Begin
-        Ch := Copy(Expected, I, 1);
-        If Ch = ',' Then Ch := '.';
-        Want := Want + Ch;
-    End;
-    Want := Trim(Want);
-    If Not IsFloatStr(Want) Then Exit;
-    If Not IsFloatStr(Actual) Then Exit;
-    Result := Abs(StrToFloatDef(Actual, 0) - StrToFloatDef(Want, 0)) < 0.00005;
+    If Not (IsLengthProperty(PropName) Or (PropName = 'Rotation')
+        Or (PropName = 'HoleRotation') Or (PropName = 'StartAngle')
+        Or (PropName = 'EndAngle') Or (PropName = 'UnionIndex')) Then Exit;
+    Result := FilterNumbersEqual(Actual, Expected);
 End;
 
 Function MatchesFilterPCB(Obj : IPCB_Primitive; FilterStr : String) : Boolean;
@@ -2409,6 +2525,7 @@ Begin
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
+        (PropName = 'ModelHeight') Or
         (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
         (PropName = 'IsComment') Or (PropName = 'UseTTFonts') Or
         (PropName = 'MirrorFlag') Or
@@ -2486,7 +2603,7 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
-        + 'StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component, '
+        + 'StandoffHeight, OverallHeight, ModelHeight, BodyOpacity3D, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
         + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '

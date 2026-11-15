@@ -80,8 +80,12 @@ def test_the_part_tools_need_no_library_focused_by_hand():
                          ("lib_create_footprint_from_package", "_unfocused_pcblib")):
         start = src.index(f"async def {tool}(")
         body = src[start:src.index("@mcp.tool()", start)]
-        assert helper + "(bridge" in body, tool
         assert "ACTIVE" not in body.split('"""')[1], tool
+        if tool == "lib_link_footprint":
+            # The tool is one call to the link shared with its list form.
+            assert "await _link_footprint(" in body
+            body = inspect.getsource(library._link_footprint)
+        assert helper + "(bridge" in body, tool
 
 
 class _Lib(_Docs):

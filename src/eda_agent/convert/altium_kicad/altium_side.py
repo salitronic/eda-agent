@@ -328,7 +328,8 @@ async def read_board(bridge, board_path: str, project_path: str) -> dict[str, An
     mech = await bridge.send_command_async("pcb.get_mech_layer_names",
                                            {"count_primitives": "false"})
     out["mech_layers"] = (mech or {}).get("mechanical_layers") or []
-    stack = await bridge.send_command_async("pcb.get_layer_stackup", {})
+    from ...bridge.stackup import layer_stackup
+    stack = await layer_stackup(bridge)
     out["stackup"] = (stack or {}).get("layers") or []
     rules = await bridge.send_command_async("pcb.get_design_rules", {})
     out["rules"] = (rules or {}).get("rules") or []

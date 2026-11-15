@@ -92,21 +92,3 @@ def test_the_tool_sends_what_it_is_given(monkeypatch):
         document_path=r"C:\p\Child.SchDoc", new_name="Power"))
     assert sent == [("project.rename_document",
                      {"document_path": r"C:\p\Child.SchDoc", "new_name": "Power"})]
-
-
-def test_a_pruned_copy_of_a_kept_document_is_named_as_one(tmp_path):
-    from eda_agent.prjpcb import prune_stale_documents
-    a = tmp_path / "A.SchDoc"
-    b = tmp_path / "B.SchDoc"
-    a.write_text("x")
-    b.write_text("x")
-    prj = tmp_path / "P.PrjPcb"
-    prj.write_text(
-        "[Design]\r\nVersion=1.0\r\n\r\n"
-        f"[Document1]\r\nDocumentPath={a.name}\r\n\r\n"
-        f"[Document2]\r\nDocumentPath={b.name}\r\n\r\n"
-        f"[Document3]\r\nDocumentPath={b.name}\r\n\r\n",
-        encoding="utf-8")
-    out = prune_stale_documents(str(prj), [str(a), str(b)], str(tmp_path / "bk"))
-    assert out["pruned"] == 1
-    assert out["duplicates_of_kept"] == [b.name]

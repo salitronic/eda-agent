@@ -37,6 +37,9 @@ from .exact import CopperIndex, sharp_bends
 from .fanout import _extent, outward
 
 EPS = 1e-6
+#: Mils round an area of the brief within which a stage leaves a net to the
+#: negotiation: a lane or fanout laid there could cross into it.
+AREA_MARGIN = 200.0
 
 
 @dataclass
@@ -238,9 +241,36 @@ class StageContext:
 
     # -- facts ---------------------------------------------------------------
 
-    def routed(self, net: str) -> bool:
+    def routed(self, net: str, pair: bool = False) -> bool:
+        """Whether a stage lays ``net``. A net the brief rules by layer or
+        area is left to the negotiation, which obeys it, except for the
+        pair stage, which checks the brief itself."""
         r = self.r
+        if net in r.brief_masks and not pair:
+            return False
+        if not pair and net in self._near_areas():
+            # Near an area of the brief (an antenna's keep-out): the
+            # negotiation, which walls the area, routes it.
+            return False
         return bool(net) and (r.only is None or net in r.only) and net not in r.laid_nets
+
+    def _near_areas(self) -> set[str]:
+        """Nets with a pad within AREA_MARGIN of an area of the brief that
+        bars them."""
+        got = getattr(self, "_near", None)
+        if got is not None:
+            return got
+        got = set()
+        for a in self.r.brief.areas:
+            pts = [p for ring in a.polygons for p in ring]
+            if not pts:
+                continue
+            x0, x1 = min(p[0] for p in pts) - AREA_MARGIN, max(p[0] for p in pts) + AREA_MARGIN
+            y0, y1 = min(p[1] for p in pts) - AREA_MARGIN, max(p[1] for p in pts) + AREA_MARGIN
+            got |= {p.net for p in self.r.board.pads
+                    if p.net and p.net not in a.allow and x0 <= p.x <= x1 and y0 <= p.y <= y1}
+        self._near = got
+        return got
 
     def joined_elsewhere(self, net: str) -> bool:
         return net in self.planes or net in self.pours
@@ -335,6 +365,8 @@ class StageContext:
         r = self.r
         rv = via.diameter / 2
         if not self.inside_board(via.x, via.y):
+            return False
+        if r.via_barred(via.x, via.y, via.diameter):
             return False
         span = set(r.board.layers_between(via.low_layer, via.high_layer))
         for li, layer in enumerate(r.grid.layers):

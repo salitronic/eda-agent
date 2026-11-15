@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "eda-agent-route"
+version = "0.1.0"
+description = "Grid path search for eda-agent's board router"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "George Saliba", email = "george.saliba@salitronic.com" }]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+
+[project.urls]
+Homepage = "https://github.com/salitronic/eda-agent"
+Repository = "https://github.com/salitronic/eda-agent"
+
+[tool.maturin]
+features = ["python"]
+module-name = "eda_agent_route"

@@ -56,7 +56,10 @@ def test_a_layer_past_mechanical16_is_walked_alone():
 
 def test_layers_are_named_past_mechanical16():
     section = _pcb("LmCopperSection")
-    assert "Common := ',\"layer\":\"' + LayerDisplayName(Obj.Layer)" in section
+    # Named once per layer in a read, by LayerDisplayName.
+    assert ("Common := ',\"layer\":\"' + LmLayerNameCached(Obj.Layer, LayerKeys, "
+            "LayerNames)") in section
+    assert "Result := LayerDisplayName(Lyr);" in _pcb("LmLayerNameCached")
     placer = _pcb("PCB_PlacePolygonRect")
     assert "EscapeJsonString(LayerDisplayName(Polygon.Layer))" in placer
     assert "GetLayerString(Polygon.Layer)" not in placer

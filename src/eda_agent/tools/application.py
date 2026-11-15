@@ -845,28 +845,30 @@ def register_application_tools(mcp):
                              project_path: str = "") -> dict[str, Any]:
         """Snapshot a project so the session can be rolled back.
 
-        Copies the project's design files into a content-addressed store under
-        the workspace (unchanged files are deduplicated, so repeat checkpoints
-        are cheap). Take one before any risky autonomous edit; restore with
+        Altium saves a copy of each design document in the project folder
+        into a content-addressed store under the workspace, an open one as
+        it is in the editor; the project file and other files are stored
+        as they are on disk. Unchanged files are stored once, and a closed
+        document unchanged since the last checkpoint is not opened again.
+        Take one before any risky autonomous edit; restore with
         `app_restore_checkpoint`. This is the undo the live bridge otherwise
         lacks.
 
         Args:
             label: optional human note ("before routing pass").
-            save_first: flush dirty Altium docs to disk before snapshotting
-                so the checkpoint reflects in-editor changes (default True).
+            save_first: save the project first, so the project file holds
+                what Altium holds (default True).
             project_path: the .PrjPcb to snapshot. Left empty, the focused
                 project is taken; with several open that may not be the one
                 you are editing, so the reply names it and lists the rest.
 
         Returns:
-            The checkpoint manifest summary (id, created, file_count, ...),
+            The checkpoint manifest summary (id, created, file_count,
+            ``not_written``: documents Altium did not copy, with why),
             ``project`` (the one snapshotted) and ``other_open_projects``.
-            With ``save_first``, also ``saved``: True when the flush
+            With ``save_first``, also ``saved``: True when the save
             worked, False with ``save_error`` and a ``note`` when it did
-            not. A checkpoint is still taken either way, but one taken
-            after a failed save holds the on-disk state only, which is
-            missing precisely the in-editor work you were protecting.
+            not.
         """
         import os
         saved: Optional[bool] = None
@@ -902,8 +904,11 @@ def register_application_tools(mcp):
                 saved = False
                 save_error = str(exc)
         from pathlib import Path
+
+        from ..checkpoint import take
         store = _checkpoint_store()
-        info = store.create(Path(project_dir), project_file=project_file or "", label=label)
+        info = await take(get_bridge(), store, Path(project_dir),
+                          project_file=project_file or "", label=label)
         result: dict[str, Any] = {"checkpoint": info.summary(), "project": snapshot_of,
                                   "other_open_projects": others}
         if save_first:
@@ -911,9 +916,9 @@ def register_application_tools(mcp):
             if not saved:
                 result["save_error"] = save_error
                 result["note"] = (
-                    "save_all failed, so this checkpoint holds the "
-                    "on-disk state only. Unsaved editor changes are NOT "
-                    "in it."
+                    "the project save failed, so the project file in this "
+                    "checkpoint is the one on disk; the documents are as "
+                    "Altium holds them."
                 )
         return result
 
@@ -929,9 +934,12 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Restore the focused project's files from a checkpoint.
 
-        Overwrites design files with the snapshot contents. Close the project
-        in Altium (or expect a reload prompt) before restoring, since Altium
-        holds documents open. With `prune_added=True` this is a true revert:
+        Only files that differ from the checkpoint are restored. The
+        project is closed WITHOUT SAVING, so edits since the checkpoint
+        are dropped, and opened again afterwards. Altium opens each
+        changed design document's snapshot and saves it under its own
+        name; the project file and other files are put back while the
+        project is closed. With `prune_added=True` this is a true revert:
         files created after the checkpoint are deleted; the default leaves
         newer files untouched.
 
@@ -940,20 +948,28 @@ def register_application_tools(mcp):
             prune_added: delete files absent at checkpoint time (default False).
 
         Returns:
-            {restored, removed, missing_blobs}.
+            {restored, unchanged, removed, missing_blobs, not_restored
+            (file: why), not_in_checkpoint, reopened, were_open (the
+            project's documents open before; the project reopens with
+            none of them open)}.
         """
+        import os
+
         from ..saving import refused, saving_off
         if saving_off():
             return refused("A restore overwrites the project's files.")
-        project_dir, _project_file, err = await _resolve_project_dir()
+        project_dir, project_file, err = await _resolve_project_dir()
         if err:
             return err
         from pathlib import Path
+
+        from ..checkpoint import put_back
         store = _checkpoint_store()
         try:
-            return store.restore(
-                checkpoint_id, Path(project_dir), prune_added=prune_added
-            )
+            return await put_back(
+                get_bridge(), store, checkpoint_id, Path(project_dir),
+                project_path=os.path.join(project_dir, project_file) if project_file else "",
+                prune_added=prune_added)
         except FileNotFoundError as e:
             return {"error": str(e)}
 

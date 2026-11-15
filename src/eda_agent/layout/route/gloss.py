@@ -33,6 +33,7 @@ from ..drc import BIG_POLY, Item, conductive_items, net_ties, _tied
 from ..model import LayoutBoard, Pad, Track
 from ..rules import RuleSet
 from .exact import CopperIndex
+from .params import RouteRules
 
 #: Two track ends closer than this, in mils, are one point.
 SNAP = 0.01
@@ -160,9 +161,13 @@ class _Copper:
     """Every conductive item, filed per layer, that tracks can be taken out
     of and put into as runs are laid again."""
 
-    def __init__(self, board: LayoutBoard, rules: RuleSet):
+    def __init__(self, board: LayoutBoard, rules: RuleSet, spacing=None, barriers=()):
         self.board = board
         self.rules = rules
+        # (net, net) -> the routing brief's spacing between them, and its
+        # isolation barriers (Brief.barrier_sides), kept as clearances.
+        self.spacing: dict = dict(spacing or {})
+        self.barriers = list(barriers)
         self.layers = {name: i for i, name in enumerate(board.copper_layers())}
         self.index = CopperIndex(len(self.layers), bucket=100.0)
         self.items: list[Item | None] = []
@@ -224,7 +229,11 @@ class _Copper:
         key = (self.rules.facts(cand, self.board), self.rules.facts(other, self.board))
         if key not in self._gap:
             self._gap[key] = self.rules.clearance(cand, other, self.board)
-        return self._gap[key]
+        need = max(self._gap[key], self.spacing.get((cand.net, other.net), 0.0))
+        for b in self.barriers:
+            if {RouteRules._side(cand.net, b), RouteRules._side(other.net, b)} == {"a", "b"}:
+                need = max(need, b[2])
+        return need
 
 
 def _edge_gap(rules: RuleSet) -> float:
@@ -233,13 +242,15 @@ def _edge_gap(rules: RuleSet) -> float:
 
 
 class _Gloss:
-    def __init__(self, board: LayoutBoard, rules: RuleSet):
+    def __init__(self, board: LayoutBoard, rules: RuleSet, spacing=None, barriers=()):
         self.board = board
         self.rules = rules
-        self.copper = _Copper(board, rules)
+        self.copper = _Copper(board, rules, spacing, barriers)
         self.edge_gap = _edge_gap(rules)
         self.outline = board.outline_shape() if len(board.outline) >= 3 else None
-        self.reach = max(rules.max_clearance(), self.edge_gap, 1.0) + 1.0
+        self.reach = max(rules.max_clearance(), self.edge_gap, 1.0,
+                         *self.copper.spacing.values(),
+                         *(b[2] for b in self.copper.barriers)) + 1.0
         self.report = GlossReport()
         self.blocker = ""
 
@@ -493,9 +504,12 @@ class _Gloss:
 
 
 def gloss(board: LayoutBoard, rules: RuleSet | None = None, nets=None, layers=None,
-          passes: int = 3, tracks=None) -> GlossReport:
+          passes: int = 3, tracks=None, spacing=None, barriers=()) -> GlossReport:
     """Lay the board's free tracks again as the shortest clean 45/90 runs,
     in place. See the module docstring for what a run may become.
     ``tracks`` limits it to runs made only of those Track objects (a
-    router's own output); every other track stays as it is."""
-    return _Gloss(board, rules or RuleSet.from_board(board)).run(nets, layers, passes, tracks)
+    router's own output); every other track stays as it is. ``spacing``
+    and ``barriers`` the routing brief's (Brief.spacing_pairs,
+    Brief.barrier_sides), kept like clearances."""
+    return _Gloss(board, rules or RuleSet.from_board(board), spacing, barriers).run(
+        nets, layers, passes, tracks)

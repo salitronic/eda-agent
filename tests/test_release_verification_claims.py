@@ -215,9 +215,25 @@ def test_every_step_that_writes_a_property_is_ranked():
 #
 # Step 76 (Altium 21) gates a pad shape READ on the version and changes the
 # control flow of a loop whose NameOn / CommentOn writes are unchanged.
+#
+# Step 80 (basic 3D models) READS each body's model type and stores the
+# Config tab choice in preferences.json; it writes no Altium property.
+#
+# Step 84 (checkpoints and the board backup) opens, saves under another
+# name and closes documents with method calls; it writes no property.
+#
+# Step 85 (the saved project file) loads and closes a hidden project and
+# READS its documents; it writes no Altium property.
+#
+# Step 86 (the database library) READS what Altium holds for a DbLib and
+# installs and uninstalls a library with method calls; it writes no
+# Altium property.
+#
+# Step 87 (a new OutJob) is Python only: it has Altium save a staged copy
+# through step 84's command and writes no Altium property.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
                              "30", "58", "59", "61", "66", "67", "71", "72", "73", "74", "75",
-                             "76", "77"}
+                             "76", "77", "80", "81", "83", "84", "85", "86", "87"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

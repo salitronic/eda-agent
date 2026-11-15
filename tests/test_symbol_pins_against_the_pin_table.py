@@ -99,7 +99,7 @@ def test_a_subscripted_name_printed_as_two_words_matches(tmp_path):
                            "4 PS HOLD PS HOLD input", "7 VCC LO Output for high",
                            "8 PB OUT Status of PB push-button input"]]))
     ok = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
-        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\VCCLO"),
+        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\\VCCLO"),
         ("8", "PB_OUT")))
     assert ok["ok"], ok
     wrong = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
@@ -284,3 +284,93 @@ def test_a_drawing_that_labels_each_pin_number_then_name_passes(tmp_path):
     # Read name-then-number, every name here would meet the next number.
     wrong = check_pin_table(ds, _pins(("1", "VIN"), ("2", "VDD"), ("3", "IRQ_N")))
     assert [m["pin"] for m in wrong["missing"]] == ["1", "2", "3"]
+
+
+def test_two_pins_sharing_one_table_row_both_pass(tmp_path):
+    # A number cell holding "6 / 7" reads as 6, the row, then 7.
+    pdf = tmp_path / "iso.pdf"
+    pdf.write_bytes(_pdf([["Pin Functions", "5 IN1 I Channel 1 input", "6",
+                           "NC - Not connected", "7",
+                           "8 GND1 - Ground connection for VCC1"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(("5", "IN1"), ("6", "NC"), ("7", "NC"), ("8", "GND1")))
+    assert ok["ok"], ok
+    # The shared row gives its name to its own two numbers and no other.
+    wrong = check_pin_table(ds, _pins(("6", "GND1"), ("7", "IN1"), ("8", "NC")))
+    assert [m["pin"] for m in wrong["missing"]] == ["6", "7", "8"]
+
+
+def _placed_pdf(cells: list[tuple[float, float, str, str]]) -> bytes:
+    """A one-page PDF of Helvetica text placed cell by cell: (x, y, text,
+    how), how "" upright, "turned" on its side, "spaced" letter-spaced."""
+    shows = []
+    for x, y, text, how in cells:
+        if how == "turned":
+            shows.append(f"BT /F1 8 Tf 0 1 -1 0 {x} {y} Tm ({text}) Tj ET")
+        else:
+            spacing = "1.2" if how == "spaced" else "0"
+            shows.append(f"BT /F1 8 Tf {spacing} Tc 1 0 0 1 {x} {y} Tm ({text}) Tj ET")
+    stream = " ".join(shows)
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            "/Contents 5 0 R /Resources << /Font << /F1 3 0 R >> >> >>",
+            f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"]
+    out, offsets = b"%PDF-1.4\n", []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n{body}\nendobj\n".encode()
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+@pytest.fixture
+def two_packages(tmp_path):
+    # One pin-number column per package, the TSSOP20 heading turned on its
+    # side; a row prints both packages' numbers before the pin's name, one
+    # name letter-spaced and one wrapped round its row's line.
+    cells = [(72, 740, "Pin definitions", ""),
+             (70, 700, "QFN16", ""), (116, 690, "TSSOP20", "turned"),
+             (150, 700, "Pin name", ""), (230, 700, "Type", "")]
+    rows = [("1", "3", "VDD"), ("2", "4", "PA0"), ("3", "5", "PA1"),
+            ("4", "-", "NC"), ("5", "1", "GND")]
+    for i, (qfn, tssop, name) in enumerate(rows):
+        y = 670 - 30 * i
+        cells += [(80, y, qfn, ""), (110, y, tssop, ""),
+                  (150, y, name, "spaced" if name == "PA0" else ""),
+                  (230, y, "S (2)", "")]
+    cells += [(80, 520, "6", ""), (110, 520, "2", ""),
+              (150, 528, "PC14-", ""), (150, 512, "OSC32_IN", "")]
+    pdf = tmp_path / "mcu.pdf"
+    pdf.write_bytes(_placed_pdf(cells))
+    return str(pdf)
+
+
+def test_a_package_column_reads_that_packages_numbers_only(two_packages):
+    ds = {"path": two_packages, "page": "1", "package_column": "TSSOP20"}
+    ok = check_pin_table(ds, _pins(("3", "VDD"), ("4", "PA0"), ("5", "PA1"),
+                                   ("1", "GND"), ("2", "PC14-OSC32_IN")))
+    assert ok["ok"], ok
+    assert ok["package_column"] == "TSSOP20" and ok["found"] == 5
+    # The QFN16 numbers printed on the same rows are not TSSOP20's.
+    wrong = check_pin_table(ds, _pins(("1", "VDD"), ("2", "PA0"), ("5", "GND")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "2", "5"]
+    qfn = check_pin_table({**ds, "package_column": "qfn 16"}, _pins(
+        ("1", "VDD"), ("2", "PA0"), ("4", "NC"), ("5", "GND"), ("6", "PC14-OSC32_IN")))
+    assert qfn["ok"], qfn
+
+
+def test_a_package_the_table_does_not_head_names_the_ones_it_does(two_packages):
+    out = check_pin_table({"path": two_packages, "page": "1",
+                           "package_column": "LQFP48"}, _pins(("1", "VDD")))
+    assert not out["ok"]
+    assert "headed LQFP48" in out["reason"] and "QFN16, TSSOP20" in out["reason"]
+
+
+def test_a_refusal_without_a_package_column_says_it_can_be_given(sheet):
+    out = check_pin_table({"path": sheet, "page": "2"}, _pins(("1", "GND")))
+    assert "package_column" in out["reason"]

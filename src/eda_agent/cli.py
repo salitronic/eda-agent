@@ -249,8 +249,8 @@ def _stop_halted_script(command: list) -> None:
 
     A handler that hits an undeclared identifier halts the loop but leaves
     the script running in the engine, and the new loop then fails with
-    "Another script executing now". Run > Stop (EditScript:Stop, as the
-    install's EditScript.rcs names it) frees the engine; with nothing
+    "Another script executing now". Run > Stop (EditScript:Stop) frees
+    the engine; with nothing
     running it does nothing. Measured 2026-10-25: after it, StartMCPServer
     came up at once.
     """

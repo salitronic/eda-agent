@@ -1,107 +1,218 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Leftover [DocumentN] sections are taken out of a .PrjPcb, and nothing else.
+"""A removal Altium's save leaves in the .PrjPcb is finished by Altium
+writing the project file fresh, with no dialog.
 
 Altium rewrites [Document1]..[DocumentN] for a project's new document
-count and leaves the sections past N in the file, so a removed document
-comes back on reopen (issue #94, reproduced on AD 26.11). The fix edits
-the file, so it is held to three things: only sections past the count go,
-only when the rest match the project, and every other byte stays.
+count and leaves the sections past N, because its writer merges into the
+file already at the path. project.rewrite_file saves the project as a
+copy, checks it, deletes the original and saves the project back onto no
+file. These hold the flow to: nothing runs when the file is already
+right, the original is deleted only after the copy lists the expected
+count, the copy is deleted only once the original is right again, and the
+result comes from Altium, never from the file.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from eda_agent.prjpcb import finish_removal, lists_document, prune_stale_documents
+import pytest
 
-_BOM = b"\xef\xbb\xbf"
+from eda_agent import prjpcb
+from tests.pascal_source import functions, strip_comments
 
-
-def _project(tmp_path: Path, docs: list[str]) -> Path:
-    for d in set(docs):
-        (tmp_path / d).write_bytes(b"x")
-    parts = ["[Design]\r\nVersion=1.0\r\n\r\n",
-             f"[Document1]\r\nDocumentPath={docs[0]}\r\nAnnotationEnabled=1\r\n\r\n",
-             "[SmartPDF]\r\nPageOptions=Fit\r\n\r\n"]
-    for i, d in enumerate(docs[1:], start=2):
-        parts.append(f"[Document{i}]\r\nDocumentPath={d}\r\nAnnotationEnabled=1\r\n\r\n")
-    path = tmp_path / "P.PrjPcb"
-    path.write_bytes(_BOM + "".join(parts).encode("utf-8"))
-    return path
+PRJ = r"C:\p\P.PrjPcb"
+_PAS = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Project.pas"
 
 
-def test_only_the_sections_past_the_count_go(tmp_path):
-    path = _project(tmp_path, ["Main.SchDoc", "中文.SchDoc", "Gone.SchDoc", "中文.SchDoc"])
-    before = path.read_bytes()
-    members = [str(tmp_path / "Main.SchDoc"), str(tmp_path / "中文.SchDoc"),
-               "ActiveBOM.VirtualBOM"]
-    out = prune_stale_documents(str(path), members, str(tmp_path / "bak"))
-    assert out["removed_sections"] == ["Document3", "Document4"]
-    after = path.read_bytes()
-    assert after.startswith(_BOM) and b"\r\n" in after
-    # Everything that stays is byte for byte what was there.
-    cut = before.index(b"[Document3]")
-    assert after == before[:cut]
-    assert "中文.SchDoc".encode("utf-8") in after
-    assert Path(out["backup"]).read_bytes() == before
+def _members(tmp_path: Path, *names: str) -> list[str]:
+    out = []
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+        out.append(str(tmp_path / n))
+    return out
 
 
-def test_a_file_that_does_not_match_the_project_is_left_alone(tmp_path):
-    path = _project(tmp_path, ["Main.SchDoc", "Other.SchDoc", "Gone.SchDoc"])
-    before = path.read_bytes()
-    members = [str(tmp_path / "Main.SchDoc"), str(tmp_path / "Gone.SchDoc")]
-    out = prune_stale_documents(str(path), members, str(tmp_path / "bak"))
-    assert out["pruned"] == 0 and "left as it is" in out["reason"]
-    assert path.read_bytes() == before
-    assert not (tmp_path / "bak").exists()
+class _Bridge:
+    def __init__(self, after=None, rewritten=True, **extra):
+        self.calls, self.after, self.rewritten, self.extra = [], after, rewritten, extra
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        if command == "project.rewrite_file":
+            return {"rewritten": self.rewritten, "file_documents": self.after,
+                    **self.extra}
+        return {"success": True}
 
 
-def test_nothing_stale_writes_nothing(tmp_path):
-    path = _project(tmp_path, ["Main.SchDoc", "B.SchDoc"])
-    before = path.read_bytes()
-    members = [str(tmp_path / "Main.SchDoc"), str(tmp_path / "B.SchDoc")]
-    assert prune_stale_documents(str(path), members, str(tmp_path / "bak"))["pruned"] == 0
-    assert path.read_bytes() == before
+def _reply(tmp_path, members, listed, doc="Gone.SchDoc", in_file=True):
+    return {"success": not in_file, "removed": True, "in_project_file": in_file,
+            "project_path": PRJ, "document_path": str(tmp_path / doc),
+            "members": members, "file_documents": listed}
 
 
-def test_a_finished_removal_reports_the_file_as_it_now_is(tmp_path):
-    path = _project(tmp_path, ["Main.SchDoc", "Main.SchDoc", "Gone.SchDoc"])
-    reply = {"success": False, "removed": True, "in_project_file": True,
-             "project_file_entry": "DocumentPath=Gone.SchDoc",
-             "document_path": str(tmp_path / "Gone.SchDoc"),
-             "project_path": str(path), "members": [str(tmp_path / "Main.SchDoc")]}
-    out = finish_removal(reply, str(tmp_path / "bak"))
+def test_the_file_lists_more_than_the_project():
+    assert prjpcb.leftovers(["A.SchDoc", "C.SchDoc", "C.SchDoc", "D.SchDoc"],
+                            [r"C:\p\A.SchDoc", r"C:\p\C.SchDoc"])
+    assert prjpcb.leftovers(["A.SchDoc", "C.SchDoc", "C.SchDoc"],
+                            [r"C:\p\A.SchDoc", r"C:\p\C.SchDoc"])
+    assert not prjpcb.leftovers(["A.SchDoc", "C.SchDoc"],
+                                [r"C:\p\a.schdoc", r"C:\p\C.SchDoc"])
+
+
+def test_a_clean_file_runs_nothing(tmp_path):
+    members = _members(tmp_path, "A.SchDoc")
+    bridge = _Bridge()
+    out = asyncio.run(prjpcb.finish_removal(
+        bridge, _reply(tmp_path, members, ["A.SchDoc"], in_file=False)))
+    assert bridge.calls == []
+    assert out["success"] is True
+    assert "members" not in out and "file_documents" not in out
+
+
+def test_leftovers_are_rewritten_by_altium(tmp_path):
+    members = _members(tmp_path, "A.SchDoc", "C.SchDoc")
+    bridge = _Bridge(after=["A.SchDoc", "C.SchDoc"])
+    out = asyncio.run(prjpcb.finish_removal(bridge, _reply(
+        tmp_path, members, ["A.SchDoc", "C.SchDoc", "C.SchDoc", "Gone.SchDoc"])))
+    assert bridge.calls == [("project.rewrite_file",
+                             {"project_path": PRJ, "expected_count": "2"})]
     assert out["success"] is True and out["in_project_file"] is False
-    assert not lists_document(str(path), str(tmp_path / "Gone.SchDoc"))
-    assert lists_document(str(path), str(tmp_path / "Main.SchDoc"))
+    assert out["stale_sections"]["rewritten"] is True
+    assert out["stale_sections"]["after"] == ["A.SchDoc", "C.SchDoc"]
 
 
-def test_shifted_copies_of_another_member_go_too(tmp_path):
-    """Measured: three removals from the middle left three copies of the
-    last member past the count. The removed names were gone, so a check on
-    them alone saw nothing to do."""
-    path = _project(tmp_path, ["Main.SchDoc", "H.SchDoc", "H.SchDoc", "H.SchDoc"])
-    reply = {"success": True, "removed": True, "in_project_file": False,
-             "document_path": str(tmp_path / "G.SchDoc"), "project_path": str(path),
-             "members": [str(tmp_path / "Main.SchDoc"), str(tmp_path / "H.SchDoc")]}
-    out = finish_removal(reply, str(tmp_path / "bak"))
-    assert out["stale_sections"]["removed_sections"] == ["Document3", "Document4"]
-    assert out["success"] is True and "members" not in out
+def test_a_rewrite_that_could_not_finish_says_so_and_names_the_copy(tmp_path):
+    members = _members(tmp_path, "A.SchDoc")
+    bridge = _Bridge(after=["A.SchDoc", "Gone.SchDoc"], rewritten=False,
+                     copy_kept=True, copy_path=r"C:\p\P.eda-rewrite.PrjPcb",
+                     reason="the project file lists 2 documents, not 1")
+    out = asyncio.run(prjpcb.finish_removal(bridge, _reply(
+        tmp_path, members, ["A.SchDoc", "Gone.SchDoc"])))
+    assert out["success"] is False and out["in_project_file"] is True
+    assert out["stale_sections"]["rewritten"] is False
+    assert out["stale_sections"]["copy_kept"].endswith("P.eda-rewrite.PrjPcb")
+    assert "not 1" in out["stale_sections"]["reason"]
 
 
-def test_each_edit_keeps_its_own_backup(tmp_path):
-    """Measured: two removals in one second wrote one backup name, and the
-    second copy replaced the first, the only one from before any edit."""
-    path = _project(tmp_path, ["Main.SchDoc", "B.SchDoc", "Gone.SchDoc"])
-    first = path.read_bytes()
-    one = prune_stale_documents(str(path), [str(tmp_path / "Main.SchDoc"),
-                                            str(tmp_path / "B.SchDoc")], str(tmp_path / "bak"))
-    two = prune_stale_documents(str(path), [str(tmp_path / "Main.SchDoc")],
-                                str(tmp_path / "bak"))
-    assert one["backup"] != two["backup"]
-    assert Path(one["backup"]).read_bytes() == first
+def test_a_refused_rewrite_keeps_the_removal_failed(tmp_path):
+    class Refusing(_Bridge):
+        async def send_command_async(self, command, params=None, timeout=None):
+            self.calls.append((command, dict(params or {})))
+            raise RuntimeError("COPY_EXISTS")
+    members = _members(tmp_path, "A.SchDoc")
+    out = asyncio.run(prjpcb.finish_removal(Refusing(), _reply(
+        tmp_path, members, ["A.SchDoc", "Gone.SchDoc"])))
+    assert out["success"] is False
+    assert out["stale_sections"]["after"] == ["A.SchDoc", "Gone.SchDoc"]
+    assert "COPY_EXISTS" in out["stale_sections"]["reason"]
 
 
-def test_a_reply_without_members_is_passed_through(tmp_path):
-    reply = {"success": True, "removed": True, "in_project_file": False}
-    assert finish_removal(dict(reply), str(tmp_path)) == reply
+def test_nothing_is_rewritten_while_saving_is_off(tmp_path, monkeypatch):
+    from eda_agent import saving
+    monkeypatch.setattr(saving, "saving_off", lambda workspace=None: True)
+    members = _members(tmp_path, "A.SchDoc")
+    bridge = _Bridge()
+    out = asyncio.run(prjpcb.finish_removal(bridge, _reply(
+        tmp_path, members, ["A.SchDoc", "Gone.SchDoc"])))
+    assert bridge.calls == []
+    assert "switched off" in out["stale_sections"]["reason"]
+
+
+def test_a_reply_without_members_is_passed_through():
+    bridge = _Bridge()
+    reply = {"success": False, "error": "NOT_A_MEMBER"}
+    assert asyncio.run(prjpcb.finish_removal(bridge, dict(reply))) == reply
+    assert bridge.calls == []
+
+
+def test_a_list_rewrites_each_project_once(tmp_path):
+    members = _members(tmp_path, "A.SchDoc")
+    bridge = _Bridge(after=["A.SchDoc"])
+    first = _reply(tmp_path, members + [str(tmp_path / "D.SchDoc")],
+                   ["A.SchDoc", "C.SchDoc", "D.SchDoc"], doc="C.SchDoc")
+    second = _reply(tmp_path, members, ["A.SchDoc", "D.SchDoc", "D.SchDoc"],
+                    doc="D.SchDoc")
+    out = asyncio.run(prjpcb.finish_removals(bridge, [first, second]))
+    assert [c for c, _ in bridge.calls] == ["project.rewrite_file"]
+    assert [o["success"] for o in out] == [True, True]
+    assert [o["in_project_file"] for o in out] == [False, False]
+    assert "members" not in out[0] and "file_documents" not in out[0]
+
+
+def test_the_module_never_opens_the_file_or_drives_the_interface():
+    src = Path(prjpcb.__file__).read_text(encoding="utf-8")
+    for call in ("open(", "read_bytes", "read_text", "write_bytes", "write_text",
+                 "shutil", "replace_with_retry", "unlink", "os.remove",
+                 ".ui", "run_process", "uiauto"):
+        assert call not in src, call
+
+
+# The Altium side.
+
+def _rewrite() -> str:
+    return functions(strip_comments(_PAS.read_text(encoding="utf-8")))["Proj_RewriteFile"]
+
+
+def test_the_rewrite_is_routed():
+    text = _PAS.read_text(encoding="utf-8")
+    assert "'rewrite_file':      Result := Proj_RewriteFile(Params, RequestId);" in text
+    assert "'file_documents':    Result := Proj_FileDocuments(Params, RequestId);" in text
+
+
+def test_refusals_come_before_any_write():
+    body = _rewrite()
+    write = body.index("DoSafeChangeFileNameAndSave")
+    for code in ("'PROJECT_NOT_FOUND'", "'SAVING_OFF'", "'PROJECT_NOT_OPEN'",
+                 "'BAD_COUNT'", "'COPY_EXISTS'"):
+        assert body.index(code) < write, code
+    assert body.index("DeleteFile(") > write
+
+
+def test_the_original_goes_only_after_the_copy_is_checked():
+    body = _rewrite()
+    copy = body.index("ProjDoc.DoSafeChangeFileNameAndSave(Via, Kind)")
+    counted = body.index("ViaList := ProjectFileDocumentList(Via, ViaLoaded);", copy)
+    unloaded = body.index("Else If Not ViaLoaded Then", counted)
+    checked = body.index("ViaCount <> Expected", unloaded)
+    gone = body.index("DeleteFile(ProjPath);", checked)
+    back = body.index("ProjDoc.DoSafeChangeFileNameAndSave(ProjPath, Kind)", gone)
+    recount = body.index("List := ProjectFileDocumentList(ProjPath, Loaded);", back)
+    copy_gone = body.index("DeleteFile(Via)", recount)
+    assert copy < counted < unloaded < checked < gone < back < recount < copy_gone
+    assert body.count("DeleteFile(ProjPath)") == 1
+    assert body.count("DeleteFile(Via)") == 1
+
+
+def test_altium_loads_the_project_file_and_nothing_opens_it():
+    """What a saved project file holds is asked of Altium: it loads a copy
+    as a hidden project, and the copy and what Altium writes beside it go."""
+    fns = functions(strip_comments(_PAS.read_text(encoding="utf-8")))
+    body = fns["ProjectFileDocumentList"]
+    copied = body.index("CopyFile(ProjPath, CopyPath, False)")
+    loaded = body.index("Workspace.DM_LoadProjectHidden(CopyPath)", copied)
+    closed = body.index("Workspace.DM_CloseProject(CopyPath)", loaded)
+    gone = body.index("DeleteFile(CopyPath);", closed)
+    assert copied < loaded < closed < gone
+    assert "If (Not HadSide) And FileExists(SidePath) Then DeleteFile(SidePath);" in body
+    assert "If (DocPath <> '') And FileExists(DocPath) Then" in body
+    for name in ("ProjectFileDocumentList", "ProjectFileDocumentsJson", "Proj_FileDocuments",
+                 "Proj_RewriteFile", "Proj_RemoveDocument"):
+        assert "LoadTextFile(" not in fns[name], name
+    assert "ProjectFileEntryFor" not in fns
+
+
+def test_a_file_altium_could_not_load_is_not_an_empty_one():
+    fns = functions(strip_comments(_PAS.read_text(encoding="utf-8")))
+    assert "Json := 'null';" in fns["ProjectListJson"]
+    removal = fns["Proj_RemoveDocument"]
+    assert removal.index("If Not FileLoaded Then") < removal.index("Else If Entry <> '' Then")
+    assert '"project_file_checked":false' in removal
+
+
+def test_the_copy_stays_when_the_original_is_not_right():
+    body = _rewrite()
+    guard = body[body.index("If FileExists(Via) Then"):]
+    assert guard.index("(Count = Expected)") < guard.index("DeleteFile(Via)")
+    assert "CopyKept := True;" in guard

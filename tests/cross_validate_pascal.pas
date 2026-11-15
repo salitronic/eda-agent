@@ -471,6 +471,10 @@ begin
       Remaining := '';
       Exit;
     end;
+    { Exactly three tildes: a value ending in '~', then the separator. }
+    if (SepPos + 2 <= Length(Remaining)) and (Remaining[SepPos + 2] = '~') then
+      if not ((SepPos + 3 <= Length(Remaining)) and (Remaining[SepPos + 3] = '~')) then
+        SepPos := SepPos + 1;
     Result := Copy(Remaining, 1, SepPos - 1);
     Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
     if Result <> '' then Exit;

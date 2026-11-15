@@ -142,8 +142,12 @@ def test_a_body_listed_twice_is_moved_once():
 
 
 def _saved(monkeypatch, bodies):
-    monkeypatch.setattr(library.pcblib_models, "saved_body_models",
-                        lambda path, name: bodies)
+    async def export(bridge, path, name):
+        if bodies is None:
+            raise library.footprint_export.ExportFailed("no export")
+        return {"Primitives": []}
+    monkeypatch.setattr(library.footprint_export, "read_export", export)
+    monkeypatch.setattr(library.footprint_export, "body_models", lambda export: bodies)
 
 
 @pytest.mark.asyncio
@@ -162,9 +166,9 @@ async def test_set_3d_body_sends_heights_in_mils(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_step_standoff_carries_the_saved_rotations(monkeypatch, tmp_path):
+async def test_a_step_standoff_carries_the_exported_rotations(monkeypatch, tmp_path):
     # SetState writes the rotations with the Z offset, and no getter reads
-    # them, so the saved file's must go along or the model is turned flat.
+    # them, so Altium's export's must go along or the model is turned flat.
     lib = tmp_path / "Ics.PcbLib"
     lib.write_bytes(b"")
     _saved(monkeypatch, [
@@ -178,7 +182,7 @@ async def test_a_step_standoff_carries_the_saved_rotations(monkeypatch, tmp_path
     sent = bridge.sent[-1][1]
     assert sent["saved_count"] == "2"
     assert sent["saved_models"] == "SOT23.step|1|90.0|0.0|180.0||0|0.0|0.0|0.0"
-    assert [b["index"] for b in result["saved_bodies"]] == [1, 2]
+    assert [b["index"] for b in result["exported_bodies"]] == [1, 2]
 
 
 @pytest.mark.asyncio

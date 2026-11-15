@@ -125,3 +125,76 @@ def test_with_no_source_it_asks_and_writes_nothing(monkeypatch, tmp_path):
     assert out["needs_input"] is True
     assert out["candidates"] == [r"C:\Mine\Fab.OutJob"]
     assert list(tmp_path.iterdir()) == []
+
+
+def _run_create(monkeypatch, tmp_path, altium_saves):
+    """proj_create_outjob against a stand-in for Altium that saves the copy
+    it is asked for, or does not."""
+    import shutil
+    import types
+
+    from eda_agent import config, saving
+
+    workspace = tmp_path / "workspace"
+    project_dir = tmp_path / "proj"
+    workspace.mkdir()
+    project_dir.mkdir()
+    source = tmp_path / "Mine.OutJob"
+    source.write_bytes(_SRC)
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, dict(params or {})))
+            if command == "project.get_documents":
+                return [{"file_path": str(project_dir / "New.PcbDoc")}]
+            if command == "application.save_document_copy":
+                if altium_saves:
+                    shutil.copyfile(params["file_path"], params["copy_path"])
+                return {"written": altium_saves}
+            if command == "project.get_outjob_containers":
+                return {"containers": [{"name": "Fab"}]}
+            return {}
+
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def reg(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return reg
+
+        def __getattr__(self, n):
+            return lambda *a, **k: (lambda fn: fn)
+
+    monkeypatch.setattr(saving, "saving_off", lambda workspace=None: False)
+    monkeypatch.setattr(config, "get_config",
+                        lambda: types.SimpleNamespace(workspace_dir=str(workspace)))
+    monkeypatch.setattr(project, "get_bridge", lambda: _Bridge())
+    project.register_project_tools(_Mcp())
+    out = asyncio.run(tools["proj_create_outjob"](
+        str(project_dir / "New.PrjPcb"), source_outjob=str(source)))
+    return out, sent, workspace, project_dir
+
+
+def test_the_projects_outjob_is_the_one_altium_saved(monkeypatch, tmp_path):
+    out, sent, workspace, project_dir = _run_create(monkeypatch, tmp_path, True)
+    assert out["ok"] is True
+    copy = [p for c, p in sent if c == "application.save_document_copy"]
+    assert len(copy) == 1 and copy[0]["kind"] == "OUTPUTJOB"
+    # Staged in the bridge workspace, saved by Altium into the project.
+    assert copy[0]["file_path"].startswith(str(workspace))
+    assert copy[0]["copy_path"] == str(project_dir / "Mine.OutJob")
+    assert (project_dir / "Mine.OutJob").read_bytes().count(b"New.PcbDoc") == 1
+    assert list((workspace / "outjob_staging").iterdir()) == []
+    order = [c for c, _ in sent]
+    assert order.index("application.save_document_copy") < order.index("project.add_document")
+
+
+def test_when_altium_does_not_save_the_project_gets_no_outjob(monkeypatch, tmp_path):
+    out, sent, workspace, project_dir = _run_create(monkeypatch, tmp_path, False)
+    assert out["ok"] is False and "Altium did not save" in out["reason"]
+    assert list(project_dir.iterdir()) == []
+    assert list((workspace / "outjob_staging").iterdir()) == []
+    assert "project.add_document" not in [c for c, _ in sent]

@@ -63,7 +63,8 @@ def main() -> int:
         try:
             req = json.loads(line)
             _write_cadquery_here(_plan(req["plan"]), Path(req["path"]),
-                                 str(req.get("name") or "part"))
+                                 str(req.get("name") or "part"),
+                                 Path(req["review"]) if req.get("review") else None)
             reply = {"ok": True}
         except Exception as exc:                # noqa: BLE001 - reported
             reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]}

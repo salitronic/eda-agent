@@ -136,7 +136,7 @@ _SIMULATOR_TOOLS = frozenset({
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
-    "proj_list_documents", "proj_list_open", "proj_list_variants", "proj_open",
+    "proj_import_from_kicad", "proj_list_documents", "proj_list_open", "proj_list_variants", "proj_open",
     "proj_remove_document", "proj_run_output", "proj_save",
     "proj_set_parameter", "proj_update_from_libraries",
     "sch_place_comment", "sch_tidy_port_references",
