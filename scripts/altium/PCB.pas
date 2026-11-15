@@ -6428,6 +6428,55 @@ Begin
 End;
 
 {..............................................................................}
+{ RefreshBoardVias - Take every free via off the board and add it back, so    }
+{ Altium works out again which copper layers it touches (#377). A layer     }
+{ inserted into the stack is not seen by the vias already on the board until }
+{ the board is reopened: a pour there with RemoveDead set removes all of its }
+{ copper as dead although through vias cross it. Measured on AD 25.8.1:      }
+{ BeginModify / EndModify, a size changed and put back in one bracket, the   }
+{ via's own LowLayer / HighLayer written back and the board registration     }
+{ message alone all left it stale; removing and adding the via (or a real    }
+{ change in its own bracket) did not. Removing and adding keeps the via as  }
+{ it is. A via owned by a component is left alone and counted in Skipped.    }
+{ Call inside PcbBeginEdit / PcbEndEdit.                                     }
+{..............................................................................}
+
+Function RefreshBoardVias(Board : IPCB_Board; Var Skipped : Integer) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Vias : TInterfaceList;
+    I : Integer;
+Begin
+    Result := 0;
+    Skipped := 0;
+    Vias := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Prim := Iter.FirstPCBObject;
+    While Prim <> Nil Do
+    Begin
+        If Prim.InComponent Then Inc(Skipped)
+        Else Vias.Add(Prim);
+        Prim := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+    { Vias holds Altium references: it is not freed (a TInterfaceList     }
+    { holding them faults in oleaut32 when freed).                        }
+    For I := 0 To Vias.Count - 1 Do
+    Begin
+        Prim := Vias.Items[I];
+        Board.RemovePCBObject(Prim);
+        Board.AddPCBObject(Prim);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Prim.I_ObjectAddress);
+        Inc(Result);
+    End;
+End;
+
+{..............................................................................}
 { PCB_AddLayer - Insert a copper layer (MidLayer1..30 / InternalPlane1..16)   }
 { into the stack via IPCB_LayerStack.InsertLayer, or, with above / below (a   }
 { layer of the stack), at that place via InsertInStackAbove / Below.          }
@@ -6442,6 +6491,7 @@ Var
     LayerName, AboveName, BelowName, Order : String;
     TargetLayer, RefLayer : TLayer;
     RefObj, NewObj, Walk : IPCB_LayerObject_V7;
+    Refreshed, InParts : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -6502,6 +6552,8 @@ Begin
         End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
+        { The vias already on the board do not see the new layer yet. }
+        Refreshed := RefreshBoardVias(Board, InParts);
     Finally
         PcbEndEdit(0);
     End;
@@ -6517,7 +6569,9 @@ Begin
     End;
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '"'
-        + ',"stack_order":[' + Order + ']}');
+        + ',"stack_order":[' + Order + ']'
+        + ',"vias_refreshed":' + IntToStr(Refreshed)
+        + ',"vias_in_components":' + IntToStr(InParts) + '}');
 End;
 
 {..............................................................................}
