@@ -315,7 +315,7 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
     layer_of = LayerResolver(dump.layers)
     report: dict = {}
     out: dict = {k: [] for k in "TAVXFRPO"}
-    deleted = {"track": 0, "arc": 0, "region": 0}
+    deleted = {"track": 0, "arc": 0, "region": 0, "via": 0, "polygon": 0}
 
     def bad_layer(rep: KindReport, i: int, layer: Any) -> None:
         rep.refused += 1
@@ -432,13 +432,15 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
     for obj in dump.vias:
         idx.add((), obj[1:3], obj)
     picks, pending = {}, {}
-    entries = geometry_map.get("vias") or []
+    entries = (list(geometry_map.get("vias") or [])
+               + _deletes_of(geometry_map, "via"))
     rep.entries = len(entries)
     for i, e in enumerate(entries):
         try:
             x, y = (float(v) * COORD_PER_MIL for v in e["key"][:2])
-            assert len(e["new"]) == 2
-            _mil(e["new"][0]), _mil(e["new"][1])
+            if not e.get(_DELETE):
+                assert len(e["new"]) == 2
+                _mil(e["new"][0]), _mil(e["new"][1])
         except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
             _refuse(rep, i, exc, "needs key [x,y], new [x,y]")
             continue
@@ -446,8 +448,12 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
                  if abs(obj[1] - x) <= tol and abs(obj[2] - y) <= tol]
         _claim(rep, picks, pending, i, cands, f"via at {e['key']}")
     for obj, i in _settle(rep, picks, pending, entries).items():
-        n = entries[i]["new"]
         o, x, y = obj
+        if entries[i].get(_DELETE):
+            out["V"].append((o, f"V\t{o}\t{x}\t{y}\tDEL"))
+            deleted["via"] += 1
+            continue
+        n = entries[i]["new"]
         out["V"].append((o, f"V\t{o}\t{x}\t{y}\t{_mil(n[0])}\t{_mil(n[1])}"))
     report["vias"] = rep
 
@@ -596,13 +602,14 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         if vx is not None and vy is not None:
             idx.add((lyr,), (vx, vy), obj)
     picks, pending = {}, {}
-    entries = geometry_map.get("polygons") or []
+    entries = (list(geometry_map.get("polygons") or [])
+               + _deletes_of(geometry_map, "polygon"))
     rep.entries = len(entries)
     for i, e in enumerate(entries):
         try:
             lyr = layer_of(e["layer"])
             fx, fy = (float(v) * COORD_PER_MIL for v in e["key_first"][:2])
-            assert e["segments"]
+            assert e.get(_DELETE) or e["segments"]
         except (KeyError, TypeError, ValueError, IndexError, AssertionError):
             rep.refused += 1
             rep.note("refused", i, "needs layer, key_first [vx,vy], segments")
@@ -614,11 +621,15 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
                  if abs(obj[3] - fx) <= tol and abs(obj[4] - fy) <= tol]
         _claim(rep, picks, pending, i, cands, f"polygon on {e['layer']} starting {e['key_first']}")
     for obj, i in _settle(rep, picks, pending, entries).items():
+        o, lyr, n, vx, vy = obj
+        if entries[i].get(_DELETE):
+            out["P"].append((o, f"P\t{o}\t{lyr}\t{n}\t{vx}\t{vy}\tDEL"))
+            deleted["polygon"] += 1
+            continue
         segs = _segments_lines(entries[i]["segments"], rep, i)
         if segs is None:
             rep.matched -= 1
             continue
-        o, lyr, n, vx, vy = obj
         out["P"].append((o, "\n".join([f"P\t{o}\t{lyr}\t{n}\t{vx}\t{vy}\t{len(segs)}"]
                                       + segs)))
     report["polygons"] = rep
@@ -742,7 +753,8 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
     if dels:
         summary["delete"] = {"entries": len(dels), "matched": sum(deleted.values()),
                              "tracks": deleted["track"], "arcs": deleted["arc"],
-                             "regions": deleted["region"]}
+                             "regions": deleted["region"], "vias": deleted["via"],
+                             "polygons": deleted["polygon"]}
     comps = geometry_map.get("components") or []
     if comps:
         summary["components"] = {

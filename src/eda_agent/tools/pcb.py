@@ -59,6 +59,36 @@ def _list_field(value: Any, what: str) -> str:
     return text
 
 
+def items_from_file(inline: Optional[list], file: str, key: str
+                    ) -> tuple[Optional[list], Optional[dict[str, Any]]]:
+    """The list a place tool works on: given inline or read from a JSON
+    file (issue #316), so hundreds of objects need not ride in the call.
+
+    The file holds the list itself or an object with it under ``key``.
+    Returns ``(items, None)``, or ``(None, refusal)`` when both, neither
+    or an unreadable file was given.
+    """
+    if file and inline:
+        return None, {"success": False,
+                      "error": f"give {key} or file, not both"}
+    if not file:
+        if inline is None:
+            return None, {"success": False, "error": f"give {key} or file"}
+        return list(inline), None
+    from pathlib import Path
+    try:
+        data = json.loads(Path(file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, {"success": False, "error": f"could not read {file}: {e}"}
+    if isinstance(data, dict):
+        data = data.get(key)
+    if not isinstance(data, list) or not all(isinstance(d, dict) for d in data):
+        return None, {"success": False,
+                      "error": f"{file} must hold a list of {key}, or an "
+                               f"object with that list under {key!r}"}
+    return data, None
+
+
 #: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
 #: names them.
 _DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
@@ -5837,7 +5867,9 @@ def register_pcb_tools(mcp):
              "polygons": [{"layer", "key_first": [vx,vy], "segments": [seg]}],
              "board_outline": [seg] or {"segments": [seg]},
              "delete":   [{"kind": "track"|"arc", "layer", "width", "key"}
-                          | {"kind": "region", "layer", "key": {"n", "first", "holes"}}],
+                          | {"kind": "region", "layer", "key": {"n", "first", "holes"}}
+                          | {"kind": "via", "key": [x,y]}
+                          | {"kind": "polygon", "layer", "key_first": [vx,vy]}],
              "create":   [{"kind": "track"|"arc", "layer", "width",
                            "geom": [x1,y1,x2,y2] | [cx,cy,r,start,end],
                            "net"?, "keepout"? (default true on KeepOutLayer)}
@@ -8670,12 +8702,14 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_tracks(
-        tracks: list[dict[str, Any]],
+        tracks: Optional[list[dict[str, Any]]] = None,
         board_path: str = "",
+        file: str = "",
     ) -> dict[str, Any]:
         """Place many track segments on the active PCB in ONE IPC round-trip.
 
-        One Altium transaction for the whole list.
+        One Altium transaction for the whole list. Past a few hundred,
+        pass ``file`` instead, or create them with pcb_apply_geometry_map.
 
         Args:
             tracks: List of track dicts. Each dict supports:
@@ -8688,6 +8722,8 @@ def register_pcb_tools(mcp):
             board_path: The board to place on, taken by its path and
                 refused when it is not open; empty acts on the board in
                 front, which another session can change between calls.
+            file: A JSON file holding the same list, or an object with it
+                under "tracks"; in place of tracks.
 
             Example:
                 [
@@ -8704,6 +8740,9 @@ def register_pcb_tools(mcp):
             resolve, and, when any track took "current", "current_layer"
             and "on_current_layer".
         """
+        tracks, refusal = items_from_file(tracks, file, "tracks")
+        if refusal:
+            return refusal
         parts = []
         for t in tracks:
             x1 = _mils(t["x1"])
@@ -8722,13 +8761,15 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_vias(
-        vias: list[dict[str, Any]],
+        vias: Optional[list[dict[str, Any]]] = None,
         board_path: str = "",
+        file: str = "",
     ) -> dict[str, Any]:
         """Place many vias on the active PCB in ONE IPC round-trip.
 
         One Altium transaction for the whole list; a list of one places
-        a single via. Coordinates and sizes keep their decimals.
+        a single via. Coordinates and sizes keep their decimals. Past a
+        few hundred, pass ``file`` instead, or use pcb_apply_geometry_map.
 
         Args:
             vias: List of via dicts. Each dict supports:
@@ -8739,12 +8780,17 @@ def register_pcb_tools(mcp):
             board_path: The board to place on, taken by its path and
                 refused when it is not open; empty acts on the board in
                 front, which another session can change between calls.
+            file: A JSON file holding the same list, or an object with it
+                under "vias"; in place of vias.
 
         Returns:
             Dictionary with "placed" and "failed" counts, "unknown_layers"
             naming any layer pair and "unknown_nets" any net that did not
             resolve; a via on an unknown net is not placed.
         """
+        vias, refusal = items_from_file(vias, file, "vias")
+        if refusal:
+            return refusal
         parts = []
         for v in vias:
             size = v.get("size", 50)

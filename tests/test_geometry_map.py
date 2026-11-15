@@ -212,7 +212,7 @@ def test_a_delete_is_matched_like_a_move_and_marked():
     assert lines[0] == f"T\t4\t0\t0\t{50 * C}\t0\t57\t{10 * C}\tDEL"
     assert lines[1].startswith("A\t2\t") and lines[1].endswith("\tDEL")
     assert rep["delete"] == {"entries": 3, "matched": 2, "tracks": 1, "arcs": 1,
-                             "regions": 0}
+                             "regions": 0, "vias": 0, "polygons": 0}
     assert rep["tracks"]["unmatched"] == 1
 
 
@@ -388,7 +388,8 @@ def test_the_apply_pass_deletes_and_creates_with_proven_calls():
     dele = body[body.index("If A1 = 'DEL' Then"):]
     assert dele.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < dele.index(
         "Board.RemovePCBObject(Prim);")
-    assert body.count("Board.RemovePCBObject(Prim);") == 3
+    # Track, arc, region, via, and pour (issue #316).
+    assert body.count("Board.RemovePCBObject(Prim);") == 5
     region = body[body.index("Else If (KindNo = 6) And (Pos(#9 + 'DEL', Lines[J]) > 0) Then"):]
     region = region[:region.index("Else If KindNo = 6 Then")]
     assert region.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < region.index(

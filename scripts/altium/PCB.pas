@@ -29052,10 +29052,22 @@ Begin
                         Begin
                             Via := Prim;
                             For K := 1 To 2 Do SplitNextTab(Rest);
-                            Via.BeginModify;
-                            Via.X := StrToIntDef(SplitNextTab(Rest), Via.X);
-                            Via.Y := StrToIntDef(SplitNextTab(Rest), Via.Y);
-                            Via.EndModify;
+                            A1 := SplitNextTab(Rest);
+                            If A1 = 'DEL' Then
+                            Begin
+                                { Removed as a track is above (issue #316). }
+                                PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+                                    c_Broadcast, PCBM_BoardRegisteration, Prim.I_ObjectAddress);
+                                Board.RemovePCBObject(Prim);
+                                Inc(Deleted);
+                            End
+                            Else
+                            Begin
+                                Via.BeginModify;
+                                Via.X := StrToIntDef(A1, Via.X);
+                                Via.Y := StrToIntDef(SplitNextTab(Rest), Via.Y);
+                                Via.EndModify;
+                            End;
                         End
                         Else If KindNo = 4 Then
                         Begin
@@ -29379,6 +29391,25 @@ Begin
                             End;
                         Finally
                             Board.BoardIterator_Destroy(Iter);
+                        End;
+                        { Pours the map deletes go after that walk: one     }
+                        { removed before it would shift the ordinals it     }
+                        { counts by. The union is cleared first: MEASURED   }
+                        { on AD 25, removing pours still in a union crashed }
+                        { ADVPCB.DLL in the repour after (issue #316).      }
+                        For I := 0 To Matched.Count - 1 Do
+                        Begin
+                            J := StrToIntDef(MatchLines[I], 0);
+                            If Pos(#9 + 'DEL', Lines[J]) > 0 Then
+                            Begin
+                                Prim := Matched.Items[I];
+                                Try Prim.SetState_UnionIndex := 0; Except End;
+                                PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+                                    c_Broadcast, PCBM_BoardRegisteration, Prim.I_ObjectAddress);
+                                Board.RemovePCBObject(Prim);
+                                Inc(Deleted);
+                                Inc(Applied);
+                            End;
                         End;
                     End;
                 Finally
