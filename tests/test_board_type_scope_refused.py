@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
-"""A board object type refuses a scope it cannot honour (issue #365).
+"""A board object type refuses a scope it cannot honour.
 
 The PCB route of obj_modify, obj_delete and obj_count acts on the board in
-front, or the only open board, whatever the scope says. A document,
-project or lib_component scope was dropped without a word, so
-``obj_delete(eTrackObject, scope="doc:<another board>")`` deleted on the
-board in front and reported success. obj_query already refused such a
-scope; the three now refuse it too, before ApplyLibComponentScope moves
-the SchLib in front to the named symbol.
+front, or the only open board, whatever the scope says. So a document,
+project or lib_component scope is refused: without the refusal
+``obj_delete(eTrackObject, scope="doc:<another board>")`` would delete on
+the board in front and report success. obj_query refuses such a scope
+too. The three refuse before ApplyLibComponentScope moves the SchLib in
+front to the named symbol.
 
 A type the schematic resolver knows keeps its scope ("component" is the
 schematic part), so a project-wide schematic modify still works.

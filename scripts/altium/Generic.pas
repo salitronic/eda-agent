@@ -5101,13 +5101,13 @@ End;
 {..............................................................................}
 { A BOARD TYPE CANNOT HONOUR A SCOPE. The PCB path acts on the board in      }
 { front, or the only open board, whatever the scope says, so a scope naming  }
-{ another document, the project or a library symbol used to be dropped       }
-{ without a word: obj_delete scoped to one board deleted on another.         }
+{ another document, the project or a library symbol is refused: a delete     }
+{ scoped to one board must never land on another.                            }
 { Refused before ApplyLibComponentScope, which moves the SchLib in front to  }
 { the named symbol. A type the schematic resolver knows keeps its scope:     }
 { "component" is the schematic part. Verb names the action in the message.  }
 { Returns an empty string when the call may go on. Gen_QueryObjects keeps   }
-{ its own, stricter check (issue #365).                                      }
+{ its own, stricter check.                                                   }
 {..............................................................................}
 
 Function BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr,

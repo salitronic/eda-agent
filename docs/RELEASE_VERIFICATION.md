@@ -1,4 +1,4 @@
-# Release verification: 2026.11.14.18
+# Release verification: 2026.11.15.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -430,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.14.18`, `version_match` =
+Expect `altium_script_version` = `2026.11.15.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4354,7 +4354,7 @@ staged file is removed afterwards. When Altium does not save, the project
 gets no OutJob and the reply says so. With the dashboard's Saving switch
 off the tool is refused before anything is staged.
 
-Verified live on AD 26.11.1.5 with script 2026.11.14.18, on scratch
+Verified live on AD 26.11.1.5 on scratch
 copies. A copy of Altium's shipped Fabrication OutJob, saved by Altium,
 kept every line the tool sets (each container's folder and file path,
 release-managed off, the copper layer set, a relative and an absolute
