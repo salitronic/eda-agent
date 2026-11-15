@@ -289,7 +289,7 @@ async def test_an_answer_stands_for_the_same_finding_and_not_for_a_changed_one(a
     tool, _ = apply
     jid = _job()
     await tool(job_id=jid, expect_file=BOARD_FILE, checkpoint=False,
-               accept=[{"check": "length", "reason": "accepted for the test"}])
+               accept=[{"id": "length:A", "reason": "accepted for the test"}])
     out = await tool(job_id=_job(), expect_file=BOARD_FILE, checkpoint=False)
     assert "error" not in out, "the same finding, answered before"
     # The same id with another measurement is a new finding.
@@ -298,3 +298,19 @@ async def test_an_answer_stands_for_the_same_finding_and_not_for_a_changed_one(a
     B.record_decisions(BOARD_FILE, [kept["length:A"]])
     out = await tool(job_id=_job(), expect_file=BOARD_FILE, checkpoint=False)
     assert [f["id"] for f in out["unanswered"]] == ["length:A"]
+
+
+def test_one_answer_covers_a_group_of_judgements_but_not_of_broken_rules():
+    from eda_agent.layout.route import review
+
+    found = [{"id": "length:A", "check": "length", "text": "A: over"},
+             {"id": "length:B", "check": "length", "text": "B: over"},
+             {"id": "detour:C", "check": "detour", "text": "C: 2x"},
+             {"id": "detour:D", "check": "detour", "text": "D: 3x"}]
+    left, decided = review.unanswered(found, [{"check": "length", "reason": "fine"},
+                                              {"check": "detour", "reason": "short nets"}])
+    assert [f["id"] for f in left] == ["length:A", "length:B"]
+    assert [d["id"] for d in decided] == ["detour:C", "detour:D"]
+    left, _ = review.unanswered(found, [{"id": "length:A", "reason": "450 mil is the limit"},
+                                        {"check": "detour", "reason": "short nets"}])
+    assert [f["id"] for f in left] == ["length:B"]

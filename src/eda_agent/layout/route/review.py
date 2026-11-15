@@ -718,13 +718,19 @@ def off_angle(tracks: list[dict]) -> dict[str, tuple[int, tuple]]:
     return out
 
 
+#: The checks one answer may cover as a group: the judgements, and the nets
+#: not laid. A rule the brief sets and the copper breaks is answered by id.
+GROUP_CHECKS = ("detour", "vias", "angle", "pad_entry", "unrouted", "held")
+
+
 def unanswered(found: list[dict], accept: Iterable[dict]) -> tuple[list[dict], list[dict]]:
     """The findings ``accept`` leaves open, and the decisions it makes.
 
     Each answer gives a ``reason`` and names a finding by ``id``, or every
-    finding of a ``check`` (pad_entry, detour...); ``evidence`` (a
-    simulation's result file, a calculation) is kept with it. An answer
-    with no reason answers nothing."""
+    finding of a ``check`` in GROUP_CHECKS (pad_entry, detour...); a
+    finding of any other check is answered by its ``id`` only.
+    ``evidence`` (a simulation's result file, a calculation) is kept with
+    it. An answer with no reason answers nothing."""
     by_id: dict[str, dict] = {}
     by_check: dict[str, dict] = {}
     for a in accept or []:
@@ -738,7 +744,8 @@ def unanswered(found: list[dict], accept: Iterable[dict]) -> tuple[list[dict], l
             by_check[str(a["check"])] = ans
     left, decided = [], []
     for f in found:
-        ans = by_id.get(f["id"]) or by_check.get(f["check"])
+        ans = by_id.get(f["id"]) or (by_check.get(f["check"])
+                                     if f["check"] in GROUP_CHECKS else None)
         if ans:
             decided.append({"id": f["id"], "check": f["check"], "text": f["text"], **ans})
         else:

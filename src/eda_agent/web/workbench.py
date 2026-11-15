@@ -224,7 +224,15 @@ class Engine:
         run = self.run
 
         def work():
-            reply = self.call(tool, {"job_id": run["job_id"], "expect_file": run["board"]})
+            args = {"job_id": run["job_id"], "expect_file": run["board"]}
+            reply = self.call(tool, args)
+            left = reply.get("unanswered") if isinstance(reply, dict) else None
+            if left and reply.get("error"):
+                # Apply here is the user's own press on a proposal they are
+                # looking at: that answers the review's findings.
+                reply = self.call(tool, {**args, "accept": [
+                    {"id": f["id"], "reason": "applied by the user from the workbench"}
+                    for f in left if f.get("id")]})
             run["applied"] = reply
             run["state"] = "applied" if not (isinstance(reply, dict) and reply.get("error")) \
                 else "failed"

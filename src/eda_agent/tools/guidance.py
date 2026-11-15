@@ -670,10 +670,22 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                 "pcb_unroute"],
         "avoid": [
             ("pcb_autoroute", "one run for the whole board decides every net "
-                              "itself; rounds stop for your review after each "
-                              "group"),
+                              "itself and gives no advice on the nets it "
+                              "leaves unrouted; rounds stop for your review "
+                              "after each group. Its result is reviewed all "
+                              "the same: pcb_autoroute_apply waits on every "
+                              "finding"),
+            ("obj_run_process", "PCB:AutoRoute starts Altium's own "
+                                "autorouter, which takes no brief; the bridge "
+                                "does not answer until it ends, which can be "
+                                "hours, and no tool here can stop it; it is "
+                                "refused unless the user has set \"Altium "
+                                "autorouter\" to Allowed on the Config tab"),
         ],
         "note": (
+            "Route with these tools. Altium's own autorouter is used only "
+            "when the user specifically asks for it and has set \"Altium "
+            "autorouter\" to Allowed on the Config tab. "
             "You decide how the board is routed; the router does the "
             "mechanical work and obeys. pcb_route_brief with no changes "
             "lists the critical nets (pairs, clocks, switching nodes, "

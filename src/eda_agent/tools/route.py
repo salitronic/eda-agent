@@ -165,19 +165,24 @@ def register_route_tools(mcp):
         join_existing: bool = False,
         exclude_layers: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Route the focused board with the in-house engine, as a job.
+        """Route many nets in one run; to route a board use pcb_route_round.
+
+        Rounds (pcb_route_brief, then pcb_route_round) route one group at
+        a time, stop for your review after each and advise on nets left
+        unrouted. This runs as a job.
 
         Reads the board exactly, routes in the background and returns a job
         id at once. Poll design_job_status; design_job_result gives the
-        tracks and vias, the DRC verdict and the pours used as planes.
-        Nothing is written until pcb_autoroute_apply. Stages, each fixed
+        tracks and vias, the DRC verdict, the pours used as planes and the
+        same ``review`` a round gives (per-net figures, a picture,
+        ``questions``). Nothing is written until pcb_autoroute_apply, which
+        refuses while a finding is unanswered. Stages, each fixed
         for the next: differential pairs, plane fanout, IC pin lanes,
         buses, then the rest by priority. Bends are 45 degrees or less and
         no via goes in a passive's pad. Obeys the board's routing brief
         (pcb_route_brief); a critical net without one is left out and
-        listed in brief_needed. To route in reviewed rounds, use
-        pcb_route_round. The user's Routing discipline on the Config tab
-        can make that advisory or off; the reply then says so.
+        listed in brief_needed. The user's Routing discipline on the Config
+        tab can make that advisory or off; the reply then says so.
 
         Args:
             expect_file: Full path of the board; refused if another board
@@ -263,7 +268,10 @@ def register_route_tools(mcp):
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": list(nets) if nets else None, "planes": use_planes,
-             "stages": stages, "gloss": bool(gloss), "brief": brief})
+             "stages": stages, "gloss": bool(gloss), "brief": brief,
+             # Reviewed like a round: the findings wait on an answer before
+             # pcb_autoroute_apply writes. Advice on unrouted nets is a round's.
+             "review": True, "advise": False})
         return {
             "job_id": job_id,
             "board": board.name,
@@ -273,8 +281,11 @@ def register_route_tools(mcp):
             "next_step": "call design_job_status(job_id, wait_seconds=90) "
                          "until it is done (nothing notifies you when it "
                          "finishes, so keep calling it; do not end your "
-                         "turn), then design_job_result; apply with "
-                         "pcb_autoroute_apply",
+                         "turn), then design_job_result: look at "
+                         "review.picture, answer review.questions, then "
+                         "pcb_autoroute_apply. For the nets it leaves "
+                         "unrouted, and for the rest of the board, route in "
+                         "rounds with pcb_route_round",
         }
 
     @mcp.tool()
@@ -584,9 +595,11 @@ def register_route_tools(mcp):
                 routed through their old poured copper (default True). A
                 poured net's connections are not there, and the new copper
                 is not cleared, until the polygons are repoured round it.
-            accept: answers to findings, each {id, reason} or {check,
-                reason} for every finding of that check; the reason is
-                kept with the board's brief.
+            accept: answers to findings, each {id, reason}. {check,
+                reason} answers every finding of a judgement check
+                (detour, vias, angle, pad_entry) or of unrouted / held; a
+                brief rule the copper breaks is answered by id. The
+                reason is kept with the board's brief.
 
         Returns:
             ``{"tracks": {placed, failed}, "vias": {placed, failed},
@@ -617,8 +630,10 @@ def register_route_tools(mcp):
         level, said = _discipline()
         if left and level == "enforced":
             return {"error": f"{len(left)} findings are unanswered; nothing was written. Route "
-                             "again, or answer each with accept=[{id, reason}] (or {check, "
-                             "reason} for all of one check).",
+                             "again, or answer each with accept=[{id, reason}]. {check, "
+                             "reason} answers all of one check only for "
+                             f"{', '.join(review.GROUP_CHECKS)}; a rule of the brief the "
+                             "copper breaks is answered by id.",
                     "unanswered": left}
         bridge = get_bridge()
         head = await bridge.send_command_async("pcb.get_layout_model", {"section": "board"},
