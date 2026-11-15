@@ -12223,6 +12223,122 @@ Begin
     End;
 End;
 
+{ The one pour named Wanted (case ignored), or Nil. Hits counts the pours    }
+{ with that name and Position is the match's place in pcb_get_polygons'      }
+{ order. Names repeat (Altium names every net-less pour of a layer alike), }
+{ so more than one hit returns Nil, and Listing holds each candidate's      }
+{ index, layer and net for the refusal (issue #NNN).                        }
+Function PourByName(Board : IPCB_Board; Wanted : String; Var Position : Integer;
+    Var Hits : Integer; Var Listing : String) : IPCB_Polygon;
+Var
+    Walk : IPCB_BoardIterator;
+    Poly, Match : IPCB_Polygon;
+    At : Integer;
+    Net : String;
+Begin
+    Result := Nil;
+    Match := Nil;
+    Position := -1;
+    Hits := 0;
+    Listing := '';
+    At := 0;
+    Walk := Board.BoardIterator_Create;
+    Try
+        Walk.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Walk.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Walk.AddFilter_Method(eProcessAll);
+        Poly := Walk.FirstPCBObject;
+        While Poly <> Nil Do
+        Begin
+            If UpperCase(Poly.Name) = UpperCase(Wanted) Then
+            Begin
+                Inc(Hits);
+                If Hits = 1 Then
+                Begin
+                    Match := Poly;
+                    Position := At;
+                End;
+                Net := '';
+                Try If Poly.Net <> Nil Then Net := Poly.Net.Name; Except Net := ''; End;
+                If Listing <> '' Then Listing := Listing + ',';
+                Listing := Listing + JsonObj(JsonInt('index', At) + ','
+                    + JsonStr('layer', LayerDisplayName(Poly.Layer)) + ','
+                    + JsonStr('net', Net));
+            End;
+            Inc(At);
+            Poly := Walk.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Walk);
+    End;
+    If Hits = 1 Then Result := Match;
+End;
+
+{ The pour a write names, by name, by index, or both. Indices shift on every }
+{ modify and repour, so a write that only had an index could land on another }
+{ pour (issue #NNN). A name alone must be unique; with an index too, the pour }
+{ there must carry it. Nil with Refusal set to the full error response when  }
+{ neither picks exactly one pour.                                            }
+Function PourFromParams(Board : IPCB_Board; Params : String; RequestId : String;
+    Var Position : Integer; Var Refusal : String) : IPCB_Polygon;
+Var
+    IndexStr, NameStr, Listing : String;
+    Wanted, Passed, Hits : Integer;
+Begin
+    Result := Nil;
+    Refusal := '';
+    Position := -1;
+    IndexStr := Trim(ExtractJsonValue(Params, 'index'));
+    NameStr := Trim(ExtractJsonValue(Params, 'name'));
+    If (IndexStr = '') And (NameStr = '') Then
+    Begin
+        Refusal := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'Give the pour''s name or its index (pcb_get_polygons lists both)');
+        Exit;
+    End;
+    If IndexStr <> '' Then
+    Begin
+        Wanted := StrToIntDef(IndexStr, -1);
+        If Wanted < 0 Then
+        Begin
+            Refusal := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'index counts from 0');
+            Exit;
+        End;
+        Result := PourAtPosition(Board, Wanted, Passed);
+        If Result = Nil Then
+        Begin
+            Refusal := BuildErrorResponse(RequestId, 'NOT_FOUND',
+                'The board has ' + IntToStr(Passed) + ' pours, none at ' + IntToStr(Wanted));
+            Exit;
+        End;
+        If (NameStr <> '') And (UpperCase(NameStr) <> UpperCase(Result.Name)) Then
+        Begin
+            Refusal := BuildErrorResponse(RequestId, 'POUR_CHANGED',
+                'Pour ' + IntToStr(Wanted) + ' is now ' + Result.Name + ', not ' + NameStr
+                + '; read pcb_get_polygons again, or give the name alone');
+            Result := Nil;
+            Exit;
+        End;
+        Position := Wanted;
+        Exit;
+    End;
+    Result := PourByName(Board, NameStr, Position, Hits, Listing);
+    If Hits = 0 Then
+    Begin
+        Refusal := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No pour named ' + NameStr);
+        Exit;
+    End;
+    If Hits > 1 Then
+    Begin
+        Refusal := BuildErrorResponseDetailed(RequestId, 'AMBIGUOUS_NAME',
+            'There are ' + IntToStr(Hits) + ' pours named ' + NameStr
+            + '. Rename one, or give its index with the name: the pour at that '
+            + 'index must still carry the name. The candidates are in the details.',
+            JsonObj(JsonRaw('candidates', '[' + Listing + ']')));
+        Result := Nil;
+    End;
+End;
+
 { One outline corner: where it is and, for an arc, its centre, radius and   }
 { start and end angles.                                                     }
 Function PourCornerJson(Seg : TPolySegment) : String;
@@ -13201,22 +13317,20 @@ End;
 
 {..............................................................................}
 { PCB_ModifyPolygon - Modify polygon pour properties                         }
-{ Params: index (required), net (optional), layer (optional),               }
+{ Params: name and / or index (PourFromParams), net (optional), layer,      }
 {         hatch_style (optional: Solid/45Degree/90Degree/Horizontal/Vertical)}
 {..............................................................................}
 
 Function PCB_ModifyPolygon(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Polygon : IPCB_Polygon;
-    IndexStr, NetStr, LayerStr, HatchStr : String;
+    NetStr, LayerStr, HatchStr : String;
     DeadStr, NecksStr, IslandsStr : String;
-    Changed, Failed : String;
-    TargetIdx, CurIdx : Integer;
+    Changed, Failed, Refusal : String;
+    TargetIdx : Integer;
     FoundPoly : IPCB_Polygon;
     FoundNet : IPCB_Net;
-    Found, Want : Boolean;
+    Want : Boolean;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -13226,7 +13340,6 @@ Begin
         Exit;
     End;
 
-    IndexStr := ExtractJsonValue(Params, 'index');
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
     HatchStr := ExtractJsonValue(Params, 'hatch_style');
@@ -13235,19 +13348,6 @@ Begin
     IslandsStr := ExtractJsonValue(Params, 'remove_islands_by_area');
     Changed := '';
     Failed := '';
-
-    If IndexStr = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing "index" parameter');
-        Exit;
-    End;
-
-    TargetIdx := StrToIntDef(IndexStr, -1);
-    If TargetIdx < 0 Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'Invalid index value');
-        Exit;
-    End;
 
     TargetLayer := eNoLayer;
     If LayerStr <> '' Then
@@ -13261,33 +13361,12 @@ Begin
         End;
     End;
 
-    // Find the polygon at the specified index
-    Found := False;
-    FoundPoly := Nil;
-    CurIdx := 0;
-
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
-    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    Polygon := Iterator.FirstPCBObject;
-    While Polygon <> Nil Do
+    { By name, by index, or both: an index alone shifts as pours are       }
+    { modified and repoured, and twice picked another pour (issue #NNN).    }
+    FoundPoly := PourFromParams(Board, Params, RequestId, TargetIdx, Refusal);
+    If FoundPoly = Nil Then
     Begin
-        If CurIdx = TargetIdx Then
-        Begin
-            FoundPoly := Polygon;
-            Found := True;
-            Break;
-        End;
-        Inc(CurIdx);
-        Polygon := Iterator.NextPCBObject;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
-
-    If Not Found Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Polygon index ' + IntToStr(TargetIdx) + ' not found');
+        Result := Refusal;
         Exit;
     End;
 
@@ -24734,16 +24813,15 @@ End;
 Function PCB_GrowPour(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iter : IPCB_BoardIterator;
-    Poly, Found : IPCB_Polygon;
-    PourName, DistStr, Before : String;
+    Found : IPCB_Polygon;
+    DistStr, Before, Refusal : String;
     Dist : Double;
+    Position : Integer;
 Begin
-    PourName := ExtractJsonValue(Params, 'name');
     DistStr := ExtractJsonValue(Params, 'distance_mils');
-    If (PourName = '') Or (Not IsFloatStr(DistStr)) Then
+    If Not IsFloatStr(DistStr) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name and distance_mils are required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'distance_mils is required');
         Exit;
     End;
     Dist := StrToFloatDef(DistStr, 0);
@@ -24758,28 +24836,12 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    Found := Nil;
-    Iter := Board.BoardIterator_Create;
-    Try
-        Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Poly := Iter.FirstPCBObject;
-        While Poly <> Nil Do
-        Begin
-            If UpperCase(Poly.Name) = UpperCase(PourName) Then
-            Begin
-                Found := Poly;
-                Break;
-            End;
-            Poly := Iter.NextPCBObject;
-        End;
-    Finally
-        Board.BoardIterator_Destroy(Iter);
-    End;
+    { It took the FIRST pour of that name, and names repeat: a second pour }
+    { of the name is now refused instead (issue #NNN).                     }
+    Found := PourFromParams(Board, Params, RequestId, Position, Refusal);
     If Found = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No pour named ' + PourName);
+        Result := Refusal;
         Exit;
     End;
     Before := PourBoundsJson(Found);
@@ -24795,6 +24857,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('name', Found.Name) + ','
+        + JsonInt('index', Position) + ','
         + JsonRaw('distance_mils', FloatToJsonStr(Dist)) + ','
         + JsonRaw('bounds_before', Before) + ','
         + JsonRaw('bounds_after', PourBoundsJson(Found)) + ','

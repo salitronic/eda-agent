@@ -1203,6 +1203,28 @@ async def _rule_edit(tool: str, args: dict[str, Any], command: str,
         bridge, tool, args, lambda: bridge.send_command_async(command, params))
 
 
+
+def _pour_choice(index: Any, name: str) -> Optional[dict[str, Any]]:
+    """A refusal when neither a valid index nor a name picks a pour."""
+    if index is not None and (
+            isinstance(index, bool) or not isinstance(index, int) or index < 0):
+        return {"ok": False, "reason": "index counts from 0"}
+    if index is None and not name.strip():
+        return {"ok": False,
+                "reason": "give the pour's name or its index "
+                          "(pcb_get_polygons lists both)"}
+    return None
+
+
+def _pour_params(index: Optional[int], name: str) -> dict[str, Any]:
+    """The bridge's pour selector: index and / or the trimmed name."""
+    ask: dict[str, Any] = {}
+    if index is not None:
+        ask["index"] = str(index)
+    if name.strip():
+        ask["name"] = name.strip()
+    return ask
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -2363,7 +2385,10 @@ def register_pcb_tools(mcp):
             "smart_track_ends": smart_track_ends})
 
     @mcp.tool()
-    async def pcb_grow_pour(name: str, distance_mils: float) -> dict[str, Any]:
+    async def pcb_grow_pour(
+        name: str = "", distance_mils: float = 0,
+        index: Optional[int] = None,
+    ) -> dict[str, Any]:
         """Move a pour's outline out by a distance all round, or in with a
         negative distance, as Altium's own Grow does: to pull a pour back
         from the board edge or spread it to a new keepout.
@@ -2371,20 +2396,25 @@ def register_pcb_tools(mcp):
         The copper is not repoured: call pcb_repour_polygons afterwards.
 
         Args:
-            name: The pour's name (pcb_get_polygons lists them).
+            name: The pour's name (pcb_get_polygons lists them). It must
+                belong to one pour only (AMBIGUOUS_NAME lists the
+                candidates); give ``index`` too to pick one of them.
             distance_mils: How far to move the outline; negative shrinks.
+            index: The pour's index, alone or with the name (the pour
+                there must then carry it).
 
         Returns:
-            ``name``, ``distance_mils``, ``bounds_before`` and
+            ``name``, ``index``, ``distance_mils``, ``bounds_before`` and
             ``bounds_after`` (left, bottom, right, top in mils).
         """
-        if not name.strip():
-            return {"ok": False, "reason": "name is required"}
+        refused = _pour_choice(index, name)
+        if refused:
+            return refused
         if distance_mils == 0:
             return {"ok": False, "reason": "distance_mils is not 0"}
-        return await get_bridge().send_command_async(
-            "pcb.grow_pour", {"name": name.strip(),
-                              "distance_mils": repr(float(distance_mils))})
+        ask = _pour_params(index, name)
+        ask["distance_mils"] = repr(float(distance_mils))
+        return await get_bridge().send_command_async("pcb.grow_pour", ask)
 
     @mcp.tool()
     async def pcb_plane_connections(
@@ -10277,7 +10307,8 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_modify_polygon(
-        index: int,
+        index: Optional[int] = None,
+        name: str = "",
         net: str = "",
         layer: str = "",
         hatch_style: str = "",
@@ -10287,11 +10318,17 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Modify a polygon pour's properties and its pour options.
 
-        Index from ``pcb_get_polygons``. Nothing here repours: run
-        ``pcb_repour_polygons`` after (``repour_needed`` says so).
+        Name the pour by ``name``, ``index`` or both, from
+        ``pcb_get_polygons``. Indices shift after every modify and repour,
+        so prefer the name: a name alone must belong to exactly one pour
+        (AMBIGUOUS_NAME lists the candidates); with an index too, the pour
+        at that index must carry the name (POUR_CHANGED). Nothing here
+        repours: run ``pcb_repour_polygons`` after (``repour_needed`` says
+        so).
 
         Args:
-            index: Polygon index (from pcb_get_polygons output)
+            index: Polygon index (from pcb_get_polygons output).
+            name: Polygon name, case ignored.
             net: New net; an unknown name goes to ``not_applied``.
             layer: New layer name.
             hatch_style: "Solid", "NoHatch", "45Degree" or "90Degree".
@@ -10302,12 +10339,15 @@ def register_pcb_tools(mcp):
                 threshold.
 
         Returns:
-            ``modified`` (something changed), ``success``, ``index``,
-            ``name``, ``changed``, ``not_applied``, ``repour_needed``,
-            ``note``.
+            ``modified`` (something changed), ``success``, ``index``
+            (where the pour was), ``name`` (its name now), ``changed``,
+            ``not_applied``, ``repour_needed``, ``note``.
         """
+        refused = _pour_choice(index, name)
+        if refused:
+            return refused
         bridge = get_bridge()
-        params: dict[str, Any] = {"index": str(index)}
+        params: dict[str, Any] = _pour_params(index, name)
         if net:
             params["net"] = net
         if layer:
