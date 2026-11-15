@@ -14,7 +14,8 @@ from eda_agent.tools import generic
 from tests.pascal_source import load
 
 _ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
-SEP = "¦"
+SEP = "|"
+FILE_SEP = "\u00a6"
 
 
 class _Bridge:
@@ -82,6 +83,7 @@ def test_bad_lists_send_nothing(monkeypatch):
         {"parameter_list": [{"rule": {"GAP": "5mil"}}]},
         {"parameter_list": [{"rule": {"RULEKIND": "Length", "rulekind": "Width"}}]},
         {"parameter_list": [{"rule": {"RULEKIND": f"a{SEP}b"}}]},
+        {"parameter_list": [{"rule": {"RULEKIND": f"a{FILE_SEP}b"}}]},
         {"parameter_list": [{"rule": RULE, "value": "x"}]},
         {"parameter_list": [{"name": "A", "value": "1"}], "parameters": {"B": "2"}},
         {"parameter_list": [{"name": "A", "value": "1"}], "name": " "},
