@@ -13,7 +13,7 @@ import re
 from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
-from ..safety import refuse_process, untrusted_text_note
+from ..safety import refuse_altium_autorouter, refuse_process, untrusted_text_note
 from ..sch_members import member_refusals
 from .library import _mils
 from ..units import format_length
@@ -1625,6 +1625,10 @@ def register_generic_tools(mcp):
                 "WorkspaceManager:OpenObject", "PCB:Zoom")
             parameters: Optional pipe-separated key=value parameter pairs, e.g.:
                 "ObjectKind=Document|FileName=C:\\path\\to\\file.SchDoc"
+                PCB:AutoRoute, Altium's own autorouter, is refused
+                (AUTOROUTER_NOT_ALLOWED) unless the user has set "Altium
+                autorouter" to Allowed on the Config tab: route with
+                pcb_route_brief and pcb_route_round.
 
         Returns:
             Dictionary with execution result. Success means the process
@@ -1634,6 +1638,10 @@ def register_generic_tools(mcp):
         refusal = refuse_process(process_name)
         if refusal is not None:
             return {"success": False, "error": "REFUSED_BY_POLICY",
+                    "reason": refusal, "process": process_name}
+        refusal = refuse_altium_autorouter(process_name)
+        if refusal is not None:
+            return {"success": False, "error": "AUTOROUTER_NOT_ALLOWED",
                     "reason": refusal, "process": process_name}
 
         bridge = get_bridge()

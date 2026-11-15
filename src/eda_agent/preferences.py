@@ -31,6 +31,8 @@ router holds the AI to its routing discipline (see :data:`ROUTING`; default
 a basic 3D model, extruded boxes, cylinders or spheres with no STEP model
 among them (default ``not_allowed``: such footprints are reported, and the
 AI asks the user before replacing them; see :func:`basic_3d_models_report`).
+``altium_autorouter`` is ``allowed`` to let the AI start Altium's own
+autorouter (default ``not_allowed``: the AI routes with the router here).
 ``checks_off`` names the checks switched off, comma separated
 (see :data:`CHECKS`; default none: every check runs). Each of the others
 also has an environment variable in the AI client's config; for the first two
@@ -62,6 +64,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "usage": ("off", "on"),
     "routing": ("enforced", "advisory", "off"),
     "basic_3d_models": ("not_allowed", "allowed"),
+    "altium_autorouter": ("not_allowed", "allowed"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -153,6 +156,12 @@ ROUTING: dict[str, str] = {
 def routing_discipline(workspace: Optional[Path] = None) -> str:
     """'enforced', 'advisory' or 'off', as chosen on the Config tab."""
     return preferences(workspace)["routing"]
+
+
+def altium_autorouter_allowed(workspace: Optional[Path] = None) -> bool:
+    """True when the AI may start Altium's own autorouter (the Config tab's
+    "Altium autorouter" set to Allowed)."""
+    return preferences(workspace)["altium_autorouter"] == "allowed"
 
 
 def basic_3d_models_allowed(workspace: Optional[Path] = None) -> bool:

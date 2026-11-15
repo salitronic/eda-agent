@@ -71,6 +71,7 @@ without the record that it differs from its source.
 | Setting | Choices | What it does |
 |---|---|---|
 | Routing discipline | Enforced / Advisory / Off | Enforced, the default: the router leaves out a critical net (a differential pair, clock, switching node, high-current path or antenna feed) until the AI gives it a routing brief entry with its source, and `pcb_autoroute_apply` writes a round only once the AI has answered every finding of its review. Advisory: those nets are routed and named, and the findings are listed but nothing waits for an answer. Off: neither is asked for. |
+| Altium autorouter | Not allowed / Allowed | Not allowed, the default: the AI routes with the router here (`pcb_route_brief`, `pcb_route_round`, `pcb_autoroute`), and `obj_run_process` refuses `PCB:AutoRoute` with `AUTOROUTER_NOT_ALLOWED`. Allowed: the AI may start Altium's own autorouter when the user asks for it. Altium's autorouter takes no routing brief, and the bridge does not answer until it ends, so the AI can neither work nor stop it meanwhile. |
 
 At every level the router obeys the brief the AI did give (layers, widths,
 regions, keep-outs, areas), and the review still measures the copper. Routes

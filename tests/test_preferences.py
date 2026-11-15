@@ -41,7 +41,7 @@ _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
     UiAutomationMode, KeepInViewMode, LengthUnits, DialogMode, UsageMode, RoutingMode,
-    Basic3dMode, ChecksOff,
+    Basic3dMode, AutorouterMode, ChecksOff,
     WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
@@ -136,7 +136,7 @@ def test_python_reads_the_same_file(tmp_path):
         "deleting": "allowed", "closing": "allowed",
         "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
         "length_units": "mil", "usage": "off", "routing": "enforced",
-        "basic_3d_models": "not_allowed"}
+        "basic_3d_models": "not_allowed", "altium_autorouter": "not_allowed"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -163,7 +163,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_UsageOffClick", "opt_UsageOnClick",
                     "opt_RouteEnforcedClick", "opt_RouteAdvisoryClick",
                     "opt_RouteOffClick", "opt_Basic3dNotAllowedClick",
-                    "opt_Basic3dAllowedClick"):
+                    "opt_Basic3dAllowedClick", "opt_AutorouterNotAllowedClick",
+                    "opt_AutorouterAllowedClick"):
         assert f"= {handler}" in dfm, handler
         assert handler in form, handler
     for option, call in (("None", "'none', 'without'"), ("Rkm", "'rkm', 'without'"),
@@ -192,7 +193,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("RouteAdvisory", "'routing', 'advisory'"),
                          ("RouteOff", "'routing', 'off'"),
                          ("Basic3dNotAllowed", "'basic_3d_models', 'not_allowed'"),
-                         ("Basic3dAllowed", "'basic_3d_models', 'allowed'")):
+                         ("Basic3dAllowed", "'basic_3d_models', 'allowed'"),
+                         ("AutorouterNotAllowed", "'altium_autorouter', 'not_allowed'"),
+                         ("AutorouterAllowed", "'altium_autorouter', 'allowed'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -526,6 +529,37 @@ def test_basic_3d_models_are_kept_and_default_to_not_allowed(tmp_path):
     doc = (Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md").read_text(
         encoding="utf-8")
     assert "| Basic 3D models | Not allowed / Allowed |" in doc
+
+
+def test_altiums_autorouter_is_kept_and_defaults_to_not_allowed(tmp_path):
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(AutorouterMode);",
+        "  AutorouterMode := 'allowed'; StorePreferences(0);",
+        "  AutorouterMode := ''; LoadPreferences(0); WriteLn(AutorouterMode);",
+    ])
+    assert out == ["not_allowed", "allowed"]
+    assert preferences.altium_autorouter_allowed(tmp_path)
+    (tmp_path / "preferences.json").write_text('{"altium_autorouter":"maybe"}')
+    assert not preferences.altium_autorouter_allowed(tmp_path)
+    painted = functions(strip_comments(_code("StatusForm.pas")))["PaintAgentSettings"]
+    for name in ("opt_AutorouterNotAllowed", "opt_AutorouterAllowed",
+                 "lbl_CfgAutorouterHint"):
+        assert name in painted, name
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md").read_text(
+        encoding="utf-8")
+    assert "| Altium autorouter | Not allowed / Allowed |" in doc
+
+
+def test_altiums_autorouter_is_refused_until_the_user_allows_it(monkeypatch):
+    from eda_agent import safety
+
+    monkeypatch.setattr(preferences, "altium_autorouter_allowed", lambda *a: False)
+    for name in ("PCB:AutoRoute", " pcb:autoroute "):
+        reason = safety.refuse_altium_autorouter(name)
+        assert "Config tab" in reason and "pcb_route_round" in reason
+    assert safety.refuse_altium_autorouter("PCB:Zoom") is None
+    monkeypatch.setattr(preferences, "altium_autorouter_allowed", lambda *a: True)
+    assert safety.refuse_altium_autorouter("PCB:AutoRoute") is None
 
 
 def test_a_footprint_is_basic_only_without_a_step_body():

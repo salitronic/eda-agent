@@ -94,6 +94,7 @@
   <a href="#token-count">Token count</a>
   <h2>Routing</h2>
   <a href="#routing">Routing discipline</a>
+  <a href="#altium-autorouter">Altium autorouter</a>
   <h2>3D models</h2>
   <a href="#basic-3d-models">Basic 3D models</a>
 </nav>
@@ -383,6 +384,22 @@ so the part is never taken for a checked one.</p>
   <p class="note">At every level the router obeys the brief the AI did give,
     and the review still measures the copper. Routes you draw yourself in
     Altium are never checked or blocked by this setting.</p>
+</section>
+
+<section class="setting" id="altium-autorouter">
+  <h3>Altium autorouter</h3>
+  <p>Whether the AI may start Altium's own autorouter. It takes no routing
+    brief, and while it runs the AI can neither work in Altium nor stop it.</p>
+  <dl>
+    <dt>Not allowed <span class="default">default</span></dt>
+    <dd>The AI routes with the EDA Agent router, which follows its routing
+      brief and stops for review after each round. A request to start
+      Altium's autorouter is refused, and the AI tells you why.</dd>
+    <dt>Allowed</dt>
+    <dd>The AI may start Altium's autorouter when you ask for it.</dd>
+  </dl>
+  <p class="note">Starting the autorouter yourself from Altium's Route menu
+    is never blocked by this setting.</p>
 </section>
 
 <h2 class="group">3D models</h2>

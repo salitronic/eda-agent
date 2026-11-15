@@ -74,6 +74,32 @@ def refuse_process(process_name: str) -> str | None:
     return None
 
 
+#: Altium's own autorouter. It takes no routing brief, the bridge does
+#: not answer until it ends, and no tool here can stop it.
+ALTIUM_AUTOROUTER_PREFIXES = ("pcb:autoroute",)
+
+
+def refuse_altium_autorouter(process_name: str) -> str | None:
+    """Why this process is refused while the Config tab's "Altium
+    autorouter" is Not allowed, or None when it may run."""
+    name = (process_name or "").strip().lower()
+    if not any(name.startswith(p) for p in ALTIUM_AUTOROUTER_PREFIXES):
+        return None
+    from .preferences import altium_autorouter_allowed
+    if altium_autorouter_allowed():
+        return None
+    return (
+        f"{process_name!r} starts Altium's own autorouter, and \"Altium "
+        f"autorouter\" is Not allowed on the Config tab of the Altium "
+        f"panel. Route with pcb_route_brief and pcb_route_round (or "
+        f"pcb_autoroute for one run), which follow your brief and stop "
+        f"for review. If the user specifically asks for Altium's "
+        f"autorouter, ask them to set that row to Allowed; only the user "
+        f"changes it. The bridge does not answer until Altium's "
+        f"autorouter ends, which can be hours, and no tool here can stop it."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Read-only mode
 # ---------------------------------------------------------------------------

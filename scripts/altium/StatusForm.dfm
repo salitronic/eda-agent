@@ -2181,9 +2181,76 @@ object StatusForm: TStatusForm
         Font.Style = []
         ParentFont = False
       end
+      object lbl_CfgAutorouter: TLabel
+        Left = 12
+        Top = 1174
+        Width = 150
+        Height = 16
+        AutoSize = False
+        Caption = 'Altium autorouter'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -12
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object opt_AutorouterNotAllowed: TPanel
+        Left = 166
+        Top = 1170
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Not allowed'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 52
+        OnClick = opt_AutorouterNotAllowedClick
+      end
+      object opt_AutorouterAllowed: TPanel
+        Left = 262
+        Top = 1170
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Allowed'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 53
+        OnClick = opt_AutorouterAllowedClick
+      end
+      object lbl_CfgAutorouterHint: TLabel
+        Left = 12
+        Top = 1198
+        Width = 340
+        Height = 28
+        AutoSize = False
+        WordWrap = True
+        Caption = ''
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00A0A0A0
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+      end
       object sep_Cfg10: TPanel
         Left = 12
-        Top = 1176
+        Top = 1236
         Width = 340
         Height = 1
         BevelOuter = bvNone
@@ -2192,7 +2259,7 @@ object StatusForm: TStatusForm
       end
       object lbl_CfgGrpModels: TLabel
         Left = 12
-        Top = 1188
+        Top = 1248
         Width = 340
         Height = 16
         AutoSize = False
@@ -2206,7 +2273,7 @@ object StatusForm: TStatusForm
       end
       object lbl_CfgBasic3d: TLabel
         Left = 12
-        Top = 1214
+        Top = 1274
         Width = 150
         Height = 16
         AutoSize = False
@@ -2220,7 +2287,7 @@ object StatusForm: TStatusForm
       end
       object opt_Basic3dNotAllowed: TPanel
         Left = 166
-        Top = 1210
+        Top = 1270
         Width = 90
         Height = 24
         BevelOuter = bvNone
@@ -2239,7 +2306,7 @@ object StatusForm: TStatusForm
       end
       object opt_Basic3dAllowed: TPanel
         Left = 262
-        Top = 1210
+        Top = 1270
         Width = 90
         Height = 24
         BevelOuter = bvNone
@@ -2258,7 +2325,7 @@ object StatusForm: TStatusForm
       end
       object lbl_CfgBasic3dHint: TLabel
         Left = 12
-        Top = 1238
+        Top = 1298
         Width = 340
         Height = 42
         AutoSize = False
