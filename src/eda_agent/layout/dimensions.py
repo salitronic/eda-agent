@@ -28,6 +28,8 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from ..units import MM_PER_MIL
+
 KINDS = ("linear", "angular", "radial", "leader", "datum", "baseline", "center",
          "original")
 
@@ -121,7 +123,7 @@ def radial_callout(points: list[tuple[float, float]], radius: Optional[float],
     out = 0.5 * r + 100.0
     bend = (tip[0] + out * ux, tip[1] + out * uy)
     end = (bend[0] + (200.0 if ux >= 0 else -200.0), bend[1])
-    shown = r * 0.0254 if unit.strip().lower() in ("mm", "millimeters") else r
+    shown = r * MM_PER_MIL if unit.strip().lower() in ("mm", "millimeters") else r
     digits = 2 if precision is None else max(0, int(precision))
     return tip, bend, end, f"R {shown:.{digits}f}"
 

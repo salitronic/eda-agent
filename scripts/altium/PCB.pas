@@ -30104,7 +30104,7 @@ Begin
                             If Pos(#9 + 'DEL', Lines[J]) > 0 Then
                             Begin
                                 Prim := Matched.Items[I];
-                                Try Prim.SetState_UnionIndex := 0; Except End;
+                                Try Prim.SetState_UnionIndex := 0; Except NoteWriteFailed('pour union cleared before its delete'); End;
                                 PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
                                     c_Broadcast, PCBM_BoardRegisteration, Prim.I_ObjectAddress);
                                 Board.RemovePCBObject(Prim);

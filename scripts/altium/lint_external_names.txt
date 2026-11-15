@@ -19,7 +19,6 @@ crDefault
 crHandPoint
 dupIgnore
 eAlwaysRepour
-eAngularDimension
 eArc
 eArcObject
 eArrowKind_Arrow
@@ -38,7 +37,6 @@ eAutoPos_Manual
 eAutoPos_TopCenter
 eAutoPos_TopLeft
 eAutoPos_TopRight
-eBaselineDimension
 eBezier
 eBlanket
 eBoardSide_Bottom
@@ -151,7 +149,6 @@ eLayerClass_SolderMask
 eLeftAlign
 eLeftSide
 eLine
-eLinearDimension
 eM
 eMechanical1
 eMechanical10
@@ -252,7 +249,6 @@ ePrePreg
 eProbe
 eProcessAll
 eProcessFree
-eRadialDimension
 eRectangle
 eRectangular
 eRegionKind_BoardCutout
