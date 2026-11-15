@@ -63,7 +63,7 @@ def _list_field(value: Any, what: str) -> str:
 def items_from_file(inline: Optional[list], file: str, key: str
                     ) -> tuple[Optional[list], Optional[dict[str, Any]]]:
     """The list a place tool works on: given inline or read from a JSON
-    file (issue #316), so hundreds of objects need not ride in the call.
+    file, so hundreds of objects need not ride in the call.
 
     The file holds the list itself or an object with it under ``key``.
     Returns ``(items, None)``, or ``(None, refusal)`` when both, neither

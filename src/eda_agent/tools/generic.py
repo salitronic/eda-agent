@@ -458,11 +458,10 @@ def _cursor_to_view_centre() -> bool:
     return True
 
 
-# A Rule parameter's fields are joined by '|' in Altium's memory. The saved
-# file shows them joined by U+00A6, because '|' separates the file's own
-# fields; Altium swaps the two on save and load (measured on AD 25: a value
-# written with U+00A6 reads back with '|' after a reopen). Escaped so the
-# source stays ASCII.
+# A Rule parameter's fields are joined by '|'. Altium swaps '|' and U+00A6
+# in the value on save and load (measured on AD 25: a value written with
+# U+00A6 reads back with '|' after a reopen), so neither may appear inside
+# a field. Escaped so the source stays ASCII.
 RULE_FIELD_SEPARATOR = "|"
 FILE_FIELD_SEPARATOR = "\u00a6"
 
@@ -471,8 +470,8 @@ def directive_parameter_fields(
     parameter_list: list[dict[str, Any]] | None,
     name: str | None,
 ) -> tuple[dict[str, str], str]:
-    """The request fields for a directive's parameters given as a list
-    (#315): ``param_count`` and ``param_name_<i>``, ``param_value_<i>``,
+    """The request fields for a directive's parameters given as a list:
+    ``param_count`` and ``param_name_<i>``, ``param_value_<i>``,
     ``param_hidden_<i>``, plus ``set_name``. Indexed fields carry a value
     that holds '=' or '|' and a name that repeats. Returns (fields, error);
     on an error the fields are empty and nothing is to be sent."""

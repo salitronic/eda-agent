@@ -2281,8 +2281,8 @@ def _tokens(text: str) -> set[str]:
 def _query_tokens(task: str) -> set[str]:
     """The caller's words, plus the words the tools use for the same thing."""
     words = _tokens(task)
-    # "Place many tracks" missed the bulk route (issue #316): "many" is a
-    # stopword, so the question read as "place a track". As a quantity it
+    # "many" is a stopword, so "place many tracks" would read as "place a
+    # track" and miss the bulk route. As a quantity it
     # asks for the batch tools, the way "bulk" does.
     if re.search(r"\b(many|lots)\b", (task or "").lower()):
         words.add("batch")

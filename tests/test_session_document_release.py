@@ -4,7 +4,7 @@
 """A session is checked against the document it names, and can let go of one.
 
 Two sessions sharing one Altium were refused because of each other's
-FOCUSED document (#314): the ownership guard read the target of a write
+FOCUSED document: the ownership guard read the target of a write
 only from board_path / expect_file / file_path, so a command naming its
 document as project_path or library_path was checked against whatever
 the other session had left in front, and project.open, which changes no

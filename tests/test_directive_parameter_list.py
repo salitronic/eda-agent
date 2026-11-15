@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""Directive and blanket parameters given as a list (#315): a Rule
+"""Directive and blanket parameters given as a list: a Rule
 parameter, a name that repeats, the directive's own name and a hidden
 parameter, sent as indexed fields so a value may hold '=' and '|'."""
 

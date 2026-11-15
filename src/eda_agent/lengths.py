@@ -179,8 +179,7 @@ ADDED: dict[str, frozenset[str]] = {
 
 #: Lists of vertices ``[x, y]`` or ``[x, y, sweep]``, by tool and name (a
 #: name with a unit by its stem): x and y are lengths, the sweep is
-#: degrees. A vertex given as a dict says which is which by its keys
-#: (#375).
+#: degrees. A vertex given as a dict says which is which by its keys.
 ARC_VERTICES: dict[str, frozenset[str]] = {
     "pcb_place_region": frozenset({"points", "shape"}),
     "lib_get_footprint_primitives": frozenset({"shape"}),

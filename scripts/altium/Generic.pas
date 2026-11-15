@@ -10003,10 +10003,10 @@ Begin
     If Added > 0 Then Result := PSet;
 End;
 
-{ A new parameter set from the request (#315). With param_count the         }
+{ A new parameter set from the request. With param_count the                }
 { parameters come as indexed fields param_name_<i>, param_value_<i> and     }
 { param_hidden_<i> (i from 0), so a value may hold '=' and '|' (a Rule      }
-{ parameter's value is KEY=VALUE fields joined by U+00A6) and a name may    }
+{ parameter's value is KEY=VALUE fields joined by '|') and a name may       }
 { repeat (two ClassName, two Rule). Without it, ParamList as before.        }
 { set_name names the set; default the first parameter's name. Nil when no  }
 { parameter was made; Problem then says why.                                }
@@ -10716,7 +10716,7 @@ Begin
         + ',"coverage":[' + NetsJson + ']}');
 End;
 
-{ DRAW ORDER (#371). A sheet draws its objects in the order its container }
+{ DRAW ORDER. A sheet draws its objects in the order its container        }
 { holds them, and a new object goes to the end, so it is drawn over all   }
 { placed before it (a blanket hides the wires it encloses). Altium's own   }
 { Send To Back / Bring To Front wait for a click on the canvas and the     }

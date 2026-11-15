@@ -6429,7 +6429,7 @@ End;
 
 {..............................................................................}
 { RefreshBoardVias - Take every free via off the board and add it back, so    }
-{ Altium works out again which copper layers it touches (#377). A layer     }
+{ Altium works out again which copper layers it touches. A layer            }
 { inserted into the stack is not seen by the vias already on the board until }
 { the board is reopened: a pour there with RemoveDead set removes all of its }
 { copper as dead although through vias cross it. Measured on AD 25.8.1:      }
@@ -12281,7 +12281,7 @@ End;
 { with that name and Position is the match's place in pcb_get_polygons'      }
 { order. Names repeat (Altium names every net-less pour of a layer alike), }
 { so more than one hit returns Nil, and Listing holds each candidate's      }
-{ index, layer and net for the refusal (issue #373).                        }
+{ index, layer and net for the refusal.                                     }
 Function PourByName(Board : IPCB_Board; Wanted : String; Var Position : Integer;
     Var Hits : Integer; Var Listing : String) : IPCB_Polygon;
 Var
@@ -12330,7 +12330,7 @@ End;
 
 { The pour a write names, by name, by index, or both. Indices shift on every }
 { modify and repour, so a write that only had an index could land on another }
-{ pour (issue #373). A name alone must be unique; with an index too, the pour }
+{ pour. A name alone must be unique; with an index too, the pour            }
 { there must carry it. Nil with Refusal set to the full error response when  }
 { neither picks exactly one pour.                                            }
 Function PourFromParams(Board : IPCB_Board; Params : String; RequestId : String;
@@ -13416,7 +13416,7 @@ Begin
     End;
 
     { By name, by index, or both: an index alone shifts as pours are       }
-    { modified and repoured, and twice picked another pour (issue #373).    }
+    { modified and repoured, and can then pick another pour.                }
     FoundPoly := PourFromParams(Board, Params, RequestId, TargetIdx, Refusal);
     If FoundPoly = Nil Then
     Begin
@@ -25674,7 +25674,7 @@ Begin
         Exit;
     End;
     { It took the FIRST pour of that name, and names repeat: a second pour }
-    { of the name is now refused instead (issue #373).                     }
+    { of the name is refused.                                              }
     Found := PourFromParams(Board, Params, RequestId, Position, Refusal);
     If Found = Nil Then
     Begin
@@ -29955,7 +29955,7 @@ Begin
                             A1 := SplitNextTab(Rest);
                             If A1 = 'DEL' Then
                             Begin
-                                { Removed as a track is above (issue #316). }
+                                { Removed as a track is above. }
                                 PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
                                     c_Broadcast, PCBM_BoardRegisteration, Prim.I_ObjectAddress);
                                 Board.RemovePCBObject(Prim);
@@ -30296,7 +30296,7 @@ Begin
                         { removed before it would shift the ordinals it     }
                         { counts by. The union is cleared first: MEASURED   }
                         { on AD 25, removing pours still in a union crashed }
-                        { ADVPCB.DLL in the repour after (issue #316).      }
+                        { Altium in the repour after.                       }
                         For I := 0 To Matched.Count - 1 Do
                         Begin
                             J := StrToIntDef(MatchLines[I], 0);

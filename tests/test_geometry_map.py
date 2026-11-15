@@ -388,7 +388,7 @@ def test_the_apply_pass_deletes_and_creates_with_proven_calls():
     dele = body[body.index("If A1 = 'DEL' Then"):]
     assert dele.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < dele.index(
         "Board.RemovePCBObject(Prim);")
-    # Track, arc, region, via, and pour (issue #316).
+    # Track, arc, region, via, and pour.
     assert body.count("Board.RemovePCBObject(Prim);") == 5
     region = body[body.index("Else If (KindNo = 6) And (Pos(#9 + 'DEL', Lines[J]) > 0) Then"):]
     region = region[:region.index("Else If KindNo = 6 Then")]

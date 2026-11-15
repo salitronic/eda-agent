@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""Lengths the session's unit used to get wrong, on the real tools (#375).
+"""Lengths the session's unit used to get wrong, on the real tools.
 
 Each was found by sending one call in the other unit through the
 server's own call_tool, the boundary a client meets:

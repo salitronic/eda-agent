@@ -44,8 +44,8 @@ def _pcb():
 # --- the Pascal --------------------------------------------------------------
 
 def test_references_count_is_never_written():
-    # Writing References_Count raised an access violation in
-    # ScriptingSystem.DLL on AD 25: references are only added and deleted.
+    # Writing References_Count raised an access violation in Altium's
+    # script engine on AD 25: references are only added and deleted.
     for name, body in _pcb().items():
         assert not re.search(r"References_Count\s*:=", body, re.I), name
 

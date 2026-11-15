@@ -1490,6 +1490,8 @@ Begin
         + ',"copy_path":"' + EscapeJsonString(CopyPath) + '"'
         + ',"was_open":' + BoolToJsonStr(WasOpen)
         + ',"written":' + BoolToJsonStr(Written) + '}');
+End;
+
 { The key of the first owner record held by TAG, '' when it holds none. }
 Function OwnerKeyHeldBy(Tag : String) : String;
 Var
@@ -1516,7 +1518,7 @@ Begin
 End;
 
 { The calling session gives up a document it holds, so another session can }
-{ write to it at once instead of after OWNER_IDLE_MS (#314). Without        }
+{ write to it at once instead of after OWNER_IDLE_MS. Without               }
 { file_path every document it holds. A document another session holds is  }
 { refused, naming the holder: taking it is app_claim_document, on the      }
 { user's word.                                                             }

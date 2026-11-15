@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""Hundreds of copper objects go through one file (issue #316).
+"""Hundreds of copper objects go through one file.
 
 The geometry map deletes vias and pours as it deletes tracks, arcs and
 regions; pcb_place_tracks / pcb_place_vias take their list from a file;

@@ -2361,7 +2361,7 @@ End;
 { document in front (FOCUS). Every name a tool gives its document is read:  }
 { a command that named its document as project_path or library_path used   }
 { to be checked against the focused document instead, so a session was     }
-{ refused because of a document another session had left in front (#314).  }
+{ refused because of a document another session had left in front.         }
 { A doc: scope names the document too. The project comes last: a sheet or  }
 { board named beside it is the narrower target.                             }
 Function CommandTarget(Params : String; Focus : String) : String;
