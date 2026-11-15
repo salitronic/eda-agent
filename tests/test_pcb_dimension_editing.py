@@ -86,13 +86,28 @@ def test_an_arc_bound_kind_is_never_unbound_or_created():
     assert re.search(r"\(K = 3\) Or \(K = 9\) Or \(K = 10\)", edit)
     assert "'BOUND_TO_ARC|" in edit
     create = funcs["PCB_CreateDimension"]
-    assert re.search(r"\(K < 1\) Or \(K = 9\) Or \(K = 10\)", create)
+    assert re.search(r"\(K = 3\) Or \(K = 9\) Or \(K = 10\)", create)
     assert "'KIND_NOT_SUPPORTED'" in create
-    # A radial is drawn from its centre and radius, set before it joins the
-    # board, and gets no references.
-    radial = create[create.index("If K = 3 Then"):create.index("Board.AddPCBObject(Dim);")]
-    assert "Dim.Size := MilsToCoordF(RadiusMils);" in radial
-    assert "'BAD_RADIUS'" in create
+
+
+def test_a_reference_is_bound_only_by_an_anchor_above_zero():
+    # A free reference reads anchor -1 once rebuilt and 0 when just added;
+    # its Primitive is not Nil then, and touching it stops the script.
+    bound = _pcb()["DimRefBound"]
+    assert "Result := R.Anchor > 0;" in bound
+    assert "Primitive" not in bound
+    for name in ("DimBoundCount", "DimUnbindAll", "DimJson"):
+        assert "DimRefBound(Dim, I)" in _pcb()[name]
+        assert "Anchor <> -1" not in _pcb()[name]
+
+
+def test_a_create_or_edit_is_one_board_edit():
+    create = _pcb()["PCB_CreateDimension"]
+    assert create.index("PcbBeginEdit(0);") < create.index("DimApplyGeometry(Dim, Params);") \
+        < create.index("PcbEndEdit(0);")
+    edit = _pcb()["PCB_EditDimension"]
+    assert edit.index("Board.BoardIterator_Destroy(Iter);") < edit.index("PcbBeginEdit(0);") \
+        < edit.index("DimApplyGeometry(Dim, Params);") < edit.index("PcbEndEdit(0);")
 
 
 def test_a_stale_index_is_refused():
@@ -142,19 +157,10 @@ def test_a_datum_callout_row_and_the_points_kept():
     assert (p["text_x"], p["text_y"]) == ("10.0000", "-280.0000")
 
 
-@pytest.mark.parametrize("kind", ["linear_diameter", "radial_diameter"])
+@pytest.mark.parametrize("kind", ["radial", "linear_diameter", "radial_diameter"])
 def test_arc_bound_kinds_are_refused(kind):
     with pytest.raises(ValueError, match="bound"):
         dimensions.params_for(kind, [[0, 0], [1, 1]])
-
-
-def test_a_radial_takes_its_centre_and_a_radius_or_a_point_on_the_arc():
-    p = dimensions.params_for("radial", [[100, 200], [400, 600]])
-    assert p == {"kind": "radial", "points": "100.0000,200.0000", "radius": "500.0000"}
-    p = dimensions.params_for("radial", [[100, 200]], radius=75)
-    assert p["radius"] == "75.0000"
-    with pytest.raises(ValueError, match="radius"):
-        dimensions.params_for("radial", [[100, 200]])
 
 
 def test_too_few_points_are_refused():
@@ -223,12 +229,8 @@ def test_edit_points_take_the_kind_from_the_board(monkeypatch):
     assert params["text_locations"] == "500.0000,300.0000"
 
 
-def test_create_sends_a_radial_and_refuses_a_diameter_without_calling_altium(monkeypatch):
-    _, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial",
-                    points=[[0, 0], [10, 0]])
-    assert sent[0][0] == "pcb.create_dimension"
-    assert sent[0][1]["kind"] == "radial" and sent[0][1]["radius"] == "10.0000"
-    reply, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial_diameter",
+def test_create_refuses_a_radial_without_calling_altium(monkeypatch):
+    reply, sent = _tool(monkeypatch, "pcb_create_dimension", kind="radial",
                         points=[[0, 0], [10, 0]])
     assert reply["ok"] is False and sent == []
 

@@ -15185,7 +15185,7 @@ End;
 { from the X / Y read just before it (an angular recomputes its vertex on  }
 { every add). A script cannot bind a reference to an object: the link is   }
 { dropped on the next rebuild and on save. So references made here are     }
-{ free points and do not follow a pad or arc that moves; Anchor <> -1      }
+{ free points and do not follow a pad or arc that moves; an Anchor above 0  }
 { marks a reference Altium bound. A radial or diameter takes its value     }
 { from the arc it is bound to and reads 0 free, so it is never unbound.    }
 { Not used, because each faults or stops the script on AD 25: writing      }
@@ -15372,17 +15372,25 @@ Begin
     While DimPoint(Pts, Result, PX, PY) Do Inc(Result);
 End;
 
-Function DimBoundCount(Dim : IPCB_Dimension) : Integer;
+{ True when reference I is bound to a board object: its anchor is above 0. }
+{ MEASURED: a free reference reads anchor -1 on AD 25 and 0 on AD 26. Its  }
+{ Primitive is not read: on AD 26 a free reference's is not Nil, and       }
+{ touching it stops the script.                                            }
+Function DimRefBound(Dim : IPCB_Dimension; I : Integer) : Boolean;
 Var
     R : TDimensionReference;
+Begin
+    R := Dim.References[I];
+    Result := R.Anchor > 0;
+End;
+
+Function DimBoundCount(Dim : IPCB_Dimension) : Integer;
+Var
     I : Integer;
 Begin
     Result := 0;
     For I := 0 To Dim.References_Count - 1 Do
-    Begin
-        R := Dim.References[I];
-        If R.Anchor <> -1 Then Inc(Result);
-    End;
+        If DimRefBound(Dim, I) Then Inc(Result);
 End;
 
 { Release every bound reference in place: no primitive, anchor -1, written }
@@ -15395,7 +15403,7 @@ Begin
     For I := 0 To Dim.References_Count - 1 Do
     Begin
         R := Dim.References[I];
-        If R.Anchor <> -1 Then
+        If DimRefBound(Dim, I) Then
         Begin
             PcbBeginEdit(0);
             Try
@@ -15584,7 +15592,7 @@ Begin
         R := Dim.References[I];
         If Refs <> '' Then Refs := Refs + ',';
         Refs := Refs + '{"anchor":' + IntToStr(R.Anchor) + ',"bound":'
-            + BoolToJsonStr(R.Anchor <> -1) + '}';
+            + BoolToJsonStr(DimRefBound(Dim, I)) + '}';
     End;
     Texts := '';
     Pc := '';
@@ -15767,19 +15775,6 @@ Begin
             DimSetCoord(Dim, 'Y1Location', PY);
         End;
     End
-    Else If K = 3 Then
-    Begin
-        { A radial placed free: its centre and radius, no references. }
-        If DimPoint(Pts, 0, PX, PY) Then
-        Begin
-            DimSetCoord(Dim, 'X1Location', PX);
-            DimSetCoord(Dim, 'Y1Location', PY);
-        End;
-        { One bound to an arc takes its radius from the arc. }
-        If (DimBoundCount(Dim) = 0)
-            And (StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0) > 0) Then
-            DimSetCoord(Dim, 'Size', StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0));
-    End
     Else If Pts <> '' Then
         DimSetPoints(Dim, Pts, DimAnchorFor(K, Pts, Params, AX, AY), AX, AY,
             (K = 4) Or (K = 5) Or (K = 6) Or (K = 7));
@@ -15795,7 +15790,6 @@ Var
     Obj : IPCB_Primitive;
     K, I, DimIndex, Need : Integer;
     LayerStr, Pts : String;
-    RadiusMils, CX, CY : Double;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -15805,22 +15799,18 @@ Begin
         Exit;
     End;
     K := DimKindFromName(ExtractJsonValue(Params, 'kind'));
-    If (K < 1) Or (K = 9) Or (K = 10) Then
+    If (K < 1) Or (K = 3) Or (K = 9) Or (K = 10) Then
     Begin
+        { MEASURED on AD 26: a radial made here, from a centre and radius }
+        { or from two free references, draws "R 0.00".                    }
         Result := BuildErrorResponse(RequestId, 'KIND_NOT_SUPPORTED',
-            'kind is linear, angular, radial, leader, datum, baseline, center or '
-            + 'original. A diameter takes its value from the arc it is bound to, '
-            + 'and a script cannot bind one: place it in Altium on the arc.');
+            'kind is linear, angular, leader, datum, baseline, center or original. '
+            + 'A radial or diameter takes its value from the arc it is bound to, '
+            + 'and a script cannot bind one (unbound it reads 0): place it in '
+            + 'Altium on the arc, or draw a leader labelled with the radius.');
         Exit;
     End;
     Pts := ExtractJsonValue(Params, 'points');
-    RadiusMils := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0);
-    If (K = 3) And (RadiusMils <= 0) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_RADIUS',
-            'a radial needs its centre and a radius above 0');
-        Exit;
-    End;
     Need := 1;
     If (K = 1) Or (K = 4) Or (K = 5) Or (K = 6) Or (K = 8) Then Need := 2;
     If K = 2 Then Need := 4;
@@ -15848,29 +15838,15 @@ Begin
             Exit;
         End;
         Dim.Layer := TargetLayer;
-        If K = 3 Then
-        Begin
-            { A radial has no references to add: its centre and radius are }
-            { set before it joins the board, the callout out on a diagonal. }
-            DimPoint(Pts, 0, CX, CY);
-            Dim.X1Location := MilsToCoordF(CX);
-            Dim.Y1Location := MilsToCoordF(CY);
-            Dim.Size := MilsToCoordF(RadiusMils);
-            Dim.TextX := MilsToCoordF(CX + RadiusMils);
-            Dim.TextY := MilsToCoordF(CY + RadiusMils);
-        End;
         Board.AddPCBObject(Dim);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
         { Inside the same edit: every write below opens its own pair, and }
         { nested in this one they make a single undo step.                }
         DimApplyValues(Dim, Params);
-        If K <> 3 Then
-        Begin
-            DimApplyGeometry(Dim, Params);
-            DimApplyValues(Dim, Params);
-            DimRebuild(Dim);
-        End;
+        DimApplyGeometry(Dim, Params);
+        DimApplyValues(Dim, Params);
+        DimRebuild(Dim);
     Finally
         PcbEndEdit(0);
     End;

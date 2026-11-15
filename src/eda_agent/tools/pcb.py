@@ -10784,17 +10784,15 @@ def register_pcb_tools(mcp):
 
         Its ends are FREE points: they do not follow a pad that moves later
         (a script cannot bind them; dragging an end onto a pad in Altium
-        does). A radial is drawn from its centre and radius, not bound to
-        an arc. A diameter needs that binding and is refused.
+        does). A radial or diameter needs that binding (free, it draws 0)
+        and is refused: use a leader labelled with the radius.
 
         Args:
-            kind: linear, angular, radial, leader, datum, baseline, center,
-                original.
+            kind: linear, angular, leader, datum, baseline, center, original.
             points: [x, y] pairs. linear: the two points. angular: vertex,
-                one point on each line. radial: the centre, and a point on
-                the arc unless radius is given. leader: tip, bends, end.
-                datum: origin, then each point. baseline: base, then each
-                point. center: the centre. original: start, end.
+                one point on each line. leader: tip, bends, end. datum:
+                origin, then each point. baseline: base, then each point.
+                center: the centre. original: start, end.
             layer: Layer to draw on (default TopOverlay).
             angle: Measuring direction in degrees (linear, datum, baseline;
                 the cross's turn on a center).
@@ -10803,7 +10801,7 @@ def register_pcb_tools(mcp):
             spacing: Distance between a baseline's lines.
             label, shape: A leader's text and frame (none, round, square).
             radius, sector: An angular's arc radius and which of the four
-                angles (1-4); a radial's radius.
+                angles (1-4).
             size: A center mark's size.
             text_height, line_width, unit (mil, mm, deg), precision,
                 prefix, suffix: The callout's style.

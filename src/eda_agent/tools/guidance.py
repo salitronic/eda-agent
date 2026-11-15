@@ -965,11 +965,12 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                 "pcb_edit_dimension", "pcb_dimension_bindings"],
         "avoid": [],
         "note": (
-            "pcb_create_dimension draws linear, angular, radial, leader, "
-            "datum, baseline, center and original dimensions from points. "
-            "Its ends are free points: they do not follow a pad that moves "
-            "later. A radial is drawn from a centre and radius; a diameter "
-            "is bound to an arc, which only Altium's own placement does. "
+            "pcb_create_dimension draws linear, angular, leader, datum, "
+            "baseline, center and original dimensions from points. Its ends "
+            "are free points: they do not follow a pad that moves later. A "
+            "radial or diameter takes its value from an arc it is bound to, "
+            "which only Altium's own placement does; made by script it "
+            "draws 0, so call out a radius with a leader labelled with it. "
             "pcb_get_dimensions gives each dimension's index "
             "and x, y, which pcb_edit_dimension needs; it refuses to change "
             "the geometry of a dimension bound to board objects unless "
