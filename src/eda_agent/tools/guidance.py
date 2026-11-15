@@ -638,6 +638,30 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "centre."),
     },
     {
+        "task": "Create or delete hundreds of board objects at once",
+        "keywords": ("hundreds", "thousands", "batch", "geometry map"),
+        "when": (("batch", "track"), ("batch", "via"), ("batch", "arc"),
+                 ("batch", "region"), ("batch", "pour"), ("batch", "polygon"),
+                 ("track", "file"), ("via", "file"), ("hundreds",),
+                 ("thousands",)),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_apply_geometry_map"],
+        "avoid": [
+            ("pcb_place_tracks", "takes the list inside the call; past a few "
+                                 "hundred give it a file, or use the map"),
+            ("pcb_place_vias", "the same, for vias"),
+            ("obj_delete", "one call per filter, each walking every object "
+                           "of its type on the board"),
+        ],
+        "note": (
+            "Write a JSON map: \"create\" for new tracks, arcs, regions, "
+            "through vias and pours, \"delete\" for tracks, arcs, regions, "
+            "vias and pours found by their current geometry. One file, one "
+            "transaction, one undo step. Run it with dry_run first to see "
+            "what matches."),
+    },
+    {
         "task": "Make a PDF of the schematics or the board without a person there",
         "keywords": ("pdf", "print", "schematic pdf", "smart pdf", "publish",
                      "documentation", "drawing"),
@@ -2257,6 +2281,11 @@ def _tokens(text: str) -> set[str]:
 def _query_tokens(task: str) -> set[str]:
     """The caller's words, plus the words the tools use for the same thing."""
     words = _tokens(task)
+    # "Place many tracks" missed the bulk route (issue #316): "many" is a
+    # stopword, so the question read as "place a track". As a quantity it
+    # asks for the batch tools, the way "bulk" does.
+    if re.search(r"\b(many|lots)\b", (task or "").lower()):
+        words.add("batch")
     joined = re.sub(r"[^a-z0-9]+", "", (task or "").lower())
     for key, extra in _SYNONYMS.items():
         if key in words or (len(key) > 6 and key in joined):
