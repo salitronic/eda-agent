@@ -3330,8 +3330,9 @@ def register_generic_tools(mcp):
             collapsed: Draw the blanket collapsed.
             color, area_color: Border and fill, Altium's BGR integers;
                 omitted, the user's blanket defaults. The fill is always
-                see-through: the blanket is drawn above what it encloses,
-                and Altium keeps no opaque blanket fill on save.
+                see-through: the blanket is drawn above what it encloses
+                (sch_set_draw_order sends it back), and Altium keeps no
+                opaque blanket fill on save.
 
         Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
         Coverage: sch_get_blankets after a compile.
@@ -3370,6 +3371,45 @@ def register_generic_tools(mcp):
             args["area_color"] = str(int(area_color))
         bridge = get_bridge()
         return await bridge.send_command_async("generic.place_blanket", args)
+
+    @mcp.tool()
+    async def sch_set_draw_order(
+        object_type: str,
+        filter: str = "",
+        to: str = "front",
+    ) -> dict[str, Any]:
+        """Bring matching objects on the active sheet to the front, or send
+        them to the back. A sheet draws its objects in the order they were
+        placed, so a new rectangle, image or blanket hides what is under it.
+
+        Args:
+            object_type: Schematic object type (see `obj_query`), e.g.
+                "eBlanket". Only objects placed on the sheet itself have
+                a draw order; pins, sheet entries and a part's parameters
+                go with their owner.
+            filter: Pipe-separated property=value conditions (AND logic),
+                as `obj_query`. Empty = every object of the type.
+            to: "front" (drawn over everything else) or "back" (drawn
+                under everything else).
+
+        Not undoable with Ctrl+Z; set it again to change it. Kept on save.
+
+        Returns:
+            ``matched``, ``moved``, ``objects_on_sheet`` and ``verified``
+            (the matches read back at the front or back of the sheet).
+        """
+        if to not in ("front", "back"):
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"to is 'front' or 'back', not {to!r}. Nothing was moved."}}
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, matched=0)
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.set_draw_order",
+            {"object_type": object_type, "filter": filter, "to": to},
+        )
 
     @mcp.tool()
     async def sch_place_compile_mask(x1: float, y1: float, x2: float, y2: float,

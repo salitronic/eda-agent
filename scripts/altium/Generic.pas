@@ -10627,6 +10627,162 @@ Begin
         + ',"coverage":[' + NetsJson + ']}');
 End;
 
+{ DRAW ORDER (#371). A sheet draws its objects in the order its container }
+{ holds them, and a new object goes to the end, so it is drawn over all   }
+{ placed before it (a blanket hides the wires it encloses). Altium's own   }
+{ Send To Back / Bring To Front wait for a click on the canvas and the     }
+{ script API has no reorder member. Taking an object out of the sheet's   }
+{ container and registering it again puts it at the end: MEASURED on AD   }
+{ 25.8.1, drawn on top at once and kept over save and reopen, nothing     }
+{ else changed. Front = the matches taken out and put back, in their own  }
+{ order; back = every OTHER object on the sheet, so the matches end up     }
+{ first. Only objects placed directly on the sheet have a draw order      }
+{ (first level: pins, sheet entries and a part's parameters belong to     }
+{ their owner). No robot message is sent: the object is not new, and a    }
+{ registration message would hand Undo a "created" record.                }
+
+{ True when the matches sit together at the end of the sheet's first level }
+{ (front) or at its start (back). Matched and Total count what it walked.  }
+Function DrawOrderHolds(SchDoc : ISch_Document; TypeInt : Integer; FilterStr : String;
+    ToBack : Boolean; Var Matched : Integer; Var Total : Integer) : Boolean;
+Var
+    It : ISch_Iterator;
+    O : ISch_GraphicalObject;
+    IsMatch, SeenOther, SeenMatchAfterOther : Boolean;
+Begin
+    Matched := 0;
+    Total := 0;
+    SeenOther := False;
+    SeenMatchAfterOther := False;
+    It := SchDoc.SchIterator_Create;
+    It.SetState_IterationDepth(eIterateFirstLevel);
+    Try
+        O := It.FirstSchObject;
+        While O <> Nil Do
+        Begin
+            Inc(Total);
+            IsMatch := False;
+            If O.ObjectId = TypeInt Then IsMatch := MatchesFilter(O, FilterStr);
+            If IsMatch Then
+            Begin
+                Inc(Matched);
+                If ToBack And SeenOther Then SeenMatchAfterOther := True;
+            End
+            Else
+            Begin
+                If (Not ToBack) And (Matched > 0) Then SeenMatchAfterOther := True;
+                SeenOther := True;
+            End;
+            O := It.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(It);
+    End;
+    Result := Not SeenMatchAfterOther;
+End;
+
+Function Gen_SetDrawOrder(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    It : ISch_Iterator;
+    O : ISch_GraphicalObject;
+    Movers : TInterfaceList;
+    TypeStr, FilterStr, ToStr, Err : String;
+    TypeInt, I, Matched, Total, Moved, AfterMatched, AfterTotal : Integer;
+    ToBack, IsMatch, Holds : Boolean;
+Begin
+    TypeStr := ExtractJsonValue(Params, 'object_type');
+    FilterStr := ExtractJsonValue(Params, 'filter');
+    ToStr := LowerCase(ExtractJsonValue(Params, 'to'));
+    If ToStr = '' Then ToStr := 'front';
+    If (ToStr <> 'front') And (ToStr <> 'back') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'to is front or back, not "' + ToStr + '". Nothing was moved.');
+        Exit;
+    End;
+    ToBack := (ToStr = 'back');
+    TypeInt := ObjectTypeFromString(TypeStr);
+    If TypeInt < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(TypeStr));
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    If SchDoc.ObjectId = eSchLib Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHDOC',
+            'Draw order is set on a schematic sheet; a library symbol is in front. Nothing was moved.');
+        Exit;
+    End;
+
+    { Collected first: nothing moves while the iterator is alive. The list }
+    { is left to the script host; freeing one that holds Altium objects    }
+    { faults.                                                              }
+    Movers := TInterfaceList.Create;
+    Matched := 0;
+    Total := 0;
+    It := SchDoc.SchIterator_Create;
+    It.SetState_IterationDepth(eIterateFirstLevel);
+    Try
+        O := It.FirstSchObject;
+        While O <> Nil Do
+        Begin
+            Inc(Total);
+            IsMatch := False;
+            If O.ObjectId = TypeInt Then IsMatch := MatchesFilter(O, FilterStr);
+            If IsMatch Then Inc(Matched);
+            If IsMatch <> ToBack Then Movers.Add(O);
+            O := It.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(It);
+    End;
+
+    Moved := 0;
+    Err := '';
+    If Matched > 0 Then
+    Begin
+        SchBeginEdit(SchDoc, '');
+        Try
+            For I := 0 To Movers.Count - 1 Do
+            Begin
+                O := Movers.Items[I];
+                Try
+                    SchDoc.UnRegisterSchObjectFromContainer(O);
+                    SchDoc.RegisterSchObjectInContainer(O);
+                    Inc(Moved);
+                Except
+                    If Err = '' Then Err := 'an object could not be taken out of the sheet and put back';
+                End;
+            End;
+        Finally
+            SchEndEdit(SchDoc, 'Edit');
+        End;
+        SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    End;
+
+    Holds := DrawOrderHolds(SchDoc, TypeInt, FilterStr, ToBack, AfterMatched, AfterTotal);
+    If (AfterMatched <> Matched) Or (AfterTotal <> Total) Then
+    Begin
+        Holds := False;
+        If Err = '' Then Err := 'the sheet holds a different number of objects than before';
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"to":"' + ToStr
+        + '","matched":' + IntToStr(Matched)
+        + ',"moved":' + IntToStr(Moved)
+        + ',"objects_on_sheet":' + IntToStr(Total)
+        + ',"objects_after":' + IntToStr(AfterTotal)
+        + ',"verified":' + BoolToJsonStr((Matched > 0) And Holds And (Err = ''))
+        + ',"error":"' + EscapeJsonString(Err) + '"}');
+End;
+
 {..............................................................................}
 { InferNetLabelStyle - the sheet's own net-label font, by majority.          }
 { Every net label a tool adds takes the FontId (font face AND size in the     }
@@ -19882,6 +20038,7 @@ Begin
         'place_compile_mask': Result := Gen_PlaceCompileMask(Params, RequestId);
         'place_blanket':    Result := Gen_PlaceBlanket(Params, RequestId);
         'get_blankets':     Result := Gen_GetBlankets(Params, RequestId);
+        'set_draw_order':   Result := Gen_SetDrawOrder(Params, RequestId);
         'place_rectangle':  Result := Gen_PlaceRectangle(Params, RequestId);
         'place_line':       Result := Gen_PlaceLine(Params, RequestId);
         'place_note':       Result := Gen_PlaceNote(Params, RequestId);
