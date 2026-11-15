@@ -2326,10 +2326,39 @@ Begin
         Or (Verb = 'clear_highlights')
         Or (Verb = 'layer_view')
         Or (Verb = 'document_owners')
-        Or (Verb = 'claim_document');
+        Or (Verb = 'claim_document')
+        Or (Verb = 'release_document')
+        Or (Verb = 'open');
 End;
 
 { END COMMAND RULES }
+
+{ The document a write acts on: the first path the command names, else the  }
+{ document in front (FOCUS). Every name a tool gives its document is read:  }
+{ a command that named its document as project_path or library_path used   }
+{ to be checked against the focused document instead, so a session was     }
+{ refused because of a document another session had left in front (#314).  }
+{ A doc: scope names the document too. The project comes last: a sheet or  }
+{ board named beside it is the narrower target.                             }
+Function CommandTarget(Params : String; Focus : String) : String;
+Var
+    Scope : String;
+Begin
+    Result := ExtractJsonValue(Params, 'board_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'expect_file');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'file_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'library_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'sheet_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'document_path');
+    If Result = '' Then
+    Begin
+        Scope := ExtractJsonValue(Params, 'scope');
+        If LowerCase(Copy(Scope, 1, 4)) = 'doc:' Then
+            Result := Copy(Scope, 5, Length(Scope));
+    End;
+    If Result = '' Then Result := ExtractJsonValue(Params, 'project_path');
+    If Result = '' Then Result := Focus;
+End;
 
 { The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
 Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
@@ -2350,7 +2379,8 @@ Begin
         + IntToStr(Age Div 1000) + ' s ago). Nothing was changed. Work on '
         + 'another document, or ask the user: application.claim_document '
         + '(app_claim_document) hands it over when they say so. It is free '
-        + 'again once that session has left it alone for '
+        + 'again when that session releases it (app_release_document) or '
+        + 'has left it alone for '
         + IntToStr(OWNER_IDLE_MS Div 60000) + ' minutes.');
 End;
 
@@ -2524,10 +2554,7 @@ Begin
       document in front once the session's own is back. }
     Actor := LowerCase(ExtractJsonValue(RequestContent, 'actor'));
     Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
-    OwnTarget := ExtractJsonValue(Params, 'board_path');
-    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'expect_file');
-    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'file_path');
-    If OwnTarget = '' Then OwnTarget := FocusBefore;
+    OwnTarget := CommandTarget(Params, FocusBefore);
     ResetNextStep(0);
 
     ExceptionMsg := '';

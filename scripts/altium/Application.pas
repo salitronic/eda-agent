@@ -1490,6 +1490,84 @@ Begin
         + ',"copy_path":"' + EscapeJsonString(CopyPath) + '"'
         + ',"was_open":' + BoolToJsonStr(WasOpen)
         + ',"written":' + BoolToJsonStr(Written) + '}');
+{ The key of the first owner record held by TAG, '' when it holds none. }
+Function OwnerKeyHeldBy(Tag : String) : String;
+Var
+    Rest, Key, Rec : String;
+    P, Q : Integer;
+Begin
+    Result := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Exit;
+        Key := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Key);
+        If (Rec <> '') And (OwnerField(Rec, 0) = Tag) Then
+        Begin
+            Result := Key;
+            Exit;
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+End;
+
+{ The calling session gives up a document it holds, so another session can }
+{ write to it at once instead of after OWNER_IDLE_MS (#314). Without        }
+{ file_path every document it holds. A document another session holds is  }
+{ refused, naming the holder: taking it is app_claim_document, on the      }
+{ user's word.                                                             }
+Function App_ReleaseDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Tag, Owner, Items : String;
+    N : Integer;
+Begin
+    Tag := RequestTag(RequestId);
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Items := '';
+        N := 0;
+        Key := OwnerKeyHeldBy(Tag);
+        While (Key <> '') And (N < 10000) Do
+        Begin
+            OwnerDrop(Key);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '"' + EscapeJsonString(Key) + '"';
+            N := N + 1;
+            Key := OwnerKeyHeldBy(Tag);
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonRaw('released', '[' + Items + ']') + ','
+            + JsonStr('session', Tag)));
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    If Rec = '' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonRaw('released', '[]') + ','
+            + JsonStr('session', Tag) + ','
+            + JsonStr('note', Path + ' was held by no session.')));
+        Exit;
+    End;
+    Owner := OwnerField(Rec, 0);
+    If Owner <> Tag Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_YOURS',
+            Path + ' is held by another Claude session (' + Owner
+            + '), not this one, so it was left alone. Taking it over is '
+            + 'app_claim_document, when the user says so.');
+        Exit;
+    End;
+    OwnerDrop(Key);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('released', '["' + EscapeJsonString(Key) + '"]') + ','
+        + JsonStr('session', Tag)));
 End;
 
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
@@ -1516,6 +1594,7 @@ Begin
         'format_value':        Result := App_FormatValue(Params, RequestId);
         'document_owners':     Result := App_DocumentOwners(RequestId);
         'claim_document':      Result := App_ClaimDocument(Params, RequestId);
+        'release_document':    Result := App_ReleaseDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

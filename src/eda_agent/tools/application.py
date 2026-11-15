@@ -1295,6 +1295,26 @@ def register_application_tools(mcp):
             "application.claim_document", {"file_path": file_path})
 
     @mcp.tool()
+    async def app_release_document(file_path: str = "") -> dict[str, Any]:
+        """Give up a document this session is editing.
+
+        Another session can then write to it at once, instead of after
+        ``idle_release_seconds``. Call it when done with a document that
+        another session may want. A document another session holds is
+        refused (NOT_YOURS); taking one over is app_claim_document.
+
+        Args:
+            file_path: The document's full path. Empty releases every
+                document this session holds.
+
+        Returns:
+            ``released`` (the documents given up) and ``session``.
+        """
+        params = {"file_path": file_path} if file_path else {}
+        return await get_bridge().send_command_async(
+            "application.release_document", params)
+
+    @mcp.tool()
     async def app_list_documents() -> list[dict[str, Any]]:
         """List all documents known to the current Altium workspace.
 

@@ -112,10 +112,14 @@ def command_is_read_only(command: str) -> bool:
 #: never refused a document another session is editing (OwnerRefusal in
 #: StatusForm.pas). MEASURED: a session's pcb.focus_board claimed a board
 #: and the next session's focus on it was refused before it wrote anything.
+#: project.open (verb "open") loads a project and changes no document; it
+#: was checked against the document another session had left in front and
+#: refused (#314). release_document only gives up the caller's own claim.
 LOOK_VERBS_EXACT = (
     "focus_board", "set_active_document", "cockpit_state", "zoom",
     "switch_view", "refresh_document", "highlight_net", "clear_highlights",
-    "layer_view", "document_owners", "claim_document",
+    "layer_view", "document_owners", "claim_document", "release_document",
+    "open",
 )
 
 
