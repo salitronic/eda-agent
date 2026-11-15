@@ -686,13 +686,24 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
             "suggested_scope": fixed, **extra}
 
 
+#: A Matched Lengths rule's two modes. MEASURED (AD 25.8): the rule's four
+#: check flags are one choice in Altium -- the two nets of each pair, or
+#: the pairs, xSignals and other nets of the scope against each other.
+#: Issue #381.
+MATCH_MODES = ("group", "within_pair")
+
+
 def create_rule_params(name: str, rule_type: str = "clearance", value: float = 10,
                        max_value: Optional[float] = None,
                        favored_value: Optional[float] = None,
                        max_uncoupled_length: Optional[float] = None, scope: str = "",
                        net_scope: str = "different_nets", allowed: Optional[bool] = None,
-                       connect_style: str = "direct") -> dict[str, Any]:
-    """pcb.create_design_rule's request, or a refusal (which has no name)."""
+                       connect_style: str = "direct",
+                       match_mode: Optional[str] = None) -> dict[str, Any]:
+    """pcb.create_design_rule's request, or a refusal (which has no name).
+
+    ``match_mode`` is a Matched Lengths rule's mode, "group" or
+    "within_pair"; None keeps Altium's default (group)."""
     if scope:
         refusal = _scope_refusal(scope, created=False)
         if refusal:
@@ -717,6 +728,17 @@ def create_rule_params(name: str, rule_type: str = "clearance", value: float = 1
         "flight_time_rising": ("max_flight_time_ns", None),
         "flight_time_falling": ("max_flight_time_ns", None),
     }.get(rule_type)
+    if match_mode is not None and rule_type != "matched_lengths":
+        return {"ok": False, "reason": "match_mode is for a matched_lengths rule"}
+    if rule_type == "matched_lengths":
+        if value <= 0:
+            return {"ok": False, "reason": "matched_lengths takes a tolerance more than 0 mils"}
+        params["matched_tolerance_mils"] = str(value)
+        if match_mode is not None:
+            if match_mode not in MATCH_MODES:
+                return {"ok": False, "reason": "match_mode is "
+                        + " or ".join(repr(m) for m in MATCH_MODES)}
+            params["matched_mode"] = match_mode
     if limit_keys:
         if value <= 0 and rule_type != "length":
             return {"ok": False, "reason": f"{rule_type} takes a value more than 0"}
@@ -9140,6 +9162,7 @@ def register_pcb_tools(mcp):
         net_scope: str = "different_nets",
         allowed: Optional[bool] = None,
         connect_style: str = "direct",
+        match_mode: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new design rule on the active PCB.
 
@@ -9162,7 +9185,9 @@ def register_pcb_tools(mcp):
                 "flight_time_rising" / "flight_time_falling" (value =
                 max flight time in ns). These four read their limits back
                 in ``limits``; change them later with
-                pcb_set_rule_properties.
+                pcb_set_rule_properties. "matched_lengths" (value =
+                tolerance in mils; scope a net / pair / xSignal class)
+                reads its settings back in ``settings``.
             value: Primary value in mils (the MIN for ranged kinds).
             max_value: MAX for ranged kinds (default 5x value).
             favored_value: Preferred value (default value).
@@ -9178,6 +9203,9 @@ def register_pcb_tools(mcp):
                 "same_net"; ignored by pair, mask and via-in-pad rules.
             allowed: vias_under_smd only: False forbids via-in-pad.
                 Omitted means True, Altium's default.
+            match_mode: matched_lengths only: "group" (the pairs,
+                xSignals and nets in scope against each other, Altium's
+                default) or "within_pair" (the two nets of each pair).
 
         Returns:
             Dictionary with created rule details.
@@ -9188,7 +9216,7 @@ def register_pcb_tools(mcp):
         """
         params = create_rule_params(
             name, rule_type, value, max_value, favored_value, max_uncoupled_length,
-            scope, net_scope, allowed, connect_style)
+            scope, net_scope, allowed, connect_style, match_mode)
         if "name" not in params:
             return params
         return await _rule_edit("pcb_create_design_rule", params,
@@ -11028,6 +11056,8 @@ def register_pcb_tools(mcp):
         min_signal_impedance_ohms: float | None = None,
         max_signal_impedance_ohms: float | None = None,
         max_flight_time_ns: float | None = None,
+        matched_tolerance_mils: float | None = None,
+        matched_mode: str | None = None,
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
@@ -11099,6 +11129,9 @@ def register_pcb_tools(mcp):
                 rule's limit. These three are read back in limits; one
                 that did not hold, or that belongs to another kind of rule,
                 is named in limits_note.
+            matched_tolerance_mils, matched_mode ("group" or
+                "within_pair"): a Matched Lengths rule, read back in
+                ``settings``.
             testpoint: a Testpoint Style rule's settings, by name:
                 min_size_mils, max_size_mils, preferred_size_mils,
                 min_hole_mils, max_hole_mils, preferred_hole_mils,
@@ -11173,6 +11206,7 @@ def register_pcb_tools(mcp):
             ("min_signal_impedance_ohms", min_signal_impedance_ohms),
             ("max_signal_impedance_ohms", max_signal_impedance_ohms),
             ("max_flight_time_ns", max_flight_time_ns),
+            ("matched_tolerance_mils", matched_tolerance_mils),
         ]:
             if value is not None:
                 params[key] = str(value)
@@ -11193,6 +11227,13 @@ def register_pcb_tools(mcp):
                     "min_length_mils", "max_length_mils"):
             if key in params and float(params[key]) < 0:
                 return {"ok": False, "reason": f"{key} is 0 or more"}
+        if "matched_tolerance_mils" in params and float(params["matched_tolerance_mils"]) <= 0:
+            return {"ok": False, "reason": "matched_tolerance_mils is more than 0"}
+        if matched_mode is not None:
+            if matched_mode not in MATCH_MODES:
+                return {"ok": False, "reason": "matched_mode is "
+                        + " or ".join(repr(m) for m in MATCH_MODES)}
+            params["matched_mode"] = matched_mode
         for key, value in (("width_impedance_driven", width_impedance_driven),
                            ("check_connected_copper", check_connected_copper)):
             if value is not None:

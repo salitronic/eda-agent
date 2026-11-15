@@ -818,62 +818,6 @@ Begin
         ));
 End;
 
-{..............................................................................}
-{ PCB_GetRuleProperties - Read properties of a design rule.                     }
-{                                                                               }
-{ Constraint values (Gap, MinWidth, MinHoleSize, impedance, etc.) are NOT       }
-{ properties of the base IPCB_Rule interface, they live on the per-kind        }
-{ subtypes (IPCB_ClearanceConstraint, IPCB_MaxMinWidthConstraint, etc.). The    }
-{ kind-specific Pascal constants are not declared in every Altium build, so     }
-{ accessing them directly compiles in some versions and crashes others with     }
-{ "Undeclared identifier" errors that Try/Except cannot catch.                  }
-{                                                                               }
-{ Rule.Descriptor is a stable, documented string property on every IPCB_Rule    }
-{ subtype that already contains all constraint values in human-readable form,   }
-{ e.g. "Width Constraint (Min=0.18mm) (Max=0.19mm) (Preferred=0.185mm)".        }
-{ Callers that need parsed values can split the descriptor, far safer than    }
-{ dispatching on RuleKind to typed subtype access in script.                    }
-{..............................................................................}
-
-Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Rule : IPCB_Rule;
-    RuleName, GapField : String;
-Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
-    RuleName := ExtractJsonValue(Params, 'name');
-    If RuleName = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', '"name" parameter is required');
-        Exit;
-    End;
-
-    Rule := PCB_FindRuleByName(Board, RuleName);
-    If Rule = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Rule not found: ' + RuleName);
-        Exit;
-    End;
-
-    GapField := ClearanceGapMM(Board, RuleName);
-    If GapField <> '' Then GapField := ',"gap_mm":' + GapField;
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"name":"' + EscapeJsonString(Rule.Name) + '",'
-        + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
-        + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
-        + '"priority":' + IntToStr(Rule.Priority) + ','
-        + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"'
-        + GapField + '}');
-End;
-
 { MORE RULE SETTINGS, by rule kind: Width (2) impedance limits and the      }
 { connected-copper check, Height (50) limits, Component Clearance           }
 { (24) vertical gap, distance display and check mode, Routing Corners (10)  }
@@ -1098,6 +1042,130 @@ Begin
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+End;
+
+Function MatchedAsked(Params : String) : Boolean;
+Begin
+    Result := (ExtractJsonValue(Params, 'matched_tolerance_mils') <> '')
+        Or (ExtractJsonValue(Params, 'matched_mode') <> '');
+End;
+
+{ A Matched Lengths rule, kind 4 (eRule_MatchedLengths, written as a       }
+{ number like the other kinds in this file): its tolerance and its mode.   }
+{ MEASURED on AD 25.8: the rule holds four check flags but Altium keeps    }
+{ them as ONE two-way choice. CheckNetsInDiffPair on turns the other three }
+{ off (match the two nets of each pair); off turns all three on (match the  }
+{ pairs, the xSignals and the other nets of the scope against each other,   }
+{ the default). A write to one of the other three changes nothing. So the  }
+{ mode is written through CheckNetsInDiffPair alone and all four are       }
+{ reported as read back. UseDelayUnits is reported so a rule set to delay  }
+{ in the rules editor is not read as mils by mistake.                       }
+Function RuleExtrasMatched(Board : IPCB_Board; RuleName, Params : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_MatchedNetLengthsConstraint;
+    TolS, ModeS, ModeNow : String;
+Begin
+    Result := '';
+    TolS := ExtractJsonValue(Params, 'matched_tolerance_mils');
+    ModeS := LowerCase(ExtractJsonValue(Params, 'matched_mode'));
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 4) And (R.Name = RuleName) Then
+            Begin
+                If TolS <> '' Then
+                Begin
+                    R.Tolerance := MilsToCoordF(StrToFloatDef(TolS, 0));
+                    If Not RuleMilsTook(R.Tolerance, TolS) Then Missed := Missed + '"matched_tolerance_mils",';
+                End;
+                If ModeS <> '' Then
+                Begin
+                    R.CheckNetsInDiffPair := (ModeS = 'within_pair');
+                    If R.CheckNetsInDiffPair <> (ModeS = 'within_pair') Then Missed := Missed + '"matched_mode",';
+                End;
+                If R.CheckNetsInDiffPair Then ModeNow := 'within_pair' Else ModeNow := 'group';
+                Result := '"matched_tolerance_mils":' + FloatToJsonStr(CoordToMilsF(R.Tolerance))
+                    + ',"matched_mode":"' + ModeNow + '"'
+                    + ',"checks":{"within_pair":' + BoolToJsonStr(R.CheckNetsInDiffPair)
+                    + ',"pair_to_pair":' + BoolToJsonStr(R.CheckDiffPairVsDiffPair)
+                    + ',"xsignals":' + BoolToJsonStr(R.CheckBetweenXSignals)
+                    + ',"other_objects":' + BoolToJsonStr(R.CheckOtherElectricalObjects) + '}'
+                    + ',"matched_use_delay_units":' + BoolToJsonStr(R.UseDelayUnits);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{..............................................................................}
+{ PCB_GetRuleProperties - Read properties of a design rule.                     }
+{                                                                               }
+{ Constraint values (Gap, MinWidth, MinHoleSize, impedance, etc.) are NOT       }
+{ properties of the base IPCB_Rule interface, they live on the per-kind        }
+{ subtypes (IPCB_ClearanceConstraint, IPCB_MaxMinWidthConstraint, etc.). The    }
+{ kind-specific Pascal constants are not declared in every Altium build, so     }
+{ accessing them directly compiles in some versions and crashes others with     }
+{ "Undeclared identifier" errors that Try/Except cannot catch.                  }
+{                                                                               }
+{ Rule.Descriptor is a stable, documented string property on every IPCB_Rule    }
+{ subtype that already contains all constraint values in human-readable form,   }
+{ e.g. "Width Constraint (Min=0.18mm) (Max=0.19mm) (Preferred=0.185mm)".        }
+{ Callers that need parsed values can split the descriptor, far safer than    }
+{ dispatching on RuleKind to typed subtype access in script.                    }
+{..............................................................................}
+
+Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Rule : IPCB_Rule;
+    RuleName, GapField, MatchedField, MatchedMissed : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    RuleName := ExtractJsonValue(Params, 'name');
+    If RuleName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', '"name" parameter is required');
+        Exit;
+    End;
+
+    Rule := PCB_FindRuleByName(Board, RuleName);
+    If Rule = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Rule not found: ' + RuleName);
+        Exit;
+    End;
+
+    GapField := ClearanceGapMM(Board, RuleName);
+    If GapField <> '' Then GapField := ',"gap_mm":' + GapField;
+    If Rule.RuleKind = 4 Then
+    Begin
+        MatchedMissed := '';
+        MatchedField := RuleExtrasMatched(Board, RuleName, '', MatchedMissed);
+        If MatchedField <> '' Then GapField := GapField + ',"settings":{' + MatchedField + '}';
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"name":"' + EscapeJsonString(Rule.Name) + '",'
+        + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
+        + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
+        + '"priority":' + IntToStr(Rule.Priority) + ','
+        + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"'
+        + GapField + '}');
 End;
 
 Function RuleExtrasFanout(Board : IPCB_Board; RuleName, StyleS, DirS, BgaDirS, BgaViaS, GridS : String; Var Missed : String) : String;
@@ -2071,6 +2139,8 @@ Begin
         And (Kind <> 49) Then XBad := 'fanout_* and bga_* are for a Fanout Control rule';
     If TestpointAsked(Params) And (Not IsTestpointStyleKind(Kind)) Then
         XBad := 'testpoint_* is for a Testpoint Style rule';
+    If MatchedAsked(Params) And (Kind <> 4) Then
+        XBad := 'matched_* is for a Matched Lengths rule';
     If XBad <> '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_RULE_KIND', XBad + '; ' + RuleName + ' is kind ' + IntToStr(Kind));
@@ -2090,6 +2160,8 @@ Begin
         XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
     If IsTestpointStyleKind(Kind) And TestpointAsked(Params) Then
         XReport := RuleExtrasTestpoint(Board, RuleName, Params, XMissed);
+    If (Kind = 4) And MatchedAsked(Params) Then
+        XReport := RuleExtrasMatched(Board, RuleName, Params, XMissed);
     If XReport <> '' Then
     Begin
         Inc(UpdatedCount);
@@ -10598,6 +10670,7 @@ Var
     HasMaxValue, AllowedVal : Boolean;
     L : TLayer;
     LimitCount : Integer;
+    MatchedField, MatchedMissed : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -10809,6 +10882,16 @@ Begin
                 Rule := RulePlaneC;
             End;
         End
+        Else If RuleTypeStr = 'matched_lengths' Then
+        Begin
+            { Made with its name and scope here; the tolerance and the     }
+            { group checks are written and read back by RuleExtrasMatched  }
+            { once the rule is on the board. Fields not given keep the     }
+            { defaults Altium gives a new rule.                            }
+            Rule := PCBServer.PCBRuleFactory(4);
+            Rule.Name := RuleName;
+            If ScopeStr <> '' Then Rule.Scope1Expression := ScopeStr;
+        End
         Else If (RuleTypeStr = 'length') Or (RuleTypeStr = 'signal_impedance')
             Or (RuleTypeStr = 'flight_time_rising') Or (RuleTypeStr = 'flight_time_falling') Then
         Begin
@@ -10831,8 +10914,8 @@ Begin
                 'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
                 + 'via_size, differential_pairs, solder_mask_expansion, '
                 + 'paste_mask_expansion, vias_under_smd, polygon_connect, '
-                + 'plane_connect, length, signal_impedance, flight_time_rising or '
-                + 'flight_time_falling');
+                + 'plane_connect, length, matched_lengths, signal_impedance, '
+                + 'flight_time_rising or flight_time_falling');
             Exit;
         End;
 
@@ -10855,6 +10938,24 @@ Begin
             + '"name":"' + EscapeJsonString(RuleName) + '",'
             + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '"'
             + RuleLimitsReport(Board, Rule.RuleKind, RuleName, Params, LimitCount) + '}');
+        Exit;
+    End;
+
+    If RuleTypeStr = 'matched_lengths' Then
+    Begin
+        MatchedMissed := '';
+        MatchedField := RuleExtrasMatched(Board, RuleName, Params, MatchedMissed);
+        If MatchedMissed <> '' Then MatchedMissed := Copy(MatchedMissed, 1, Length(MatchedMissed) - 1);
+        ConnDesc := '';
+        Try ConnDesc := Rule.Descriptor; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
+            + '"descriptor":"' + EscapeJsonString(ConnDesc) + '",'
+            + '"settings":{' + MatchedField + '},'
+            + '"settings_not_applied":[' + MatchedMissed + ']}');
         Exit;
     End;
 
