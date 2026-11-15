@@ -116,6 +116,9 @@ COVERED: dict[str, str] = {
     "pcb_start_polygon_placement": "kicad_place_zones",
     "pcb_keepout_board_outline": "kicad_place_zones",
     "pcb_dimension": "kicad_place_dimensions",
+    "pcb_create_dimension": "kicad_place_dimensions",
+    "pcb_get_dimensions": "kicad_query_items",
+    "pcb_edit_dimension": "kicad_modify_items",
     "pcb_set_board_shape": "kicad_set_board_outline",
     "pcb_auto_size_board_outline": "kicad_set_board_outline",
     "pcb_copy_tracks_radial": "kicad_copy_items",
@@ -294,6 +297,8 @@ COVERED: dict[str, str] = {
 }
 
 NOT_APPLICABLE: dict[str, str] = {
+    # A KiCad dimension's ends are plain points: nothing binds them.
+    "pcb_dimension_bindings": "Altium binds a dimension's ends to pads and arcs; KiCad does not",
     # Altium 365
     **{name: _A365 for name in (
         "altium365_check_setup", "altium365_describe_type", "altium365_get_component",

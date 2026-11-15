@@ -185,7 +185,7 @@ NOT_LENGTH_NAMES = re.compile(
     r"current|_w$|power|_c$|^t_|temp|ambient|tj_|theta|_pf$|_nf$|_f$|_h$|"
     r"farads|capacitance|inductance|_ns$|_ps$|_um$|oz|awg|^er|^k_|dk|df|loss|"
     r"constant|tangent|dpi|zoom|opacity|transparency|azimuth|elevation|"
-    r"depth_of_field|offset$|page|seed|level|quality|precision|decimals|"
+    r"depth_of_field|offset$|page|seed|level|quality|precision|decimals|sector|"
     r"budget|cost|penalty|^delta$|gain|^dc$|^ac$|^c_|^r_|tol|^font_id|"
     r"part_id|owner|unit$|^set$|^vcc$|^supply|^value$|_value$|span|share|"
     r"threshold|below$|zones|correction|repeat|start$|end$|first|last|"

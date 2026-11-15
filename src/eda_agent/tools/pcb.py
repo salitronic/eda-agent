@@ -36,6 +36,7 @@ from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from .editor_options import run_options
 from ..layout import pad_relief
+from ..layout import dimensions
 from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
@@ -10689,6 +10690,196 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_dimensions(index: int = -1, pieces: bool = False) -> dict[str, Any]:
+        """Read the board's dimensions: kind, position, references, callouts.
+
+        Each dimension's ``references`` say whether Altium bound that end to
+        a board object (``bound``: it follows the pad or arc when that
+        moves). ``texts`` are the callouts as drawn. Kinds: linear, angular,
+        radial, leader, datum, baseline, center, original, linear_diameter,
+        radial_diameter, each with its own values (angle, size, radius,
+        sector, label, shape, text_locations).
+
+        Args:
+            index: One dimension by its index; -1 (default) reads all.
+            pieces: Also list the tracks, arcs and texts it is drawn from.
+
+        Returns:
+            ``count`` (dimensions on the board) and ``dimensions``.
+        """
+        params = {"index": str(int(index))}
+        if pieces:
+            params["pieces"] = "true"
+        return await get_bridge().send_command_async("pcb.get_dimensions", params)
+
+    @mcp.tool()
+    async def pcb_dimension_bindings() -> dict[str, Any]:
+        """Which dimensions have ends bound to board objects.
+
+        A bound end follows its pad or arc when that moves. pcb_edit_dimension
+        refuses to change a bound dimension's geometry unless told to unbind
+        it, after which it no longer follows. A radial or diameter is bound
+        to its arc and is never unbound (free, it reads 0).
+
+        Returns:
+            ``bound``: each bound dimension's index, kind, x, y and how many
+            of its references are bound; ``count`` dimensions on the board.
+        """
+        reply = await get_bridge().send_command_async(
+            "pcb.get_dimensions", {"index": "-1", "bound_only": "true"})
+        if not isinstance(reply, dict) or "dimensions" not in reply:
+            return reply
+        bound = [{"index": d.get("index"), "kind": d.get("kind"), "x": d.get("x"),
+                  "y": d.get("y"),
+                  "bound_references": sum(1 for r in d.get("references", [])
+                                          if r.get("bound"))}
+                 for d in reply["dimensions"]]
+        return {"count": reply.get("count"), "bound": bound}
+
+    @mcp.tool()
+    async def pcb_create_dimension(
+        kind: str,
+        points: list,
+        layer: str = "TopOverlay",
+        angle: float = 0,
+        offset: float = 300,
+        spacing: float = 300,
+        label: str = "",
+        shape: str = "none",
+        radius: Optional[float] = None,
+        sector: int = 1,
+        size: Optional[float] = None,
+        text_height: Optional[float] = None,
+        line_width: Optional[float] = None,
+        unit: str = "",
+        precision: Optional[int] = None,
+        prefix: Optional[str] = None,
+        suffix: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Draw a measuring dimension from points: Altium works out the value.
+
+        Its ends are FREE points: they do not follow a pad that moves later
+        (a script cannot bind them; dragging an end onto a pad in Altium
+        does). A radial or diameter needs that binding and is refused.
+
+        Args:
+            kind: linear, angular, leader, datum, baseline, center, original.
+            points: [x, y] pairs. linear: the two points. angular: vertex,
+                one point on each line. leader: tip, bends, end. datum:
+                origin, then each point. baseline: base, then each point.
+                center: the centre. original: start, end.
+            layer: Layer to draw on (default TopOverlay).
+            angle: Measuring direction in degrees (linear, datum, baseline;
+                the cross's turn on a center).
+            offset: How far the line (linear), callout row (datum) or first
+                line (baseline) sits from the points.
+            spacing: Distance between a baseline's lines.
+            label, shape: A leader's text and frame (none, round, square).
+            radius, sector: An angular's arc radius and which of the four
+                angles (1-4).
+            size: A center mark's size.
+            text_height, line_width, unit (mil, mm, deg), precision,
+                prefix, suffix: The callout's style.
+
+        Returns:
+            ``created`` and the new ``dimension`` as pcb_get_dimensions
+            reads it (its ``index`` for pcb_edit_dimension).
+        """
+        try:
+            params = dimensions.params_for(kind, points, angle=angle, offset=offset,
+                                           spacing=spacing, radius=radius)
+            params.update(_dimension_values(
+                angle=angle, label=label or None,
+                shape=shape if kind.strip().lower() == "leader" else None,
+                sector=sector if kind.strip().lower() == "angular" else None,
+                size=size if size is not None else (
+                    100 if kind.strip().lower() == "center" else None),
+                text_height=text_height, line_width=line_width, unit=unit,
+                precision=precision, prefix=prefix, suffix=suffix))
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        params["layer"] = layer
+        return await get_bridge().send_command_async("pcb.create_dimension", params)
+
+    @mcp.tool()
+    async def pcb_edit_dimension(
+        index: int,
+        x: float,
+        y: float,
+        keep_bindings: bool = True,
+        points: Optional[list] = None,
+        dx: float = 0,
+        dy: float = 0,
+        angle: Optional[float] = None,
+        offset: Optional[float] = None,
+        spacing: Optional[float] = None,
+        label: Optional[str] = None,
+        shape: Optional[str] = None,
+        radius: Optional[float] = None,
+        sector: Optional[int] = None,
+        size: Optional[float] = None,
+        text_height: Optional[float] = None,
+        line_width: Optional[float] = None,
+        unit: Optional[str] = None,
+        precision: Optional[int] = None,
+        prefix: Optional[str] = None,
+        suffix: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Change a dimension: its points, position, angle or style.
+
+        A dimension with ends bound to board objects (pcb_dimension_bindings)
+        is refused for geometry changes while keep_bindings is true. With
+        keep_bindings=false its ends are unbound first: it is then drawn as
+        before but NO LONGER FOLLOWS the pad or arc it was bound to (fine
+        when the drawing is redone by a tool anyway; rebind by dragging an
+        end onto the object in Altium). keep_bindings=false alone just
+        unbinds. A radial or diameter keeps its arc: only style changes.
+
+        Args:
+            index, x, y: The dimension, as pcb_get_dimensions gives it; x, y
+                must still match (a stale index is refused).
+            keep_bindings: False unbinds bound ends (see above).
+            points: New points, as pcb_create_dimension takes them.
+            dx, dy: Move the whole dimension.
+            angle, offset, spacing, label, shape, radius, sector, size,
+                text_height, line_width, unit, precision, prefix, suffix:
+                As in pcb_create_dimension.
+
+        Returns:
+            ``edited``, ``unbound`` (references released) and the
+            ``dimension`` as read afterwards.
+        """
+        params: dict[str, str] = {"index": str(int(index)), "x": format_length(x),
+                                  "y": format_length(y)}
+        if not keep_bindings:
+            params["keep_bindings"] = "false"
+        try:
+            if points is not None:
+                current = await get_bridge().send_command_async(
+                    "pcb.get_dimensions", {"index": str(int(index))})
+                found = (current or {}).get("dimensions") or []
+                if not found:
+                    return {"ok": False, "reason": f"no dimension at index {index}"}
+                kind = found[0].get("kind", "")
+                use_angle = angle if angle is not None else float(found[0].get("angle") or 0)
+                geo = dimensions.params_for(kind, points, angle=use_angle, offset=offset,
+                                            spacing=spacing, radius=radius)
+                geo.pop("kind", None)
+                params.update(geo)
+            params.update(_dimension_values(
+                angle=angle, label=label, shape=shape, sector=sector, size=size,
+                radius=radius if points is None else None, text_height=text_height,
+                line_width=line_width, unit=unit or "", precision=precision,
+                prefix=prefix, suffix=suffix))
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        if dx:
+            params["dx"] = format_length(dx)
+        if dy:
+            params["dy"] = format_length(dy)
+        return await get_bridge().send_command_async("pcb.edit_dimension", params)
+
+    @mcp.tool()
     async def pcb_place_pad(
         x: float,
         y: float,
@@ -11265,3 +11456,37 @@ def register_pcb_tools(mcp):
                 "layer": layer,
             },
         )
+
+
+def _dimension_values(*, angle=None, label=None, shape=None, sector=None, size=None,
+                      radius=None, text_height=None, line_width=None, unit="",
+                      precision=None, prefix=None, suffix=None) -> dict[str, str]:
+    """The style and kind values of pcb_create_dimension / pcb_edit_dimension."""
+    out: dict[str, str] = {}
+    if angle is not None:
+        out["angle"] = f"{float(angle):g}"
+    if label is not None:
+        out["label"] = str(label)
+    if shape is not None:
+        out["shape"] = dimensions.shape_code(shape)
+    if sector is not None:
+        if int(sector) not in (1, 2, 3, 4):
+            raise ValueError("sector is 1, 2, 3 or 4")
+        out["sector"] = str(int(sector))
+    for key, value in (("size", size), ("radius", radius), ("text_height", text_height),
+                       ("line_width", line_width)):
+        if value is not None:
+            if float(value) <= 0:
+                raise ValueError(f"{key} must be above 0")
+            out[key] = format_length(value)
+    if unit:
+        out["unit"] = dimensions.unit_code(unit)
+    if precision is not None:
+        if not 0 <= int(precision) <= 6:
+            raise ValueError("precision is 0 to 6")
+        out["precision"] = str(int(precision))
+    if prefix is not None:
+        out["prefix"] = str(prefix)
+    if suffix is not None:
+        out["suffix"] = str(suffix)
+    return out
