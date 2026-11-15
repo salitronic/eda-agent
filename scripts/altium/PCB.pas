@@ -15835,13 +15835,15 @@ Begin
         Board.AddPCBObject(Dim);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
+        { Inside the same edit: every write below opens its own pair, and }
+        { nested in this one they make a single undo step.                }
+        DimApplyValues(Dim, Params);
+        DimApplyGeometry(Dim, Params);
+        DimApplyValues(Dim, Params);
+        DimRebuild(Dim);
     Finally
         PcbEndEdit(0);
     End;
-    DimApplyValues(Dim, Params);
-    DimApplyGeometry(Dim, Params);
-    DimApplyValues(Dim, Params);
-    DimRebuild(Dim);
     MarkDocDirtyByPath(Board.FileName);
     { a new dimension is listed FIRST, not last: find its index by address }
     DimIndex := -1;
@@ -15899,7 +15901,9 @@ Begin
     Err := '';
     Unbound := '';
     Found := False;
+    Dim := Nil;
     I := 0;
+    { Found first: nothing is changed while the board is being walked. }
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eDimensionObject));
     Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
@@ -15912,41 +15916,6 @@ Begin
             Begin
                 Found := True;
                 Dim := Obj;
-                K := Dim.DimensionKind;
-                Bound := DimBoundCount(Dim);
-                If (Abs(CoordToMilsF(Dim.X) - GX) > 0.01) Or (Abs(CoordToMilsF(Dim.Y) - GY) > 0.01) Then
-                    Err := 'NOT_THIS_DIMENSION|dimension ' + IntToStr(Want) + ' is at '
-                        + FloatToJsonStr(CoordToMilsF(Dim.X)) + ', ' + FloatToJsonStr(CoordToMilsF(Dim.Y))
-                        + ', not at the x, y given: read pcb_get_dimensions again'
-                Else If (Geometry Or Not KeepBindings) And (Bound > 0) And ((K = 3) Or (K = 9) Or (K = 10)) Then
-                    Err := 'BOUND_TO_ARC|a ' + DimKindName(K) + ' takes its value from the arc it is '
-                        + 'bound to; unbound it reads 0, so its geometry is not changed here'
-                Else If Geometry And (Bound > 0) And KeepBindings Then
-                    Err := 'BOUND|' + IntToStr(Bound) + ' of its references are bound to board '
-                        + 'objects; keep_bindings=false unbinds them first (they then stop '
-                        + 'following those objects)'
-                Else
-                Begin
-                    If (Bound > 0) And Not KeepBindings Then
-                    Begin
-                        DimUnbindAll(Dim);
-                        If DimBoundCount(Dim) > 0 Then
-                            Err := 'UNBIND_FAILED|' + IntToStr(DimBoundCount(Dim))
-                                + ' references are still bound after the unbind'
-                        Else Unbound := IntToStr(Bound);
-                    End;
-                    If Err = '' Then
-                    Begin
-                        DimApplyValues(Dim, Params);
-                        DimApplyGeometry(Dim, Params);
-                        If (DX <> 0) Or (DY <> 0) Then DimMoveBy(Dim, DX, DY);
-                        DimRebuild(Dim);
-                        MarkDocDirtyByPath(Board.FileName);
-                        Result := BuildSuccessResponse(RequestId, '{"edited":true,"unbound":'
-                            + IntToStr(StrToIntDef(Unbound, 0)) + ',"dimension":'
-                            + DimJson(Dim, I, False) + '}');
-                    End;
-                End;
                 Break;
             End;
             Inc(I);
@@ -15954,6 +15923,52 @@ Begin
         End;
     Finally
         Board.BoardIterator_Destroy(Iter);
+    End;
+    If Found Then
+    Begin
+        K := Dim.DimensionKind;
+        Bound := DimBoundCount(Dim);
+        If (Abs(CoordToMilsF(Dim.X) - GX) > 0.01) Or (Abs(CoordToMilsF(Dim.Y) - GY) > 0.01) Then
+            Err := 'NOT_THIS_DIMENSION|dimension ' + IntToStr(Want) + ' is at '
+                + FloatToJsonStr(CoordToMilsF(Dim.X)) + ', ' + FloatToJsonStr(CoordToMilsF(Dim.Y))
+                + ', not at the x, y given: read pcb_get_dimensions again'
+        Else If (Geometry Or Not KeepBindings) And (Bound > 0) And ((K = 3) Or (K = 9) Or (K = 10)) Then
+            Err := 'BOUND_TO_ARC|a ' + DimKindName(K) + ' takes its value from the arc it is '
+                + 'bound to; unbound it reads 0, so its geometry is not changed here'
+        Else If Geometry And (Bound > 0) And KeepBindings Then
+            Err := 'BOUND|' + IntToStr(Bound) + ' of its references are bound to board '
+                + 'objects; keep_bindings=false unbinds them first (they then stop '
+                + 'following those objects)'
+        Else
+        Begin
+            { One edit round the whole change: each write opens its own }
+            { pair, and nested in this one they make a single undo step. }
+            PcbBeginEdit(0);
+            Try
+                If (Bound > 0) And Not KeepBindings Then
+                Begin
+                    DimUnbindAll(Dim);
+                    If DimBoundCount(Dim) > 0 Then
+                        Err := 'UNBIND_FAILED|' + IntToStr(DimBoundCount(Dim))
+                            + ' references are still bound after the unbind'
+                    Else Unbound := IntToStr(Bound);
+                End;
+                If Err = '' Then
+                Begin
+                    DimApplyValues(Dim, Params);
+                    DimApplyGeometry(Dim, Params);
+                    If (DX <> 0) Or (DY <> 0) Then DimMoveBy(Dim, DX, DY);
+                    DimRebuild(Dim);
+                End;
+            Finally
+                PcbEndEdit(0);
+            End;
+            MarkDocDirtyByPath(Board.FileName);
+            If Err = '' Then
+                Result := BuildSuccessResponse(RequestId, '{"edited":true,"unbound":'
+                    + IntToStr(StrToIntDef(Unbound, 0)) + ',"dimension":'
+                    + DimJson(Dim, I, False) + '}');
+        End;
     End;
     If Not Found Then
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no dimension at index ' + IntToStr(Want))

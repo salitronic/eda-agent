@@ -953,6 +953,32 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "BarCodeInverted; or Multiline with MultilineTextWidth / Height."),
     },
     {
+        "task": "Draw, read or change a board dimension that measures",
+        "keywords": ("dimension", "dimensions", "measure", "linear", "angular",
+                     "leader", "datum", "baseline", "callout"),
+        "when": (("dimension", "measure"), ("dimension", "place"),
+                 ("dimension", "draw"), ("dimension", "read"),
+                 ("dimension", "edit"), ("dimension", "move")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_create_dimension", "pcb_get_dimensions",
+                "pcb_edit_dimension", "pcb_dimension_bindings"],
+        "avoid": [
+            ("pcb_dimension", "draws a dimension with no end points to "
+                              "measure from; pcb_create_dimension takes the "
+                              "points and Altium works out the value"),
+        ],
+        "note": (
+            "pcb_create_dimension draws linear, angular, leader, datum, "
+            "baseline, center and original dimensions from points. Its ends "
+            "are free points: they do not follow a pad that moves later. A "
+            "radial or diameter is bound to an arc, which only Altium's own "
+            "placement does. pcb_get_dimensions gives each dimension's index "
+            "and x, y, which pcb_edit_dimension needs; it refuses to change "
+            "the geometry of a dimension bound to board objects unless "
+            "keep_bindings is false."),
+    },
+    {
         "task": "Format a board dimension's text and arrows",
         "keywords": ("dimension", "arrow", "precision", "units", "prefix",
                      "suffix", "extension"),
