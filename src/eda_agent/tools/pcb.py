@@ -7868,8 +7868,10 @@ def register_pcb_tools(mcp):
         }
 
     @mcp.tool()
-    async def pcb_add_layer(layer: str, above: str = "", below: str = "") -> dict[str, Any]:
-        """Insert a copper layer into the PCB layer stack.
+    async def pcb_add_layer(layer: str, above: str = "", below: str = "",
+                            reopen: bool = True) -> dict[str, Any]:
+        """Insert a copper layer into the PCB layer stack, then save and
+        reopen the board so every via counts on the new layer.
 
         Valid names include MidLayer1..MidLayer30 (signal layers) and
         InternalPlane1..InternalPlane16 (power / ground planes). Top / Bottom
@@ -7877,21 +7879,31 @@ def register_pcb_tools(mcp):
         ``below`` (a layer already in the stack) it goes in at that place;
         otherwise Altium chooses.
 
+        THIS SAVES THE BOARD, with every change made to it so far. A via
+        placed since the board was opened does not count on a layer added
+        after it was opened until the board is loaded again, and a pour
+        there that removes dead copper stays empty. ``reopen=False`` adds
+        the layer without saving: vias loaded with the board count at
+        once, the others after a save and reopen (``note``).
+
         Args:
             layer: Layer name, e.g. "MidLayer1", "InternalPlane1"
             above: Put it directly above this layer.
             below: Put it directly below this layer.
+            reopen: Save, close and reopen the board after the insert.
 
         Returns:
             ``layer`` and ``stack_order``, the copper layers top down;
             ``vias_refreshed``: free vias taken off the board and added
-            back so a pour on the new layer counts them (a via in a
-            component is left, ``vias_in_components``). That covers vias
-            loaded with the board: one placed since the board was opened
-            counts on the new layer only after a save and reopen, and a
-            pour there that removes dead copper stays empty until then
-            (``note``).
+            back (a via in a component is left, ``vias_in_components``);
+            ``reopened`` with ``saved``. ``reopened`` false carries
+            ``reopen_stage`` and ``reopen_reason`` (a board never saved to
+            a file is one) and the ``note``: the layer is in, the board
+            is as it was left.
         """
+        import os
+        from ..bridge.reopen import save_close_reopen
+
         if above.strip() and below.strip():
             return {"ok": False, "reason": "give above or below, not both"}
         params: dict[str, Any] = {"layer": layer}
@@ -7899,7 +7911,21 @@ def register_pcb_tools(mcp):
             params["above"] = above.strip()
         if below.strip():
             params["below"] = below.strip()
-        return await get_bridge().send_command_async("pcb.add_layer", params)
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.add_layer", params)
+        if not reopen or not (isinstance(result, dict) and result.get("success")):
+            return result
+        path = str(result.get("file_path") or "")
+        if not os.path.isfile(path):
+            return {**result, "reopened": False, "reopen_stage": "save",
+                    "reopen_reason": "the board is not saved to a file yet"}
+        done = await save_close_reopen(bridge, path)
+        if not done["ok"]:
+            return {**result, "reopened": False, "saved": done["saved"],
+                    "reopen_stage": done.get("stage"),
+                    "reopen_reason": done.get("reason") or done.get("close")}
+        out = {k: v for k, v in result.items() if k != "note"}
+        return {**out, "saved": True, "reopened": True}
 
     @mcp.tool()
     async def pcb_move_layer(

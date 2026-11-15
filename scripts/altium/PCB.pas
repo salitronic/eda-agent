@@ -6580,6 +6580,7 @@ Begin
         + ',"stack_order":[' + Order + ']'
         + ',"vias_refreshed":' + IntToStr(Refreshed)
         + ',"vias_in_components":' + IntToStr(InParts)
+        + ',"file_path":"' + EscapeJsonString(Board.FileName) + '"'
         + ',"note":"Vias loaded with the board count on the new layer now. '
         + 'A via placed since the board was opened does not until the board is '
         + 'saved and reopened: a pour there that removes dead copper stays '

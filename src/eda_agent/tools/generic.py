@@ -1240,45 +1240,18 @@ def register_generic_tools(mcp):
         return await _reload_sheet(file_path, save)
 
     async def _reload_sheet(file_path: str, save: bool) -> dict[str, Any]:
-        import os
-        from ..bridge.exceptions import AltiumError
+        from ..bridge.reopen import save_close_reopen
 
         path = file_path.strip()
         if not path.lower().endswith((".schdoc", ".wirdoc")):
             return {"ok": False, "reason": "file_path is a .SchDoc or .WirDoc"}
         bridge = get_bridge()
-        out: dict[str, Any] = {"file_path": path, "saved": False}
-        if save:
-            saved = await bridge.send_command_async(
-                "application.save_document", {"file_path": path}, timeout=60.0)
-            if not (isinstance(saved, dict) and saved.get("saved")):
-                return {"ok": False, "stage": "save", **out,
-                        "reason": (saved or {}).get("reason", "the save did not reach "
-                                   "the file") if isinstance(saved, dict) else str(saved)}
-            out["saved"] = True
-        try:
-            closed = await bridge.send_command_async(
-                "application.close_document", {"file_path": path}, timeout=120.0)
-        except AltiumError as exc:
-            return {"ok": False, "stage": "close", **out, "reason": str(exc)}
-        out["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
-        if not out["closed"]:
-            return {"ok": False, "stage": "close", **out, "close": closed}
-        if not os.path.isfile(path):
-            return {"ok": False, "stage": "reopen", **out,
-                    "reason": "the sheet is not on disk to reopen"}
-        await bridge.send_command_async("application.run_process", {
-            "process_name": "WorkspaceManager:OpenObject",
-            "parameters": f"ObjectKind=Document|FileName={path}"})
-        try:
-            await bridge.send_command_async(
-                "application.set_active_document", {"file_path": path})
-        except AltiumError as exc:
-            return {"ok": False, "stage": "reopen", **out, "reason": str(exc)}
-        out["reopened"] = True
+        out = await save_close_reopen(bridge, path, save)
+        if not out["ok"]:
+            return out
         out["recompile"] = await bridge.send_command_async(
             "project.force_recompile", {}, timeout=120.0)
-        return {"ok": True, **out}
+        return out
 
     @mcp.tool()
     async def sch_place_comment(text: str, x: float, y: float,
