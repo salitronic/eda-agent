@@ -270,7 +270,7 @@ Begin
         If PcbType = ePolyObject Then Placer := 'pcb_place_polygon_rect';
         If PcbType = eRegionObject Then Placer := 'pcb_place_region';
         If PcbType = eRuleObject Then Placer := 'pcb_create_design_rule';
-        If PcbType = eDimensionObject Then Placer := 'pcb_place_dimension';
+        If PcbType = eDimensionObject Then Placer := 'pcb_create_dimension';
         If PcbType = eComponentBodyObject Then Placer := 'pcb_place_3d_body';
         If PcbType = eConnectionObject Then
             Result := Result + 'A connection is a ratsnest line drawn from the '

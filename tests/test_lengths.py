@@ -311,9 +311,8 @@ def _server_with_family():
     mcp = FoldingServer(server)
 
     @mcp.tool()
-    async def pcb_place_radial_dimension(center_x: float, center_y: float,
-                                         radius: float) -> dict:
-        seen["radial"] = (center_x, center_y, radius)
+    async def pcb_place_simple_body(x: float, y: float, radius: float) -> dict:
+        seen["body"] = (x, y, radius)
         return {"radius": radius, "angle": 45}
 
     @mcp.tool()
@@ -332,9 +331,9 @@ def _server_with_family():
 def test_a_family_tool_converts_its_member_as_itself(workspace, families):
     server, seen = _server_with_family()
     _call(server, "length_units", {"to": "mm"})
-    out = _call(server, "pcb_dimension",
-                {"kind": "radial", "args": {"center_x": 2.54, "center_y": 0, "radius": 1.27}})
-    assert seen["radial"] == (100, 0, 50)
+    out = _call(server, "pcb_body",
+                {"kind": "simple", "args": {"x": 2.54, "y": 0, "radius": 1.27}})
+    assert seen["body"] == (100, 0, 50)
     assert out["radius"] == 1.27 and out["angle"] == 45
     assert out["length_units"] == "mm"
 
@@ -342,14 +341,14 @@ def test_a_family_tool_converts_its_member_as_itself(workspace, families):
 def test_tool_invoke_converts_the_tool_it_runs_once(workspace, families):
     server, seen = _server_with_family()
     _call(server, "length_units", {"to": "mm"})
-    out = _call(server, "tool_invoke", {"name": "pcb_place_radial_dimension",
-                                        "arguments": {"center_x": 25.4, "center_y": 0,
+    out = _call(server, "tool_invoke", {"name": "pcb_place_simple_body",
+                                        "arguments": {"x": 25.4, "y": 0,
                                                       "radius": 2.54}})
-    assert seen["radial"] == (1000, 0, 100)
+    assert seen["body"] == (1000, 0, 100)
     assert out["result"]["radius"] == 2.54
-    out = _call(server, "tool_invoke", {"name": "pcb_dimension", "arguments": {
-        "kind": "radial", "args": {"center_x": 0, "center_y": 0, "radius": 0.254}}})
-    assert seen["radial"][2] == 10
+    out = _call(server, "tool_invoke", {"name": "pcb_body", "arguments": {
+        "kind": "simple", "args": {"x": 0, "y": 0, "radius": 0.254}}})
+    assert seen["body"][2] == 10
     assert out["result"]["radius"] == 0.254
 
 

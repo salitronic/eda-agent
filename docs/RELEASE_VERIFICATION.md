@@ -3567,8 +3567,7 @@ read off. Switched back on, `app_save_document` wrote the scratch sheet.
 New board tools: `pcb_render_png`, `pcb_save_board_text`,
 `pcb_net_figures`, `pcb_clear_guides`, `pcb_local_grid`,
 `pcb_plane_state`, `pcb_hole_symbols`, `pcb_component_parameters`,
-`pcb_place_simple_body`, `pcb_place_baseline_dimension`,
-`pcb_file_info`. New project tools: `proj_step_export_options` (and an
+`pcb_place_simple_body`, `pcb_file_info`. New project tools: `proj_step_export_options` (and an
 `options` argument on `proj_export_step`), `proj_get_channels`,
 `proj_component_models`, `lib_library_manager`, `proj_output_panel`,
 `proj_add_generated_document`, and a `structure` argument on
@@ -3609,7 +3608,7 @@ send their list to the batch handlers that `obj_batch_modify`,
 `obj_batch_create`, `obj_batch_delete` and `lib_batch_rename` used; those
 names are no longer advertised and still answer through `tool_invoke`,
 with a note naming the new form. The family tools (`pcb_calc`, `audit`,
-`pcb_dimension`, `pcb_body`) take a list of `{kind, args}`.
+`pcb_body`) take a list of `{kind, args}`.
 
 On a scratch board and a scratch sheet:
 

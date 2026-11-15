@@ -155,17 +155,6 @@ def test_simple_body_refuses_before_altium(monkeypatch, kwargs):
     assert out["ok"] is False and bridge.sent == []
 
 
-def test_baseline_dimension_sends_its_points(monkeypatch):
-    tools, bridge = _pcb(monkeypatch)
-    asyncio.run(tools["pcb_place_baseline_dimension"](
-        200, 200, [[600, 200], [900, 200]], layer="Mechanical1"))
-    command, params = bridge.sent[0]
-    assert command == "pcb.place_baseline_dimension"
-    assert params["points"] == "600.0,200.0/900.0,200.0"
-    out = asyncio.run(tools["pcb_place_baseline_dimension"](0, 0, [[1, 2, 3]]))
-    assert out["ok"] is False and len(bridge.sent) == 1
-
-
 def test_plane_state_reads_by_layer_number_only():
     body = _body("PCB.pas", "PCB_PlaneState")
     assert "IsPlaneLayerIsPoured(Lyr)" in body

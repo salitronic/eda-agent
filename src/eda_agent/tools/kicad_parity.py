@@ -115,7 +115,6 @@ COVERED: dict[str, str] = {
     "pcb_place_polygon_board": "kicad_place_zones",
     "pcb_start_polygon_placement": "kicad_place_zones",
     "pcb_keepout_board_outline": "kicad_place_zones",
-    "pcb_dimension": "kicad_place_dimensions",
     "pcb_create_dimension": "kicad_place_dimensions",
     "pcb_get_dimensions": "kicad_query_items",
     "pcb_edit_dimension": "kicad_modify_items",

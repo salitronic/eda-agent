@@ -47,7 +47,7 @@ longer advertised on their own; every one still runs by name through
   (or `action`, `how`) and that kind's arguments as `args`
   (`tools/folds.py`):
   `pcb_calc`, `audit`, `app_ui`, `app_menu` (`app_run_menu` is
-  `app_menu(how="run")`), `pcb_dimension`, `pcb_body` and
+  `app_menu(how="run")`), `pcb_body` and
   `app_checkpoints` (`app_checkpoint` is `app_checkpoints(action="make")`).
   Their names carry no verb.
 - A single tool whose list twin takes the same fields is hidden behind the

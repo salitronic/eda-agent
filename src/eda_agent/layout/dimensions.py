@@ -14,6 +14,7 @@ Points per kind:
 
 * ``linear``: the two measured points.
 * ``angular``: the vertex, then one point on each line.
+* ``radial``: the centre, and a point on the arc unless a radius is given.
 * ``leader``: the arrow tip, any bends, the end where the label sits.
 * ``datum``: the origin, then each point called out from it.
 * ``baseline``: the base, then each point measured from it.
@@ -26,15 +27,16 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-KINDS = ("linear", "angular", "leader", "datum", "baseline", "center", "original")
+KINDS = ("linear", "angular", "radial", "leader", "datum", "baseline", "center",
+         "original")
 
 #: Points each kind needs at least.
-MIN_POINTS = {"linear": 2, "angular": 3, "leader": 2, "datum": 2,
+MIN_POINTS = {"linear": 2, "angular": 3, "radial": 1, "leader": 2, "datum": 2,
               "baseline": 2, "center": 1, "original": 2}
 
-#: A radial or diameter takes its value from the arc it is bound to and
-#: reads 0 when free, so none is made here.
-BOUND_ONLY_KINDS = ("radial", "linear_diameter", "radial_diameter")
+#: A diameter takes its value from the arc it is bound to, so none is made
+#: here.
+BOUND_ONLY_KINDS = ("linear_diameter", "radial_diameter")
 
 #: TDimensionUnit values seen in Altium's own files.
 UNITS = {"mil": 0, "mils": 0, "mm": 2, "millimeters": 2, "deg": 4, "degrees": 4}
@@ -98,8 +100,8 @@ def params_for(kind: str, points: Any, *, angle: float = 0.0,
     """
     kind = kind.strip().lower()
     if kind in BOUND_ONLY_KINDS:
-        raise ValueError(f"a {kind} takes its value from the arc it is bound to and "
-                         "reads 0 free: place it in Altium on the arc")
+        raise ValueError(f"a {kind} takes its value from the arc it is bound to: "
+                         "place it in Altium on the arc")
     if kind not in KINDS:
         raise ValueError(f"kind is one of {', '.join(KINDS)}")
     pts = _pts(points)
@@ -113,6 +115,16 @@ def params_for(kind: str, points: Any, *, angle: float = 0.0,
         if radius is None:
             v = pts[0]
             radius = 0.6 * min(math.dist(v, pts[1]), math.dist(v, pts[2]))
+        out["radius"] = f"{float(radius):.4f}"
+        return out
+    if kind == "radial":
+        # The centre, and the radius given or the distance to a second point.
+        if radius is None and len(pts) > 1:
+            radius = math.dist(pts[0], pts[1])
+        if radius is None or float(radius) <= 0:
+            raise ValueError("radial needs its centre and a radius, or a second "
+                             "point on the arc")
+        out["points"] = _text(pts[:1])
         out["radius"] = f"{float(radius):.4f}"
         return out
     out["points"] = _text(pts if kind != "center" else pts[:1])

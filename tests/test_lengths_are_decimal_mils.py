@@ -245,7 +245,6 @@ def test_off_grid_is_measured_in_decimal_mils():
 
 def test_derived_lengths_are_not_cut_by_integer_division():
     pcb = load(_DIR / "PCB.pas", minimum=20)
-    assert "TextX := (X1 + X2) / 2;" in pcb["PCB_PlaceDimension"]
     assert "Inset := Border / 2;" in pcb["PCB_Panelize"]
     assert "Bumps := Trunc(AddLen / (2 * Amp));" in pcb["PCB_TuneLength"]
     assert "CenterX := (MinX + MaxX) / 2;" in pcb["PCB_AlignComponents"]

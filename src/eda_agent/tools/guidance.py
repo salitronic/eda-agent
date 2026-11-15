@@ -963,17 +963,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["pcb_create_dimension", "pcb_get_dimensions",
                 "pcb_edit_dimension", "pcb_dimension_bindings"],
-        "avoid": [
-            ("pcb_dimension", "draws a dimension with no end points to "
-                              "measure from; pcb_create_dimension takes the "
-                              "points and Altium works out the value"),
-        ],
+        "avoid": [],
         "note": (
-            "pcb_create_dimension draws linear, angular, leader, datum, "
-            "baseline, center and original dimensions from points. Its ends "
-            "are free points: they do not follow a pad that moves later. A "
-            "radial or diameter is bound to an arc, which only Altium's own "
-            "placement does. pcb_get_dimensions gives each dimension's index "
+            "pcb_create_dimension draws linear, angular, radial, leader, "
+            "datum, baseline, center and original dimensions from points. "
+            "Its ends are free points: they do not follow a pad that moves "
+            "later. A radial is drawn from a centre and radius; a diameter "
+            "is bound to an arc, which only Altium's own placement does. "
+            "pcb_get_dimensions gives each dimension's index "
             "and x, y, which pcb_edit_dimension needs; it refuses to change "
             "the geometry of a dimension bound to board objects unless "
             "keep_bindings is false."),
@@ -986,7 +983,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  ("dimension", "precision")),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["pcb_place_dimension", "obj_query", "obj_modify"],
+        "use": ["pcb_create_dimension", "pcb_edit_dimension", "obj_query",
+                "obj_modify"],
         "avoid": [],
         "note": (
             "obj_modify on eDimensionObject: TextHeight, TextWidth, "

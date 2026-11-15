@@ -5884,7 +5884,7 @@ def register_pcb_tools(mcp):
         primitives only (not in a component, pour or dimension): move
         components with pcb_move_components.
 
-        The map (mils, absolute board coordinates, not origin-relative)::
+        The map (mils, absolute board coordinates)::
 
             {"tracks":   [{"layer", "width", "key": [x1,y1,x2,y2],
                            "new": [x1,y1,x2,y2], "new_width"?}],
@@ -5922,15 +5922,13 @@ def register_pcb_tools(mcp):
         ambiguous and deletes none. Creates are free, on
         the layer named, each with an optional ``net``; a net the board
         lacks creates nothing and is listed in ``apply.create_refused``
-        with the map ``entry``. A via is a through via (TopLayer to
-        BottomLayer). A polygon pour is made but NOT poured: pour many
+        with the map ``entry``. A via is a through via. A polygon pour is made but NOT poured: pour many
         with pcb_repour_polygons afterwards (small ones first); ``order``
         sets its pour index (``pour_order_off`` counts any that did not
         take). Copper fills that are rotated or not rectangular are best
         sent as regions. A created region takes, with ``teardrop``,
-        Altium's teardrop flag. THIS IS THE BULK COPPER CREATE: thousands of
-        tracks, vias, regions and pours from one file, in one transaction,
-        instead of sending them inline. A value past +/-214,748 mil (an arc's
+        Altium's teardrop flag. THIS IS THE BULK COPPER CREATE: one file,
+        one transaction. A value past +/-214,748 mil (an arc's
         centre plus radius included) stops the whole apply before anything
         is sent, since Altium's coordinates cannot hold it; ``out_of_range``
         counts them per kind. Draw a near-straight arc as a line.
@@ -7810,32 +7808,6 @@ def register_pcb_tools(mcp):
         if color is not None:
             params["color"] = str(int(color))
         return await get_bridge().send_command_async("pcb.place_simple_body", params)
-
-    @mcp.tool()
-    async def pcb_place_baseline_dimension(x: float, y: float, points: list,
-                                           layer: str = "TopOverlay",
-                                           rotation: float = 0) -> dict[str, Any]:
-        """Place one baseline dimension: several points measured from a base.
-
-        Args:
-            x, y: The base point, absolute mils.
-            points: The measured points, as [x, y] pairs in mils.
-            layer: The layer to draw on (default TopOverlay).
-            rotation: The measuring direction in degrees, 0 along X.
-
-        Returns:
-            ``placed``, ``points_sent`` and ``points_read_back``.
-        """
-        pairs = []
-        for p in points or []:
-            if not isinstance(p, (list, tuple)) or len(p) != 2:
-                return {"ok": False, "reason": "points are [x, y] pairs"}
-            pairs.append(f"{float(p[0])},{float(p[1])}")
-        if not pairs:
-            return {"ok": False, "reason": "points is required"}
-        return await get_bridge().send_command_async("pcb.place_baseline_dimension", {
-            "x": str(x), "y": str(y), "points": "/".join(pairs), "layer": layer,
-            "rotation": str(rotation)})
 
     @mcp.tool()
     async def pcb_file_info() -> dict[str, Any]:
@@ -10742,43 +10714,6 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.place_region", params)
 
     @mcp.tool()
-    async def pcb_place_dimension(
-        x1: float,
-        y1: float,
-        x2: float,
-        y2: float,
-        layer: str = "TopOverlay",
-        orientation: str = "",
-    ) -> dict[str, Any]:
-        """Place a linear dimension between two points.
-
-        Horizontal dimension measures delta-X, vertical measures delta-Y.
-        Orientation auto-detects from the larger axis delta if not given.
-
-        Args:
-            x1, y1: First reference point in mils
-            x2, y2: Second reference point in mils
-            layer: Layer to draw the dimension on (default "TopOverlay")
-            orientation: "horizontal" or "vertical" ("" = auto)
-
-        Returns:
-            Dictionary confirming the dimension placement
-        """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_dimension",
-            {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "layer": layer,
-                "orientation": orientation,
-            },
-        )
-        return result
-
-    @mcp.tool()
     async def pcb_get_dimensions(index: int = -1, pieces: bool = False) -> dict[str, Any]:
         """Read the board's dimensions: kind, position, references, callouts.
 
@@ -10849,14 +10784,17 @@ def register_pcb_tools(mcp):
 
         Its ends are FREE points: they do not follow a pad that moves later
         (a script cannot bind them; dragging an end onto a pad in Altium
-        does). A radial or diameter needs that binding and is refused.
+        does). A radial is drawn from its centre and radius, not bound to
+        an arc. A diameter needs that binding and is refused.
 
         Args:
-            kind: linear, angular, leader, datum, baseline, center, original.
+            kind: linear, angular, radial, leader, datum, baseline, center,
+                original.
             points: [x, y] pairs. linear: the two points. angular: vertex,
-                one point on each line. leader: tip, bends, end. datum:
-                origin, then each point. baseline: base, then each point.
-                center: the centre. original: start, end.
+                one point on each line. radial: the centre, and a point on
+                the arc unless radius is given. leader: tip, bends, end.
+                datum: origin, then each point. baseline: base, then each
+                point. center: the centre. original: start, end.
             layer: Layer to draw on (default TopOverlay).
             angle: Measuring direction in degrees (linear, datum, baseline;
                 the cross's turn on a center).
@@ -10865,7 +10803,7 @@ def register_pcb_tools(mcp):
             spacing: Distance between a baseline's lines.
             label, shape: A leader's text and frame (none, round, square).
             radius, sector: An angular's arc radius and which of the four
-                angles (1-4).
+                angles (1-4); a radial's radius.
             size: A center mark's size.
             text_height, line_width, unit (mil, mm, deg), precision,
                 prefix, suffix: The callout's style.
@@ -11110,74 +11048,6 @@ def register_pcb_tools(mcp):
             "pcb.place_components",
             {"placements": "~~".join(recs), "board_path": board_path},
         )
-
-    @mcp.tool()
-    async def pcb_place_angular_dimension(
-        center_x: float,
-        center_y: float,
-        x1: float,
-        y1: float,
-        x2: float,
-        y2: float,
-        radius: float = 100,
-        layer: str = "TopOverlay",
-    ) -> dict[str, Any]:
-        """Place an angular dimension (angle between two reference directions).
-
-        Args:
-            center_x, center_y: Vertex of the angle in mils
-            x1, y1: First reference direction endpoint in mils
-            x2, y2: Second reference direction endpoint in mils
-            radius: Arc radius at which to draw the dimension in mils
-            layer: Layer (default "TopOverlay")
-
-        Returns:
-            Dictionary confirming the angular dimension
-        """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_angular_dimension",
-            {
-                "center_x": _mils(center_x),
-                "center_y": _mils(center_y),
-                "x1": _mils(x1),
-                "y1": _mils(y1),
-                "x2": _mils(x2),
-                "y2": _mils(y2),
-                "radius": _mils(radius),
-                "layer": layer,
-            },
-        )
-        return result
-
-    @mcp.tool()
-    async def pcb_place_radial_dimension(
-        center_x: float,
-        center_y: float,
-        radius: float,
-        layer: str = "TopOverlay",
-    ) -> dict[str, Any]:
-        """Place a radial dimension around a center point with a given radius.
-
-        Args:
-            center_x, center_y: Center point in mils
-            radius: Radius to dimension in mils
-            layer: Layer (default "TopOverlay")
-
-        Returns:
-            Dictionary confirming the radial dimension
-        """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_radial_dimension",
-            {
-                "center_x": str(center_x),
-                "center_y": str(center_y),
-                "radius": str(radius),
-                "layer": layer,
-            },
-        )
-        return result
 
     @mcp.tool()
     async def pcb_distribute_components(

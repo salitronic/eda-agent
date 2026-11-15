@@ -102,11 +102,11 @@ def test_the_catalog_lists_members_with_how_to_reach_them(altium):
 
 
 def test_the_description_names_every_kind_and_its_arguments(altium):
-    doc = altium.get("pcb_dimension").description
-    for kind in ("linear", "angular", "radial", "baseline"):
+    doc = altium.get("pcb_body").description
+    for kind in ("step", "extruded", "simple"):
         assert f"- {kind}(" in doc
-    assert "[pcb_place_baseline_dimension]" in doc
-    assert "baseline(x, y, points" in doc
+    assert "[pcb_place_simple_body]" in doc
+    assert "simple(shape, x, y, radius" in doc
 
 
 def test_a_family_takes_its_members_most_demanding_metadata(altium):

@@ -15175,11 +15175,6 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_PlaceDimension - Place a linear dimension (horizontal or vertical)      }
-{ Params: x1,y1,x2,y2 in mils, layer=<layer>, orientation=horizontal|vertical }
-{..............................................................................}
-
-{..............................................................................}
 { Dimension editing: read, create and change dimensions of the kinds whose  }
 { ends are free points (linear, angular, leader, datum, baseline, center,  }
 { original). A dimension's ends are its references. DelphiScript's         }
@@ -15772,6 +15767,19 @@ Begin
             DimSetCoord(Dim, 'Y1Location', PY);
         End;
     End
+    Else If K = 3 Then
+    Begin
+        { A radial placed free: its centre and radius, no references. }
+        If DimPoint(Pts, 0, PX, PY) Then
+        Begin
+            DimSetCoord(Dim, 'X1Location', PX);
+            DimSetCoord(Dim, 'Y1Location', PY);
+        End;
+        { One bound to an arc takes its radius from the arc. }
+        If (DimBoundCount(Dim) = 0)
+            And (StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0) > 0) Then
+            DimSetCoord(Dim, 'Size', StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0));
+    End
     Else If Pts <> '' Then
         DimSetPoints(Dim, Pts, DimAnchorFor(K, Pts, Params, AX, AY), AX, AY,
             (K = 4) Or (K = 5) Or (K = 6) Or (K = 7));
@@ -15787,6 +15795,7 @@ Var
     Obj : IPCB_Primitive;
     K, I, DimIndex, Need : Integer;
     LayerStr, Pts : String;
+    RadiusMils, CX, CY : Double;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -15796,15 +15805,22 @@ Begin
         Exit;
     End;
     K := DimKindFromName(ExtractJsonValue(Params, 'kind'));
-    If (K < 1) Or (K = 3) Or (K = 9) Or (K = 10) Then
+    If (K < 1) Or (K = 9) Or (K = 10) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'KIND_NOT_SUPPORTED',
-            'kind is linear, angular, leader, datum, baseline, center or original. '
-            + 'A radial or diameter takes its value from the arc it is bound to, '
+            'kind is linear, angular, radial, leader, datum, baseline, center or '
+            + 'original. A diameter takes its value from the arc it is bound to, '
             + 'and a script cannot bind one: place it in Altium on the arc.');
         Exit;
     End;
     Pts := ExtractJsonValue(Params, 'points');
+    RadiusMils := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0);
+    If (K = 3) And (RadiusMils <= 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_RADIUS',
+            'a radial needs its centre and a radius above 0');
+        Exit;
+    End;
     Need := 1;
     If (K = 1) Or (K = 4) Or (K = 5) Or (K = 6) Or (K = 8) Then Need := 2;
     If K = 2 Then Need := 4;
@@ -15832,15 +15848,29 @@ Begin
             Exit;
         End;
         Dim.Layer := TargetLayer;
+        If K = 3 Then
+        Begin
+            { A radial has no references to add: its centre and radius are }
+            { set before it joins the board, the callout out on a diagonal. }
+            DimPoint(Pts, 0, CX, CY);
+            Dim.X1Location := MilsToCoordF(CX);
+            Dim.Y1Location := MilsToCoordF(CY);
+            Dim.Size := MilsToCoordF(RadiusMils);
+            Dim.TextX := MilsToCoordF(CX + RadiusMils);
+            Dim.TextY := MilsToCoordF(CY + RadiusMils);
+        End;
         Board.AddPCBObject(Dim);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
         { Inside the same edit: every write below opens its own pair, and }
         { nested in this one they make a single undo step.                }
         DimApplyValues(Dim, Params);
-        DimApplyGeometry(Dim, Params);
-        DimApplyValues(Dim, Params);
-        DimRebuild(Dim);
+        If K <> 3 Then
+        Begin
+            DimApplyGeometry(Dim, Params);
+            DimApplyValues(Dim, Params);
+            DimRebuild(Dim);
+        End;
     Finally
         PcbEndEdit(0);
     End;
@@ -15975,97 +16005,6 @@ Begin
     Else If Err <> '' Then
         Result := BuildErrorResponse(RequestId, Copy(Err, 1, Pos('|', Err) - 1),
             Copy(Err, Pos('|', Err) + 1, Length(Err)));
-End;
-
-Function PCB_PlaceDimension(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Dim : IPCB_Dimension;
-    TextX, TextY : Double;
-    X1, Y1, X2, Y2 : Double;
-    Orient, LayerStr : String;
-    TargetLayer : TLayer;
-Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
-    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
-    LayerStr := ExtractJsonValue(Params, 'layer');
-    Orient := LowerCase(ExtractJsonValue(Params, 'orientation'));
-
-    If LayerStr = '' Then LayerStr := 'TopOverlay';
-    TargetLayer := ResolveLayerId(Board, LayerStr);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
-        Exit;
-    End;
-    { Auto-detect orientation if unset: whichever axis has the larger delta. }
-    If Orient = '' Then
-    Begin
-        If Abs(X2 - X1) >= Abs(Y2 - Y1) Then Orient := 'horizontal'
-        Else Orient := 'vertical';
-    End;
-
-    { Centre the text label between the two endpoints with a small offset
-      along the perpendicular axis so it doesn't sit on top of geometry. }
-    If Orient = 'horizontal' Then
-    Begin
-        TextX := (X1 + X2) / 2;
-        TextY := Y1 + 50;
-    End
-    Else
-    Begin
-        TextX := X1 + 50;
-        TextY := (Y1 + Y2) / 2;
-    End;
-
-    PcbBeginEdit(0);
-    Try
-        Dim := PCBServer.PCBObjectFactory(eDimensionObject, eLinearDimension, eCreate_Default);
-        If Dim = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create dimension');
-            Exit;
-        End;
-
-        Dim.Layer := TargetLayer;
-        Dim.DimensionKind := eLinearDimension;
-        Dim.X1Location := MilsToCoordF(X1);
-        Dim.Y1Location := MilsToCoordF(Y1);
-        { Size is the dimension extent; for horizontal linear it's delta-X,
-          for vertical linear it's delta-Y. Negative is clamped to absolute. }
-        If Orient = 'horizontal' Then
-            Dim.Size := MilsToCoordF(Abs(X2 - X1))
-        Else
-            Dim.Size := MilsToCoordF(Abs(Y2 - Y1));
-
-        Dim.TextX := MilsToCoordF(TextX);
-        Dim.TextY := MilsToCoordF(TextY);
-
-        Board.AddPCBObject(Dim);
-        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-            PCBM_BoardRegisteration, Dim.I_ObjectAddress);
-    Finally
-        PcbEndEdit(0);
-    End;
-
-    MarkDocDirtyByPath(Board.FileName);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,'
-        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
-        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
-        + '"orientation":"' + EscapeJsonString(Orient) + '",'
-        + '"layer":"' + EscapeJsonString(LayerStr) + '"}');
 End;
 
 {..............................................................................}
@@ -17175,137 +17114,6 @@ Begin
     End;
     Result := BuildSuccessResponse(RequestId,
         '{"focused":true,"board":"' + EscapeJsonString(Board.FileName) + '"}');
-End;
-
-{..............................................................................}
-{ PCB_PlaceAngularDimension - Place an angular dimension (arc between 2 axes) }
-{ Params: center_x, center_y, x1,y1, x2,y2 in mils, radius in mils,          }
-{         layer=<layer>                                                      }
-{..............................................................................}
-
-Function PCB_PlaceAngularDimension(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Dim : IPCB_Dimension;
-    X1, Y1, X2, Y2 : Double;
-    Cx, Cy, Radius : Double;
-    LayerStr : String;
-    TargetLayer : TLayer;
-Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
-    Cx := StrToFloatDef(ExtractJsonValue(Params, 'center_x'), 0);
-    Cy := StrToFloatDef(ExtractJsonValue(Params, 'center_y'), 0);
-    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
-    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 100);
-    LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr = '' Then LayerStr := 'TopOverlay';
-    TargetLayer := ResolveLayerId(Board, LayerStr);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
-        Exit;
-    End;
-
-    PcbBeginEdit(0);
-    Try
-        Dim := PCBServer.PCBObjectFactory(eDimensionObject, eAngularDimension, eCreate_Default);
-        If Dim = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create angular dimension');
-            Exit;
-        End;
-        Dim.Layer := TargetLayer;
-        Dim.DimensionKind := eAngularDimension;
-        Dim.X1Location := MilsToCoordF(Cx);
-        Dim.Y1Location := MilsToCoordF(Cy);
-        Dim.TextX := MilsToCoordF(Cx);
-        Dim.TextY := MilsToCoordF(Cy + Radius + 20);
-        Board.AddPCBObject(Dim);
-        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-            PCBM_BoardRegisteration, Dim.I_ObjectAddress);
-    Finally
-        PcbEndEdit(0);
-    End;
-
-    MarkDocDirtyByPath(Board.FileName);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,"kind":"angular","center_x":' + FloatToJsonStr(Cx)
-        + ',"center_y":' + FloatToJsonStr(Cy) + ',"radius":' + FloatToJsonStr(Radius)
-        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
-End;
-
-{..............................................................................}
-{ PCB_PlaceRadialDimension - Place a radial dimension around a center point   }
-{ Params: center_x, center_y, radius in mils, layer=<layer>                   }
-{..............................................................................}
-
-Function PCB_PlaceRadialDimension(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Dim : IPCB_Dimension;
-    Cx, Cy, Radius : Double;
-    LayerStr : String;
-    TargetLayer : TLayer;
-Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
-    Cx := StrToFloatDef(ExtractJsonValue(Params, 'center_x'), 0);
-    Cy := StrToFloatDef(ExtractJsonValue(Params, 'center_y'), 0);
-    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 100);
-    LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr = '' Then LayerStr := 'TopOverlay';
-    TargetLayer := ResolveLayerId(Board, LayerStr);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
-        Exit;
-    End;
-
-    PcbBeginEdit(0);
-    Try
-        Dim := PCBServer.PCBObjectFactory(eDimensionObject, eRadialDimension, eCreate_Default);
-        If Dim = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create radial dimension');
-            Exit;
-        End;
-        Dim.Layer := TargetLayer;
-        Dim.DimensionKind := eRadialDimension;
-        Dim.X1Location := MilsToCoordF(Cx);
-        Dim.Y1Location := MilsToCoordF(Cy);
-        Dim.Size := MilsToCoordF(Radius);
-        Dim.TextX := MilsToCoordF(Cx + Radius);
-        Dim.TextY := MilsToCoordF(Cy + Radius);
-        Board.AddPCBObject(Dim);
-        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-            PCBM_BoardRegisteration, Dim.I_ObjectAddress);
-    Finally
-        PcbEndEdit(0);
-    End;
-
-    MarkDocDirtyByPath(Board.FileName);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,"kind":"radial","center_x":' + FloatToJsonStr(Cx)
-        + ',"center_y":' + FloatToJsonStr(Cy) + ',"radius":' + FloatToJsonStr(Radius)
-        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
 End;
 
 {..............................................................................}
@@ -31559,94 +31367,6 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_PlaceBaselineDimension - one dimension measuring several points from a }
-{ common base. Params: x, y (base, mils), points 'x,y/x,y/...' (mils),       }
-{ layer (default TopOverlay), rotation (degrees, 0 = along X).               }
-{..............................................................................}
-Function PCB_PlaceBaselineDimension(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Dim : IPCB_BaselineDimension;
-    PointsStr, Pair, LayerStr, Problem, Rest : String;
-    X, Y, PX, PY, Rot : Double;
-    TargetLayer : TLayer;
-    Added, Count, Cut, Comma : Integer;
-Begin
-    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
-    Rot := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
-    PointsStr := ExtractJsonValue(Params, 'points');
-    LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr = '' Then LayerStr := 'TopOverlay';
-    If PointsStr = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'points is required: x,y/x,y/...');
-        Exit;
-    End;
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-    TargetLayer := ResolveLayerId(Board, LayerStr);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
-            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
-        Exit;
-    End;
-    Problem := '';
-    Added := 0;
-    Count := -1;
-    PcbBeginEdit(0);
-    Try
-        Dim := PCBServer.PCBObjectFactory(eDimensionObject, eBaselineDimension, eCreate_Default);
-        If Dim = Nil Then
-            Problem := 'no baseline dimension could be created'
-        Else
-        Begin
-            Dim.Layer := TargetLayer;
-            Dim.X1Location := MilsToCoordF(X);
-            Dim.Y1Location := MilsToCoordF(Y);
-            Try Dim.SetState_Angle(Rot); Except Problem := 'rotation not taken'; End;
-            Rest := PointsStr + '/';
-            While Pos('/', Rest) > 0 Do
-            Begin
-                Cut := Pos('/', Rest);
-                Pair := Trim(Copy(Rest, 1, Cut - 1));
-                Rest := Copy(Rest, Cut + 1, Length(Rest));
-                If Pair = '' Then Continue;
-                Comma := Pos(',', Pair);
-                If Comma = 0 Then Continue;
-                PX := StrToFloatDef(Copy(Pair, 1, Comma - 1), 0);
-                PY := StrToFloatDef(Copy(Pair, Comma + 1, Length(Pair)), 0);
-                Try
-                    Dim.TextLocations_Add(Point(MilsToCoordF(PX), MilsToCoordF(PY)));
-                    Inc(Added);
-                Except
-                    Problem := 'a point was not taken';
-                End;
-            End;
-            Try Count := Dim.GetState_TextLocationsCount; Except Count := -1; End;
-            Board.AddPCBObject(Dim);
-            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-                PCBM_BoardRegisteration, Dim.I_ObjectAddress);
-        End;
-    Finally
-        PcbEndEdit(0);
-    End;
-    If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
-    Try Board.GraphicallyInvalidate; Except End;
-    Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonBool('placed', (Problem = '') And (Added > 0)) + ','
-        + JsonInt('points_sent', Added) + ','
-        + JsonInt('points_read_back', Count) + ','
-        + JsonStr('layer', LayerStr) + ','
-        + JsonStr('problem', Problem)));
-End;
-
-{..............................................................................}
 { PCB_FileInfo - the file format version the board was last saved in, and   }
 { the id Altium gives it while it is open.                                  }
 {..............................................................................}
@@ -33066,7 +32786,6 @@ Begin
         'object_outline':          Result := PCB_ObjectOutline(Params, RequestId);
         'component_parameters':    Result := PCB_ComponentParameters(Params, RequestId);
         'place_simple_body':       Result := PCB_PlaceSimpleBody(Params, RequestId);
-        'place_baseline_dimension': Result := PCB_PlaceBaselineDimension(Params, RequestId);
         'file_info':               Result := PCB_FileInfo(Params, RequestId);
         'find_dominant_rule':      Result := PCB_FindDominantRule(Params, RequestId);
         'measure_clearance':       Result := PCB_MeasureClearance(Params, RequestId);
@@ -33173,7 +32892,6 @@ Begin
         'create_diff_pair':        Result := PCB_CreateDiffPair(Params, RequestId);
         'place_region':            Result := PCB_PlaceRegion(Params, RequestId);
         'distribute_components':   Result := PCB_DistributeComponents(Params, RequestId);
-        'place_dimension':         Result := PCB_PlaceDimension(Params, RequestId);
         'get_dimensions':          Result := PCB_GetDimensions(Params, RequestId);
         'create_dimension':        Result := PCB_CreateDimension(Params, RequestId);
         'edit_dimension':          Result := PCB_EditDimension(Params, RequestId);
@@ -33181,8 +32899,6 @@ Begin
         'place_component':         Result := PCB_PlaceComponent(Params, RequestId);
         'place_components':        Result := PCB_PlaceComponents(Params, RequestId);
         'focus_board':             Result := PCB_FocusBoard(Params, RequestId);
-        'place_angular_dimension': Result := PCB_PlaceAngularDimension(Params, RequestId);
-        'place_radial_dimension':  Result := PCB_PlaceRadialDimension(Params, RequestId);
         'place_embedded_board':    Result := PCB_PlaceEmbeddedBoard(Params, RequestId);
         'fillet_corners':          Result := PCB_FilletCorners(Params, RequestId);
         'import_placement':        Result := PCB_ImportPlacement(Params, RequestId);

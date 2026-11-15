@@ -95,15 +95,6 @@ FOLDS: dict[str, Fold] = {
             "drive": "app_run_ui_command",
         },
     ),
-    "pcb_dimension": Fold(
-        summary="Place a dimension on the open board.",
-        members={
-            "linear": "pcb_place_dimension",
-            "angular": "pcb_place_angular_dimension",
-            "radial": "pcb_place_radial_dimension",
-            "baseline": "pcb_place_baseline_dimension",
-        },
-    ),
     "pcb_body": Fold(
         summary=("Place a free 3D body on the open board: a STEP model, an "
                  "extruded outline, or a cylinder or sphere."),
