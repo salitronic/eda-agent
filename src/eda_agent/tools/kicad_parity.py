@@ -466,6 +466,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_get_directives": "Altium schematic directives",
     "sch_place_blanket": "Altium blankets carry directives; KiCad has no blanket object",
     "sch_get_blankets": "Altium blankets carry directives; KiCad has no blanket object",
+    "sch_set_draw_order": "KiCad's schematic API has no draw-order call",
     "sch_place_compile_mask": "Altium compile masks; KiCad has no compile-mask object",
     "sch_set_net_tie": "net ties are a footprint property in KiCad",
     "sch_set_component_unique_id": "KiCad symbol uuids are fixed identities",
