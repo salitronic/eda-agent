@@ -8646,10 +8646,8 @@ Begin
         { ADD IT TO THE BOARD BEFORE TOUCHING ANY PROPERTY.
           MEASURED, by crashing Altium: an earlier version of this set
           Layer, x, y and StandoffHeight on the body while it still
-          belonged to nothing, and the PCB engine went down with
-          "Access violation ... Read of address 0x20" inside ADVPCB.DLL.
-          A null dereference at a small field offset is a setter reaching
-          into state an owning board is supposed to provide.
+          belonged to nothing, and the PCB editor crashed: a setter
+          reaching into state an owning board is supposed to provide.
 
           The reference does it in this order and so does
           Lib_Link3DModel: factory, load, SetState_FromModel, assign the
@@ -16001,7 +15999,7 @@ Begin
                     Begin
                         { Three loaders, first one naming the library FILE:       }
                         { LoadFromLibrary with FootPrint and FileName, the pair   }
-                        { AdvPcb.dll builds beside "Change Physical Footprint".   }
+                        { "Change Physical Footprint" uses.                       }
                         { Then the part's own, from its Pattern and               }
                         { SourceFootprintLibrary, then LoadFromLibrary with the   }
                         { SourceComponentLibrary key, which names a COMPONENT     }
@@ -18123,9 +18121,8 @@ Var
     Ok : Boolean;
 Begin
     { ONE WRITE ON A VIA CRASHES THE SCRIPTING ENGINE, AND IT IS NOT THIS ONE.
-      Assigning SolderMaskExpansion straight onto an IPCB_Via raises an
-      access violation in ScriptingSystem.DLL (read of address 0x38) on
-      AD 26.10.1.6, through BeginModify or SendMessageToRobots alike, and
+      Assigning SolderMaskExpansion straight onto an IPCB_Via crashes
+      the scripting engine on AD 26.10.1.6, through BeginModify or SendMessageToRobots alike, and
       the engine shows its modal before any Except runs. Measured again on
       2026-10-11 with nothing else on the board: that assignment still
       faults, while SolderMaskExpansionFromHoleEdge assigned on the via and
@@ -19263,7 +19260,7 @@ End;
 
 {..............................................................................}
 { PCB_Teardrops - launch Altium's Teardrop command.                           }
-{ Tools > Teardrops runs PCB:TearDropSelectedPads (AdvPcb.rcs); PCB:Teardrop  }
+{ Tools > Teardrops runs PCB:TearDropSelectedPads; PCB:Teardrop              }
 { is not a registered process and RunProcess ignored it without a word.       }
 { The Teardrop dialog is modal and cannot be suppressed from script (same     }
 { limitation as the ECO dialog); the add/remove choice and the scope are made }
@@ -27304,17 +27301,50 @@ End;
 { the open document keeps its own path, project and modified state.           }
 {                                                                              }
 { Params: target_path (required), check_only ("true" answers whether the      }
-{ target exists or is open, writing nothing). A target open in Altium is      }
-{ refused: writing under an open document is how a save loses edits. The      }
-{ backup of an existing target is made by the Python tool before this runs.   }
+{ target exists or is open, writing nothing), backup_path (an existing target }
+{ is first saved there by Altium, opened unfocused and closed again; a backup }
+{ Altium did not write stops the copy). A target open in Altium is refused:   }
+{ writing under an open document is how a save loses edits.                   }
 {..............................................................................}
+
+{ Altium saves the board file at Path under BackupPath: opened without focus, }
+{ pointed at the backup for one save, closed. True when the backup is there.  }
+Function SaveBoardFileAs(Path, BackupPath : String) : Boolean;
+Var
+    Doc : IServerDocument;
+    AgeBefore : Integer;
+Begin
+    Result := False;
+    If SaveHeldBack(BackupPath) Then Exit;
+    AgeBefore := -1;
+    If FileExists(BackupPath) Then
+    Begin
+        Try AgeBefore := FileAge(BackupPath); Except AgeBefore := -1; End;
+    End;
+    Doc := Nil;
+    Try Doc := Client.OpenDocument('PCB', Path); Except Doc := Nil; End;
+    If Doc = Nil Then Exit;
+    Try
+        Doc.SetFileName(BackupPath);
+        Doc.SetModified(True);
+        Doc.DoFileSave('');
+    Finally
+        Try Doc.SetFileName(Path); Except NoteWriteFailed('point the old target back at its own file'); End;
+        Try Doc.SetModified(False); Except { closed on the next line, and nothing saves it } End;
+        Try Client.CloseDocument(Doc); Except End;
+    End;
+    If FileExists(BackupPath) Then
+    Begin
+        Try Result := FileAge(BackupPath) <> AgeBefore; Except Result := False; End;
+    End;
+End;
 
 Function PCB_SaveCopyAs(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     ServerDoc, TargetDoc : IServerDocument;
-    TargetPath, SourcePath, AfterPath, Response, Why : String;
-    WasModified, TargetExisted, Written : Boolean;
+    TargetPath, SourcePath, AfterPath, BackupPath, Response, Why : String;
+    WasModified, TargetExisted, Written, BackedUp : Boolean;
     AgeBefore, AgeAfter : Integer;
 Begin
     TargetPath := ExtractJsonValue(Params, 'target_path');
@@ -27370,6 +27400,22 @@ Begin
         Exit;
     End;
 
+    BackupPath := ExtractJsonValue(Params, 'backup_path');
+    BackedUp := False;
+    If TargetExisted And (BackupPath <> '') Then
+    Begin
+        BackedUp := SaveBoardFileAs(TargetPath, BackupPath);
+        If Not BackedUp Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'BACKUP_FAILED',
+                'Altium did not write the backup of ' + TargetPath + ' at '
+                + BackupPath + '. Nothing was written; pass backup=False to '
+                + 'overwrite without one.');
+            Result := Response;
+            Exit;
+        End;
+    End;
+
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except End;
     AgeBefore := -1;
@@ -27396,12 +27442,14 @@ Begin
     Written := (AgeAfter >= 0) And (AgeAfter <> AgeBefore);
     AfterPath := '';
     Try AfterPath := Board.FileName; Except End;
+    If Not BackedUp Then BackupPath := '';
 
     Response := BuildSuccessResponse(RequestId,
         '{"source":"' + EscapeJsonString(SourcePath) + '"'
         + ',"target":"' + EscapeJsonString(TargetPath) + '"'
         + ',"target_existed":' + BoolToJsonStr(TargetExisted)
         + ',"written":' + BoolToJsonStr(Written)
+        + ',"backup":"' + EscapeJsonString(BackupPath) + '"'
         + ',"open_board_path":"' + EscapeJsonString(AfterPath) + '"}');
     Result := Response;
 End;

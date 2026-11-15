@@ -9,15 +9,8 @@ by caption used to know English (and a little Spanish), so on any of those
 installs a menu walk found nothing and the dialog driver recognised no
 button.
 
-THE TRANSLATIONS ARE ALTIUM'S, NOT GUESSED. They ship in
-<install>\\System\\Resources\\<LCID>\\:
-
-* forms.fdb, every dialog control's caption: a 1-byte length and UTF-16
-  "Caption.'<English>'", then a 1-byte length and the UTF-16 translation;
-* *.rcs, the menus: UTF-16 text whose "<kind> <id> ... Caption='...'"
-  lines share their ids with the English <install>\\System\\*.rcs.
-
-A hand-written table would cover one language at a time and guess at the
+THE TRANSLATIONS ARE ALTIUM'S, NOT GUESSED: they ship with the install,
+one folder per language. A hand-written table would cover one language at a time and guess at the
 wording: Altium's Chinese "Execute Changes" is 执行变更, not the 执行更改 a
 translator would likely write. Reading the install covers every language
 Altium has, in the words it actually shows. Windows' own message boxes are localised by Windows, not Altium,

@@ -56,7 +56,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - **Sch <-> PCB netlist crossref**: `obj_crossref_net(net_name)` compares the schematic pin list against the PCB pad list for the same net. Catches ECO drift, stale post-fabrication routing, phantom nets from port/sheet-entry rename conflicts. `in_sync` flag + `sch_only` / `pcb_only` diff
 - **SPICE simulation workflow**: `sim_get_readiness` audits every component and partitions into ready / needs-primitive / needs-file. `sim_attach_primitives` sets SpicePrefix + Value on passives. `sim_attach_model` links a vendor `.mdl` / `.ckt`. `sim_run` dispatches the simulator. Built-in guardrail: never fabricate a SPICE model file, fetch the vendor one
 - **Focus-independent PCB access**: every PCB handler falls back to `GetPCBBoardByPath` when `GetCurrentPCBBoard` returns nil (user has a sch tab focused). No more misleading "No PCB document is active" when the PCB is right there
-- **Fast and compile-cached**: persistent polling loop; ~10 ms per call in active mode. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `proj_force_recompile` + `proj_get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
+- **Persistent and compile-cached**: one polling loop stays loaded, so a call does not start a script each time. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `proj_force_recompile` + `proj_get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
 - **Editor and project settings, read back**: board grids and the sheet's electrical grid, board and schematic editor preferences, auto-save, and project options (net identifier scope, output path, pin swapping). Every value written is read back, and one that did not take is reported in `not_applied`
 - **Rigid-flex and route clean-up**: split a board into layer stack regions, give each region its own stack (a flex stack with fewer copper layers), add and edit bend lines with radius, angle and fold order, and run Altium's Gloss or Retrace on chosen nets with the track count and length reported before and after
 - **Layer stack manager**: the whole physical stack with Z heights and finished thickness, dielectric and solder mask settings (Dk, Df, thickness, stiffener), layers inserted above or below a chosen layer, impedance profiles created and set per layer, and each via's protection structure and back drilling
@@ -191,6 +191,13 @@ One tool surface, chosen at startup by `EDA_AGENT_BACKEND` (or `--backend`).
 | `kicad` | KiCad's IPC API and `kicad-cli` | optional |
 | `easyeda` | a browser extension you import into EasyEDA Pro | optional |
 
+Altium Designer is the tool this project is built around, and it needs
+your own licensed install; the other two backends serve people who work in
+those editors. None is offered in place of another. A design can be
+exchanged with KiCad in both directions (`proj_import_from_kicad`,
+`proj_convert_to_kicad`), for handing it to someone who works in the other
+tool or for review.
+
 The EasyEDA connection runs the other way round: the editor dials out to
 this server, so nothing here can start it or make it connect.
 
@@ -284,6 +291,11 @@ once (`eda-agent altium365-logout` forgets it).
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
+The Nexar route runs under your own Nexar app, so
+[Nexar's API terms](https://nexar.com/api/legal) are yours to keep: among
+them, what the API returns is not to be kept for more than 24 hours, which
+includes copies your AI client saves in a conversation, and the app's key
+is never to be published.
 
 **Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
 `naming.json` (a `template` and `pattern` per footprint, symbol and
@@ -455,7 +467,7 @@ The server has **three independent timeout mechanisms**:
 
 ### 1. Per-command timeout (Python side)
 
-When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Fast queries typically complete in under 100 ms, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
+When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Most queries answer well inside that, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
 
 Each request is published to its own `request_<id>.json` file; Altium replies in `response_<id>.json` with the matching ID. The bridge's keep-alive thread and MCP-client calls each use their own request IDs, so responses never race. The older single-`response.json` channel was retired in IPC v2.
 
@@ -483,7 +495,7 @@ Things that affect every session at once: a deploy, a relaunch or a restart of A
 
 ### Why this matters for Altium UI responsiveness
 
-The polling loop goes into idle mode after a second or two of no MCP commands (150 empty polls). In idle mode it polls every 30 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), giving sub-50 ms round-trip latency for back-to-back commands. For a full release, call `app_detach` or click **Detach** on the dashboard.
+The polling loop goes into idle mode after a second or two of no MCP commands (150 empty polls). In idle mode it polls every 30 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), so back-to-back commands are picked up without a visible wait. For a full release, call `app_detach` or click **Detach** on the dashboard.
 
 ## Tool reference
 
@@ -604,7 +616,7 @@ eda-agent/
 │   ├── layout/, placement/, route/   Board geometry, rules, placement and routing engines
 │   ├── libimport/          Part providers and vendor library import
 │   ├── render/, export/    Drawing designs to SVG/PNG; file-format exporters
-│   ├── fileio/, sim/       Library file readers; simulation results and settings
+│   ├── sim/                Simulation results and settings
 │   ├── ui/                 Windows UI automation for dialogs and menus
 │   ├── web/                Local web dashboard
 │   ├── diag/               Health and doctor checks
@@ -651,7 +663,7 @@ Apache License 2.0. See [LICENSE](https://github.com/salitronic/eda-agent/blob/m
 
 This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any damage to your designs, projects, data, or installation.
 
-This project is not affiliated with, endorsed by, or sponsored by Altium Limited, the KiCad project, or EasyEDA. "Altium" and "Altium Designer" are trademarks of Altium Limited; "KiCad" and "EasyEDA" are trademarks of their respective owners. `eda-agent` is an independent community tool that interoperates with each of these applications through its own published API: Altium Designer via its scripting API, KiCad via its IPC API and command line, and EasyEDA Pro via its extension API.
+This project is not affiliated with, endorsed by, or sponsored by Altium, the KiCad project, or EasyEDA, and none of them develops, reviews or supports it. "Altium" and "Altium Designer" are trademarks of Altium or its affiliates; "KiCad" and "EasyEDA" are trademarks of their respective owners. `eda-agent` is an independent community tool that interoperates with each of these applications through its own published API: Altium Designer via its scripting API, KiCad via its IPC API and command line, and EasyEDA Pro via its extension API.
 
 ## About
 

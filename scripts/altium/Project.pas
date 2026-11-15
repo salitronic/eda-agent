@@ -720,63 +720,297 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
 End;
 
-{ The DocumentPath= line of the project FILE that names DocPath's file, or   }
+{ WHAT A SAVED PROJECT FILE HOLDS IS ASKED OF ALTIUM. The file is never     }
+{ opened here. A copy of it is made beside it, Altium loads the copy as a    }
+{ hidden project (IWorkspace.DM_LoadProjectHidden), its documents are read   }
+{ off that project, and the copy is closed and deleted. Measured on AD       }
+{ 26.11.1.5: under a second, the Projects panel and the focused project      }
+{ unchanged, and the only thing left behind was the copy's .PrjPcbStructure, }
+{ deleted here. A copy in another folder listed nothing, because Altium      }
+{ lists only the documents whose files it finds, so the copy has to sit      }
+{ beside the original.                                                       }
+{                                                                             }
+{ ProjectFileDocumentList gives the full path of each document with a file,  }
+{ each followed by a tab. Loaded is False when Altium could not load the     }
+{ copy, which is not the same as a project file that names nothing.          }
+Function ProjectFileDocumentList(ProjPath : String; Var Loaded : Boolean) : String;
+Var
+    Workspace : IWorkspace;
+    Hidden : IProject;
+    Doc : IDocument;
+    Ext, CopyPath, SidePath, DocPath, List : String;
+    I : Integer;
+    HadSide : Boolean;
+Begin
+    List := '';
+    Loaded := False;
+    Workspace := GetWorkspace;
+    If (ProjPath <> '') And FileExists(ProjPath) And (Workspace <> Nil) Then
+    Begin
+        Ext := ExtractFileExt(ProjPath);
+        CopyPath := Copy(ProjPath, 1, Length(ProjPath) - Length(Ext)) + '.eda-read' + Ext;
+        SidePath := CopyPath + 'Structure';
+        HadSide := FileExists(SidePath);
+        If FileExists(CopyPath) Then DeleteFile(CopyPath);
+        If (Not FileExists(CopyPath)) And CopyFile(ProjPath, CopyPath, False) Then
+        Begin
+            Try
+                Hidden := Nil;
+                Try Hidden := Workspace.DM_LoadProjectHidden(CopyPath); Except Hidden := Nil; End;
+                If Hidden <> Nil Then
+                Begin
+                    Loaded := True;
+                    For I := 0 To Hidden.DM_LogicalDocumentCount - 1 Do
+                    Begin
+                        DocPath := '';
+                        Doc := Hidden.DM_LogicalDocuments(I);
+                        If Doc <> Nil Then Try DocPath := Doc.DM_FullPath; Except DocPath := ''; End;
+                        If (DocPath <> '') And FileExists(DocPath) Then
+                            List := List + DocPath + #9;
+                    End;
+                    Try Workspace.DM_CloseProject(CopyPath); Except { reported by the count of open projects } End;
+                End;
+            Finally
+                DeleteFile(CopyPath);
+                If (Not HadSide) And FileExists(SidePath) Then DeleteFile(SidePath);
+            End;
+        End;
+    End;
+    Result := List;
+End;
+
+{ The document of a ProjectFileDocumentList that has DocPath's file name, or }
 { ''. Matched on the file name alone, so a same-named document in another    }
 { folder reads as still listed: the error falls on "not removed", never on   }
 { a false "removed".                                                          }
-Function ProjectFileEntryFor(ProjPath, DocPath : String) : String;
+Function ProjectListEntryFor(List, DocPath : String) : String;
 Var
-    SL : TStringList;
-    I : Integer;
-    Line, Value, Want : String;
+    Rest, One, Want, Found : String;
+    P : Integer;
 Begin
-    Result := '';
+    Found := '';
     Want := UpperCase(ExtractFileName(DocPath));
-    SL := TStringList.Create;
-    Try
-        If LoadTextFile(SL, ProjPath) Then
+    Rest := List;
+    While (Rest <> '') And (Found = '') Do
+    Begin
+        P := Pos(#9, Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        One := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If (One <> '') And (UpperCase(ExtractFileName(One)) = Want) Then Found := One;
+    End;
+    Result := Found;
+End;
+
+{ How many documents a ProjectFileDocumentList holds. }
+Function ProjectListCount(List : String) : Integer;
+Var
+    I, N : Integer;
+Begin
+    N := 0;
+    For I := 1 To Length(List) Do
+        If Copy(List, I, 1) = #9 Then N := N + 1;
+    Result := N;
+End;
+
+{ A ProjectFileDocumentList as a JSON array, or null when the file could not }
+{ be loaded.                                                                 }
+Function ProjectListJson(List : String; Loaded : Boolean) : String;
+Var
+    Rest, One, Json : String;
+    P : Integer;
+Begin
+    Json := '';
+    Rest := List;
+    While Rest <> '' Do
+    Begin
+        P := Pos(#9, Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        One := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If One = '' Then Continue;
+        If Json <> '' Then Json := Json + ',';
+        Json := Json + '"' + EscapeJsonString(One) + '"';
+    End;
+    If Loaded Then
+        Json := '[' + Json + ']'
+    Else
+        Json := 'null';
+    Result := Json;
+End;
+
+{ The documents the saved project file holds, as Altium loads them, as a     }
+{ JSON array; null when it could not be loaded. More than the project's own  }
+{ documents is the leftover Altium's writer keeps after a removal.           }
+Function ProjectFileDocumentsJson(ProjPath : String) : String;
+Var
+    List, Json : String;
+    Loaded : Boolean;
+Begin
+    List := ProjectFileDocumentList(ProjPath, Loaded);
+    Json := ProjectListJson(List, Loaded);
+    Result := Json;
+End;
+
+{ project.file_documents: what the saved project file lists, to check a      }
+{ rewrite of it.                                                             }
+Function Proj_FileDocuments(Params : String; RequestId : String) : String;
+Var
+    ProjPath : String;
+Begin
+    ProjPath := ExtractJsonValue(Params, 'project_path');
+    If (ProjPath = '') Or (Not FileExists(ProjPath)) Then
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND',
+            'No project file at: ' + ProjPath)
+    Else
+        Result := BuildSuccessResponse(RequestId, '{"project_path":"'
+            + EscapeJsonString(ProjPath) + '","file_documents":'
+            + ProjectFileDocumentsJson(ProjPath) + '}');
+End;
+
+{ project.rewrite_file: the project file written fresh by Altium, without the }
+{ documents its save keeps from the file already on disk.                     }
+{                                                                             }
+{ Altium's project writer merges into the file at the target path: saved over }
+{ itself, every section past the new count stays. Saved to a path with no     }
+{ file, it lists only the documents the project holds. So the project is      }
+{ saved as a copy beside it, Altium loads the copy and it must hold           }
+{ expected_count documents, the original is deleted and the project saved     }
+{ back under its own name, onto no file. The copy is deleted only once the    }
+{ original holds expected_count again; otherwise it stays, and the reply      }
+{ names it.                                                                   }
+Function Proj_RewriteFile(Params : String; RequestId : String) : String;
+Var
+    ProjPath, Kind, Via, Ext, Problem, ViaList, List : String;
+    ProjDoc : IServerDocument;
+    Expected, ViaCount, Count : Integer;
+    Saved, ViaSaved, Deleted, CopyKept, ViaLoaded, Loaded : Boolean;
+Begin
+    ProjPath := ExtractJsonValue(Params, 'project_path');
+    If (ProjPath = '') Or (Not FileExists(ProjPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND',
+            'No project file at: ' + ProjPath);
+        Exit;
+    End;
+    If SaveHeldBack(ProjPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+            'Saving is switched off on the bridge dashboard');
+        Exit;
+    End;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(ProjPath); Except ProjDoc := Nil; End;
+    If ProjDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_OPEN',
+            'The project is not open in Altium: ' + ProjPath);
+        Exit;
+    End;
+    If Not IsIntStr(ExtractJsonValue(Params, 'expected_count')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_COUNT',
+            'expected_count must be the number of documents the file should list');
+        Exit;
+    End;
+    Expected := StrToInt(ExtractJsonValue(Params, 'expected_count'));
+    Ext := ExtractFileExt(ProjPath);
+    Via := Copy(ProjPath, 1, Length(ProjPath) - Length(Ext)) + '.eda-rewrite' + Ext;
+    If FileExists(Via) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COPY_EXISTS',
+            'A file is already at ' + Via + '. It may be the copy an earlier '
+            + 'rewrite kept; check it and move it away before rewriting again.');
+        Exit;
+    End;
+    Kind := '';
+    Try Kind := ProjDoc.Kind; Except Kind := ''; End;
+    If Kind = '' Then Kind := 'PCBPROJECT';
+    Problem := '';
+    Saved := False;
+    Deleted := False;
+    CopyKept := False;
+    ViaSaved := False;
+    Try ViaSaved := ProjDoc.DoSafeChangeFileNameAndSave(Via, Kind); Except ViaSaved := False; End;
+    ViaLoaded := False;
+    ViaList := '';
+    If ViaSaved And FileExists(Via) Then ViaList := ProjectFileDocumentList(Via, ViaLoaded);
+    ViaCount := ProjectListCount(ViaList);
+    If Not (ViaSaved And FileExists(Via)) Then
+        Problem := 'Altium did not write the copy'
+    Else If Not ViaLoaded Then
+        Problem := 'Altium could not load the copy to check it, so the original was kept'
+    Else If ViaCount <> Expected Then
+        Problem := 'the copy lists ' + IntToStr(ViaCount) + ' documents, not '
+            + IntToStr(Expected) + ', so the original was kept'
+    Else
+    Begin
+        DeleteFile(ProjPath);
+        Deleted := Not FileExists(ProjPath);
+        If Not Deleted Then
+            Problem := 'the original could not be deleted, so it was saved over';
+    End;
+    { Back under its own name in every case: the open project must not stay  }
+    { pointed at the copy.                                                    }
+    Try Saved := ProjDoc.DoSafeChangeFileNameAndSave(ProjPath, Kind); Except Saved := False; End;
+    Loaded := False;
+    List := ProjectFileDocumentList(ProjPath, Loaded);
+    Count := ProjectListCount(List);
+    If Not Loaded Then Count := -1;
+    If FileExists(Via) Then
+    Begin
+        If Saved And FileExists(ProjPath) And ((Not Deleted) Or (Count = Expected)) Then
+            DeleteFile(Via)
+        Else
         Begin
-            For I := 0 To SL.Count - 1 Do
+            CopyKept := True;
+            If Problem = '' Then
             Begin
-                Line := Trim(SL.Strings[I]);
-                If UpperCase(Copy(Line, 1, 13)) <> 'DOCUMENTPATH=' Then Continue;
-                Value := Copy(Line, 14, Length(Line));
-                If UpperCase(ExtractFileName(Value)) = Want Then
-                Begin
-                    Result := Line;
-                    Exit;
-                End;
+                If Not FileExists(ProjPath) Then
+                    Problem := 'Altium did not write the project file back; the '
+                        + 'clean copy is at ' + Via
+                Else If Not Loaded Then
+                    Problem := 'Altium could not load the project file to check '
+                        + 'it; the clean copy is at ' + Via
+                Else
+                    Problem := 'the project file lists ' + IntToStr(Count)
+                        + ' documents, not ' + IntToStr(Expected)
+                        + '; the clean copy is at ' + Via;
             End;
         End;
-    Finally
-        SL.Free;
     End;
+    Result := BuildSuccessResponse(RequestId, '{"rewritten":'
+        + BoolToJsonStr((Problem = '') And Saved And (Count = Expected))
+        + ',"saved":' + BoolToJsonStr(Saved)
+        + ',"copy_kept":' + BoolToJsonStr(CopyKept)
+        + ',"copy_path":"' + EscapeJsonString(Via) + '"'
+        + ',"project_path":"' + EscapeJsonString(ProjPath) + '"'
+        + ',"file_documents":' + ProjectListJson(List, Loaded)
+        + ',"reason":"' + EscapeJsonString(Problem) + '"}');
 End;
 
 { Remove a document FROM A PROJECT. It does not delete the file.             }
 {                                                                             }
-{ THE PROJECT FILE IS WRITTEN AND READ BACK. Removal changed the project in  }
-{ memory only, so the .PrjPcb kept the [DocumentN] entry and the document    }
-{ was back after a reopen (issue #94). The project is saved, unless          }
-{ save_project is false, and the file itself is checked for the entry.       }
+{ THE PROJECT FILE IS WRITTEN AND LOADED BACK. Removal changes the project   }
+{ in memory only; until the .PrjPcb is saved it keeps the [DocumentN] entry  }
+{ and the document is back after a reopen. The project is saved, unless      }
+{ save_project is false, and Altium loads a copy of the saved file to see    }
+{ whether it still holds the document.                                       }
 {                                                                             }
-{ This used to run WorkspaceManager:CloseObject on the document, which closes }
-{ the editor WINDOW and leaves project membership untouched. Measured: the    }
-{ call reported success, raised an Unsaved Changes prompt, and the .PrjPcb    }
-{ still carried the DocumentPath afterwards. The right call is the mirror of  }
-{ the one Proj_AddDocument uses, DM_RemoveSourceDocument, and it is confirmed }
-{ by three independent scripts in reference/.                                 }
+{ WorkspaceManager:CloseObject closes the editor WINDOW and leaves project    }
+{ membership untouched. The removal is DM_RemoveSourceDocument, the mirror of }
+{ the call Proj_AddDocument uses.                                             }
 {                                                                             }
 { Membership is re-read afterwards, because the removal is the whole point of }
 { the tool and "I issued it" is not the same as "it happened".                }
 Function Proj_RemoveDocument(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, DocumentPath, DocPath, ProjPath, Entry, Members : String;
+    ProjectPath, DocumentPath, DocPath, ProjPath, Entry, Members, FileDocs, FileList : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
     I : Integer;
-    StillMember, WasMember, ProjSaved : Boolean;
+    StillMember, WasMember, ProjSaved, FileLoaded : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     DocumentPath := ExtractJsonValue(Params, 'document_path');
@@ -811,8 +1045,8 @@ Begin
                 Try Project.DM_RemoveSourceDocument(DocumentPath); Except End;
 
                 { Members as Altium holds them now. The reply carries them so }
-                { the server can take leftover sections out of the file: only }
-                { sections past this count, and only when the rest match it.  }
+                { the server can tell whether the file lists more than these  }
+                { and have project.rewrite_file write it fresh.               }
                 StillMember := False;
                 Members := '';
                 For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
@@ -846,14 +1080,30 @@ Begin
                 { it rewrites [Document1]..[DocumentN] for the new count and   }
                 { leaves every section past N in the file, so a removal leaves }
                 { an entry (or a shifted duplicate) behind and a reopen loads  }
-                { it again. Saving more does not help. The file is read back,  }
-                { and a leftover is reported with the members, for the server  }
-                { to take out (eda_agent.prjpcb); never called removed here.   }
+                { it again. Saving more does not help. Altium loads the saved  }
+                { file (ProjectFileDocumentList), and the reply carries what   }
+                { it holds beside the members, for the server to call          }
+                { project.rewrite_file (eda_agent.prjpcb); never called        }
+                { removed here.                                                }
                 If ExtractJsonValue(Params, 'save_project') <> 'false' Then
                     ProjSaved := SaveProjectFile(Project);
-                Entry := ProjectFileEntryFor(ProjPath, DocumentPath);
+                FileLoaded := False;
+                FileList := ProjectFileDocumentList(ProjPath, FileLoaded);
+                Entry := ProjectListEntryFor(FileList, DocumentPath);
+                FileDocs := ProjectListJson(FileList, FileLoaded);
 
-                If Entry <> '' Then
+                If Not FileLoaded Then
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":true,"removed":true,"project_saved":'
+                        + BoolToJsonStr(ProjSaved) + ',"in_project_file":null'
+                        + ',"project_file_checked":false'
+                        + ',"document_path":"' + EscapeJsonString(DocumentPath)
+                        + '","project_path":"' + EscapeJsonString(ProjPath)
+                        + '","reason":"removed from the project in Altium. The '
+                        + 'saved project file could not be checked, because '
+                        + 'Altium did not load a copy of it; reopen the project '
+                        + 'to confirm the document stays out."}')
+                Else If Entry <> '' Then
                     Result := BuildSuccessResponse(RequestId,
                         '{"success":false,"removed":true,"project_saved":'
                         + BoolToJsonStr(ProjSaved) + ',"in_project_file":true'
@@ -861,6 +1111,7 @@ Begin
                         + '","document_path":"' + EscapeJsonString(DocumentPath)
                         + '","project_path":"' + EscapeJsonString(ProjPath)
                         + '","members":[' + Members + ']'
+                        + ',"file_documents":' + FileDocs
                         + ',"reason":"removed in memory, but the project file '
                         + 'on disk still lists it, so it comes back when the '
                         + 'project is reopened. Altium rewrites only as many '
@@ -872,7 +1123,8 @@ Begin
                         + BoolToJsonStr(ProjSaved) + ',"in_project_file":false'
                         + ',"document_path":"' + EscapeJsonString(DocumentPath)
                         + '","project_path":"' + EscapeJsonString(ProjPath)
-                        + '","members":[' + Members + ']}');
+                        + '","members":[' + Members + ']'
+                        + ',"file_documents":' + FileDocs + '}');
             End;
         End
         Else
@@ -3708,22 +3960,53 @@ Begin
 End;
 
 {..............................................................................}
-{ List output containers from an open .OutJob document                        }
-{ The OutJob file is an INI format, parse sections for containers. This is   }
-{ the one direct read of an OutJob: the script engine gives no route to an   }
-{ OutJob's outputs and media (IWSM_OutputJobDocument is not reachable), so   }
-{ every tool asks here rather than opening the file itself. MEASURED on AD  }
-{ 26.11: IWorkspace.DM_GetOutputJobDocumentByPath answers, but the object   }
-{ has none of OutputMediumCount, GetState_OutputMediumCount, DM_OutputerCount. }
-{ Params: outjob_path (optional, uses first open OutJob if omitted)          }
+{ THE OUTJOB IS READ THROUGH ITS OWN DOCUMENT. An OutJob's server document,  }
+{ held in a variable of type IWSM_OutputJobDocument, answers                 }
+{ GetState_OutputMediumCount and GetState_OutputMedium (each container's     }
+{ name, type and output path) and GetState_MediumOutputer (the outputs a     }
+{ container writes). MEASURED on AD 26.11.1.5, matching the outputs the      }
+{ OutJob enables. The object IWorkspace.DM_GetOutputJobDocumentByPath gives  }
+{ has none of these members.                                                 }
+{..............................................................................}
+
+{ An OutJob's server document, opened if it is not. Nil when it cannot be.   }
+Function OutJobServerDocument(Path : String) : IServerDocument;
+Begin
+    Result := Nil;
+    Try Result := Client.GetDocumentByPath(Path); Except Result := Nil; End;
+    If Result = Nil Then
+    Begin
+        Try Result := Client.OpenDocument('OUTPUTJOB', Path); Except Result := Nil; End;
+    End;
+End;
+
+{ The folder a container writes to. A PDF container's output path names its  }
+{ file, so its folder is taken.                                               }
+Function MediumOutputDir(M : IOutputMedium) : String;
+Begin
+    Result := '';
+    Try Result := M.GetState_OutputPath; Except Result := ''; End;
+    If Result = '' Then Exit;
+    If ExtractFileExt(Result) <> '' Then
+        Result := ExtractFilePath(Result)
+    Else If Copy(Result, Length(Result), 1) <> '\' Then
+        Result := Result + '\';
+End;
+
+{..............................................................................}
+{ List the output containers of an OutJob, through Altium's OutJob API.      }
+{ Params: outjob_path (optional, uses the focused project's first OutJob).    }
 {..............................................................................}
 
 Function Proj_GetOutJobContainers(Params : String; RequestId : String) : String;
 Var
-    OutJobPath, S : String;
-    IniFile : TIniFile;
-    ContainerName, ContainerType, Outputs, OutputType, Enabled : String;
-    G, J, N : Integer;
+    OutJobPath : String;
+    SDoc : IServerDocument;
+    OJ : IWSM_OutputJobDocument;
+    M : IOutputMedium;
+    O : IOutputer;
+    ContainerName, ContainerType, Outputs, Names, OutPath : String;
+    G, J, N, K : Integer;
     Data : String;
     First : Boolean;
     Workspace : IWorkspace;
@@ -3768,57 +4051,59 @@ Begin
         Exit;
     End;
 
-    { OutJob files are INI format, parse OutputGroup sections }
+    SDoc := OutJobServerDocument(OutJobPath);
+    If SDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPENED',
+            'Altium could not open the OutJob: ' + OutJobPath);
+        Exit;
+    End;
+    OJ := SDoc;
     Data := '[';
     First := True;
-    IniFile := TIniFile.Create(OutJobPath);
-    Try
-        G := 1;
-        While True Do
+    N := 0;
+    Try N := OJ.GetState_OutputMediumCount; Except N := 0; End;
+    For G := 0 To N - 1 Do
+    Begin
+        M := Nil;
+        Try M := OJ.GetState_OutputMedium(G); Except M := Nil; End;
+        If M = Nil Then Continue;
+        ContainerName := '';
+        ContainerType := '';
+        OutPath := '';
+        Try ContainerName := M.GetState_Name; Except End;
+        Try ContainerType := M.GetState_TypeString; Except End;
+        Try OutPath := M.GetState_OutputPath; Except End;
+        { The outputs this container writes: Altium's generator name of each, }
+        { and the name the OutJob gives it.                                    }
+        Outputs := '';
+        Names := '';
+        K := 0;
+        Try K := OJ.GetState_MediumOutputersCount(M); Except K := 0; End;
+        For J := 0 To K - 1 Do
         Begin
-            S := 'OutputGroup' + IntToStr(G);
-            J := 1;
-            ContainerName := IniFile.ReadString(S, 'OutputMedium1', '');
-            If ContainerName = '' Then Break;  { no more groups }
-
-            While True Do
+            O := Nil;
+            Try O := OJ.GetState_MediumOutputer(M, J); Except O := Nil; End;
+            If O <> Nil Then
             Begin
-                ContainerName := IniFile.ReadString(S, 'OutputMedium' + IntToStr(J), '');
-                If ContainerName = '' Then Break;
-
-                ContainerType := IniFile.ReadString(S, 'OutputMedium' + IntToStr(J) + '_Type', '');
-
-                { The output types this container writes: OutputTypeN with a }
-                { non-zero OutputEnabledN_OutputMediumJ.                     }
-                Outputs := '';
-                N := 1;
-                While True Do
+                If Outputs <> '' Then
                 Begin
-                    OutputType := IniFile.ReadString(S, 'OutputType' + IntToStr(N), '');
-                    If OutputType = '' Then Break;
-                    Enabled := Trim(IniFile.ReadString(S, 'OutputEnabled' + IntToStr(N)
-                        + '_OutputMedium' + IntToStr(J), '0'));
-                    If (Enabled <> '') And (Enabled <> '0') Then
-                    Begin
-                        If Outputs <> '' Then Outputs := Outputs + ',';
-                        Outputs := Outputs + '"' + EscapeJsonString(OutputType) + '"';
-                    End;
-                    Inc(N);
+                    Outputs := Outputs + ',';
+                    Names := Names + ',';
                 End;
-
-                If Not First Then Data := Data + ',';
-                First := False;
-                Data := Data + '{"name":"' + EscapeJsonString(ContainerName) + '"';
-                Data := Data + ',"type":"' + EscapeJsonString(ContainerType) + '"';
-                Data := Data + ',"outputs":[' + Outputs + ']';
-                Data := Data + ',"group":' + IntToStr(G) + '}';
-
-                Inc(J);
+                Outputs := Outputs + '"' + EscapeJsonString(O.DM_GeneratorName) + '"';
+                Names := Names + '"' + EscapeJsonString(O.DM_ViewName) + '"';
             End;
-            Inc(G);
         End;
-    Finally
-        IniFile.Free;
+        If Not First Then Data := Data + ',';
+        First := False;
+        Data := Data + '{"name":"' + EscapeJsonString(ContainerName) + '"'
+            + ',"type":"' + EscapeJsonString(ContainerType) + '"'
+            + ',"outputs":[' + Outputs + ']'
+            + ',"output_names":[' + Names + ']'
+            + ',"output_path":"' + EscapeJsonString(OutPath) + '"'
+            + ',"output_dir":"' + EscapeJsonString(MediumOutputDir(M)) + '"'
+            + ',"index":' + IntToStr(G) + '}';
     End;
     Data := Data + ']';
 
@@ -3879,10 +4164,11 @@ End;
 
 Function Proj_RunOutJob(Params : String; RequestId : String) : String;
 Var
-    OutJobPath, ContainerName, S : String;
-    IniFile : TIniFile;
-    FoundContainerName, ContainerType, RelativePath, OutputDir : String;
-    G, J : Integer;
+    OutJobPath, ContainerName : String;
+    OJ : IWSM_OutputJobDocument;
+    M : IOutputMedium;
+    FoundContainerName, ContainerType, OutputDir : String;
+    G, N : Integer;
     Found, OutJobOpened, OutJobActive, RunRaised : Boolean;
     ClosedOthers : Integer;
     OutJobDoc : IServerDocument;
@@ -3966,38 +4252,30 @@ Begin
     Except
     End;
 
-    { Parse the INI to find the container and its type }
+    { The container, its type and its folder, from Altium's OutJob API. }
     Found := False;
     ContainerType := '';
-    RelativePath := '';
-    IniFile := TIniFile.Create(OutJobPath);
-    Try
-        G := 1;
-        While Not Found Do
+    OutputDir := '';
+    If OutJobDoc <> Nil Then
+    Begin
+        OJ := OutJobDoc;
+        N := 0;
+        Try N := OJ.GetState_OutputMediumCount; Except N := 0; End;
+        For G := 0 To N - 1 Do
         Begin
-            S := 'OutputGroup' + IntToStr(G);
-            J := 1;
-            FoundContainerName := IniFile.ReadString(S, 'OutputMedium1', '');
-            If FoundContainerName = '' Then Break;
-
-            While True Do
+            M := Nil;
+            Try M := OJ.GetState_OutputMedium(G); Except M := Nil; End;
+            If M = Nil Then Continue;
+            FoundContainerName := '';
+            Try FoundContainerName := M.GetState_Name; Except End;
+            If FoundContainerName = ContainerName Then
             Begin
-                FoundContainerName := IniFile.ReadString(S, 'OutputMedium' + IntToStr(J), '');
-                If FoundContainerName = '' Then Break;
-
-                If FoundContainerName = ContainerName Then
-                Begin
-                    ContainerType := IniFile.ReadString(S, 'OutputMedium' + IntToStr(J) + '_Type', '');
-                    RelativePath := IniFile.ReadString('PublishSettings', 'OutputBasePath' + IntToStr(J), '');
-                    Found := True;
-                    Break;
-                End;
-                Inc(J);
+                Try ContainerType := M.GetState_TypeString; Except End;
+                OutputDir := MediumOutputDir(M);
+                Found := True;
+                Break;
             End;
-            Inc(G);
         End;
-    Finally
-        IniFile.Free;
     End;
 
     If Not Found Then
@@ -4011,45 +4289,29 @@ Begin
     { stopped the script; it is caught and reported, and the folder decides. }
     RunRaised := False;
     Try
-        If ContainerType = 'Publish' Then
+        { A PDF container publishes; every other kind generates. The OutJob }
+        { gives the container its folder, so none is passed.               }
+        If UpperCase(ContainerType) = 'PDF' Then
         Begin
             ResetParameters;
             AddStringParameter('Action', 'PublishToPDF');
             AddStringParameter('OutputMedium', ContainerName);
             AddStringParameter('ObjectKind', 'OutputBatch');
-            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
             AddStringParameter('DisableDialog', 'True');
             RunProcess('WorkspaceManager:Print');
         End
         Else
         Begin
-            { Default: GeneratedFiles and others use GenerateReport }
             ResetParameters;
             AddStringParameter('Action', 'Run');
             AddStringParameter('OutputMedium', ContainerName);
             AddStringParameter('ObjectKind', 'OutputBatch');
-            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
             RunProcess('WorkspaceManager:GenerateReport');
         End;
     Except
         RunRaised := True;
     End;
 
-    { Resolve the OutJob's configured output directory so callers can pick }
-    { up the produced files without having to re-parse the INI. The INI    }
-    { stores OutputBasePath relative to the OutJob; absolute paths pass    }
-    { through. Trailing slash normalised so Python can append filenames.   }
-    OutputDir := '';
-    If RelativePath <> '' Then
-    Begin
-        If (Length(RelativePath) >= 2) And (Copy(RelativePath, 2, 1) = ':') Then
-            OutputDir := RelativePath
-        Else
-            OutputDir := ExtractFilePath(OutJobPath) + RelativePath;
-        If (Length(OutputDir) > 0) And
-           (Copy(OutputDir, Length(OutputDir), 1) <> '\') Then
-            OutputDir := OutputDir + '\';
-    End;
 
     { NOT A SUCCESS CLAIM. The process was issued, and nothing here can say }
     { whether it wrote anything: a container bound to a managed release, or }
@@ -4060,7 +4322,6 @@ Begin
         '{"process_issued":true' +
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
-        ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
         ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
         ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
         ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
@@ -6765,8 +7026,12 @@ Begin
 End;
 
 {..............................................................................}
-{ Import a document into the project from an external path                    }
-{ Copies the file to the project directory, then adds it to the project.      }
+{ Import a document into the project from an external path.                   }
+{ Altium writes the copy into the project folder, as File > Save Copy As:     }
+{ the source is opened (if it is not), pointed at the new path for one save   }
+{ and pointed back, and closed again if this opened it. Then the copy is      }
+{ added to the project. A file already at the new path is refused, never      }
+{ written over.                                                               }
 { Params: source_path                                                         }
 {..............................................................................}
 
@@ -6775,6 +7040,8 @@ Var
     SourcePath, ProjectDir, DestPath, FileName : String;
     Workspace : IWorkspace;
     Project : IProject;
+    ServerDoc : IServerDocument;
+    WasOpen, WasModified : Boolean;
 Begin
     SourcePath := ExtractJsonValue(Params, 'source_path');
 
@@ -6791,13 +7058,56 @@ Begin
     FileName := ExtractFileName(SourcePath);
     DestPath := ProjectDir + FileName;
 
-    { Copy the file to the project directory (skip if same location) }
     If UpperCase(SourcePath) <> UpperCase(DestPath) Then
     Begin
+        If FileExists(DestPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'FILE_EXISTS',
+                'A file is already at ' + DestPath + '; it is not written over');
+            Exit;
+        End;
+        If SaveHeldBack(DestPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+                'Saving is switched off on the bridge dashboard');
+            Exit;
+        End;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(SourcePath); Except ServerDoc := Nil; End;
+        WasOpen := ServerDoc <> Nil;
+        If Not WasOpen Then
+        Begin
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Document');
+            AddStringParameter('FileName', SourcePath);
+            RunProcess('WorkspaceManager:OpenObject');
+            Try ServerDoc := Client.GetDocumentByPath(SourcePath); Except ServerDoc := Nil; End;
+        End;
+        If ServerDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_OPENED',
+                'Altium could not open ' + SourcePath + ' to save a copy of it');
+            Exit;
+        End;
+        WasModified := False;
+        Try WasModified := ServerDoc.Modified; Except End;
+        { The rename lasts for the one save, and is put back in Finally. }
         Try
-            CopyFile(SourcePath, DestPath, False);
-        Except
-            Result := BuildErrorResponse(RequestId, 'COPY_FAILED', 'Failed to copy file to project directory');
+            ServerDoc.SetFileName(DestPath);
+            ServerDoc.SetModified(True);
+            ServerDoc.DoFileSave('');
+        Finally
+            Try ServerDoc.SetFileName(SourcePath); Except NoteWriteFailed('point the source back at its own file'); End;
+            Try ServerDoc.SetModified(WasModified); Except NoteWriteFailed('put the source''s modified flag back'); End;
+        End;
+        If Not WasOpen Then
+        Begin
+            Try Client.CloseDocument(ServerDoc); Except End;
+        End;
+        If Not FileExists(DestPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COPY_FAILED',
+                'Altium did not write the copy at ' + DestPath);
             Exit;
         End;
     End;
@@ -8384,6 +8694,8 @@ Begin
         'get_documents':     Result := Proj_GetDocuments(Params, RequestId);
         'add_document':      Result := Proj_AddDocument(Params, RequestId);
         'remove_document':   Result := Proj_RemoveDocument(Params, RequestId);
+        'file_documents':    Result := Proj_FileDocuments(Params, RequestId);
+        'rewrite_file':      Result := Proj_RewriteFile(Params, RequestId);
         'rename_document':   Result := Proj_RenameDocument(Params, RequestId);
         'get_parameters':    Result := Proj_GetParameters(Params, RequestId);
         'set_parameter':     Result := Proj_SetParameter(Params, RequestId);

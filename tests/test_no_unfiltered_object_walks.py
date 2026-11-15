@@ -4,9 +4,8 @@
 """Every object walk names the kinds it walks.
 
 ``AddFilter_ObjectSet(AllObjects)`` on a footprint crashed the scripting
-engine (#44): the iterator handed back an object it could not cast and
-ScriptingSystem.DLL read address FFFFFFFFFFFFFFFF, an access violation no
-Try catches, which takes the polling loop down with it. Classifying by
+engine (#44): the iterator handed back an object it could not cast, a
+crash no Try catches, which takes the polling loop down with it. Classifying by
 ObjectId afterwards does not help, the walk still reaches the object that
 faults. An iterator with no object filter at all walks the same set.
 

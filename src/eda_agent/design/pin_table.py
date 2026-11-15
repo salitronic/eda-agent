@@ -232,13 +232,178 @@ def _page_lines(path: str, pages: Optional[set[int]]) -> tuple[dict[int, list[st
     return out, ""
 
 
+#: A package as a table heads its pin-number column: LQFP48, UFQFPN32,
+#: WLCSP49, TSSOP20, SO8. A family's name in it keeps pin names (PE2,
+#: WKUP3) out.
+_PACKAGE_HEAD = re.compile(
+    r"[A-Z]*(QFP|QFN|BGA|CSP|SOIC|SOP|SON|SOT|DFN|DIP|LGA|LCC|SO)[A-Z]*\d{1,4}[A-Z]?")
+
+
+def _package_key(text: str) -> str:
+    return re.sub(r"[\s\-]", "", str(text or "")).upper()
+
+
+def _char_boxes(page: Any) -> list[tuple[str, int, float, float, float, float]]:
+    """Every printed character of a page: (character, quarter turns of its
+    text, left, bottom, right, top)."""
+    import math
+
+    import pypdfium2.raw as raw
+
+    textpage = page.get_textpage()
+    out = []
+    for i in range(textpage.count_chars()):
+        ch = textpage.get_text_range(i, 1)
+        if not ch or ch.isspace():
+            out.append((" ", 0, 0.0, 0.0, 0.0, 0.0))
+            continue
+        turns = round(raw.FPDFText_GetCharAngle(textpage.raw, i) / (math.pi / 2)) % 4
+        out.append((ch, turns, *textpage.get_charbox(i, loose=True)))
+    return out
+
+
+def _reading_frame(turns: int, l: float, b: float, r: float, t: float
+                   ) -> tuple[float, float, float, float]:
+    """A box turned so the page's body text reads left to right."""
+    for _ in range(turns):
+        l, b, r, t = b, -r, t, -l
+    return l, b, r, t
+
+
+def _words(chars: list[tuple[str, int, float, float, float, float]]
+           ) -> list[dict[str, Any]]:
+    """The page's words, in the frame its body text reads in: letters
+    printed letter-spaced are one word, and a heading turned on its side
+    is a word at its column's place. ``across`` marks text turned from the
+    body's direction."""
+    counts = [0, 0, 0, 0]
+    for ch, turns, *_ in chars:
+        if ch != " ":
+            counts[turns] += 1
+    body = counts.index(max(counts))
+    words: list[dict[str, Any]] = []
+    cur: Optional[dict[str, Any]] = None
+    for ch, turns, *box in chars:
+        if ch == " ":
+            cur = None
+            continue
+        l, b, r, t = _reading_frame(body, *box)
+        across = turns != body
+        size = (r - l) if across else (t - b)
+        if cur is not None and cur["across"] == across:
+            if across:   # letters stacked up or down one column
+                joins = abs(l - cur["l"]) < size * 0.3 and (
+                    abs(b - cur["t"]) < size * 0.4 or abs(cur["b"] - t) < size * 0.4)
+            else:
+                joins = abs(b - cur["b"]) < size * 0.3 and -size * 0.3 < l - cur["r"] < size * 0.35
+            if joins:
+                cur["text"] += ch
+                cur["l"], cur["b"] = min(cur["l"], l), min(cur["b"], b)
+                cur["r"], cur["t"] = max(cur["r"], r), max(cur["t"], t)
+                continue
+        cur = {"text": ch, "across": across, "l": l, "b": b, "r": r, "t": t}
+        words.append(cur)
+    return words
+
+
+def _package_columns(words: list[dict[str, Any]], want: str) -> dict[str, float]:
+    """The middle of each column headed by a package name, by name: the
+    package asked for as it is given, the others by their family."""
+    out: dict[str, float] = {}
+    for w in words:
+        for part in re.split(r"[/,]", w["text"]):
+            key = _package_key(part)
+            if key == want or _PACKAGE_HEAD.fullmatch(key):
+                out.setdefault(key, (w["l"] + w["r"]) / 2)
+    return out
+
+
+def _lines_of_column(words: list[dict[str, Any]], columns: dict[str, float],
+                     package: str) -> list[str]:
+    """The page's lines with the pin numbers of every other package's
+    column left out, so each row prints this package's number and the
+    pin's name together."""
+    keep = columns[package]
+    xs = sorted(columns.values())
+    half = min((b - a for a, b in zip(xs, xs[1:])), default=20.0) / 2
+    lo, hi = xs[0] - half, xs[-1] + half
+    rows: list[list[dict[str, Any]]] = []
+    for w in sorted((w for w in words if not w["across"]), key=lambda w: -w["b"]):
+        mid = (w["l"] + w["r"]) / 2
+        if lo <= mid <= hi and abs(mid - keep) > half:
+            continue                       # another package's pin number
+        height = w["t"] - w["b"]
+        if rows and abs(rows[-1][0]["b"] - w["b"]) < height * 0.4:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    # A footnote mark, "(2)", read as a word would break a name wrapped
+    # round its row's line.
+    lines = (_FOOTNOTE.sub(" ", " ".join(w["text"] for w in sorted(row, key=lambda w: w["l"])))
+             .strip() for row in rows)
+    return [ln for ln in lines if ln]
+
+
+_FOOTNOTE = re.compile(r"\(\d{1,2}\)")
+
+
+def _package_page_lines(path: str, pages: Optional[set[int]], package: str
+                        ) -> tuple[dict[int, list[str]], str]:
+    """The pin table's lines as the column headed ``package`` gives them.
+
+    A table with a pin-number column per package prints one row's numbers
+    for every package side by side, and plain text runs them together: it
+    cannot say which number is this package's. Each character's place on
+    the page can, so the other columns are left out. A page that repeats
+    no heading reads its columns where the page before had them.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return {}, "reading a package's column needs pypdfium2 (pip install pypdfium2)"
+    try:
+        pdf = pdfium.PdfDocument(path)
+    except Exception as e:  # damaged or encrypted: say so
+        return {}, f"the PDF could not be opened: {e}"
+    want = _package_key(package)
+    out: dict[int, list[str]] = {}
+    columns: dict[str, float] = {}
+    heads: set[str] = set()
+    try:
+        for number in range(1, len(pdf) + 1):
+            if pages is not None and number not in pages:
+                continue
+            try:
+                words = _words(_char_boxes(pdf[number - 1]))
+            except Exception:  # one bad page does not end the read
+                continue
+            here = _package_columns(words, want)
+            heads.update(here)
+            if want in here and len(here) > 1:
+                columns = here
+            if want in columns:
+                out[number] = _lines_of_column(words, columns, want)
+    finally:
+        pdf.close()
+    if not out:
+        return {}, (
+            f"no column of the pin table is headed {package}"
+            + (f": the headings read are {', '.join(sorted(heads))}" if heads else "")
+            + ". Give package_column as the table heads it, or leave it out "
+              "for a table with one pin-number column")
+    return out, ""
+
+
 def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any]:
     """``{ok, pages, found, missing, reason?}``.
 
-    ``datasheet`` is ``{path, page}``; with no page, the pages carrying a
-    pin-table heading are read. A pin passes when one line, or two lines
+    ``datasheet`` is ``{path, page, package_column?}``; with no page, the
+    pages carrying a pin-table heading are read. ``package_column`` names
+    the package whose column of pin numbers is read, in a table with one
+    such column per package. A pin passes when one line, or two lines
     together, print both its number and its name; when its name runs
-    wrapped over a few lines of its cell with the number touching it; or,
+    wrapped over a few lines of its cell with the number touching it; when
+    it shares one row with another pin, the two numbers in one cell; or,
     for one pin, when it is the exposed pad the table lists without a
     number (``exposed_pad`` in its entry of ``found``).
     """
@@ -259,7 +424,11 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
             return {"ok": False, "reason": (
                 "no page of the datasheet carries a pin-table heading: give "
                 "datasheet.page, the page the pin table is on")}
-    lines_by_page, problem = _page_lines(path, pages)
+    package = str(datasheet.get("package_column", "") or "").strip()
+    if package:
+        lines_by_page, problem = _package_page_lines(path, pages, package)
+    else:
+        lines_by_page, problem = _page_lines(path, pages)
     if problem:
         return {"ok": False, "reason": problem}
     lines = _without_page_breaks(lines_by_page)
@@ -281,6 +450,20 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
         # grid's column number over a row of names is not a label.
         if _ONLY_NUMBER.fullmatch(a) and not b.strip().isdigit() and len(b.split()) <= 2:
             labels.setdefault(a.strip().rstrip(".").strip().upper(), []).append(f"{a} {b}")
+    # One table row shared by two pins, its number cell holding both ("6 /
+    # 7"): the page text gives one number alone, the row without a number,
+    # then the other number alone. The row is longer than a drawing's label,
+    # and the second number is not the label of the line after it.
+    merged: dict[str, list[str]] = {}
+    for i in range(1, len(lines) - 1):
+        above, row, below = lines[i - 1], lines[i], lines[i + 1]
+        after = lines[i + 2] if i + 2 < len(lines) else ""
+        if (_ONLY_NUMBER.fullmatch(above) and _ONLY_NUMBER.fullmatch(below)
+                and not _ANY_NUMBER.search(row) and len(row.split()) > 2
+                and (not after or _ANY_NUMBER.search(after))):
+            for n in (above, below):
+                merged.setdefault(n.strip().rstrip(".").strip().upper(), []).append(
+                    f"{n.strip()} {row}")
     tokens = _tokens(lines)
     pad_rows = _exposed_pad_rows([*lines, *wrapped])
     found, missing = [], []
@@ -289,6 +472,7 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
         name = str(pin.get("name", "")).strip()
         label = labels.get(number.upper())
         rows = [*lines, *label] if label else [*lines, *wrapped]
+        rows += merged.get(number.upper(), [])
         hit = next((ln for ln in rows
                     if number and _number_in(number, ln) and _name_in(name, ln)), None)
         if hit is None:
@@ -305,10 +489,15 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
         missing.append({"pin": number, "name": name, "rows_with_number": rows})
     out: dict[str, Any] = {"ok": not missing, "pages": sorted(lines_by_page),
                            "found": len(found), "missing": missing}
+    if package:
+        out["package_column"] = package
     if missing:
         out["reason"] = (
             f"{len(missing)} pin(s) are not in the pin table as given: "
             + "; ".join(f"{m['pin']} {m['name']}" for m in missing[:15])
             + ". Read the table again and correct the number or the name "
-              "(rows_with_number shows what it prints for that number)")
+              "(rows_with_number shows what it prints for that number)"
+            + ("" if package else
+               "; a table with a pin-number column per package needs "
+               "datasheet.package_column, the package as it heads its column"))
     return out

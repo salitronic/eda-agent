@@ -2076,6 +2076,7 @@ Begin
     End;
 
     ResetItemState(0);
+    NoteOpenProjects(0);
     Result := SavingRefusal(Command, Params, RequestId);
     If Result <> '' Then Exit;
     Case Category Of
@@ -2725,8 +2726,8 @@ Begin
     { Measured 2026-09-16: with the timer pump, closing Altium while        }
     { attached no longer hangs it. Altium ran its whole shutdown through to }
     { "Application Finalized" and exited, and Windows logged neither a hang }
-    { nor a crash. What it DID raise was an Access Violation in             }
-    { ScriptingSystem.DLL (read of FFFFFFFFFFFFFFFF) during teardown.       }
+    { nor a crash. What it DID raise was an access violation in the         }
+    { scripting engine during teardown.                                     }
     {                                                                       }
     { The two steps below are how you earn that: HideStatusForm touches a   }
     { form Altium is in the middle of destroying, and CleanupMCPServer      }
@@ -2748,10 +2749,9 @@ Begin
     { DO NOT CALL CleanupMCPServer HERE. Its Application.ProcessMessages   }
     { pumps the message loop from inside this form's OWN timer handler,    }
     { while that same form is being hidden, which re-enters the form as it }
-    { tears down. Measured 2026-09-18: pressing Detach raised "Access      }
-    { violation ... in module 'ScriptingSystem.DLL'. Read of address       }
-    { FFFFFFFFFFFFFFFF", the same signature the quit path produced before  }
-    { it stopped pumping. The old blocking loop ran this from              }
+    { tears down. Measured 2026-09-18: pressing Detach raised an access    }
+    { violation in the scripting engine, the same one the quit path        }
+    { produced before it stopped pumping. The old blocking loop ran this from              }
     { StartMCPServer's exit rather than from a timer event on the form,    }
     { which is why it only appeared once dispatch moved onto the timer.    }
     {                                                                      }

@@ -209,3 +209,125 @@ def test_manifest_without_skipped_large_field_loads(tmp_path):
                                                  encoding="utf-8")
     info = store._load("legacy")
     assert info.skipped_large == []
+
+
+class _Altium:
+    """Stands in for the bridge: save_document_copy writes the copy the way
+    Altium would, and every call is kept."""
+
+    def __init__(self, open_docs=(), refuse=()):
+        self.open_docs = [str(p) for p in open_docs]
+        self.refuse = {str(p) for p in refuse}
+        self.sent: list[tuple[str, dict]] = []
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        params = dict(params or {})
+        self.sent.append((command, params))
+        if command == "application.get_open_documents":
+            return [{"file_path": p} for p in self.open_docs]
+        if command == "application.save_document_copy":
+            if params["file_path"] in self.refuse:
+                return {"written": False, "error": "Altium could not open it"}
+            Path(params["copy_path"]).write_bytes(Path(params["file_path"]).read_bytes())
+            return {"written": True}
+        if command == "project.close":
+            return {"closed": True}
+        return {"success": True}
+
+    def copies(self):
+        return [p for c, p in self.sent if c == "application.save_document_copy"]
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_altium_writes_every_design_document_into_a_checkpoint(tmp_path):
+    from eda_agent.checkpoint import take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    altium = _Altium()
+    info = _run(take(altium, store, proj, project_file="board.PrjPcb"))
+    copied = sorted(Path(p["file_path"]).name for p in altium.copies())
+    assert copied == ["board.PcbDoc", "main.SchDoc", "parts.SchLib"]
+    assert info.file_count == 4
+    assert {r for r, m in info.files.items() if m.get("written_by") == "altium"} == {
+        "board.PcbDoc", "main.SchDoc", "libs/parts.SchLib"}
+    assert not list((store.root / "staging").iterdir())
+
+
+def test_an_unchanged_closed_document_is_not_opened_again(tmp_path):
+    from eda_agent.checkpoint import take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    _run(take(_Altium(), store, proj))
+    again = _Altium(open_docs=[proj / "board.PcbDoc"])
+    info = _run(take(again, store, proj))
+    # The open board is copied as Altium holds it; the closed rest is reused.
+    assert [Path(p["file_path"]).name for p in again.copies()] == ["board.PcbDoc"]
+    assert info.file_count == 4
+
+
+def test_a_document_altium_did_not_copy_is_named_not_read(tmp_path):
+    from eda_agent.checkpoint import take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    info = _run(take(_Altium(refuse=[proj / "main.SchDoc"]), store, proj))
+    assert "main.SchDoc" not in info.files
+    assert info.not_written == {"main.SchDoc": "Altium could not open it"}
+    assert "not_written" in info.summary()
+
+
+def test_a_restore_closes_the_project_and_altium_saves_what_changed(tmp_path):
+    from eda_agent.checkpoint import put_back, take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    info = _run(take(_Altium(), store, proj))
+    (proj / "main.SchDoc").write_text("schematic v2", encoding="utf-8")
+    (proj / "board.PrjPcb").write_text("project v2", encoding="utf-8")
+    altium = _Altium()
+    out = _run(put_back(altium, store, info.id, proj,
+                        project_path=str(proj / "board.PrjPcb")))
+    commands = [c for c, _ in altium.sent if c != "application.get_open_documents"]
+    assert commands[0] == "project.close"
+    assert dict(altium.sent)["project.close"]["save"] == "false"
+    assert commands[-1] == "project.open"
+    assert [Path(p["copy_path"]).name for p in altium.copies()] == ["main.SchDoc"]
+    assert (proj / "main.SchDoc").read_text(encoding="utf-8") == "schematic v1"
+    assert (proj / "board.PrjPcb").read_text(encoding="utf-8") == "project"
+    assert out["restored"] == 2 and out["unchanged"] == 2
+    assert not list(proj.glob("*.ckpt-old"))
+
+
+def test_a_save_altium_refuses_leaves_the_file_as_it_was(tmp_path):
+    from eda_agent.checkpoint import put_back, take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    info = _run(take(_Altium(), store, proj))
+    (proj / "main.SchDoc").write_text("schematic v2", encoding="utf-8")
+    blob = store.blob_path(info.files["main.SchDoc"])
+    out = _run(put_back(_Altium(refuse=[blob]), store, info.id, proj,
+                        project_path=str(proj / "board.PrjPcb")))
+    assert out["not_restored"] == {"main.SchDoc": "Altium could not open it"}
+    assert (proj / "main.SchDoc").read_text(encoding="utf-8") == "schematic v2"
+    assert not list(proj.glob("*.ckpt-old"))
+
+
+def test_nothing_is_restored_when_the_project_will_not_close(tmp_path):
+    from eda_agent.checkpoint import put_back, take
+    proj = _project(tmp_path)
+    store = _store(tmp_path)
+    info = _run(take(_Altium(), store, proj))
+    (proj / "main.SchDoc").write_text("schematic v2", encoding="utf-8")
+
+    class _Stuck(_Altium):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "project.close":
+                return {"closed": False, "reason": "a save prompt"}
+            return await super().send_command_async(command, params, timeout)
+
+    out = _run(put_back(_Stuck(), store, info.id, proj,
+                        project_path=str(proj / "board.PrjPcb")))
+    assert "nothing was restored" in out["error"]
+    assert (proj / "main.SchDoc").read_text(encoding="utf-8") == "schematic v2"

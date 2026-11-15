@@ -22,6 +22,8 @@ from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_co
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
+from .bulk import bulk_items_by
+from ..prjpcb import removals_together
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -1135,7 +1137,7 @@ def register_generic_tools(mcp):
         )
         # Fit All Objects in a symbol library leaves no margin: the top pin
         # row sits under the editor's floating toolbar. One Zoom Out step
-        # (AdvSch.rcs PLSch:ZoomOut) clears it.
+        # clears it.
         if (action == "fit" and isinstance(result, dict)
                 and str(result.get("document_kind") or "").upper() == "SCHLIB"):
             await bridge.send_command_async(
@@ -1900,6 +1902,9 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    @bulk_items_by(removals_together(
+        "generic.delete_sheet",
+        lambda a: {"file_path": a["file_path"]} if a.get("file_path") else None))
     async def proj_delete_sheet(
         file_path: str,
     ) -> dict[str, Any]:
@@ -1907,9 +1912,9 @@ def register_generic_tools(mcp):
 
         Safety check: refuses to remove the last remaining schematic sheet.
         The file is removed from the project but not deleted from disk, and
-        closed unless it has unsaved edits. The project file is saved, its
-        leftover sections taken out and read back, as proj_remove_document
-        does.
+        closed unless it has unsaved edits. The project file is saved and
+        read back, and Altium writes it fresh when its save left the
+        sheet in it, as proj_remove_document does.
 
         Args:
             file_path: Full path to the .SchDoc file to remove
@@ -1923,10 +1928,8 @@ def register_generic_tools(mcp):
             "generic.delete_sheet",
             {"file_path": file_path},
         )
-        from ..config import get_config
         from ..prjpcb import finish_removal
-        return finish_removal(
-            result, str(get_config().workspace_dir / "backups" / "prjpcb"))
+        return await finish_removal(bridge, result)
 
     @mcp.tool()
     async def obj_switch_view(

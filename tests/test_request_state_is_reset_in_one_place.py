@@ -45,6 +45,9 @@ SESSION = {
     "JsonIdxDoc0", "JsonIdxDoc1", "JsonIdxDoc2", "JsonIdxDoc3",
     "JsonIdx0", "JsonIdx1", "JsonIdx2", "JsonIdx3", "JsonIdxNext",
     "JsonNestedSeen",
+    # The member names each project file was written with, kept until the
+    # file is written again.
+    "ProjectListed", "ProjectListedRead",
     # Session slots and queue notes between callers.
     "SlotSession", "SlotStartTick", "QueueNoteTick",
     # The tool call holding the turn, and when its last command finished.

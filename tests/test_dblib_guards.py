@@ -153,6 +153,42 @@ def test_the_connection_string_goes_nowhere_but_the_connection():
     assert "DbLibRedactConnStr(ConnStr)" in info
 
 
+def test_altium_answers_for_the_dblib_and_nothing_opens_the_file():
+    routines = _dblib_routines()
+    openers = ("LoadTextFile", "LoadFromFile", "ReadFileContent", "AssignFile",
+               "TFileStream", "TIniFile", "TMemIniFile")
+    for name, body in routines.items():
+        code = _after_begin(body)
+        for opener in openers:
+            assert opener not in code, (
+                f"{name} opens a file with {opener}; what a DbLib declares "
+                "comes from Altium's own document")
+    for name in ("Lib_GetDbLibInfo", "DbLibSearchOne", "Lib_GetDbLibRecord",
+                 "DbLibPlaceTarget"):
+        assert "DbLibDefinition(Lines, LibPath, Why)" in routines[name], (
+            f"{name} no longer takes its definition from DbLibDefinition")
+    definition = _after_begin(routines["DbLibDefinition"])
+    assert "IntegratedLibraryManager.GetAvailableDBLibDocAtPath(LibPath)" in definition
+    for member in ("GetConnectionString", "GetTableCount", "GetTableNameAt",
+                   "TableEnabled", "GetFieldNameAt", "GetParameterNameAt",
+                   "IsParameterDatabaseKey"):
+        assert f"Doc.{member}" in definition, f"the definition no longer asks {member}"
+
+
+def test_only_a_library_installed_for_the_read_is_uninstalled():
+    definition = _after_begin(_dblib_routines()["DbLibDefinition"])
+    install = definition.index("IntegratedLibraryManager.InstallLibrary(LibPath)")
+    guard = definition.rindex("If ", 0, install)
+    assert "Not DbLibIsInstalled(LibPath)" in definition[guard:install], (
+        "a library is installed without first checking it is not installed")
+    assert "Added := DbLibIsInstalled(LibPath);" in definition[install:], (
+        "Added must say the library joined the installed list in this call")
+    assert definition.count("UnInstallLibrary") == 1
+    assert re.search(
+        r"If Added Then\s+Begin\s+Try IntegratedLibraryManager\.UnInstallLibrary\(LibPath\);",
+        definition), "the uninstall must be for a library this call installed"
+
+
 def test_the_reads_are_reads_to_both_the_safety_layer_and_the_dispatcher():
     for command in ("library.get_dblib_info", "library.query_dblib",
                     "library.get_dblib_record"):

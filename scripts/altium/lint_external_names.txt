@@ -405,7 +405,6 @@ TADOConnection
 TADOQuery
 Tan
 THandleStream
-TIniFile
 TInterfaceList
 TPadViaThermalReliefItem
 TPolySegment

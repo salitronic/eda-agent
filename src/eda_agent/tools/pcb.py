@@ -4571,10 +4571,10 @@ def register_pcb_tools(mcp):
                              "nothing was removed"}
         out: dict[str, Any] = {}
         if checkpoint:
-            from ..checkpoint import CheckpointStore
+            from ..checkpoint import CheckpointStore, take
             from ..config import get_config
             cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
-            info = cp.create(Path(expect_file).parent, label="before pcb_unroute")
+            info = await take(bridge, cp, Path(expect_file).parent, label="before pcb_unroute")
             out["checkpoint"] = info.summary()
         # The board's own spelling of its path, so the script's check
         # compares like with like.
@@ -5536,8 +5536,8 @@ def register_pcb_tools(mcp):
 
         The target gets the board as it is in Altium, unsaved edits
         included; the open document keeps its path, project and modified
-        state. An existing target is overwritten, after a copy to
-        ``<target>.bak`` with ``backup`` (default); a target open in
+        state. An existing target is overwritten, after Altium saves it
+        as ``<target>.bak`` with ``backup`` (default); a target open in
         Altium is refused. The copy joins no project.
 
         Args:
@@ -5552,7 +5552,6 @@ def register_pcb_tools(mcp):
             "open_board_path", "backup"} or an error. ``written`` is read
             from the target's file time, not assumed.
         """
-        import shutil
         from pathlib import Path
 
         bridge = get_bridge()
@@ -5563,16 +5562,8 @@ def register_pcb_tools(mcp):
             "pcb.save_copy_as", {**params, "check_only": "true"})
         if not isinstance(check, dict) or "target_exists" not in check:
             return check
-        backup_path = ""
         if backup and check.get("target_exists"):
-            backup_path = target_path + ".bak"
-            try:
-                shutil.copy2(target_path, backup_path)
-            except OSError as e:
-                return {"success": False, "written": False,
-                        "error": f"could not keep a backup at {backup_path}: {e}. "
-                                 "Nothing was written; pass backup=False to "
-                                 "overwrite without one."}
+            params["backup_path"] = target_path + ".bak"
         # Altium will not write into a folder that does not exist, and said
         # only written:false. The folder is made, and the reply says so.
         folder = Path(target_path).parent
@@ -5587,9 +5578,7 @@ def register_pcb_tools(mcp):
                                  f"could not be made: {e}. Nothing was written."}
         result = await bridge.send_command_async("pcb.save_copy_as", params)
         if isinstance(result, dict):
-            result["backup"] = backup_path
-            if backup_path and not Path(backup_path).is_file():
-                result["backup"] = ""
+            result.setdefault("backup", "")
             if created_folder:
                 result["created_folder"] = created_folder
         return result

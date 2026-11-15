@@ -602,8 +602,14 @@ class _Bridge:
         if command == "pcb.save_copy_as":
             if params.get("check_only"):
                 return {"target_exists": self.target_exists, "written": False}
-            Path(params["target_path"]).write_text("copy", encoding="ascii")
-            return {"written": True}
+            target = Path(params["target_path"])
+            backup = params.get("backup_path", "")
+            # Altium saves the old target under the backup name, then writes.
+            if backup:
+                Path(backup).write_text(target.read_text(encoding="ascii"),
+                                        encoding="ascii")
+            target.write_text("copy", encoding="ascii")
+            return {"written": True, "backup": backup}
         raise AssertionError(command)
 
 
@@ -752,6 +758,7 @@ async def test_save_copy_keeps_the_overwritten_target(tmp_path, monkeypatch):
     bridge = _Bridge(tmp_path, target_exists=True)
     tools = _tools(monkeypatch, bridge)
     out = await tools["pcb_save_copy_as"](str(target), source_path="C:/M.PcbDoc")
+    assert bridge.sent[-1][1]["backup_path"] == str(target) + ".bak"
     assert out["written"] and Path(out["backup"]).read_text() == "old size"
     assert target.read_text() == "copy"
     assert all(p.get("board_path") == "C:/M.PcbDoc" for _, p in bridge.sent)

@@ -3,6 +3,7 @@
 # Copyright (c) 2026 StarX-ai
 """lib_generate_ipc_batch: what it sends, and what it refuses to call success."""
 import asyncio
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,9 +53,10 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(none.stop)
 
     async def run_fake(self, fake, **kwargs):
+        async def extracted(*a, **k):
+            return {'ok': True, 'written': [{'step_header': True}]}
         with patch.object(ipc_batch, 'get_bridge', return_value=fake), patch.object(
-                ipc_batch.pcblib_models, 'extract_embedded_models', return_value={
-                    'ok': True, 'written': [{'step_header': True, 'checksum_verified': True}]}):
+                ipc_batch.footprint_export, 'extract_models', side_effect=extracted):
             return await ipc_batch.generate_ipc_batch(str(self.source), str(self.output), **kwargs)
 
     async def test_checks_outputs_and_real_step(self):
@@ -117,21 +119,20 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelExportTests(unittest.TestCase):
-    def test_duplicate_names_keep_distinct_records(self):
-        import io, zlib
-        from eda_agent.fileio import pcblib_models as models
-        blobs = [b'ISO-10303-21;FIRST', b'ISO-10303-21;SECOND']
-        class Ole:
-            def openstream(self, name):
-                return io.BytesIO(zlib.compress(blobs[int(name.rsplit('/', 1)[1])]))
-            def close(self): pass
-        def summary(i, rec, ole):
-            return {'name': 'same.step', 'has_data': True,
-                    'checksum': models.model_checksum(blobs[i]), 'index': i}
-        with tempfile.TemporaryDirectory() as temp, patch.object(models, '_open', return_value=Ole()), patch.object(models, '_records', return_value=[{}, {}]), patch.object(models, '_summary', side_effect=summary):
-            result = models.extract_embedded_models('fake.PcbLib', temp, per_record_directory=True)
+    def test_duplicate_names_keep_distinct_footprints(self):
+        import asyncio
+        from eda_agent import footprint_export as fe
+        blobs = {'A': b'ISO-10303-21;FIRST', 'B': b'ISO-10303-21;SECOND'}
+
+        async def export(bridge, library, footprint):
+            return {'Primitives': [], 'StepFiles': [{'FILENAME': 'same.step', 'CHECKSUM': 1,
+                    'FILE': base64.b64encode(blobs[footprint]).decode()}]}
+        with tempfile.TemporaryDirectory() as temp, patch.object(fe, 'read_export', side_effect=export):
+            result = asyncio.run(fe.extract_models(None, 'fake.PcbLib', temp, footprints=['A', 'B'],
+                                                   per_footprint_directory=True))
             self.assertTrue(result['ok'], result)
-            self.assertEqual([Path(m['path']).read_bytes() for m in result['written']], blobs)
+            self.assertEqual([Path(m['path']).read_bytes() for m in result['written']],
+                             [blobs['A'], blobs['B']])
             self.assertNotEqual(result['written'][0]['path'], result['written'][1]['path'])
 
 

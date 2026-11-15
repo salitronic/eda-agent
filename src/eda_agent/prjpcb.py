@@ -1,182 +1,149 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Remove the [DocumentN] sections Altium leaves behind in a .PrjPcb.
+"""Finish a document removal Altium's project writer leaves half done.
 
 When a project loses a document, Altium rewrites [Document1]..[DocumentN]
 for the new count and leaves every section past N in the file. Reopening
-the project reads them back, so a removed document returns (issue #94;
-measured on AD 26.11: five sections on disk for one member). Saving
-again does not remove them and the scripting API has no call that does.
+the project reads them back, so a removed document returns (measured on
+AD 26.11). Saving again does not remove them: Altium's writer merges into
+the file already at the target path.
 
-This deletes only those trailing sections, and only when the sections
-that remain name exactly the documents Altium holds in memory, so the
-file ends up saying what Altium already believes. The original is copied
-to a backup first, the new text is written to a temporary file and moved
-into place, and the bytes outside the removed sections are kept as they
-were: encoding, byte-order mark and line endings included.
+Saved to a path with no file, it writes only the documents the project
+holds. So after a removal whose saved file still holds more than that,
+project.rewrite_file has Altium save the project as a copy, check it,
+delete the original and save the project back under its own name.
+
+What the saved file holds is asked of Altium too: it loads a copy of the
+file as a hidden project and the bridge reads the documents off that
+(``file_documents``, full paths of the documents whose files exist; None
+when Altium could not load the copy). Measured on AD 26.11.1.5: after the
+last of A, C, D was removed and saved, the loaded copy held A, C, D; after
+the rewrite it held A, C, and a reopen listed A and C. A copy of a member
+that stays (the shifted section Altium leaves when a document is removed
+from the middle) loads as that one member, so it asks for no rewrite.
+Altium does every write and every read; nothing here opens the file.
 """
 from __future__ import annotations
 
 import os
-import re
-import shutil
-import time
-from pathlib import Path, PureWindowsPath
-from typing import Any, Iterable
-
-from .atomicfile import discard, replace_with_retry
-
-_HEADER = re.compile(r"^\[(?P<name>[^\]\r\n]+)\]\s*$")
-_DOCUMENT = re.compile(r"^Document(?P<n>\d+)$", re.IGNORECASE)
-_BOM = b"\xef\xbb\xbf"
-
-
-def _sections(lines: list[str]) -> list[tuple[str, int, int]]:
-    """(name, first line, end line exclusive) for every [section]."""
-    heads = [(i, m.group("name")) for i, line in enumerate(lines)
-             if (m := _HEADER.match(line))]
-    out = []
-    for k, (start, name) in enumerate(heads):
-        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
-        out.append((name, start, end))
-    return out
-
-
-def _document_path(lines: list[str], start: int, end: int) -> str:
-    for line in lines[start + 1:end]:
-        if line.lower().startswith("documentpath="):
-            return line.split("=", 1)[1].strip()
-    return ""
+from pathlib import PureWindowsPath
+from typing import Any, Optional
 
 
 def _name(path: str) -> str:
     return PureWindowsPath(path).name.lower()
 
 
-def lists_document(project_path: str, document_path: str) -> bool:
-    """Whether any [DocumentN] section of the file names that document."""
-    raw = Path(project_path).read_bytes()
-    text = raw.decode("utf-8-sig", errors="replace")
-    lines = text.splitlines(keepends=True)
-    want = _name(document_path)
-    return any(_DOCUMENT.match(name) and _name(_document_path(lines, s, e)) == want
-               for name, s, e in _sections(lines))
+def leftovers(file_documents: list[str], members: list[str]) -> bool:
+    """Whether the saved file holds anything the project no longer does.
 
-
-def finish_removal(reply: Any, backup_dir: str) -> Any:
-    """Complete a removal Altium could not write to disk.
-
-    A remove reply carries the project path and the members Altium holds.
-    Leftover sections are taken out whether or not they name the removed
-    document: measured, removing from the middle of the list left shifted
-    copies of the LAST member, three of them after three removals. The
-    file is read again and the reply says what it now holds.
+    ``file_documents`` are the documents Altium loaded from the saved file
+    and ``members`` the project's documents with a file on disk (a virtual
+    one such as ActiveBOM.VirtualBOM has none). Compared by file name and
+    count.
     """
-    if not (isinstance(reply, dict) and reply.get("removed")
-            and reply.get("project_path") and isinstance(reply.get("members"), list)):
+    return sorted(_name(p) for p in file_documents) != sorted(_name(m) for m in members)
+
+
+def _removal(reply: Any) -> bool:
+    return (isinstance(reply, dict) and bool(reply.get("removed"))
+            and bool(reply.get("project_path")) and isinstance(reply.get("members"), list))
+
+
+async def finish_removals(bridge, replies: list) -> list:
+    """finish_removal for several removals: one rewrite per project, after
+    its last removal, and each reply told what the file then lists."""
+    last: dict[str, int] = {}
+    for i, reply in enumerate(replies):
+        if _removal(reply):
+            last[os.path.normcase(os.path.normpath(reply["project_path"]))] = i
+    for key, i in last.items():
+        listed = replies[i].get("file_documents")
+        replies[i] = await finish_removal(bridge, replies[i])
+        final = replies[i]
+        after = (final.get("stale_sections") or {}).get("after", listed)
+        for j, reply in enumerate(replies):
+            if j == i or not _removal(reply) or os.path.normcase(
+                    os.path.normpath(reply["project_path"])) != key:
+                continue
+            reply.pop("members", None)
+            reply.pop("file_documents", None)
+            if isinstance(after, list):
+                still = _name(reply.get("document_path", "")) in {_name(p) for p in after}
+                reply["in_project_file"] = still
+                reply["success"] = not still and final.get("success") is not False
+                if reply["success"]:
+                    reply.pop("project_file_entry", None)
+                    reply.pop("reason", None)
+            reply["project_file_finished_by"] = final.get("document_path")
+    return replies
+
+
+def removals_together(command: str, params_of):
+    """A list handler (``bulk_items_by``) for a removal tool: the removals
+    one after another, then the project file rewritten once per project.
+
+    ``params_of(args)`` gives one item's bridge parameters, or None for an
+    item that must run on its own (then the whole list does).
+    """
+    async def handler(items: list, shared: dict) -> Optional[dict[str, Any]]:
+        from .bridge import get_bridge
+        from .tools.bulk import _failed, _item_result
+        calls = [{**shared, **i} for i in items if isinstance(i, dict)]
+        params = [params_of(c) for c in calls]
+        if len(calls) != len(items) or any(p is None for p in params):
+            return None
+        bridge = get_bridge()
+        replies: list = []
+        for p in params:
+            try:
+                replies.append(await bridge.send_command_async(command, p))
+            except Exception as exc:                      # noqa: BLE001
+                replies.append({"success": False, "error": str(exc)})
+        out = [_item_result(r) for r in await finish_removals(bridge, replies)]
+        failed = sum(1 for r in out if _failed(r))
+        return {"bulk": True, "count": len(items), "succeeded": len(items) - failed,
+                "failed": failed, "items": out}
+    return handler
+
+
+async def finish_removal(bridge, reply: Any) -> Any:
+    """Make a removal last: have Altium rewrite the project file when it
+    lists more than the project holds, and report what it lists afterwards."""
+    if not _removal(reply):
+        return reply
+    members = [m for m in reply.pop("members") if m and os.path.exists(m)]
+    listed = reply.pop("file_documents", None)
+    if not isinstance(listed, list) or not leftovers(listed, members):
         return reply
     from .saving import saving_off
     if saving_off():
-        reply.pop("members", None)
-        reply["stale_sections"] = {"pruned": 0, "reason": (
-            "saving is switched off on the bridge dashboard, so the project "
-            "file was not edited")}
+        reply["stale_sections"] = {"rewritten": False, "file_documents": listed,
+                                   "reason": ("saving is switched off on the bridge "
+                                              "dashboard, so the project file was "
+                                              "not rewritten")}
         return reply
+    project_path = reply["project_path"]
     try:
-        pruned = prune_stale_documents(reply["project_path"], reply["members"],
-                                       backup_dir)
-        still = lists_document(reply["project_path"], reply.get("document_path", ""))
-    except OSError as exc:
-        reply["stale_sections"] = {"pruned": 0, "reason": f"could not edit the file: {exc}"}
-        return reply
-    reply.pop("members", None)
-    if pruned.get("pruned") or pruned.get("reason"):
-        reply["stale_sections"] = pruned
-    was_listed = reply.get("in_project_file")
+        done = await bridge.send_command_async(
+            "project.rewrite_file",
+            {"project_path": project_path, "expected_count": str(len(members))}) or {}
+    except Exception as exc:                              # noqa: BLE001
+        done = {"rewritten": False, "reason": str(exc)}
+    after = done.get("file_documents")
+    if not isinstance(after, list):
+        after = listed
+    still = _name(reply.get("document_path", "")) in {_name(p) for p in after}
+    clean = not leftovers(after, members)
+    reply["stale_sections"] = {
+        "rewritten": bool(done.get("rewritten")) and clean,
+        "before": listed, "after": after,
+        **({"copy_kept": done["copy_path"]} if done.get("copy_kept") else {}),
+        **({"reason": done["reason"]} if done.get("reason") else {})}
     reply["in_project_file"] = still
-    if not still:
-        reply["success"] = True
+    reply["success"] = not still and clean
+    if reply["success"]:
         reply.pop("project_file_entry", None)
-        if was_listed:
-            reply["reason"] = (
-                "Altium left the removed entry in the project file; the leftover "
-                "[DocumentN] sections were taken out (backup in stale_sections).")
+        reply["reason"] = ("Altium's save left the removed entries in the project "
+                           "file; Altium wrote it again without them.")
     return reply
-
-
-def prune_stale_documents(project_path: str, members: Iterable[str],
-                          backup_dir: str) -> dict[str, Any]:
-    """Drop [DocumentN] sections past the project's real document count.
-
-    ``members`` are the project's documents as Altium holds them (full
-    paths). Virtual ones with no file on disk (ActiveBOM.VirtualBOM) have
-    no section and are not counted.
-    """
-    path = Path(project_path)
-    real = [m for m in members if m and os.path.exists(m)]
-    keep = len(real)
-    raw = path.read_bytes()
-    bom = raw.startswith(_BOM)
-    try:
-        text = raw[len(_BOM) if bom else 0:].decode("utf-8")
-    except UnicodeDecodeError:
-        return {"pruned": 0, "reason": "the project file is not UTF-8; left as it is"}
-    lines = text.splitlines(keepends=True)
-    sections = _sections(lines)
-
-    docs = []
-    for name, start, end in sections:
-        m = _DOCUMENT.match(name)
-        if m:
-            docs.append((int(m.group("n")), start, end,
-                         _document_path(lines, start, end)))
-    stale = [d for d in docs if d[0] > keep]
-    if not stale:
-        return {"pruned": 0, "kept": keep}
-
-    # THE SAFETY CHECK. The sections that stay must name exactly the
-    # documents Altium holds; anything else means this file is not in the
-    # state this function understands, and it is left alone.
-    kept = sorted(_name(d[3]) for d in docs if d[0] <= keep)
-    want = sorted(_name(m) for m in real)
-    if kept != want or len(kept) != keep:
-        return {"pruned": 0, "kept": keep, "reason": (
-            "the remaining [DocumentN] sections do not match the project's "
-            "documents, so the file was left as it is"),
-            "file_documents": kept, "project_documents": want}
-
-    drop = set()
-    for _, start, end, _ in stale:
-        drop.update(range(start, end))
-    new_text = "".join(line for i, line in enumerate(lines) if i not in drop)
-
-    backup_root = Path(backup_dir)
-    backup_root.mkdir(parents=True, exist_ok=True)
-    # Two removals in one second must not share a backup: the second would
-    # overwrite the copy taken before the first edit.
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = backup_root / f"{path.stem}.{stamp}{path.suffix}"
-    n = 1
-    while backup.exists():
-        n += 1
-        backup = backup_root / f"{path.stem}.{stamp}-{n}{path.suffix}"
-    shutil.copy2(path, backup)
-    tmp = path.with_name(path.name + ".eda-tmp")
-    tmp.write_bytes((_BOM if bom else b"") + new_text.encode("utf-8"))
-    try:
-        replace_with_retry(tmp, path)
-    except OSError:
-        discard(tmp)
-        raise
-    out = {"pruned": len(stale),
-           "removed_sections": [f"Document{d[0]}" for d in stale],
-           "removed_paths": [d[3] for d in stale],
-           "kept": keep, "backup": str(backup)}
-    # A leftover that repeats a document still listed is a copy, not a
-    # second document dropped; say so, or the path reads as a loss.
-    copies = [d[3] for d in stale if _name(d[3]) in set(kept)]
-    if copies:
-        out["duplicates_of_kept"] = copies
-        out["note"] = ("these removed sections repeated documents the project "
-                       "still lists; only the copies went")
-    return out

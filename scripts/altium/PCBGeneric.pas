@@ -715,8 +715,8 @@ End;
 {                                                                            }
 { THE MASK IS REACHED THROUGH IPCB_Pad. IPCB_Via does not expose the cache;   }
 { casting the via to a pad and that to the primitive does (issue #60).       }
-{ Assigning Via.SolderMaskExpansion directly on a board via faults in         }
-{ ScriptingSystem.DLL (PCB_SetViaSoldermaskRelief); the cache route is the    }
+{ Assigning Via.SolderMaskExpansion directly on a board via crashes the       }
+{ scripting engine (PCB_SetViaSoldermaskRelief); the cache route is the       }
 { one that works.                                                            }
 { SolderMaskExpansion is the TOP value once SolderMaskSeparate is true (the   }
 { two sides unlinked); with it false that one value serves both sides and    }

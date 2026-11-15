@@ -287,15 +287,20 @@ def test_keys_that_save(keys, saves):
     assert saving.keys_save(keys) is saves
 
 
-def test_the_project_file_is_not_edited_while_saving_is_off(tmp_path, monkeypatch):
+def test_the_project_file_is_not_rewritten_while_saving_is_off(tmp_path, monkeypatch):
     monkeypatch.setattr(saving, "saving_off", lambda workspace=None: True)
     called = []
-    monkeypatch.setattr(prjpcb, "prune_stale_documents",
-                        lambda *a, **k: called.append(a) or {"pruned": 1})
-    reply = {"removed": True, "project_path": str(tmp_path / "x.PrjPcb"), "members": []}
-    out = prjpcb.finish_removal(reply, str(tmp_path))
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            called.append(command)
+            return {}
+    reply = {"removed": True, "project_path": str(tmp_path / "x.PrjPcb"),
+             "members": [], "file_documents": ["Gone.SchDoc"]}
+    import asyncio
+    out = asyncio.run(prjpcb.finish_removal(Bridge(), reply))
     assert called == []
-    assert out["stale_sections"]["pruned"] == 0
+    assert out["stale_sections"]["rewritten"] is False
     assert "switched off" in out["stale_sections"]["reason"]
 
 
@@ -312,7 +317,43 @@ def test_every_python_write_path_asks_the_switch():
     detach = app.split("async def app_detach(", 1)[1].split("@mcp.tool()", 1)[0]
     assert '"not_saved"' in detach          # a stop that held edits back says so
     restore = app.split("async def app_restore_checkpoint(", 1)[1].split("@mcp.tool()", 1)[0]
-    assert restore.index("saving_off()") < restore.index("store.restore(")
+    assert restore.index("saving_off()") < restore.index("await put_back(")
     sim = (src / "tools" / "sim.py").read_text(encoding="utf-8")
     change = sim.split("async def _change_simcfg(", 1)[1].split("\nasync def ", 1)[0]
     assert change.index("saving_off()") < change.index("write_simcfg(")
+    project = (src / "tools" / "project.py").read_text(encoding="utf-8")
+    outjob = project.split("async def proj_create_outjob(", 1)[1].split("@mcp.tool()", 1)[0]
+    assert outjob.index("saving_off()") < outjob.index('open(staged, "wb")')
+    # The project's file is the one Altium saves, never one written here.
+    assert '"application.save_document_copy"' in outjob
+    assert "open(target" not in outjob and "replace_with_retry" not in outjob
+
+
+def test_no_outjob_is_written_while_saving_is_off(tmp_path, monkeypatch):
+    from eda_agent.tools import project as project_tools
+
+    source = tmp_path / "Mine.OutJob"
+    source.write_text("[OutputJobFile]\nVersion=1.0\n", encoding="utf-8")
+    monkeypatch.setattr(saving, "saving_off", lambda workspace=None: True)
+    called = []
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            called.append(command)
+            return {}
+    monkeypatch.setattr(project_tools, "get_bridge", lambda: Bridge())
+    tools = {}
+
+    class Mcp:
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return register
+    project_tools.register_project_tools(Mcp())
+    import asyncio
+    out = asyncio.run(tools["proj_create_outjob"](
+        str(tmp_path / "Board.PrjPcb"), source_outjob=str(source), outjob_name="New"))
+    assert out["error"] == "SAVING_OFF" and "nothing was written" in out["message"]
+    assert called == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Mine.OutJob"]

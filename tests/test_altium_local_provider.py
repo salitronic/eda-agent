@@ -13,10 +13,8 @@ unreachable. That matters more than it looks: with the registry
 unconfigured and EasyEDA's search endpoint withdrawn upstream, the
 remote sources answer very little.
 
-Most assertions here run on a synthetic root rather than the binary
-fixture, because ``EDAAgentTest_ICs.SchLib`` is local-only and absent
-from a fresh clone. The one test that needs a real OLE library skips
-when it is missing, the same way ``test_fileio_schdoc.py`` does.
+Altium reads the libraries (``library.get_components``); here a
+stand-in answers for it, over a synthetic root.
 """
 
 from __future__ import annotations
@@ -31,10 +29,6 @@ from eda_agent.libimport.providers.base import (
     ProviderError,
     ProviderUnavailable,
 )
-
-_FIXTURE = (pathlib.Path(__file__).resolve().parents[1]
-            / "tests" / "integration" / "fixtures"
-            / "EDAAgentTest_ICs.SchLib")
 
 
 def test_no_libraries_is_unavailable_not_empty(tmp_path, monkeypatch):
@@ -55,16 +49,57 @@ def test_no_libraries_is_unavailable_not_empty(tmp_path, monkeypatch):
         "the setting took effect")
 
 
+class _Altium:
+    """Altium's library reader, answering from a table of libraries."""
+
+    def __init__(self, libraries, running=True):
+        self.libraries, self.running, self.sent = libraries, running, []
+
+    def is_altium_running(self):
+        return self.running
+
+    def send_command(self, command, params=None, timeout=None):
+        self.sent.append((command, params))
+        name = pathlib.Path(params["library_path"]).name
+        if name not in self.libraries:
+            raise RuntimeError("READ_FAILED")
+        return {"components": self.libraries[name]}
+
+
+def _libraries(tmp_path, monkeypatch, altium, *names):
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    monkeypatch.setenv("EDA_AGENT_ALTIUM_LIBRARIES", str(tmp_path))
+    import eda_agent.bridge
+    monkeypatch.setattr(eda_agent.bridge, "get_bridge", lambda: altium)
+
+
+_ICS = [{"name": "TPS54331D", "description": "Buck DC-DC converter"},
+        {"name": "SS14", "description": "Schottky diode 1 A 40 V"}]
+
+
 def test_an_unreadable_library_does_not_hide_the_others(tmp_path,
                                                         monkeypatch):
     """A corrupt or locked file is normal on a shared library drive."""
-    (tmp_path / "Broken.SchLib").write_text("not an OLE file",
-                                            encoding="utf-8")
-    monkeypatch.setenv("EDA_AGENT_ALTIUM_LIBRARIES", str(tmp_path))
+    altium = _Altium({"ICs.SchLib": _ICS})
+    _libraries(tmp_path, monkeypatch, altium, "Broken.SchLib", "ICs.SchLib")
+    hits = AltiumLocalProvider().search("", limit=20)
+    assert [h.extra["component"] for h in hits] == ["TPS54331D", "SS14"]
+    assert [c for c, _ in altium.sent] == ["library.get_components"] * 2
 
-    # The broken file is skipped rather than raising: with only a broken
-    # one present the result is empty, but the call still completes.
-    assert AltiumLocalProvider().search("x") == []
+
+def test_without_altium_it_is_unavailable(tmp_path, monkeypatch):
+    _libraries(tmp_path, monkeypatch, _Altium({}, running=False), "ICs.SchLib")
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        AltiumLocalProvider().search("x")
+    assert "Altium is not running" in str(excinfo.value)
+
+
+def test_the_libraries_are_never_opened_here():
+    from eda_agent.libimport.providers import altium_local
+    src = pathlib.Path(altium_local.__file__).read_text(encoding="utf-8")
+    for call in ("olefile", "read_bytes", "open(", "fileio"):
+        assert call not in src, call
 
 
 def test_the_roots_are_configurable_and_not_a_whole_drive_scan(monkeypatch):
@@ -99,19 +134,12 @@ def test_it_offers_no_download_format():
     assert provider.usable_in == ("altium",)
 
 
-@pytest.mark.skipif(not _FIXTURE.exists(),
-                    reason="needs the local-only binary fixture "
-                           "EDAAgentTest_ICs.SchLib")
-def test_it_reads_a_real_schlib(monkeypatch):
-    """The claim that matters, against a real OLE compound file."""
-    monkeypatch.setenv("EDA_AGENT_ALTIUM_LIBRARIES", str(_FIXTURE.parent))
+def test_it_lists_what_altium_reads(tmp_path, monkeypatch):
+    _libraries(tmp_path, monkeypatch, _Altium({"EDAAgentTest_ICs.SchLib": _ICS}),
+               "EDAAgentTest_ICs.SchLib")
     provider = AltiumLocalProvider()
 
     hits = provider.search("", limit=20)
-    assert hits, "the fixture library has components"
-    names = {h.extra["component"] for h in hits}
-    assert "TPS54331D" in names
-
     one = next(h for h in hits if h.extra["component"] == "TPS54331D")
     assert one.provider == "altium_local"
     assert one.part_id == "EDAAgentTest_ICs.SchLib::TPS54331D"
@@ -123,10 +151,9 @@ def test_it_reads_a_real_schlib(monkeypatch):
     assert detail["files"] == {}, "nothing is downloaded"
 
 
-@pytest.mark.skipif(not _FIXTURE.exists(),
-                    reason="needs the local-only binary fixture")
-def test_search_filters_on_name_and_description(monkeypatch):
-    monkeypatch.setenv("EDA_AGENT_ALTIUM_LIBRARIES", str(_FIXTURE.parent))
+def test_search_filters_on_name_and_description(tmp_path, monkeypatch):
+    _libraries(tmp_path, monkeypatch, _Altium({"EDAAgentTest_ICs.SchLib": _ICS}),
+               "EDAAgentTest_ICs.SchLib")
     provider = AltiumLocalProvider()
 
     by_name = provider.search("TPS54331", limit=20)

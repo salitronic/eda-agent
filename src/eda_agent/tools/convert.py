@@ -390,11 +390,13 @@ def register_convert_tools(mcp):
         kicad_cli: str = "",
         remove_title_block: bool = True,
     ) -> dict[str, Any]:
-        """Convert an Altium project into a clean KiCad project.
+        """Export a KiCad copy of an Altium project, for sharing or review.
 
-        KiCad's own Altium importer brings the project in (kicad.exe is
-        driven through its import dialogs). The result is then made into
-        a project to keep:
+        For handing a design to someone who works in KiCad, or reading it
+        there; the Altium project stays the design. KiCad's own Altium
+        importer brings the project in (kicad.exe is driven through its
+        import dialogs). The copy is then tidied so it can be used as it
+        is:
         - one symbol per part in project libraries;
         - power ports as power symbols;
         - Value, Footprint and Datasheet filled in;

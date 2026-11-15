@@ -3,9 +3,8 @@
 """pcb_set_via_soldermask_relief writes through the via's pad cache.
 
 Measured on AD 26.10.1.6, one via on a scratch board, each write in its
-own call: assigning SolderMaskExpansion straight onto the IPCB_Via raised
-an access violation in ScriptingSystem.DLL (read of address 0x38), as it
-had twice in 2026-09. SolderMaskExpansionFromHoleEdge assigned on the via
+own call: assigning SolderMaskExpansion straight onto the IPCB_Via crashed
+the scripting engine, as it had twice in 2026-09. SolderMaskExpansionFromHoleEdge assigned on the via
 took, and the expansion written into the via's TPadCache (GetState_Cache,
 change, SetState_Cache) took on both sides and read back the same through
 the via and through a pad-typed variable. The tool had been refusing

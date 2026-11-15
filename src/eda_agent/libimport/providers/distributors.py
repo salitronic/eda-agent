@@ -190,9 +190,10 @@ class NexarProvider(DistributorProvider):
 
     name = "nexar"
     description = (
-        "Nexar (Octopart) aggregator: MPN, datasheet and offers across "
-        "many distributors at once. Identity only, no symbol or "
-        "footprint. Needs NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET.")
+        "Nexar (Octopart) part search: MPN, manufacturer, description "
+        "and datasheet link. Identity only: no prices, stock, symbol or "
+        "footprint. Needs NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET from "
+        "your own Nexar app, whose API terms are yours to keep.")
     env_vars = ("NEXAR_CLIENT_ID", "NEXAR_CLIENT_SECRET")
 
     _TOKEN_URL = "https://identity.nexar.com/connect/token"

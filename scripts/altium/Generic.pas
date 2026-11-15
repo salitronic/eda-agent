@@ -5806,7 +5806,7 @@ Begin
             End;
         End;
         ResetParameters;
-        { "board" is View > Fit Board (AdvPcb.rcs PLPCB:ViewFitBoard): the  }
+        { "board" is View > Fit Board (Action=Document, Target=Board): the  }
         { board alone, not the parts parked beside it. A schematic has no   }
         { board, so it fits the sheet's objects as "fit" does.              }
         If (Action = 'board') And (FocusedKind = 'PCB') Then

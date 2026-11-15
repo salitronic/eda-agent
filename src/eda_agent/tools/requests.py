@@ -239,7 +239,7 @@ BUILT_IN: tuple[Request, ...] = (
     Request(
         name="convert_to_kicad",
         title="Convert to KiCad",
-        description="The open Altium project as a clean KiCad project, checked pin by pin.",
+        description="A KiCad copy of the open Altium project, for sharing or review, checked pin by pin.",
         text=("Convert the open Altium project into a KiCad project in {folder}. "
               "Report what each step did and whether the schematic, the board and "
               "Altium's own netlist still put the same pins together. Then list "

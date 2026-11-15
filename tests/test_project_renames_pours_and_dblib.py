@@ -272,7 +272,9 @@ def test_a_body_centre_needs_the_body_and_is_checked_after_the_move(monkeypatch,
     answer = {"after": [{"index": 1, "center_x_mils": 10.0, "center_y_mils": -5.5}]}
     tools, bridge = _registered(library, "register_library_tools", monkeypatch,
                                 {"library.set_3d_body": answer})
-    monkeypatch.setattr(library.pcblib_models, "saved_body_models", lambda *a: [])
+    async def no_export(*a):
+        raise library.footprint_export.ExportFailed("not exported in this test")
+    monkeypatch.setattr(library.footprint_export, "read_export", no_export)
     no_body = asyncio.run(tools["lib_set_3d_body"](footprint_name="F", library_path=str(lib),
                                                    center_x=10))
     assert no_body["ok"] is False and not bridge.sent

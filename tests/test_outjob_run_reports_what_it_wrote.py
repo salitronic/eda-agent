@@ -193,15 +193,19 @@ OutputBasePath2=Project Outputs\PDF
 class _DialogBridge:
     """Writes the files, then the call is blocked by an error dialog."""
 
-    def __init__(self, writes):
+    def __init__(self, writes, root=None):
         self.writes = writes
+        self.root = Path(root) if root else None
 
     async def send_command_async(self, command, params=None, timeout=None):
         from eda_agent.bridge.exceptions import AltiumTimeoutError
 
         if command == "project.get_outjob_containers":
-            return {"containers": [{"name": "Fabrication Files"},
-                                   {"name": "Docs"}]}
+            # Each container's folder, as Altium's OutJob API reports it.
+            def folder(sub):
+                return str(self.root / "Project Outputs" / sub) + "\\" if self.root else ""
+            return {"containers": [{"name": "Fabrication Files", "output_dir": folder("GERBER")},
+                                   {"name": "Docs", "output_dir": folder("PDF")}]}
         for path in self.writes:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_text("G04*", encoding="utf-8")
@@ -231,7 +235,7 @@ def test_an_inactive_outjob_is_named_as_the_cause(tmp_path, tools):
 def test_files_written_before_a_dialog_are_reported(tmp_path, tools):
     outjob = _outjob(tmp_path)
     gerber = tmp_path / "Project Outputs" / "GERBER" / "board.GTL"
-    out = asyncio.run(tools(_DialogBridge([gerber]))["proj_run_outjob"](
+    out = asyncio.run(tools(_DialogBridge([gerber], tmp_path))["proj_run_outjob"](
         container_name="Fabrication Files", outjob_path=str(outjob)))
     assert out["success"] is True
     assert out["files_written"] == 1
@@ -242,17 +246,17 @@ def test_files_written_before_a_dialog_are_reported(tmp_path, tools):
 
 def test_a_dialog_with_nothing_written_is_a_failure(tmp_path, tools):
     outjob = _outjob(tmp_path)
-    out = asyncio.run(tools(_DialogBridge([]))["proj_run_outjob"](
+    out = asyncio.run(tools(_DialogBridge([], tmp_path))["proj_run_outjob"](
         container_name="Fabrication Files", outjob_path=str(outjob)))
     assert out["success"] is False
     assert "Nothing new" in out["reason"]
 
 
 def test_the_output_folder_is_read_per_medium(tmp_path, tools):
-    """OutputBasePathJ belongs to the J-th medium, as the handler reads it."""
+    """Each container's folder is the one Altium reports for it."""
     outjob = _outjob(tmp_path)
     pdf = tmp_path / "Project Outputs" / "PDF" / "board.pdf"
-    out = asyncio.run(tools(_DialogBridge([pdf]))["proj_run_outjob"](
+    out = asyncio.run(tools(_DialogBridge([pdf], tmp_path))["proj_run_outjob"](
         container_name="Docs", outjob_path=str(outjob)))
     assert out["written"] == [str(pdf)]
 
@@ -260,14 +264,14 @@ def test_the_output_folder_is_read_per_medium(tmp_path, tools):
 def test_run_all_stops_at_a_dialog(tmp_path, tools):
     outjob = _outjob(tmp_path)
     gerber = tmp_path / "Project Outputs" / "GERBER" / "board.GTL"
-    out = asyncio.run(tools(_DialogBridge([gerber]))["proj_run_outjob_all"](
+    out = asyncio.run(tools(_DialogBridge([gerber], tmp_path))["proj_run_outjob_all"](
         outjob_path=str(outjob)))
     assert [r["container"] for r in out["results"]] == ["Fabrication Files"]
     assert out["not_run"] == ["Docs"]
     assert out["results"][0]["ok"] is True
     assert "dialog" in out["results"][0]["reason"]
 
-    out = asyncio.run(tools(_DialogBridge([gerber]))[
+    out = asyncio.run(tools(_DialogBridge([gerber], tmp_path))[
         "proj_generate_fab_package"](outjob_path=str(outjob)))
     assert out["ok"] is False
     assert out["not_run"] == ["Docs"]

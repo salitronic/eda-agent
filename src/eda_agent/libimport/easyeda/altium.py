@@ -43,6 +43,7 @@ from eda_agent.bridge.payload import unsendable_chars
 from eda_agent.libimport.easyeda.document import EasyEdaComponent
 from eda_agent.libimport.easyeda.geometry import svg_arc_to_center
 from eda_agent.libimport.easyeda.shapes import PIN_ELECTRIC
+from eda_agent.units import MM_PER_MIL
 
 __all__ = ["build_altium_plan"]
 
@@ -550,7 +551,7 @@ def _length(exact: bool):
     """A neutral length (mils) as a footprint tool takes it: whole mils,
     or with ``exact`` millimetres unrounded (the step then says so)."""
     if exact:
-        return lambda v: round(float(v) * 0.0254, 6)
+        return lambda v: round(float(v) * MM_PER_MIL, 6)
     return lambda v: int(round(v))
 
 

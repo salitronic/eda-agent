@@ -634,13 +634,12 @@ def register_route_tools(mcp):
             brief_mod.record_decisions(expect_file, decided)
             out["decisions"] = decided
         if checkpoint:
-            from ..checkpoint import CheckpointStore
+            from ..checkpoint import CheckpointStore, take
             from ..config import get_config
             cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
-            info = cp.create(Path(expect_file).parent, label=f"before pcb_autoroute_apply {job_id}")
+            info = await take(bridge, cp, Path(expect_file).parent,
+                              label=f"before pcb_autoroute_apply {job_id}")
             out["checkpoint"] = info.summary()
-            out["notes"].append("The checkpoint holds the board folder as it was on disk; "
-                                "unsaved editor changes are not in it.")
         placed = {"tracks": {"placed": 0, "failed": 0}, "vias": {"placed": 0, "failed": 0}}
         tracks = result.get("tracks") or []
         for i in range(0, len(tracks), APPLY_CHUNK):
@@ -898,13 +897,12 @@ def register_route_tools(mcp):
                              "nothing was moved"}
         out: dict[str, Any] = {"notes": list(result.get("notes") or [])}
         if checkpoint:
-            from ..checkpoint import CheckpointStore
+            from ..checkpoint import CheckpointStore, take
             from ..config import get_config
             cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
-            info = cp.create(Path(expect_file).parent, label=f"before pcb_autoplace_apply {job_id}")
+            info = await take(bridge, cp, Path(expect_file).parent,
+                              label=f"before pcb_autoplace_apply {job_id}")
             out["checkpoint"] = info.summary()
-            out["notes"].append("The checkpoint holds the board folder as it was on disk; "
-                                "unsaved editor changes are not in it.")
         moves = result.get("moves") or []
         moved = failed = 0
         for i in range(0, len(moves), APPLY_CHUNK):

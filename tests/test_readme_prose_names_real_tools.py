@@ -59,6 +59,7 @@ NOT_TOOLS: dict[str, str] = {
     "sch_only": "a reply field of the schematic/PCB comparison",
     "sch_libs": "a reply field of lib_extract_intlib",
     "pcb_libs": "a reply field of lib_extract_intlib",
+    "sch_arc": "an object_type of obj_query",
     # The namespace PREFIXES, which the readme names when explaining
     # that a tool's prefix tells you which document it acts on. They
     # end in an underscore precisely because they are not whole names.

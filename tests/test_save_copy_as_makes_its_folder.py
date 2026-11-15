@@ -39,3 +39,37 @@ def test_a_missing_folder_is_made_and_named(monkeypatch, tmp_path):
     out = asyncio.run(tools["pcb_save_copy_as"](str(target)))
     assert out["written"] is True
     assert out["created_folder"] == str(target.parent)
+
+
+def test_the_backup_of_an_existing_target_is_altiums_save(monkeypatch, tmp_path):
+    target = tmp_path / "Copy.PcbDoc"
+    target.write_bytes(b"old")
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            if params.get("check_only"):
+                return {"target_exists": True}
+            sent.append(dict(params))
+            return {"written": True, "backup": params.get("backup_path", "")}
+
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def reg(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return reg
+
+        def __getattr__(self, n):
+            return lambda *a, **k: (lambda fn: fn)
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: _Bridge())
+    pcb_tools.register_pcb_tools(_Mcp())
+    out = asyncio.run(tools["pcb_save_copy_as"](str(target)))
+    assert sent[0]["backup_path"] == str(target) + ".bak"
+    assert out["backup"] == str(target) + ".bak"
+    assert not (tmp_path / "Copy.PcbDoc.bak").exists(), "the tool copied the file itself"
+    asyncio.run(tools["pcb_save_copy_as"](str(target), backup=False))
+    assert "backup_path" not in sent[1]

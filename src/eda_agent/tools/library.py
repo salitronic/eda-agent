@@ -13,7 +13,7 @@ from ..bridge import get_bridge
 from ..preferences import if_the_user_insists
 from ..bridge.path_spelling import same_file
 from ..bridge.payload import payload_safe
-from ..fileio import pcblib_models
+from .. import footprint_export
 from ..libimport import extract_cse_zip, inspect_cse_zip
 from ..library_db import (
     dblib_path_refusal, is_dblib_path, redact_connection_text, redact_reply,
@@ -2241,6 +2241,9 @@ def register_library_tools(mcp):
             datasheet: ``{path, page}`` of the pin table. Every pin's
                 number and name must be printed together in it, or the
                 symbol is not built; pins named only by number skip it.
+                A table with a pin-number column per package also takes
+                ``package_column``, the package as the table heads its
+                column ("LQFP48"): only that column's numbers are read.
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
@@ -2368,7 +2371,7 @@ def register_library_tools(mcp):
                 pins, at the same place on each, and every body is made
                 as wide and tall as needed to hold them.
             datasheet: ``{path, page}`` of the pin table, checked as
-                lib_create_ic_symbol checks it.
+                lib_create_ic_symbol checks it (``package_column`` too).
 
         Returns:
             ``symbol``, ``part_count``, ``parts`` (pins and body per part),
@@ -2676,7 +2679,8 @@ def register_library_tools(mcp):
                 go on the symbol's current part.
             datasheet: ``{path, page}`` of the pin table. Needed for pins
                 going into a symbol lib_create_symbol has just made: they
-                are checked as lib_create_ic_symbol checks its pins.
+                are checked as lib_create_ic_symbol checks its pins
+                (``package_column`` too).
             grid: mils the pins' x, y and length snap to (default 100);
                 1 keeps them exactly as given.
 
@@ -5113,13 +5117,15 @@ def register_library_tools(mcp):
         ``lib_dblib_get_record`` and ``sch_place_dblib_component`` take.
         The password is never returned (``redacted``, ``has_password``).
         ``key_field_source`` says how the key was found; ``first_column``
-        is a guess.
+        is a guess. Altium answers for the library; the file is not
+        opened. A library that is not installed is installed for the read
+        and uninstalled after it.
 
         Args:
             library_path: Full path of the .DbLib (or .SVNDbLib);
                 lib_get_installed_libraries lists installed ones.
             with_fields: Connect read-only to list each table's columns
-                (default True). False reads the file only.
+                (default True). False asks Altium only.
 
         Returns:
             {"library_path", "connection": {"provider", "kind" (access /
@@ -5130,7 +5136,7 @@ def register_library_tools(mcp):
             "key_field_found", "symbol_ref_field", "symbol_library_field",
             "description_field", "footprint_fields": [{"ref_field",
             "library_field"}], "fields" (null when not read), "field_count",
-            "error", "settings"}], "sections", "fields_included",
+            "error", "settings"}], "fields_included",
             "connected" (null when no connection was attempted)}.
         """
         refusal = dblib_path_refusal(library_path)
@@ -7804,9 +7810,9 @@ def register_library_tools(mcp):
         ``footprint_name`` to read every body.
 
         ON A STEP BODY THE STANDOFF IS THE MODEL'S Z OFFSET. Writing it
-        also writes the model's rotations, taken from the SAVED library
-        file, so a rotation changed in the editor and not saved is
-        reverted. A STEP body the saved file does not hold is ``skipped``.
+        also writes the model's rotations, read from Altium's export of
+        the footprint as it is now, unsaved edits included. A STEP body
+        the export does not hold is ``skipped``.
 
         Args:
             footprint_name: The footprint whose bodies to edit. Required.
@@ -7838,11 +7844,11 @@ def register_library_tools(mcp):
             touched with ``center_x_mils`` / ``center_y_mils``, read
             back from Altium (for a STEP body
             ``standoff_height_mils`` is the unused body field).
-            ``saved_bodies`` is each body as the saved file has it, with
+            ``exported_bodies`` is each body as Altium exports it, with
             ``model_z_offset_mils`` and ``rotation_deg``.
             ``model_z_offset_written`` lists the STEP bodies whose Z
-            offset was written; save the library, then read again, to see
-            it in ``saved_bodies``. ``skipped``: bodies left alone, why.
+            offset was written; read again to see it in
+            ``exported_bodies``. ``skipped``: bodies left alone, why.
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
@@ -7889,28 +7895,28 @@ def register_library_tools(mcp):
             params["library_path"] = path
         bridge = get_bridge()
 
-        def saved_bodies(lib: str) -> Optional[list[dict[str, Any]]]:
-            if not lib or not Path(lib).is_file():
+        async def exported_bodies(lib: str) -> Optional[list[dict[str, Any]]]:
+            if not lib:
                 return None
             try:
-                return pcblib_models.saved_body_models(lib, params["footprint_name"])
-            except (OSError, ValueError):
+                return footprint_export.body_models(await footprint_export.read_export(
+                    bridge, lib, params["footprint_name"]))
+            except footprint_export.ExportFailed:
                 return None
 
-        saved = None
         if "standoff_height" in params:
             if not path:
-                # The rotations come from the saved file: find which is in front.
+                # The rotations come from Altium's export: find which is in front.
                 read = await bridge.send_command_async(
                     "library.set_3d_body", {"footprint_name": params["footprint_name"]},
                     timeout=60.0)
                 path = read.get("library", "") if isinstance(read, dict) else ""
-            saved = saved_bodies(path)
-            if saved is not None:
-                params["saved_count"] = str(len(saved))
+            bodies = await exported_bodies(path)
+            if bodies is not None:
+                params["saved_count"] = str(len(bodies))
                 params["saved_models"] = "|".join(
                     f"{b['model_file']}|{b['model_type']}|{b['rotation_deg'][0]}"
-                    f"|{b['rotation_deg'][1]}|{b['rotation_deg'][2]}" for b in saved)
+                    f"|{b['rotation_deg'][1]}|{b['rotation_deg'][2]}" for b in bodies)
         reply = await bridge.send_command_async(
             "library.set_3d_body", params, timeout=60.0)
         if isinstance(reply, dict) and ("center_x" in params or "center_y" in params):
@@ -7921,10 +7927,9 @@ def register_library_tools(mcp):
                                           - float(params[key])) < 0.01
                 for key in ("center_x", "center_y"))
         if isinstance(reply, dict):
-            if saved is None and "standoff_height" not in params:
-                saved = saved_bodies(path or reply.get("library", ""))
-            if saved is not None:
-                reply["saved_bodies"] = [dict(b, index=i) for i, b in enumerate(saved, 1)]
+            now = await exported_bodies(path or reply.get("library", ""))
+            if now is not None:
+                reply["exported_bodies"] = [dict(b, index=i) for i, b in enumerate(now, 1)]
         return reply
 
     @mcp.tool()
@@ -8733,59 +8738,45 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Get back the ORIGINAL 3D model files (STEP) embedded in a .PcbLib.
 
-        Byte for byte, each checked against the checksum Altium stored.
-        Read from the saved library file (never written), so a model not
-        saved yet is not there.
+        Byte for byte, as Altium exports them: each footprint is exported
+        by Altium (its own JSON export, unsaved edits included) and the
+        model files it carries are written out. The library is not saved.
 
-        With ``footprint_name``, Altium is asked which model files that
-        footprint's bodies use and only those are extracted; with
-        ``model_names``, those; otherwise every embedded model.
+        With ``footprint_name``, that footprint's models; with
+        ``model_names``, only those; otherwise every footprint's.
 
         Args:
-            library_path: The .PcbLib on disk.
-            footprint_name: Extract only this footprint's models (asks
-                Altium, so the library must be reachable over the bridge).
+            library_path: The .PcbLib.
+            footprint_name: Extract only this footprint's models.
             model_names: Model file names, e.g. ["NE555DR.stp"].
             out_dir: Folder to write to (default: the workspace's
                 models/<library name>).
             overwrite: Replace files already there.
 
         Returns:
-            ``written`` [{name, path, bytes, sha256, checksum_verified,
+            ``written`` [{name, footprint, path, bytes, sha256, checksum,
             step_header, rotation_deg}], ``refused`` [{name, reason}],
-            ``not_in_saved_file`` (asked for, not in the saved file).
+            ``not_found`` (asked for, used by no footprint exported).
         """
         path = Path(library_path)
         if not path.is_file():
             return {"ok": False, "reason": f"no such library file: {library_path}"}
-        names = list(model_names or [])
-        asked_altium = None
+        bridge = get_bridge()
         if footprint_name:
-            prims = await get_bridge().send_command_async(
-                "library.get_footprint_primitives",
-                {"footprint_name": footprint_name, "library_path": str(path)})
-            if not isinstance(prims, dict) or "body_models" not in prims:
-                return {"ok": False, "reason": "Altium could not list the "
-                        "footprint's 3D bodies", "altium": prims}
-            from_altium = [b.get("model_file", "") for b in prims["body_models"]
-                           if b.get("has_model") and b.get("model_file")]
-            asked_altium = from_altium
-            if not from_altium:
-                return {"ok": False, "reason": f"{footprint_name} has no 3D "
-                        f"model, only simple bodies", "body_models": prims["body_models"]}
-            # Altium's names are Windows paths whatever runs this.
-            names += [re.split(r"[\\/]", n)[-1] for n in from_altium]
+            footprints = [footprint_name]
+        else:
+            listed = await bridge.send_command_async(
+                "library.get_footprints", {"library_path": str(path)}) or {}
+            footprints = [f.get("name", "") for f in listed.get("footprints") or []
+                          if f.get("name")]
+            if not footprints:
+                return {"ok": False, "reason": "Altium listed no footprints in the library",
+                        "altium": listed}
         target = Path(out_dir) if out_dir else (
-            Path(get_bridge().config.workspace_dir) / "models" / path.stem)
-        try:
-            got = pcblib_models.extract_embedded_models(
-                path, target, names=names or None, overwrite=overwrite)
-        except ValueError as exc:
-            return {"ok": False, "reason": str(exc)}
-        if asked_altium is not None:
-            got["footprint"] = footprint_name
-            got["altium_model_files"] = asked_altium
-        return got
+            Path(bridge.config.workspace_dir) / "models" / path.stem)
+        return await footprint_export.extract_models(
+            bridge, str(path), target, footprints=footprints,
+            names=list(model_names or []) or None, overwrite=overwrite)
 
     async def _live_footprint(footprint_name: str, library_path: str,
                               courtyard_layer: str, assembly_layer: str):

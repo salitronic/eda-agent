@@ -3,8 +3,9 @@
 """The DbLib helpers in Library.pas, compiled and run under Free Pascal.
 
 These are the parts of the DbLib support that decide what reaches the
-database and what reaches the caller: the .DbLib file parser (which table,
-which key column), the connection-string tokenizer behind Mode=Read and
+database and what reaches the caller: the reader of the definition lines
+that DbLibDefinition sets down from Altium's answers (which table, which
+key column), the connection-string tokenizer behind Mode=Read and
 password redaction, and DbLibQuoteIdent, the only way a name gets into a
 SELECT. Altium cannot run here; FPC can run the very same routines, copied
 out of Library.pas by name, so a change to any of them is tested as
@@ -163,7 +164,7 @@ def _check(tmp_path, cases):
         assert got == want, f"{expr}\n  want {want!r}\n  got  {got!r}"
 
 
-def test_the_dblib_file_parser_finds_tables_settings_and_mappings(tmp_path):
+def test_the_definition_reader_finds_tables_settings_and_mappings(tmp_path):
     _check(tmp_path, [
         ("DbLibGlobalValue(L, 'ConnectionString')", _DBLIB_FILE[3].split("=", 1)[1]),
         ("DbLibGlobalValue(L, 'LeftQuote')", "["),

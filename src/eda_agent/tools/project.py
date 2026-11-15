@@ -12,6 +12,8 @@ from .bulk_hints import BulkHintTracker
 from ..export.variant_bom import apply_variant, find_variant
 from ..ui import change_order
 from .answering import send_answering
+from .bulk import bulk_items_by
+from ..prjpcb import removals_together
 
 
 def _rows(result: Any, key: str) -> list:
@@ -21,6 +23,17 @@ def _rows(result: Any, key: str) -> list:
             rows = inner.get(key)
             return rows if isinstance(rows, list) else []
     return []
+
+
+def _removal_params(args: dict) -> Optional[dict[str, str]]:
+    """proj_remove_document's bridge parameters for one list item; None
+    when the item keeps its removal unsaved, which runs on its own."""
+    if args.get("save_project") is False or not args.get("document_path"):
+        return None
+    params = {"document_path": args["document_path"]}
+    if args.get("project_path"):
+        params["project_path"] = args["project_path"]
+    return params
 
 
 async def _pair_names(bridge) -> set:
@@ -682,6 +695,7 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    @bulk_items_by(removals_together("project.remove_document", _removal_params))
     async def proj_remove_document(
         document_path: str,
         project_path: Optional[str] = None,
@@ -691,9 +705,12 @@ def register_project_tools(mcp):
 
         Note: This only removes the document from the project, it doesn't delete the file.
 
-        The project file is saved and read back, and leftover [DocumentN]
-        sections past the new count are taken out (after a backup), since
-        a removal held only in memory comes back on reopen.
+        The project file is saved and read back. Altium's save keeps the
+        old [DocumentN] sections, so a removed document would come back
+        on reopen. When the file lists more than the project holds,
+        Altium saves the project as a copy, the original is deleted and
+        Altium saves the project back onto no file, which writes only its
+        documents. No dialog. A list of items rewrites the file once.
 
         Args:
             document_path: Full path to the document to remove
@@ -705,9 +722,10 @@ def register_project_tools(mcp):
             ``removed`` (gone from the project in memory),
             ``project_saved``, ``in_project_file`` (the file on disk
             still lists it, with ``project_file_entry``) and
-            ``stale_sections`` when leftovers were taken out (with the
-            backup path). ``success`` is true only when the file no longer
-            lists it.
+            ``stale_sections`` when the file was rewritten (``before``,
+            ``after``, ``copy_kept`` naming the copy when the rewrite
+            could not finish). ``success`` is true only
+            when the file no longer lists it.
         """
         bridge = get_bridge()
         params = {"document_path": document_path}
@@ -717,10 +735,8 @@ def register_project_tools(mcp):
             params["save_project"] = "false"
         result = await bridge.send_command_async("project.remove_document", params)
         if save_project:
-            from ..config import get_config
             from ..prjpcb import finish_removal
-            result = finish_removal(
-                result, str(get_config().workspace_dir / "backups" / "prjpcb"))
+            result = await finish_removal(bridge, result)
         return result
 
     @mcp.tool()
@@ -1747,15 +1763,17 @@ def register_project_tools(mcp):
         It invents no outputs: it copies an existing OutJob (the user's
         own, or one Altium ships), points each output at this project's
         documents, writes every container to ``output_dir``, and adds the
-        copy to the project. Run it afterwards with proj_run_outjob or
-        proj_generate_fab_package.
+        copy to the project. Altium saves the project's file itself, so
+        when Altium does not save, the project gets none. Run it afterwards
+        with proj_run_outjob or proj_generate_fab_package.
 
         ASK THE USER FIRST. With no ``source_outjob`` nothing is written:
         the reply lists the OutJobs found in open projects. Ask the user
         which one to copy, or how they prefer their outputs (Gerber
         format and units, drill files, pick-and-place, BOM, folders) and
         pick the closest. Altium's own templates are a fallback, used
-        only with ``use_fallback`` once the user has agreed.
+        only with ``use_fallback`` once the user has agreed. While the
+        dashboard's Saving switch is off it is refused and writes nothing.
 
         Args:
             project_path: The target .PrjPcb.
@@ -1775,7 +1793,8 @@ def register_project_tools(mcp):
         import os
 
         from .. import outjob
-        from ..atomicfile import replace_with_retry
+        from ..config import get_config
+        from ..saving import refused, saving_off
 
         bridge = get_bridge()
         if not source_outjob and use_fallback:
@@ -1807,6 +1826,8 @@ def register_project_tools(mcp):
                         "shipped Fabrication template, only once the user "
                         "has agreed to it.")}
 
+        if saving_off():
+            return refused("A new OutJob is a file written into the project's folder.")
         if not os.path.isfile(source_outjob):
             return {"ok": False, "reason": f"{source_outjob} is not a file"}
         if not project_path.lower().endswith(".prjpcb"):
@@ -1841,7 +1862,12 @@ def register_project_tools(mcp):
         boards = {os.path.basename(d).lower() for d in documents
                   if d.lower().endswith(".pcbdoc")}
         if boards:
-            stack = await bridge.send_command_async("pcb.get_layer_stackup", {})
+            # With no board in front the read is refused: the layer set then
+            # stays the template's own and the reply says so.
+            try:
+                stack = await bridge.send_command_async("pcb.get_layer_stackup", {})
+            except Exception:                                 # noqa: BLE001
+                stack = None
             # Only the project's own board: the stack read is the focused one.
             if isinstance(stack, dict) and str(stack.get("board_name", "")).lower() in boards:
                 codes = outjob.copper_layer_codes(
@@ -1855,10 +1881,36 @@ def register_project_tools(mcp):
                 "the board's layer stack could not be read, so the Gerber "
                 "layer set is the template's own: check it plots every "
                 "copper and plane layer")
-        tmp = target + ".tmp"
-        with open(tmp, "wb") as fh:
+        # Altium writes the project's file. The clone is staged in the bridge
+        # workspace and Altium saves it as the target, so no OutJob lands in
+        # the project unless Altium itself saved it.
+        staging = os.path.join(get_config().workspace_dir, "outjob_staging")
+        os.makedirs(staging, exist_ok=True)
+        staged = os.path.join(staging, os.path.basename(target))
+        with open(staged, "wb") as fh:
             fh.write(data)
-        replace_with_retry(tmp, target)
+        why = ""
+        saved: Any = None
+        try:
+            saved = await bridge.send_command_async(
+                "application.save_document_copy",
+                {"file_path": staged, "copy_path": target, "kind": "OUTPUTJOB"},
+                timeout=120.0)
+        except Exception as exc:                                  # noqa: BLE001
+            why = str(exc) or type(exc).__name__
+        finally:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+        if not (isinstance(saved, dict) and saved.get("written")
+                and os.path.isfile(target)):
+            if not why and isinstance(saved, dict):
+                why = str(saved.get("error") or saved.get("message") or "")
+            return {"ok": False, "outjob_path": target,
+                    "source_outjob": source_outjob,
+                    "reason": ("Altium did not save the OutJob, so the project "
+                               "was not given one" + (f": {why}" if why else ""))}
 
         added = await bridge.send_command_async(
             "project.add_document",
@@ -1984,8 +2036,9 @@ def register_project_tools(mcp):
                          first OutJob found in the focused project.
 
         Returns:
-            Dictionary with "outjob_path" and "containers" array
-            (each: name, type, group)
+            Dictionary with "outjob_path" and "containers" array (each:
+            name, type, outputs, output_names, output_path, output_dir,
+            index), read through Altium's OutJob API.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -2059,7 +2112,7 @@ def register_project_tools(mcp):
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
             params["outjob_path"] = outjob_path
-            busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
+            busy = _locked_outputs(await _outjob_output_dir(bridge, outjob_path, container_name))
             if busy:
                 return {"success": False, "container_name": container_name,
                         "files_in_use": busy, "reason": (
@@ -2224,6 +2277,10 @@ def register_project_tools(mcp):
         set, 2026-10-21), and only the folder can say so."""
         from ..bridge.exceptions import AltiumTimeoutError
 
+        outjob = params.get("outjob_path", "")
+        # Asked before the run: once a dialog holds Altium, nothing can be.
+        folder = await _outjob_output_dir(
+            bridge, outjob, params["container_name"]) if outjob else ""
         try:
             return await bridge.send_command_async(
                 "project.run_outjob", params, timeout=timeout)
@@ -2231,45 +2288,28 @@ def register_project_tools(mcp):
             dialogs = (exc.details or {}).get("dialogs")
             if not dialogs:
                 raise
-            outjob = params.get("outjob_path", "")
             return {
                 "process_issued": True,
                 "container_name": params["container_name"],
-                "output_dir": _outjob_output_dir(
-                    outjob, params["container_name"]) if outjob else "",
+                "output_dir": folder,
                 "outjob_path": outjob,
                 "dialog": dialogs.get("summary", ""),
                 "dialog_message": [line for d in dialogs.get("dialogs", [])
                                    for line in d.get("message", [])][:6],
             }
 
-    def _outjob_output_dir(outjob_path, container_name):
-        """The container's output folder, read from the OutJob as the
-        handler reads it: the medium's index J in its OutputGroup picks
-        OutputBasePathJ in PublishSettings, relative to the OutJob."""
-        import configparser
-        from pathlib import Path
+    async def _outjob_output_dir(bridge, outjob_path, container_name):
+        """The container's output folder, as Altium's OutJob reports it."""
+        from ..bridge.exceptions import AltiumError
 
-        ini = configparser.ConfigParser(interpolation=None, strict=False)
-        ini.optionxform = str
         try:
-            ini.read(outjob_path, encoding="utf-8-sig")
-        except (OSError, configparser.Error, UnicodeDecodeError):
+            listed = await bridge.send_command_async(
+                "project.get_outjob_containers", {"outjob_path": outjob_path}) or {}
+        except AltiumError:
             return ""
-        for section in ini.sections():
-            if not section.startswith("OutputGroup"):
-                continue
-            j = 1
-            while ini.has_option(section, f"OutputMedium{j}"):
-                if ini.get(section, f"OutputMedium{j}") == container_name:
-                    rel = ini.get("PublishSettings", f"OutputBasePath{j}",
-                                  fallback="")
-                    if not rel:
-                        return ""
-                    base = (Path(rel) if len(rel) >= 2 and rel[1] == ":"
-                            else Path(outjob_path).parent / rel)
-                    return str(base) + "\\"
-                j += 1
+        for container in listed.get("containers") or []:
+            if isinstance(container, dict) and container.get("name") == container_name:
+                return container.get("output_dir") or ""
         return ""
 
     # Shared by the three OutJob tools, so they cannot disagree about what
@@ -2463,7 +2503,7 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                busy = _locked_outputs(await _outjob_output_dir(bridge, outjob_path, name))
                 if busy:
                     per_container.append({
                         "container": name, "ok": False, "files_in_use": busy,
@@ -2583,7 +2623,7 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                busy = _locked_outputs(await _outjob_output_dir(bridge, outjob_path, name))
                 if busy:
                     per_container.append({
                         "container": name, "ok": False, "files_in_use": busy,
@@ -4010,8 +4050,9 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Import a document into the focused project from an external path.
 
-        Copies the file into the project directory (if not already there),
-        adds it to the project, and saves the project file.
+        Altium writes a copy into the project directory (if not already
+        there), as Save Copy As, then it is added to the project and the
+        project file saved. A file already at the new path is refused.
 
         Args:
             source_path: Full path to the source document (SchDoc, PcbDoc, etc.)
