@@ -458,9 +458,13 @@ def _cursor_to_view_centre() -> bool:
     return True
 
 
-# Altium joins a Rule parameter's fields with U+00A6, written here as an
-# escape so the source stays ASCII.
-RULE_FIELD_SEPARATOR = "\u00a6"
+# A Rule parameter's fields are joined by '|' in Altium's memory. The saved
+# file shows them joined by U+00A6, because '|' separates the file's own
+# fields; Altium swaps the two on save and load (measured on AD 25: a value
+# written with U+00A6 reads back with '|' after a reopen). Escaped so the
+# source stays ASCII.
+RULE_FIELD_SEPARATOR = "|"
+FILE_FIELD_SEPARATOR = "\u00a6"
 
 
 def directive_parameter_fields(
@@ -505,11 +509,11 @@ def directive_parameter_fields(
             parts = []
             for key, (_, val) in zip(keys, rule.items()):
                 val = str(val)
-                if not key or any(c in key for c in "=" + RULE_FIELD_SEPARATOR) \
-                        or RULE_FIELD_SEPARATOR in val:
+                if not key or any(c in key for c in "=|" + FILE_FIELD_SEPARATOR) \
+                        or any(c in val for c in "|" + FILE_FIELD_SEPARATOR):
                     return {}, (f"parameter_list[{i}].rule {key!r}: a field name "
                                 "must be non-empty without '=', and neither may "
-                                "hold U+00A6, which separates the fields")
+                                "hold '|' or U+00A6, which separate the fields")
                 parts.append(f"{key}={val}")
             value = RULE_FIELD_SEPARATOR.join(parts)
         else:
