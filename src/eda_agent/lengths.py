@@ -165,6 +165,12 @@ ADDED: dict[str, frozenset[str]] = {
     "pcb_view": frozenset({"left", "bottom", "right", "top"}),
     # An arc's centre and radius, a text's height.
     "lib_get_footprint_primitives": frozenset({"xc", "yc", "r", "size"}),
+    # Dimensions: the line / callout distance, a center's size, the
+    # callout place and a baseline's line positions.
+    "pcb_create_dimension": frozenset({"offset", "size", "line_width"}),
+    "pcb_edit_dimension": frozenset({"offset", "size", "line_width"}),
+    "pcb_get_dimensions": frozenset({"text_x", "text_y", "size", "line_width",
+                                     "text_locations"}),
     # Containers of lengths keyed by name: pin, net, constraint.
     "easyeda_emit_template_connections": frozenset({"pin_positions"}),
     "pcb_calc_length_match": frozenset({"lengths"}),

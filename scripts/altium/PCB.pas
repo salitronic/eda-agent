@@ -15179,6 +15179,789 @@ End;
 { Params: x1,y1,x2,y2 in mils, layer=<layer>, orientation=horizontal|vertical }
 {..............................................................................}
 
+{..............................................................................}
+{ Dimension editing: read, create and change dimensions of the kinds whose  }
+{ ends are free points (linear, angular, leader, datum, baseline, center,  }
+{ original). A dimension's ends are its references. DelphiScript's         }
+{ reference record holds only Primitive and Anchor, no point: an empty     }
+{ reference lands at the board origin and travels with the dimension when  }
+{ its X / Y are written, so a point P is placed by moving the dimension by }
+{ -P, adding the reference and moving it back by +P, each move measured    }
+{ from the X / Y read just before it (an angular recomputes its vertex on  }
+{ every add). A script cannot bind a reference to an object: the link is   }
+{ dropped on the next rebuild and on save. So references made here are     }
+{ free points and do not follow a pad or arc that moves; Anchor <> -1      }
+{ marks a reference Altium bound. A radial or diameter takes its value     }
+{ from the arc it is bound to and reads 0 free, so it is never unbound.    }
+{ Not used, because each faults or stops the script on AD 25: writing      }
+{ References_Count, TextLocations on any kind but a baseline, Rotation,    }
+{ Inverted, Validate.                                                       }
+{..............................................................................}
+
+Function DimKindName(K : Integer) : String;
+Begin
+    Case K Of
+        1 : Result := 'linear';
+        2 : Result := 'angular';
+        3 : Result := 'radial';
+        4 : Result := 'leader';
+        5 : Result := 'datum';
+        6 : Result := 'baseline';
+        7 : Result := 'center';
+        8 : Result := 'original';
+        9 : Result := 'linear_diameter';
+        10 : Result := 'radial_diameter';
+    Else
+        Result := 'none';
+    End;
+End;
+
+Function DimKindFromName(S : String) : Integer;
+Begin
+    S := LowerCase(Trim(S));
+    If S = 'linear' Then Result := 1
+    Else If S = 'angular' Then Result := 2
+    Else If S = 'radial' Then Result := 3
+    Else If S = 'leader' Then Result := 4
+    Else If S = 'datum' Then Result := 5
+    Else If S = 'baseline' Then Result := 6
+    Else If S = 'center' Then Result := 7
+    Else If S = 'original' Then Result := 8
+    Else If S = 'linear_diameter' Then Result := 9
+    Else If S = 'radial_diameter' Then Result := 10
+    Else Result := -1;
+End;
+
+{ One write per edit bracket, as Altium rebuilds the dimension on EndModify. }
+Procedure DimSetCoord(Dim : IPCB_Dimension; M : String; Mils : Double);
+Var
+    C : TCoord;
+Begin
+    C := MilsToCoordF(Mils);
+    PcbBeginEdit(0);
+    Try
+        Dim.BeginModify;
+        Try
+            If M = 'X' Then Dim.X := C
+            Else If M = 'Y' Then Dim.Y := C
+            Else If M = 'X1Location' Then Dim.X1Location := C
+            Else If M = 'Y1Location' Then Dim.Y1Location := C
+            Else If M = 'TextX' Then Dim.TextX := C
+            Else If M = 'TextY' Then Dim.TextY := C
+            Else If M = 'Size' Then Dim.Size := C
+            Else If M = 'Radius' Then Dim.Radius := C
+            Else If M = 'TextHeight' Then Dim.TextHeight := C
+            Else If M = 'LineWidth' Then Dim.LineWidth := C
+            Else If M = 'DotSize' Then Dim.DotSize := C;
+        Finally
+            Dim.EndModify;
+        End;
+        Dim.GraphicallyInvalidate;
+    Finally
+        PcbEndEdit(0);
+    End;
+End;
+
+Procedure DimSetValue(Dim : IPCB_Dimension; M : String; V : String);
+Begin
+    PcbBeginEdit(0);
+    Try
+        Dim.BeginModify;
+        Try
+            If M = 'Angle' Then Dim.Angle := StrToFloatDef(V, 0)
+            Else If M = 'Sector' Then Dim.Sector := StrToFloatDef(V, 1)
+            Else If M = 'AngleStep' Then Dim.AngleStep := StrToFloatDef(V, 45)
+            Else If M = 'Shape' Then Dim.Shape := StrToIntDef(V, 0)
+            Else If M = 'Dot' Then Dim.Dot := V = 'true'
+            Else If M = 'TextDimensionUnit' Then Dim.TextDimensionUnit := StrToIntDef(V, 0)
+            Else If M = 'TextPrecision' Then Dim.TextPrecision := StrToIntDef(V, 2)
+            Else If M = 'TextFormat' Then Dim.TextFormat := V
+            Else If M = 'TextPrefix' Then Dim.TextPrefix := V
+            Else If M = 'TextSuffix' Then Dim.TextSuffix := V;
+        Finally
+            Dim.EndModify;
+        End;
+        Dim.GraphicallyInvalidate;
+    Finally
+        PcbEndEdit(0);
+    End;
+End;
+
+{ Move the whole dimension by DX, DY mils from where it is NOW. }
+Procedure DimMoveBy(Dim : IPCB_Dimension; DX : Double; DY : Double);
+Begin
+    DimSetCoord(Dim, 'X', CoordToMilsF(Dim.X) + DX);
+    DimSetCoord(Dim, 'Y', CoordToMilsF(Dim.Y) + DY);
+End;
+
+{ A 1 mil there-and-back on TextY: the write that makes Altium rebuild the  }
+{ dimension's drawing after a reference, size or angle change.              }
+Procedure DimRebuild(Dim : IPCB_Dimension);
+Var
+    T : Double;
+Begin
+    T := CoordToMilsF(Dim.TextY);
+    DimSetCoord(Dim, 'TextY', T + 1);
+    DimSetCoord(Dim, 'TextY', T);
+End;
+
+Procedure DimDropLastRef(Dim : IPCB_Dimension);
+Begin
+    PcbBeginEdit(0);
+    Try
+        Dim.BeginModify;
+        Try
+            Dim.References_DeleteLast;
+        Finally
+            Dim.EndModify;
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+End;
+
+{ A free reference at (PX, PY): move by -P, add an empty one (it lands at   }
+{ the board origin), move back by +P from wherever X / Y are then.          }
+Procedure DimAddRefAt(Dim : IPCB_Dimension; PX : Double; PY : Double);
+Var
+    R : TDimensionReference;
+Begin
+    DimMoveBy(Dim, -PX, -PY);
+    PcbBeginEdit(0);
+    Try
+        Dim.BeginModify;
+        Try
+            R := TDimensionReference;
+            Dim.References_Add(R);
+        Finally
+            Dim.EndModify;
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+    DimMoveBy(Dim, PX, PY);
+End;
+
+{ The n-th "x,y" pair of a "x,y/x,y/..." list. False when there is none. }
+Function DimPoint(Pts : String; N : Integer; Var PX : Double; Var PY : Double) : Boolean;
+Var
+    Rest, Pair : String;
+    I, Cut, Comma : Integer;
+Begin
+    Result := False;
+    Rest := Pts + '/';
+    I := 0;
+    While Pos('/', Rest) > 0 Do
+    Begin
+        Cut := Pos('/', Rest);
+        Pair := Trim(Copy(Rest, 1, Cut - 1));
+        Rest := Copy(Rest, Cut + 1, Length(Rest));
+        Comma := Pos(',', Pair);
+        If Comma = 0 Then Continue;
+        If I = N Then
+        Begin
+            PX := StrToFloatDef(Copy(Pair, 1, Comma - 1), 0);
+            PY := StrToFloatDef(Copy(Pair, Comma + 1, Length(Pair)), 0);
+            Result := True;
+            Exit;
+        End;
+        Inc(I);
+    End;
+End;
+
+Function DimPointCount(Pts : String) : Integer;
+Var
+    PX, PY : Double;
+Begin
+    Result := 0;
+    While DimPoint(Pts, Result, PX, PY) Do Inc(Result);
+End;
+
+Function DimBoundCount(Dim : IPCB_Dimension) : Integer;
+Var
+    R : TDimensionReference;
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 0 To Dim.References_Count - 1 Do
+    Begin
+        R := Dim.References[I];
+        If R.Anchor <> -1 Then Inc(Result);
+    End;
+End;
+
+{ Release every bound reference in place: no primitive, anchor -1, written }
+{ back, then rebuilt. The stored point is kept, so the drawing stays.      }
+Procedure DimUnbindAll(Dim : IPCB_Dimension);
+Var
+    R : TDimensionReference;
+    I : Integer;
+Begin
+    For I := 0 To Dim.References_Count - 1 Do
+    Begin
+        R := Dim.References[I];
+        If R.Anchor <> -1 Then
+        Begin
+            PcbBeginEdit(0);
+            Try
+                Dim.BeginModify;
+                Try
+                    R.Primitive := Nil;
+                    R.Anchor := -1;
+                    Dim.References[I] := R;
+                Finally
+                    Dim.EndModify;
+                End;
+            Finally
+                PcbEndEdit(0);
+            End;
+        End;
+    End;
+    DimRebuild(Dim);
+End;
+
+{ Replace the references with free points. AnchorX / AnchorY: where X / Y }
+{ go first (the origin, base, tip, centre or line start); UseAnchor False  }
+{ leaves X / Y alone (an angular recomputes its vertex itself). KeepFirst: }
+{ on a datum, baseline, leader or center the first reference always sits  }
+{ on X / Y, so it is kept and moved with them (the order Altium builds     }
+{ itself; a baseline rebuilt from no reference at all keeps one line      }
+{ position too few), and only the points after it are added.              }
+Procedure DimSetPoints(Dim : IPCB_Dimension; Pts : String; UseAnchor : Boolean;
+    AnchorX : Double; AnchorY : Double; KeepFirst : Boolean);
+Var
+    I : Integer;
+    PX, PY : Double;
+Begin
+    If KeepFirst And (Dim.References_Count > 0) Then
+    Begin
+        While Dim.References_Count > 1 Do DimDropLastRef(Dim);
+        I := 1;
+    End
+    Else
+    Begin
+        While Dim.References_Count > 0 Do DimDropLastRef(Dim);
+        I := 0;
+    End;
+    If UseAnchor Then
+    Begin
+        DimSetCoord(Dim, 'X', AnchorX);
+        DimSetCoord(Dim, 'Y', AnchorY);
+    End;
+    While DimPoint(Pts, I, PX, PY) Do
+    Begin
+        DimAddRefAt(Dim, PX, PY);
+        Inc(I);
+    End;
+    DimRebuild(Dim);
+End;
+
+{ A baseline's line positions, one per measured point. Each add leaves one }
+{ entry too many after the rebuild, so the list is trimmed and written     }
+{ again. Baselines only: on any other kind TextLocations stops the script. }
+Procedure DimSetTextLocations(Dim : IPCB_Dimension; Locs : String);
+Var
+    P : TCoordPoint;
+    I, N, Pass : Integer;
+    PX, PY : Double;
+Begin
+    If Dim.DimensionKind <> 6 Then Exit;
+    N := DimPointCount(Locs);
+    { Altium settles the list on the rebuild, sometimes one entry over and }
+    { sometimes one short: write, rebuild, trim, until the count holds.    }
+    For Pass := 1 To 3 Do
+    Begin
+        For I := 0 To N - 1 Do
+        Begin
+            DimPoint(Locs, I, PX, PY);
+            P := TCoordPoint;
+            P.X := MilsToCoordF(PX);
+            P.Y := MilsToCoordF(PY);
+            PcbBeginEdit(0);
+            Try
+                Dim.BeginModify;
+                Try
+                    If I < Dim.TextLocationsCount Then Dim.TextLocations[I] := P
+                    Else Dim.TextLocations_Add(P);
+                Finally
+                    Dim.EndModify;
+                End;
+            Finally
+                PcbEndEdit(0);
+            End;
+        End;
+        DimRebuild(Dim);
+        While Dim.TextLocationsCount > N Do
+        Begin
+            PcbBeginEdit(0);
+            Try
+                Dim.BeginModify;
+                Try
+                    Dim.TextLocations_DeleteLast;
+                Finally
+                    Dim.EndModify;
+                End;
+            Finally
+                PcbEndEdit(0);
+            End;
+        End;
+        If Dim.TextLocationsCount = N Then Break;
+    End;
+    For I := 0 To N - 1 Do
+    Begin
+        If I >= Dim.TextLocationsCount Then Break;
+        DimPoint(Locs, I, PX, PY);
+        P := TCoordPoint;
+        P.X := MilsToCoordF(PX);
+        P.Y := MilsToCoordF(PY);
+        PcbBeginEdit(0);
+        Try
+            Dim.BeginModify;
+            Try
+                Dim.TextLocations[I] := P;
+            Finally
+                Dim.EndModify;
+            End;
+        Finally
+            PcbEndEdit(0);
+        End;
+    End;
+    DimRebuild(Dim);
+End;
+
+{ The style and kind values a call may set, each only on a kind that has it. }
+Procedure DimApplyValues(Dim : IPCB_Dimension; Params : String);
+Var
+    K : Integer;
+    V : String;
+Begin
+    K := Dim.DimensionKind;
+    V := ExtractJsonValue(Params, 'text_height');
+    If V <> '' Then DimSetCoord(Dim, 'TextHeight', StrToFloatDef(V, 60));
+    V := ExtractJsonValue(Params, 'line_width');
+    If V <> '' Then DimSetCoord(Dim, 'LineWidth', StrToFloatDef(V, 10));
+    V := ExtractJsonValue(Params, 'unit');
+    If V <> '' Then DimSetValue(Dim, 'TextDimensionUnit', V);
+    V := ExtractJsonValue(Params, 'precision');
+    If V <> '' Then DimSetValue(Dim, 'TextPrecision', V);
+    If Pos('"prefix"', Params) > 0 Then DimSetValue(Dim, 'TextPrefix', ExtractJsonValue(Params, 'prefix'));
+    If Pos('"suffix"', Params) > 0 Then DimSetValue(Dim, 'TextSuffix', ExtractJsonValue(Params, 'suffix'));
+    V := ExtractJsonValue(Params, 'angle');
+    If (V <> '') And ((K = 1) Or (K = 5) Or (K = 6) Or (K = 7) Or (K = 9)) Then DimSetValue(Dim, 'Angle', V);
+    V := ExtractJsonValue(Params, 'size');
+    If (V <> '') And ((K = 7) Or (K = 9)) Then DimSetCoord(Dim, 'Size', StrToFloatDef(V, 60));
+    V := ExtractJsonValue(Params, 'radius');
+    If (V <> '') And (K = 2) Then DimSetCoord(Dim, 'Radius', StrToFloatDef(V, 300));
+    V := ExtractJsonValue(Params, 'sector');
+    If (V <> '') And (K = 2) Then DimSetValue(Dim, 'Sector', V);
+    If K = 4 Then
+    Begin
+        If Pos('"label"', Params) > 0 Then DimSetValue(Dim, 'TextFormat', ExtractJsonValue(Params, 'label'));
+        V := ExtractJsonValue(Params, 'shape');
+        If V <> '' Then DimSetValue(Dim, 'Shape', V);
+        V := ExtractJsonValue(Params, 'dot');
+        If V <> '' Then DimSetValue(Dim, 'Dot', LowerCase(V));
+    End;
+    V := ExtractJsonValue(Params, 'text_x');
+    If V <> '' Then DimSetCoord(Dim, 'TextX', StrToFloatDef(V, 0));
+    V := ExtractJsonValue(Params, 'text_y');
+    If V <> '' Then DimSetCoord(Dim, 'TextY', StrToFloatDef(V, 0));
+End;
+
+{ One dimension as JSON: kind, position, references (anchor, bound), the   }
+{ callout texts, the kind's own values and, when asked, its drawn pieces.  }
+Function DimJson(Dim : IPCB_Dimension; DimIndex : Integer; Pieces : Boolean) : String;
+Var
+    K, I : Integer;
+    R : TDimensionReference;
+    Iter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Tr : IPCB_Track;
+    Tx : IPCB_Text;
+    Ar : IPCB_Arc;
+    P : TCoordPoint;
+    Refs, Texts, Pc, Locs : String;
+Begin
+    K := Dim.DimensionKind;
+    Refs := '';
+    For I := 0 To Dim.References_Count - 1 Do
+    Begin
+        R := Dim.References[I];
+        If Refs <> '' Then Refs := Refs + ',';
+        Refs := Refs + '{"anchor":' + IntToStr(R.Anchor) + ',"bound":'
+            + BoolToJsonStr(R.Anchor <> -1) + '}';
+    End;
+    Texts := '';
+    Pc := '';
+    Iter := Dim.GroupIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eTextObject));
+    Try
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.ObjectId = eTextObject Then
+            Begin
+                Tx := Prim;
+                If Texts <> '' Then Texts := Texts + ',';
+                Texts := Texts + '"' + EscapeJsonString(Tx.Text) + '"';
+                If Pieces Then
+                Begin
+                    If Pc <> '' Then Pc := Pc + ',';
+                    Pc := Pc + '{"type":"text","text":"' + EscapeJsonString(Tx.Text)
+                        + '","x":' + FloatToJsonStr(CoordToMilsF(Tx.XLocation))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Tx.YLocation))
+                        + ',"rotation":' + FloatToJsonStr(Tx.Rotation) + '}';
+                End;
+            End
+            Else If Pieces And (Prim.ObjectId = eTrackObject) Then
+            Begin
+                Tr := Prim;
+                If Pc <> '' Then Pc := Pc + ',';
+                Pc := Pc + '{"type":"track","x1":' + FloatToJsonStr(CoordToMilsF(Tr.X1))
+                    + ',"y1":' + FloatToJsonStr(CoordToMilsF(Tr.Y1))
+                    + ',"x2":' + FloatToJsonStr(CoordToMilsF(Tr.X2))
+                    + ',"y2":' + FloatToJsonStr(CoordToMilsF(Tr.Y2)) + '}';
+            End
+            Else If Pieces And (Prim.ObjectId = eArcObject) Then
+            Begin
+                Ar := Prim;
+                If Pc <> '' Then Pc := Pc + ',';
+                Pc := Pc + '{"type":"arc","cx":' + FloatToJsonStr(CoordToMilsF(Ar.XCenter))
+                    + ',"cy":' + FloatToJsonStr(CoordToMilsF(Ar.YCenter))
+                    + ',"radius":' + FloatToJsonStr(CoordToMilsF(Ar.Radius)) + '}';
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Dim.GroupIterator_Destroy(Iter);
+    End;
+    Result := '{"index":' + IntToStr(DimIndex) + ',"kind":"' + DimKindName(K)
+        + '","layer":"' + EscapeJsonString(LayerDisplayName(Dim.Layer))
+        + '","x":' + FloatToJsonStr(CoordToMilsF(Dim.X))
+        + ',"y":' + FloatToJsonStr(CoordToMilsF(Dim.Y))
+        + ',"text_x":' + FloatToJsonStr(CoordToMilsF(Dim.TextX))
+        + ',"text_y":' + FloatToJsonStr(CoordToMilsF(Dim.TextY))
+        + ',"text_height":' + FloatToJsonStr(CoordToMilsF(Dim.TextHeight))
+        + ',"line_width":' + FloatToJsonStr(CoordToMilsF(Dim.LineWidth))
+        + ',"unit":' + IntToStr(Dim.TextDimensionUnit)
+        + ',"precision":' + IntToStr(Dim.TextPrecision)
+        + ',"prefix":"' + EscapeJsonString(Dim.TextPrefix)
+        + '","suffix":"' + EscapeJsonString(Dim.TextSuffix) + '"';
+    If K = 8 Then
+        Result := Result + ',"x1":' + FloatToJsonStr(CoordToMilsF(Dim.X1Location))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(Dim.Y1Location));
+    If (K = 1) Or (K = 5) Or (K = 6) Or (K = 7) Or (K = 9) Then
+        Result := Result + ',"angle":' + FloatToJsonStr(Dim.Angle);
+    If (K = 7) Or (K = 9) Then
+        Result := Result + ',"size":' + FloatToJsonStr(CoordToMilsF(Dim.Size));
+    If K = 2 Then
+        Result := Result + ',"radius":' + FloatToJsonStr(CoordToMilsF(Dim.Radius))
+            + ',"sector":' + FloatToJsonStr(Dim.Sector);
+    If (K = 3) Or (K = 10) Then
+        Result := Result + ',"angle_step":' + FloatToJsonStr(Dim.AngleStep);
+    If K = 4 Then
+        Result := Result + ',"label":"' + EscapeJsonString(Dim.TextFormat)
+            + '","shape":' + IntToStr(Dim.Shape) + ',"dot":' + BoolToJsonStr(Dim.Dot);
+    If K = 6 Then
+    Begin
+        Locs := '';
+        For I := 0 To Dim.TextLocationsCount - 1 Do
+        Begin
+            P := TCoordPoint;
+            P := Dim.TextLocations[I];
+            If Locs <> '' Then Locs := Locs + ',';
+            Locs := Locs + '[' + FloatToJsonStr(CoordToMilsF(P.X)) + ','
+                + FloatToJsonStr(CoordToMilsF(P.Y)) + ']';
+        End;
+        Result := Result + ',"text_locations":[' + Locs + ']';
+    End;
+    Result := Result + ',"references":[' + Refs + '],"bound":'
+        + BoolToJsonStr(DimBoundCount(Dim) > 0) + ',"texts":[' + Texts + ']';
+    If Pieces Then Result := Result + ',"pieces":[' + Pc + ']';
+    Result := Result + '}';
+End;
+
+Function PCB_GetDimensions(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Dim : IPCB_Dimension;
+    Want, I : Integer;
+    Pieces, BoundOnly : Boolean;
+    Items : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Want := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    Pieces := ExtractJsonValue(Params, 'pieces') = 'true';
+    BoundOnly := ExtractJsonValue(Params, 'bound_only') = 'true';
+    Items := '';
+    I := 0;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eDimensionObject));
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Try
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            If (Want < 0) Or (I = Want) Then
+            Begin
+                Dim := Obj;
+                If (Not BoundOnly) Or (DimBoundCount(Dim) > 0) Then
+                Begin
+                    If Items <> '' Then Items := Items + ',';
+                    Items := Items + DimJson(Dim, I, Pieces);
+                End;
+            End;
+            Inc(I);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"count":' + IntToStr(I)
+        + ',"dimensions":[' + Items + ']}');
+End;
+
+{ Where X / Y go before the references are rebuilt, per kind. }
+Function DimAnchorFor(K : Integer; Pts : String; Params : String;
+    Var AX : Double; Var AY : Double) : Boolean;
+Var
+    V : String;
+Begin
+    Result := False;
+    If K = 1 Then
+    Begin
+        V := ExtractJsonValue(Params, 'line_x');
+        If V <> '' Then
+        Begin
+            AX := StrToFloatDef(V, 0);
+            AY := StrToFloatDef(ExtractJsonValue(Params, 'line_y'), 0);
+            Result := True;
+        End;
+    End
+    Else If (K = 4) Or (K = 5) Or (K = 6) Or (K = 7) Then
+        Result := DimPoint(Pts, 0, AX, AY);
+End;
+
+{ Build or rebuild a dimension's geometry from free points. }
+Procedure DimApplyGeometry(Dim : IPCB_Dimension; Params : String);
+Var
+    K : Integer;
+    Pts, Locs : String;
+    AX, AY, PX, PY : Double;
+Begin
+    K := Dim.DimensionKind;
+    Pts := ExtractJsonValue(Params, 'points');
+    If K = 8 Then
+    Begin
+        If DimPoint(Pts, 0, PX, PY) Then
+        Begin
+            DimSetCoord(Dim, 'X', PX);
+            DimSetCoord(Dim, 'Y', PY);
+        End;
+        If DimPoint(Pts, 1, PX, PY) Then
+        Begin
+            DimSetCoord(Dim, 'X1Location', PX);
+            DimSetCoord(Dim, 'Y1Location', PY);
+        End;
+    End
+    Else If Pts <> '' Then
+        DimSetPoints(Dim, Pts, DimAnchorFor(K, Pts, Params, AX, AY), AX, AY,
+            (K = 4) Or (K = 5) Or (K = 6) Or (K = 7));
+    Locs := ExtractJsonValue(Params, 'text_locations');
+    If (K = 6) And (Locs <> '') Then DimSetTextLocations(Dim, Locs);
+End;
+
+Function PCB_CreateDimension(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Dim : IPCB_Dimension;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    K, I, DimIndex, Need : Integer;
+    LayerStr, Pts : String;
+    TargetLayer : TLayer;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    K := DimKindFromName(ExtractJsonValue(Params, 'kind'));
+    If (K < 1) Or (K = 3) Or (K = 9) Or (K = 10) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'KIND_NOT_SUPPORTED',
+            'kind is linear, angular, leader, datum, baseline, center or original. '
+            + 'A radial or diameter takes its value from the arc it is bound to, '
+            + 'and a script cannot bind one: place it in Altium on the arc.');
+        Exit;
+    End;
+    Pts := ExtractJsonValue(Params, 'points');
+    Need := 1;
+    If (K = 1) Or (K = 4) Or (K = 5) Or (K = 6) Or (K = 8) Then Need := 2;
+    If K = 2 Then Need := 4;
+    If DimPointCount(Pts) < Need Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_POINTS',
+            DimKindName(K) + ' needs at least ' + IntToStr(Need) + ' points');
+        Exit;
+    End;
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+    PcbBeginEdit(0);
+    Try
+        Dim := PCBServer.PCBObjectFactory(eDimensionObject, K, eCreate_Default);
+        If Dim = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create the dimension');
+            Exit;
+        End;
+        Dim.Layer := TargetLayer;
+        Board.AddPCBObject(Dim);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Dim.I_ObjectAddress);
+    Finally
+        PcbEndEdit(0);
+    End;
+    DimApplyValues(Dim, Params);
+    DimApplyGeometry(Dim, Params);
+    DimApplyValues(Dim, Params);
+    DimRebuild(Dim);
+    MarkDocDirtyByPath(Board.FileName);
+    { a new dimension is listed FIRST, not last: find its index by address }
+    DimIndex := -1;
+    I := 0;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eDimensionObject));
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Try
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.I_ObjectAddress = Dim.I_ObjectAddress Then
+            Begin
+                DimIndex := I;
+                Break;
+            End;
+            Inc(I);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"created":true,"dimension":'
+        + DimJson(Dim, DimIndex, False) + '}');
+End;
+
+Function PCB_EditDimension(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Dim : IPCB_Dimension;
+    Want, I, K, Bound : Integer;
+    GX, GY, DX, DY : Double;
+    KeepBindings, Geometry, Found : Boolean;
+    Err, Unbound : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Want := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    GX := StrToFloatDef(ExtractJsonValue(Params, 'x'), -1e9);
+    GY := StrToFloatDef(ExtractJsonValue(Params, 'y'), -1e9);
+    KeepBindings := ExtractJsonValue(Params, 'keep_bindings') <> 'false';
+    DX := StrToFloatDef(ExtractJsonValue(Params, 'dx'), 0);
+    DY := StrToFloatDef(ExtractJsonValue(Params, 'dy'), 0);
+    Geometry := (ExtractJsonValue(Params, 'points') <> '')
+        Or (ExtractJsonValue(Params, 'text_locations') <> '')
+        Or (ExtractJsonValue(Params, 'angle') <> '')
+        Or (DX <> 0) Or (DY <> 0);
+    Err := '';
+    Unbound := '';
+    Found := False;
+    I := 0;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eDimensionObject));
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Try
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            If I = Want Then
+            Begin
+                Found := True;
+                Dim := Obj;
+                K := Dim.DimensionKind;
+                Bound := DimBoundCount(Dim);
+                If (Abs(CoordToMilsF(Dim.X) - GX) > 0.01) Or (Abs(CoordToMilsF(Dim.Y) - GY) > 0.01) Then
+                    Err := 'NOT_THIS_DIMENSION|dimension ' + IntToStr(Want) + ' is at '
+                        + FloatToJsonStr(CoordToMilsF(Dim.X)) + ', ' + FloatToJsonStr(CoordToMilsF(Dim.Y))
+                        + ', not at the x, y given: read pcb_get_dimensions again'
+                Else If (Geometry Or Not KeepBindings) And (Bound > 0) And ((K = 3) Or (K = 9) Or (K = 10)) Then
+                    Err := 'BOUND_TO_ARC|a ' + DimKindName(K) + ' takes its value from the arc it is '
+                        + 'bound to; unbound it reads 0, so its geometry is not changed here'
+                Else If Geometry And (Bound > 0) And KeepBindings Then
+                    Err := 'BOUND|' + IntToStr(Bound) + ' of its references are bound to board '
+                        + 'objects; keep_bindings=false unbinds them first (they then stop '
+                        + 'following those objects)'
+                Else
+                Begin
+                    If (Bound > 0) And Not KeepBindings Then
+                    Begin
+                        DimUnbindAll(Dim);
+                        If DimBoundCount(Dim) > 0 Then
+                            Err := 'UNBIND_FAILED|' + IntToStr(DimBoundCount(Dim))
+                                + ' references are still bound after the unbind'
+                        Else Unbound := IntToStr(Bound);
+                    End;
+                    If Err = '' Then
+                    Begin
+                        DimApplyValues(Dim, Params);
+                        DimApplyGeometry(Dim, Params);
+                        If (DX <> 0) Or (DY <> 0) Then DimMoveBy(Dim, DX, DY);
+                        DimRebuild(Dim);
+                        MarkDocDirtyByPath(Board.FileName);
+                        Result := BuildSuccessResponse(RequestId, '{"edited":true,"unbound":'
+                            + IntToStr(StrToIntDef(Unbound, 0)) + ',"dimension":'
+                            + DimJson(Dim, I, False) + '}');
+                    End;
+                End;
+                Break;
+            End;
+            Inc(I);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If Not Found Then
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no dimension at index ' + IntToStr(Want))
+    Else If Err <> '' Then
+        Result := BuildErrorResponse(RequestId, Copy(Err, 1, Pos('|', Err) - 1),
+            Copy(Err, Pos('|', Err) + 1, Length(Err)));
+End;
+
 Function PCB_PlaceDimension(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -32345,6 +33128,9 @@ Begin
         'place_region':            Result := PCB_PlaceRegion(Params, RequestId);
         'distribute_components':   Result := PCB_DistributeComponents(Params, RequestId);
         'place_dimension':         Result := PCB_PlaceDimension(Params, RequestId);
+        'get_dimensions':          Result := PCB_GetDimensions(Params, RequestId);
+        'create_dimension':        Result := PCB_CreateDimension(Params, RequestId);
+        'edit_dimension':          Result := PCB_EditDimension(Params, RequestId);
         'place_pad':               Result := PCB_PlacePad(Params, RequestId);
         'place_component':         Result := PCB_PlaceComponent(Params, RequestId);
         'place_components':        Result := PCB_PlaceComponents(Params, RequestId);

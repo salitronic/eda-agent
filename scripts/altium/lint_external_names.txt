@@ -341,6 +341,10 @@ PCBM_EndModify
 rfReplaceAll
 
 # Globals, routines and classes
+# Record constructors of the PCB API (PCB API reference: TCoordPoint,
+# TDimensionReference); 'R := TDimensionReference' makes an empty one.
+TCoordPoint
+TDimensionReference
 AddStringParameter
 AnsiLowerCase
 AnsiUpperCase
