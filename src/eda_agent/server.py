@@ -441,6 +441,15 @@ def _lengths_in(server, name: str, arguments: dict):
         bad = lengths.unknown_unit_names(args, params)
         if bad:
             raise ValueError(f"{tool} takes no {', '.join(bad)}")
+        # A list given as a file is read here, so its lengths are
+        # converted like the same list given inline.
+        key = lengths.FILE_LISTS.get(tool)
+        if key and args.get("file"):
+            from .tools.pcb import items_from_file
+            listed, refusal = items_from_file(args.get(key), args["file"], key)
+            if refusal:
+                raise ValueError(refusal["error"])
+            args = {**{k: v for k, v in args.items() if k != "file"}, key: listed}
         return lengths.args_in(tool, args, unit, params,
                                whole=_whole_params(server, tool))
 

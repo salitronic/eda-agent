@@ -185,6 +185,13 @@ ARC_VERTICES: dict[str, frozenset[str]] = {
     "lib_get_footprint_primitives": frozenset({"shape"}),
 }
 
+#: Tools that take their list inline or as a JSON ``file``, by the name of
+#: the list. The file is read before the lengths are converted.
+FILE_LISTS: dict[str, str] = {
+    "pcb_place_tracks": "tracks",
+    "pcb_place_vias": "vias",
+}
+
 #: Arguments that are lengths written as text, numbers joined by commas
 #: (``"x1,y1,x2,y2"``), by tool.
 LENGTH_STRINGS: dict[str, frozenset[str]] = {

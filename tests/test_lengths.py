@@ -378,3 +378,25 @@ def test_a_tool_that_converts_itself_is_handed_the_sessions_unit(workspace, fami
     assert out["x"] == 2.54
     _call(server, "easyeda_make_part", {"x": 100, "units": "mil"})
     assert seen["part"]["units"] == "mil"
+
+
+def test_a_list_given_as_a_file_is_converted_like_the_same_list_inline(workspace, tmp_path):
+    from eda_agent.server import _CompactFastMCP
+    from eda_agent.tools.length_units import register_length_units_tools
+    server = _CompactFastMCP("lengths-file")
+    seen: dict = {}
+
+    @server.tool()
+    async def pcb_place_tracks(tracks: typing.Optional[list] = None, file: str = "") -> dict:
+        seen["tracks"], seen["file"] = tracks, file
+        return {"placed": len(tracks or [])}
+
+    register_length_units_tools(server)
+    listed = tmp_path / "tracks.json"
+    listed.write_text(json.dumps({"tracks": [
+        {"x1": 25.4, "y1": 0, "x2": 50.8, "y2": 0, "width": 0.254}]}), encoding="utf-8")
+    _call(server, "length_units", {"to": "mm"})
+    out = _call(server, "pcb_place_tracks", {"file": str(listed)})
+    assert out["placed"] == 1 and seen["file"] == ""
+    track = seen["tracks"][0]
+    assert (track["x1"], track["x2"], track["width"]) == (1000, 2000, 10)
