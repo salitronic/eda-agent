@@ -7886,7 +7886,11 @@ def register_pcb_tools(mcp):
             ``layer`` and ``stack_order``, the copper layers top down;
             ``vias_refreshed``: free vias taken off the board and added
             back so a pour on the new layer counts them (a via in a
-            component is left, ``vias_in_components``).
+            component is left, ``vias_in_components``). That covers vias
+            loaded with the board: one placed since the board was opened
+            counts on the new layer only after a save and reopen, and a
+            pour there that removes dead copper stays empty until then
+            (``note``).
         """
         if above.strip() and below.strip():
             return {"ok": False, "reason": "give above or below, not both"}

@@ -6439,6 +6439,14 @@ End;
 { change in its own bracket) did not. Removing and adding keeps the via as  }
 { it is. A via owned by a component is left alone and counted in Skipped.    }
 { Call inside PcbBeginEdit / PcbEndEdit.                                     }
+{ MEASURED on AD 26.11: this is enough for a via loaded with the board. One  }
+{ placed since the board was opened still does not count on the new layer,  }
+{ whether placed before the layer or after it, unless its size is one no    }
+{ via had before the layer was added; saving and reopening the board makes  }
+{ every via count. Not cured by: a size changed and put back as two         }
+{ modifies, RebuildPadCaches, the via's size written on the new layer, or   }
+{ reopening the board before the vias are placed. IntersectLayer answers    }
+{ true for such a via, so it does not tell them apart.                      }
 {..............................................................................}
 
 Function RefreshBoardVias(Board : IPCB_Board; Var Skipped : Integer) : Integer;
@@ -6571,7 +6579,11 @@ Begin
         '{"success":true,"layer":"' + EscapeJsonString(LayerDisplayName(TargetLayer)) + '"'
         + ',"stack_order":[' + Order + ']'
         + ',"vias_refreshed":' + IntToStr(Refreshed)
-        + ',"vias_in_components":' + IntToStr(InParts) + '}');
+        + ',"vias_in_components":' + IntToStr(InParts)
+        + ',"note":"Vias loaded with the board count on the new layer now. '
+        + 'A via placed since the board was opened does not until the board is '
+        + 'saved and reopened: a pour there that removes dead copper stays '
+        + 'empty until then."}');
 End;
 
 {..............................................................................}
