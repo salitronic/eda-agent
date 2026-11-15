@@ -117,7 +117,7 @@ def test_dispatch_refuses_another_sessions_write_before_the_handler():
     # The target is a path the command names, else the document in front
     # once the session's own is back.
     focus = body.index("SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'))")
-    assert focus < body.index("If OwnTarget = '' Then OwnTarget := FocusBefore;")
+    assert focus < body.index("OwnTarget := CommandTarget(Params, FocusBefore);")
 
 
 def test_the_rule_rejects_a_gate_that_lets_the_dashboard_be_refused():

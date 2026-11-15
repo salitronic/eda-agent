@@ -715,20 +715,25 @@ Begin
     Else Result := Copy(Rec, 1, P - 1);
 End;
 
-Procedure OwnerSet(Key : String; Tag : String; Command : String);
+{ Forget the owner record of KEY, if there is one. }
+Procedure OwnerDrop(Key : String);
 Var
     P, E : Integer;
     Rest : String;
 Begin
     If Key = '' Then Exit;
     P := Pos(Chr(1) + Key + Chr(2), DocOwners);
-    If P > 0 Then
-    Begin
-        Rest := Copy(DocOwners, P, Length(DocOwners));
-        E := Pos(Chr(3), Rest);
-        If E > 0 Then
-            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
-    End;
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E > 0 Then
+        DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Begin
+    If Key = '' Then Exit;
+    OwnerDrop(Key);
     DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
         + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
 End;

@@ -192,6 +192,7 @@ INTERACTION_OVERRIDES = {
     # nothing to a design.
     "app_document_owners": READONLY,
     "app_claim_document": READONLY,
+    "app_release_document": READONLY,
     # Reads the rules, or keeps an approved copy beside the board: nothing
     # in the design changes.
     "pcb_drc_rules": READONLY,
