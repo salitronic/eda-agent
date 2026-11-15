@@ -12227,7 +12227,7 @@ End;
 { with that name and Position is the match's place in pcb_get_polygons'      }
 { order. Names repeat (Altium names every net-less pour of a layer alike), }
 { so more than one hit returns Nil, and Listing holds each candidate's      }
-{ index, layer and net for the refusal (issue #NNN).                        }
+{ index, layer and net for the refusal (issue #373).                        }
 Function PourByName(Board : IPCB_Board; Wanted : String; Var Position : Integer;
     Var Hits : Integer; Var Listing : String) : IPCB_Polygon;
 Var
@@ -12276,7 +12276,7 @@ End;
 
 { The pour a write names, by name, by index, or both. Indices shift on every }
 { modify and repour, so a write that only had an index could land on another }
-{ pour (issue #NNN). A name alone must be unique; with an index too, the pour }
+{ pour (issue #373). A name alone must be unique; with an index too, the pour }
 { there must carry it. Nil with Refusal set to the full error response when  }
 { neither picks exactly one pour.                                            }
 Function PourFromParams(Board : IPCB_Board; Params : String; RequestId : String;
@@ -13362,7 +13362,7 @@ Begin
     End;
 
     { By name, by index, or both: an index alone shifts as pours are       }
-    { modified and repoured, and twice picked another pour (issue #NNN).    }
+    { modified and repoured, and twice picked another pour (issue #373).    }
     FoundPoly := PourFromParams(Board, Params, RequestId, TargetIdx, Refusal);
     If FoundPoly = Nil Then
     Begin
@@ -24837,7 +24837,7 @@ Begin
         Exit;
     End;
     { It took the FIRST pour of that name, and names repeat: a second pour }
-    { of the name is now refused instead (issue #NNN).                     }
+    { of the name is now refused instead (issue #373).                     }
     Found := PourFromParams(Board, Params, RequestId, Position, Refusal);
     If Found = Nil Then
     Begin
