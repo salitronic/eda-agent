@@ -113,6 +113,40 @@ ROWS: tuple[MemberRow, ...] = (
         note="the SDK index lists no members for ISch_SignalHarness; its "
              "LineWidth is measured (26.11)",
     ),
+    MemberRow(
+        members=("Radius",),
+        types=("eArc", "eEllipticalArc", "eEllipse"),
+        sdk=("ISch_Arc", "ISch_EllipticalArc", "ISch_Ellipse"),
+        measured=("25.8",),
+        note="a length in mils; a full circle is an arc from 0 to 360",
+    ),
+    MemberRow(
+        members=("SecondaryRadius",),
+        types=("eEllipticalArc", "eEllipse"),
+        sdk=("ISch_EllipticalArc", "ISch_Ellipse"),
+        measured=("25.8",),
+        note="a length in mils",
+    ),
+    MemberRow(
+        members=("StartAngle", "EndAngle"),
+        types=("eArc", "eEllipticalArc"),
+        sdk=("ISch_Arc", "ISch_EllipticalArc"),
+        measured=("25.8",),
+        note="degrees",
+    ),
+    MemberRow(
+        members=("EmbedImage", "KeepAspect"),
+        types=("eImage",),
+        sdk=("ISch_Image",),
+        measured=("25.8",),
+    ),
+    MemberRow(
+        members=("StartLineShape", "EndLineShape", "LineShapeSize"),
+        types=("ePolyline",),
+        sdk=("ISch_Polyline",),
+        measured=("25.8",),
+        note="the end shapes and their size",
+    ),
 )
 
 

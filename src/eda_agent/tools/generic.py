@@ -931,9 +931,21 @@ def register_generic_tools(mcp):
                 {"properties": "Text=GND|Location.X=100|Location.Y=400"},
                 {"properties": "Text=SCK|Location.X=300|Location.Y=200"}])
 
+        Shapes take their geometry here, in mils and degrees: Radius,
+        StartAngle, EndAngle on sch_arc (0 to 360 is a circle) and
+        elliptical_arc; SecondaryRadius on elliptical_arc and ellipse
+        (Radius is the X radius); Vertices "x1,y1,x2,y2,..." on polyline
+        (2 points or more), sch_polygon (3 or more) and bezier (4, 7,
+        10 ... points); StartLineShape,
+        EndLineShape (None, Arrow, Solid Arrow, Tail, Solid Tail, Circle,
+        Square) and LineShapeSize on polyline; FileName, EmbedImage,
+        KeepAspect and Corner.X / Corner.Y on image.
+
         Returns:
-            Dictionary confirming creation. With items: created, failed,
-            total and the failures by index. Known unsupported properties
+            Dictionary confirming creation, and ``properties``: the names
+            not written (unknown, or a value the object did not keep).
+            With items: created, failed, total, the failures by index,
+            and property_problems. Known unsupported properties
             (IsHidden on anything but pins, parameters, designators and
             sheet names; Text on a type without it, such as eParameterSet
             or eWire) reject that item before registration with reason
@@ -4518,8 +4530,9 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with created, failed, total counts and indexed failures.
-            Known unsupported properties (IsHidden on anything but pins,
+            Dict with created, failed, total counts and indexed failures,
+            and property_problems: items placed with a property that was
+            not written. Known unsupported properties (IsHidden on anything but pins,
             parameters, designators and sheet names; Text on a type without
             it, such as eParameterSet or eWire) reject that item before
             registration.

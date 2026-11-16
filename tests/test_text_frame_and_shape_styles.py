@@ -87,11 +87,12 @@ def test_transparent_and_line_style_are_asked_only_of_the_allowed_types():
     code = _source()
     # Only where Altium SAVES it: a round rectangle, text frame and note
     # read Transparent back and lose it on save; frames and notes lose
-    # LineStyle the same way (measured on AD 25.8.1).
+    # LineStyle the same way (measured on AD 25.8.1). A polyline keeps
+    # LineStyle over a save and reopen and draws dashed (measured too).
     assert _types(_routine(code, "SchObjectHasTransparent")) == {
         "eBlanket", "ePolygon", "eRectangle", "eEllipse"}
     assert _types(_routine(code, "SchObjectHasLineStyle")) == {
-        "eBlanket", "eLine", "eRectangle"}
+        "eBlanket", "eLine", "eRectangle", "ePolyline"}
     for routine in ("GetSchPropertyGated", "SetSchProperty"):
         body = _routine(code, routine)
         for prop, guard in (("Transparent", "SchObjectHasTransparent(Obj)"),

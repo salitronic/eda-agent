@@ -102,7 +102,8 @@ def test_production_textcolor_filters_do_not_read_missing_members(tmp_path):
         pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
     names = ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
              "SchObjectHasFontId", "SchObjectHasTextFontId", "SchExtraOwner",
-             "SchExtraFits", "UnsupportedSchProperty")
+             "SchExtraFits", "SchShapeOwner", "SchMemberGate",
+             "UnsupportedSchProperty")
     source = _source()
     guards = "\n".join(_routine(source, name) for name in names)
     types = sorted(set(re.findall(r"\be[A-Z]\w*", guards)) | {"ePowerObject", "eNetLabel"})
