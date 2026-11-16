@@ -371,6 +371,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "proj_lock_designator": "Altium designator lock",
     "proj_replace_component": _NO_API,
     "proj_delete_sheet": "Altium sheet removal from a project",
+    "proj_remove_parameter": "kicad_set_text_variable sets a variable; KiCad's API has no remove",
     # variants
     **{name: _VARIANT for name in (
         "proj_create_variant", "proj_copy_variant", "proj_delete_variant",

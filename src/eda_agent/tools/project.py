@@ -232,6 +232,17 @@ _NO_NET_COLOR = 536870912
 _HIERARCHY_MODES = ("automatic", "flat", "hierarchical", "global",
                     "strict_hierarchical")
 
+#: Project-wide class generation flags (Project Options > Class Generation).
+_CLASS_GEN_PROJECT = ("comp_class_manual", "comp_class_manual_room",
+                      "net_class_auto_bus", "net_class_auto_comp",
+                      "net_class_auto_named_harness", "net_class_manual",
+                      "net_class_separate_bus_sections")
+#: Per-sheet class generation flags; net_class_auto_scope apart.
+_CLASS_GEN_SHEET = ("comp_class_auto", "comp_class_auto_room",
+                    "generate_class_cluster")
+#: Altium's NetClassAutoScope, in order: 0, 1, 2.
+_NET_CLASS_SCOPES = ("none", "local", "all")
+
 
 #: The STEP exporter settings a script can write, as the bridge names them.
 STEP_OPTIONS = {
@@ -825,6 +836,30 @@ def register_project_tools(mcp):
         if hint and isinstance(result, dict):
             result["_hint_not_a_project_option"] = hint
         return result
+
+    @mcp.tool()
+    async def proj_remove_parameter(
+        name: str, project_path: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Remove a project-level parameter and write the project file
+        (only that file).
+
+        Args:
+            name: Parameter name (exact).
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``removed`` (read back), ``parameters_before`` /
+            ``parameters_after`` and ``project_file_saved``. A name the
+            project does not have is refused (NOT_FOUND).
+        """
+        if not name or not name.strip():
+            return {"ok": False, "reason": "name is required"}
+        params: dict[str, Any] = {"name": name}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.remove_parameter", params)
 
     @mcp.tool()
     async def proj_push_parameters() -> dict[str, Any]:
@@ -3679,11 +3714,17 @@ def register_project_tools(mcp):
         append_sheet_number_to_local_nets: Optional[bool] = None,
         pin_swap_by_net_label: Optional[bool] = None,
         pin_swap_by_pin: Optional[bool] = None,
+        single_pin_nets: Optional[bool] = None,
+        auto_sheet_numbering: Optional[bool] = None,
+        class_generation: Optional[dict[str, bool]] = None,
+        class_gen_document: str = "",
+        sheet_class_generation: Optional[dict[str, Any]] = None,
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or change, a project's document order, library search
-        paths, net naming options, net identifier scope, output path and
-        pin swap options.
+        paths, net naming options, net identifier scope, output path,
+        pin swap options, single-pin nets, automatic sheet numbering and
+        class generation.
 
         Call with no changes to read. Every change is read back, and
         any that did not take is listed in ``not_applied``. Save the
@@ -3706,6 +3747,18 @@ def register_project_tools(mcp):
                 net labels on the schematic.
             pin_swap_by_pin: Pin swaps on the board may move pins on
                 the schematic.
+            single_pin_nets: Allow single pin nets.
+            auto_sheet_numbering: Altium numbers the sheets itself.
+            class_generation: Project-wide class generation flags, any
+                of comp_class_manual, comp_class_manual_room,
+                net_class_auto_bus, net_class_auto_comp,
+                net_class_auto_named_harness, net_class_manual,
+                net_class_separate_bus_sections (True / False).
+            class_gen_document: Full path of the sheet that
+                sheet_class_generation applies to.
+            sheet_class_generation: That sheet's flags: comp_class_auto,
+                comp_class_auto_room, generate_class_cluster (True /
+                False) and net_class_auto_scope (none, local or all).
             project_path: The .PrjPcb. Defaults to the focused project.
 
         Returns:
@@ -3715,7 +3768,10 @@ def register_project_tools(mcp):
             ``hierarchy_mode_name``, ``output_path``,
             ``append_sheet_number_to_local_nets``,
             ``pin_swap_by_net_label``, ``pin_swap_by_pin``,
-            ``changed``, ``moved_from`` / ``moved_to`` and
+            ``single_pin_nets``, ``auto_sheet_numbering``, the read-only
+            ``name_nets_hierarchically`` and
+            ``power_port_names_take_priority``, ``class_generation``
+            (``project`` and one entry per sheet), ``changed``, ``moved_from`` / ``moved_to`` and
             ``not_applied``.
         """
         params: dict[str, Any] = {}
@@ -3749,6 +3805,39 @@ def register_project_tools(mcp):
                         + ", ".join(_HIERARCHY_MODES) + " or 0 to 4"}
         if output_path.strip():
             params["output_path"] = output_path.strip()
+        for key, value in (("single_pin_nets", single_pin_nets),
+                           ("auto_sheet_numbering", auto_sheet_numbering)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        for key, value in (class_generation or {}).items():
+            if key not in _CLASS_GEN_PROJECT or not isinstance(value, bool):
+                return {"ok": False, "reason": "class_generation takes "
+                        + ", ".join(_CLASS_GEN_PROJECT) + " as True / False"}
+            params[key] = "true" if value else "false"
+        if sheet_class_generation:
+            if not class_gen_document.strip():
+                return {"ok": False,
+                        "reason": "sheet_class_generation needs class_gen_document"}
+            for key, value in sheet_class_generation.items():
+                if key == "net_class_auto_scope":
+                    text = str(value).strip().lower()
+                    if text in _NET_CLASS_SCOPES:
+                        params[key] = str(_NET_CLASS_SCOPES.index(text))
+                    elif text in ("0", "1", "2"):
+                        params[key] = text
+                    else:
+                        return {"ok": False, "reason": "net_class_auto_scope is "
+                                + ", ".join(_NET_CLASS_SCOPES)}
+                elif key in _CLASS_GEN_SHEET and isinstance(value, bool):
+                    params[key] = "true" if value else "false"
+                else:
+                    return {"ok": False, "reason": "sheet_class_generation takes "
+                            + ", ".join(_CLASS_GEN_SHEET)
+                            + " (True / False) and net_class_auto_scope"}
+            params["class_gen_document"] = class_gen_document.strip()
+        elif class_gen_document.strip():
+            return {"ok": False,
+                    "reason": "class_gen_document goes with sheet_class_generation"}
         if project_path:
             params["project_path"] = project_path
         reply = await get_bridge().send_command_async(
