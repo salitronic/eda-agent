@@ -11081,12 +11081,9 @@ def register_pcb_tools(mcp):
                 (``"IsPad And (HoleSize > 3)"``) or joined with ``&&``;
                 an unbracketed one is refused before anything is sent.
             comment: Free-form comment.
-            gap_mils: Clearance gap, or the sliver width for a
-                MinimumSolderMaskSliver rule. Applies to every kind
-                listed above.
+            gap_mils: Clearance gap (a sliver rule: the sliver width).
             min_width_mils / max_width_mils / favored_width_mils:
-                Width constraint values (applied to every layer); decimals
-                allowed. The *_mm forms are exact (0.09 mm is 3.543 mil).
+                Width values, every layer; decimals allowed. The *_mm forms are exact (0.09 mm is 3.543 mil).
                 On a Differential Pairs Routing rule (kind 51) they set the
                 pair's track widths.
             dp_min_gap_mils / dp_max_gap_mils / dp_preferred_gap_mils and
@@ -11110,7 +11107,9 @@ def register_pcb_tools(mcp):
                 a Fanout Control rule.
             width_impedance_driven, width_min_impedance /
                 width_max_impedance / width_preferred_impedance (ohms) and
-                check_connected_copper: a Width rule.
+                check_connected_copper: a Width rule;
+                matched_tolerance_mils, matched_mode ("group" or
+                "within_pair"): a Matched Lengths rule.
                 These settings are read back in ``settings``; any that did
                 not take is in ``settings_not_applied``. A setting for a
                 rule of another kind is refused.
@@ -11129,16 +11128,13 @@ def register_pcb_tools(mcp):
                 rule's limit. These three are read back in limits; one
                 that did not hold, or that belongs to another kind of rule,
                 is named in limits_note.
-            matched_tolerance_mils, matched_mode ("group" or
-                "within_pair"): a Matched Lengths rule, read back in
-                ``settings``.
             testpoint: a Testpoint Style rule's settings, by name:
                 min_size_mils, max_size_mils, preferred_size_mils,
                 min_hole_mils, max_hole_mils, preferred_hole_mils,
                 grid_mils, grid_tolerance_mils, min_spacing_mils,
                 body_clearance_mils, edge_clearance_mils (0 or more) and
                 under_component, use_grid (True / False). Read back in
-                ``settings`` like the settings above.
+                ``settings``.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
