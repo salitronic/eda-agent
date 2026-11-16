@@ -709,9 +709,14 @@ Begin
         If Project <> Nil Then
         Begin
             Project.DM_AddSourceDocument(DocumentPath);
-            { Written now, or the add is gone after a reopen. }
-            Result := BuildSuccessResponse(RequestId, '{"success":true,"project_saved":'
-                + BoolToJsonStr(SaveProjectFile(Project)) + '}');
+            { Written now, or the add is gone after a reopen. save_project   }
+            { false keeps it in memory only, for a document that is taken    }
+            { out again before anything is saved.                            }
+            If LowerCase(ExtractJsonValue(Params, 'save_project')) = 'false' Then
+                Result := BuildSuccessResponse(RequestId, '{"success":true,"project_saved":false}')
+            Else
+                Result := BuildSuccessResponse(RequestId, '{"success":true,"project_saved":'
+                    + BoolToJsonStr(SaveProjectFile(Project)) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');

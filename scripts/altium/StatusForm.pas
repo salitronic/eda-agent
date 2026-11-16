@@ -2374,6 +2374,7 @@ Begin
     If Result = '' Then Result := ExtractJsonValue(Params, 'library_path');
     If Result = '' Then Result := ExtractJsonValue(Params, 'sheet_path');
     If Result = '' Then Result := ExtractJsonValue(Params, 'document_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'outjob_path');
     If Result = '' Then
     Begin
         Scope := ExtractJsonValue(Params, 'scope');
