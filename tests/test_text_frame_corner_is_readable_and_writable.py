@@ -13,6 +13,7 @@ Obj.Corner on the base interface, which does not compile.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tests.pascal_source import load
@@ -61,14 +62,18 @@ def test_the_frame_local_is_a_text_frame_in_both():
 def test_corner_is_still_never_asked_of_the_base_interface():
     for name in ("GetSchPropertyGated", "SetSchProperty"):
         branch = _corner_branch(_units()[name])
-        assert "Obj.Corner" not in branch.replace("FrameObj.Corner", ""), name
+        typed = re.sub(r"\b(FrameObj|ImgObj)\.Corner", "", branch)
+        assert "Obj.Corner" not in typed, name
 
 
 def test_other_types_stay_outside_the_corner_branch():
+    # An image spans Location to Corner (Gen_PlaceImage writes it), so it
+    # is read and written here too, through its own typed local.
     for name in ("GetSchPropertyGated", "SetSchProperty"):
         branch = _corner_branch(_units()[name])
-        for t in ("eRectangle", "eRoundRectangle", "eLine", "eTextFrame", "eNote"):
+        for t in ("eRectangle", "eRoundRectangle", "eLine", "eTextFrame", "eNote",
+                  "eImage"):
             assert "Obj.ObjectId = %s" % t in branch, (name, t)
         for t in ("eLabel", "ePin", "eWire", "eSheetSymbol", "eHarnessConnector",
-                  "ePolygon", "eEllipse", "eArc", "eImage"):
+                  "ePolygon", "eEllipse", "eArc"):
             assert "Obj.ObjectId = %s" % t not in branch, (name, t)

@@ -312,7 +312,7 @@ def test_create_preflights_before_writing_or_registering(name):
     assert "SchServer.DestroySchObject(NewObj)" in rejection
     assert "UNSUPPORTED_PROPERTY" in rejection
     assert "ResetPropertyDiag(0)" in body[:preflight]
-    for registration in ("Component.AddSchObject(NewObj)",
+    for registration in ("AddLibSymbolPrim(SchLib, Component, NewObj)",
                          "RegisterSchObjectInContainer(NewObj)"):
         assert apply < body.index(registration)
     if name == "Gen_CreateObject":
@@ -340,12 +340,13 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     routines = "\n".join(_routine(source, name) for name in
                          ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                           "SchObjectHasFontId", "SchObjectHasTextFontId",
-                          "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
+                          "SchExtraOwner", "SchExtraFits", "SchShapeOwner",
+                          "SchMemberGate", "UnsupportedSchProperty"))
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
                    {"eNetLabel", "eParameterSet", "eParameter", "ePowerObject", "ePort", "eSheetEntry",
-                    "eWire", "ePin", "eLabel"})
+                    "eWire", "ePin", "eLabel", "eRectangle"})
     constants = "\n".join(f"  {name} = {i};" for i, name in enumerate(types))
     checks = [
         ("ePowerObject", "TextColor=128", "TextColor"),
@@ -374,6 +375,12 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         ("eWire", "Symbol_Outer=1", "Symbol_Outer"),
         ("ePin", "PinsMoveable=true", "PinsMoveable"),
         ("eSchComponent", "ShowHiddenPins=true", ""),
+        ("eArc", "Radius=50|StartAngle=10|EndAngle=90", ""),
+        ("eEllipse", "Radius=50|SecondaryRadius=20", ""),
+        ("eEllipse", "Radius=50|StartAngle=10", "StartAngle"),
+        ("eRectangle", "Location.X=10|Radius=5", "Radius"),
+        ("ePolyline", "EndLineShape=Arrow|LineShapeSize=1", ""),
+        ("eArc", "EmbedImage=true", "EmbedImage"),
     ]
     calls = "\n".join(
         f"  Obj.ObjectId := {kind}; if UnsupportedSchProperty(Obj, '{props}') <> '{expected}' then Halt({i});"
@@ -410,7 +417,8 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     guards = "\n".join(_routine(source, name) for name in
                        ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                         "SchObjectHasFontId", "SchObjectHasTextFontId",
-                        "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
+                        "SchExtraOwner", "SchExtraFits", "SchShapeOwner",
+                        "SchMemberGate", "UnsupportedSchProperty"))
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))
@@ -490,6 +498,18 @@ procedure ApplyNoErcDefaults(Obj: TSchObject);
 begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
+var LibAdds, OwnerSets: Integer;
+procedure SetOwnerPart(Obj, Component: TSchObject);
+begin Inc(OwnerSets); end;
+function AddLibSymbolPrim(SchLib, Component, Obj: TSchObject): Boolean;
+begin Inc(LibAdds); SchLib.RegisterSchObjectInContainer(Obj); Result := True; end;
+procedure MarkLibDirty(SchLib: TSchObject);
+begin end;
+function RenderPropertyDiagJson(Dummy: Integer): String;
+begin
+  Result := '{"unknown_count":0,"unknown":[],"failed_count":0,"failed":[],'
+          + '"unreadable_count":0,"unreadable":[]}';
+end;
 function ObjectTypeFromString(S: String): Integer;
 begin
   Result := -1;
@@ -565,6 +585,19 @@ begin
     'object_type=ePowerObject;properties=Location.X=10|TextColor=128~~' +
     'object_type=eNetLabel;properties=Text=GOOD', '7'));
   PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  WriteLn(Gen_BatchCreate(
+    'scope=doc:C:\other.SchDoc;object_type=eNetLabel;properties=Text=GOOD~~' +
+    'object_type=eNetLabel;properties=Text=GOOD', '8'));
+  PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  SchServer.Doc.ObjectId := eSchLib;
+  SchServer.Doc.CurrentSchComponent := TSchObject.Create;
+  WriteLn(Gen_CreateObject('object_type=eNetLabel;container=component;properties=Text=GOOD', '9'));
+  PrintCounts;
+  WriteLn(LibAdds, ',', OwnerSets);
+  WriteLn(Gen_CreateObject('object_type=eNetLabel;container=component;properties=Text=GOOD|OwnerPartId=2', '10'));
+  WriteLn(LibAdds, ',', OwnerSets);
 end.
 '''
     path = tmp_path / "creation_regression.pas"
@@ -580,7 +613,10 @@ end.
     assert lines[1] == "0,1,0,1"
     assert json.loads(lines[2]) == {"code": "UNSUPPORTED_PROPERTY", "message": "Property Text is not supported on eParameterSet"}
     assert lines[3] == "0,2,0,2"
-    assert json.loads(lines[4]) == {"created": True, "object_type": "eNetLabel"}
+    zero = {"unknown_count": 0, "unknown": [], "failed_count": 0, "failed": [],
+            "unreadable_count": 0, "unreadable": []}
+    assert json.loads(lines[4]) == {"created": True, "object_type": "eNetLabel",
+                                    "properties": zero}
     assert lines[5] == "1,2,1,3"
     assert json.loads(lines[6]) == {
         "created": 2, "failed": 2, "total": 4,
@@ -588,9 +624,11 @@ end.
             {"index": 0, "object_type": "eNetLabel", "reason": "UNSUPPORTED_PROPERTY", "property": "IsHidden"},
             {"index": 2, "object_type": "eParameterSet", "reason": "UNSUPPORTED_PROPERTY", "property": "Text"},
         ],
+        "property_problems": [],
     }
     assert lines[7] == "2,2,2,5"
-    assert json.loads(lines[8]) == {"created": True, "object_type": "eParameter"}
+    assert json.loads(lines[8]) == {"created": True, "object_type": "eParameter",
+                                    "properties": zero}
     assert lines[9] == "3,2,3,6"
     assert json.loads(lines[10]) == {"code": "UNSUPPORTED_PROPERTY", "message": "Property TextColor is not supported on ePowerObject"}
     assert lines[11] == "0,1,0,1"
@@ -600,5 +638,21 @@ end.
             {"index": 0, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
             {"index": 2, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
         ],
+        "property_problems": [],
     }
     assert lines[13] == "2,2,2,5"
+    # A scope naming another document is refused before anything is made.
+    assert json.loads(lines[14]) == {
+        "created": 1, "failed": 1, "total": 2,
+        "failures": [{"index": 0, "object_type": "eNetLabel", "reason": "SCOPE_NOT_SUPPORTED"}],
+        "property_problems": [],
+    }
+    assert lines[15] == "1,0,1,3"
+    # container=component goes through the library, with the part set
+    # unless OwnerPartId was given.
+    assert json.loads(lines[16]) == {"created": True, "object_type": "eNetLabel",
+                                     "properties": zero}
+    assert lines[17] == "1,0,1,1"
+    assert lines[18] == "1,1"
+    assert json.loads(lines[19])["created"] is True
+    assert lines[20] == "2,1"

@@ -355,6 +355,38 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "Preview, read the PNG, fix, then draw on a fresh sheet."),
     },
     {
+        "task": "Draw an arc, circle, ellipse, bezier, arrow or picture "
+                "on a sheet or symbol",
+        "keywords": ("arc", "circle", "ellipse", "elliptical", "bezier",
+                     "curve", "polyline", "arrow", "arrowhead", "image",
+                     "picture", "graphic", "shape"),
+        "when": (("elliptical",), ("ellipse",), ("bezier",), ("arrowhead",),
+                 ("draw", "arc"), ("draw", "circle"), ("draw", "curve"),
+                 ("polyline", "arrow"), ("line", "arrow"),
+                 ("place", "picture"), ("embed", "image")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["obj_create", "obj_query", "obj_modify"],
+        "avoid": [
+            ("lib_add_symbol_arc", "draws circular arcs in a symbol only; "
+                                   "obj_create draws every shape, on a "
+                                   "sheet or (container=component) in "
+                                   "the symbol on screen"),
+        ],
+        "note": (
+            "obj_create with object_type sch_arc, elliptical_arc, ellipse, "
+            "bezier, polyline or image. Properties in mils and degrees: "
+            "Location.X / .Y (the centre of an arc or ellipse), Radius, "
+            "SecondaryRadius (the Y radius), StartAngle, EndAngle; "
+            "Vertices for a polyline (2 points or more) or bezier "
+            "(4, 7, 10 ... points); "
+            "StartLineShape / EndLineShape (Arrow, Solid Arrow, Tail, "
+            "Solid Tail, Circle, Square) and LineShapeSize on a polyline; "
+            "FileName then EmbedImage, KeepAspect, Corner.X / .Y on an "
+            "image. The reply's properties block names any value not kept. "
+            "Many shapes: obj_create items, one undo step."),
+    },
+    {
         "task": "Delete an object placed on a schematic",
         "keywords": ("delete", "text", "frame", "textframe", "note",
                      "label", "wire", "junction", "rectangle", "image",

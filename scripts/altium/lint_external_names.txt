@@ -149,6 +149,14 @@ eLayerClass_SolderMask
 eLeftAlign
 eLeftSide
 eLine
+# TLineShape, the end shapes of a schematic polyline (SDK constants 0-6)
+eLineShapeArrow
+eLineShapeCircle
+eLineShapeNone
+eLineShapeSolidArrow
+eLineShapeSolidTail
+eLineShapeSquare
+eLineShapeTail
 eM
 eMechanical1
 eMechanical10

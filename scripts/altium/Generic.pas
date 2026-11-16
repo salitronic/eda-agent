@@ -189,6 +189,15 @@ Begin
     Result := (N > 0) And ((N Mod 2) = 0);
 End;
 
+{ The fewest vertices an outline may have: a polyline is a drawn line and  }
+{ two points make one; a polygon, bezier or blanket needs three.           }
+Function SchMinVertices(Obj : ISch_GraphicalObject) : Integer;
+Begin
+    Result := 3;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId = ePolyline Then Result := 2;
+End;
+
 { Replace the whole vertex array of a polygon-family object. True when the }
 { count read back matches what was written.                                }
 Function SetSchVertices(Obj : ISch_GraphicalObject; Text : String) : Boolean;
@@ -201,11 +210,29 @@ Begin
     Ys := TStringList.Create;
     Try
         If Not ParseVertexList(Text, Xs, Ys) Then Exit;
-        If Xs.Count < 3 Then Exit;
-        Obj.VerticesCount := Xs.Count;
-        For I := 1 To Xs.Count Do
-            Obj.Vertex[I] := Point(MilsToCoordF(StrToFloatDef(Xs[I - 1], 0)),
-                                   MilsToCoordF(StrToFloatDef(Ys[I - 1], 0)));
+        If Xs.Count < SchMinVertices(Obj) Then Exit;
+        If Obj.ObjectId = eBezier Then
+        Begin
+            { A bezier is one start point and three more per curve (4, 7,   }
+            { 10). Its control points go in one by one, cleared first:      }
+            { InsertVertex then SetState_Vertex, the route scripts that     }
+            { build beziers use.                                            }
+            If ((Xs.Count - 1) Mod 3) <> 0 Then Exit;
+            Obj.ClearAllVertices;
+            For I := 1 To Xs.Count Do
+            Begin
+                Obj.InsertVertex(I);
+                Obj.SetState_Vertex(I, Point(MilsToCoordF(StrToFloatDef(Xs[I - 1], 0)),
+                                             MilsToCoordF(StrToFloatDef(Ys[I - 1], 0))));
+            End;
+        End
+        Else
+        Begin
+            Obj.VerticesCount := Xs.Count;
+            For I := 1 To Xs.Count Do
+                Obj.Vertex[I] := Point(MilsToCoordF(StrToFloatDef(Xs[I - 1], 0)),
+                                       MilsToCoordF(StrToFloatDef(Ys[I - 1], 0)));
+        End;
         Result := (Obj.VerticesCount = Xs.Count);
     Finally
         Ys.Free;
@@ -670,7 +697,8 @@ End;
 { the round rectangle, text frame and note take it, read it back and lose  }
 { it on save. LineStyle kept on the line and rectangle (and the blanket);  }
 { the text frame and note lose it, a round rectangle does not save it, an  }
-{ ellipse and a polygon have none.                                         }
+{ ellipse and a polygon have none. A polyline keeps it too: dashed, saved, }
+{ reopened, read back 1 and drawn dashed (AD 25.8.1, 2026-11-16).         }
 Function SchObjectHasTransparent(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
@@ -684,7 +712,7 @@ Begin
     Result := False;
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eLine)
-        Or (Obj.ObjectId = eRectangle);
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = ePolyline);
 End;
 
 { XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query     }
@@ -783,6 +811,47 @@ Begin
         Or (Id = eSignalHarness) Or (Id = eHarnessWire) Or (Id = eBlanket)
         Or (Id = eCompileMask) Or (Id = eImage) Or (Id = eSheetSymbol)
         Or (Id = eHarnessConnector) Or (Id = eTextFrame) Or (Id = eNote) Then
+            Result := 1;
+    End
+    Else If (PropName = 'Radius') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eArc) Or (Id = eEllipticalArc) Or (Id = eEllipse) Then
+            Result := 1;
+    End
+    Else If (PropName = 'SecondaryRadius') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eEllipticalArc) Or (Id = eEllipse) Then
+            Result := 1;
+    End
+    Else If (PropName = 'StartAngle') Or (PropName = 'EndAngle') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eArc) Or (Id = eEllipticalArc) Then
+            Result := 1;
+    End
+    Else If (PropName = 'EmbedImage') Or (PropName = 'KeepAspect') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eImage) Then
+            Result := 1;
+    End
+    Else If (PropName = 'StartLineShape') Or (PropName = 'EndLineShape')
+        Or (PropName = 'LineShapeSize') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = ePolyline) Then
             Result := 1;
     End;
 End;
@@ -1388,6 +1457,245 @@ Begin
     Else Result := SchGetExtra(Obj, PropName) = Value;
 End;
 
+{ SCHEMATIC SHAPE GEOMETRY (issue #384). What a drawing shape carries      }
+{ besides its Location, colours and line width: the radius and the start   }
+{ and end angles of an arc, the two radii of an elliptical arc and of an   }
+{ ellipse, whether an image is embedded and keeps its aspect, and the end  }
+{ shapes of a polyline. Without them obj_create placed an arc or an        }
+{ ellipse it could not size, so callers drew curves as straight segments.  }
+{ Each member lives on the interface of its shape only, and asked of any   }
+{ other type it halts the script, so SchMemberGate (the sch_members table) }
+{ answers first and the member is reached through a typed local, as Corner }
+{ and CornerXRadius are. On Altium 25: Lib_AddSymbolArc writes Radius and  }
+{ both angles of an arc, Gen_MirrorSchComponent writes the angles of an    }
+{ elliptical arc, and Gen_GetSchGeometry reads both radii of an elliptical }
+{ arc and an ellipse.                                                      }
+
+{ 1 Radius, 2 SecondaryRadius, 3 StartAngle or EndAngle, 4 EmbedImage or    }
+{ KeepAspect, 5 StartLineShape, EndLineShape or LineShapeSize, 0 none.      }
+Function SchShapeOwner(PropName : String) : Integer;
+Begin
+    Result := 0;
+    If PropName = 'Radius' Then Result := 1
+    Else If PropName = 'SecondaryRadius' Then Result := 2
+    Else If (PropName = 'StartAngle') Or (PropName = 'EndAngle') Then Result := 3
+    Else If (PropName = 'EmbedImage') Or (PropName = 'KeepAspect') Then Result := 4
+    Else If (PropName = 'StartLineShape') Or (PropName = 'EndLineShape')
+        Or (PropName = 'LineShapeSize') Then Result := 5;
+End;
+
+{ A polyline end shape by the name its Properties panel shows, or by its   }
+{ number; -1 for anything else.                                             }
+Function LineShapeOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := Trim(S);
+    { A number first: stripping the separators below would read -1 as 1. }
+    If IsIntStr(N) Then
+    Begin
+        { StrToIntDef raises past 32 bits instead of giving the default. }
+        Result := -1;
+        If Length(N) > 2 Then Exit;
+        Result := StrToIntDef(N, -1);
+        If (Result < eLineShapeNone) Or (Result > eLineShapeSquare) Then Result := -1;
+        Exit;
+    End;
+    N := LowerCase(N);
+    N := StringReplace(N, ' ', '', -1);
+    N := StringReplace(N, '_', '', -1);
+    N := StringReplace(N, '-', '', -1);
+    If N = 'none' Then Result := eLineShapeNone
+    Else If N = 'arrow' Then Result := eLineShapeArrow
+    Else If N = 'solidarrow' Then Result := eLineShapeSolidArrow
+    Else If N = 'tail' Then Result := eLineShapeTail
+    Else If N = 'solidtail' Then Result := eLineShapeSolidTail
+    Else If N = 'circle' Then Result := eLineShapeCircle
+    Else If N = 'square' Then Result := eLineShapeSquare
+    Else Result := -1;
+End;
+
+Function LineShapeName(N : Integer) : String;
+Begin
+    If N = eLineShapeNone Then Result := 'None'
+    Else If N = eLineShapeArrow Then Result := 'Arrow'
+    Else If N = eLineShapeSolidArrow Then Result := 'Solid Arrow'
+    Else If N = eLineShapeTail Then Result := 'Tail'
+    Else If N = eLineShapeSolidTail Then Result := 'Solid Tail'
+    Else If N = eLineShapeCircle Then Result := 'Circle'
+    Else If N = eLineShapeSquare Then Result := 'Square'
+    Else Result := IntToStr(N);
+End;
+
+{ Two angles in degrees that point the same way, 0 and 360 alike. Both are }
+{ within -360 to 360 here, so the loops run at most twice.                 }
+Function SchAngleSame(A : Double; B : Double) : Boolean;
+Var
+    D : Double;
+Begin
+    D := A - B;
+    While D < 0 Do D := D + 360;
+    While D >= 360 Do D := D - 360;
+    Result := (D < 0.001) Or (D > 359.999);
+End;
+
+{ The value, empty when Obj is not a shape that carries it. Lengths in      }
+{ mils, angles in degrees, end shapes by name, LineShapeSize 0 to 3. The    }
+{ callers ask SchMemberGate first; a member is only ever reached through    }
+{ the typed local of the shape that declares it.                            }
+Function SchGetShape(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    ArcObj : ISch_Arc;
+    ElArcObj : ISch_EllipticalArc;
+    EllObj : ISch_Ellipse;
+    ImgObj : ISch_Image;
+    PolyObj : ISch_Polyline;
+    Have : Boolean;
+Begin
+    Result := '';
+    Have := False;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId = eArc Then
+    Begin
+        ArcObj := Obj;
+        Have := True;
+        If PropName = 'Radius' Then Result := FloatToJsonStr(CoordToMilsF(ArcObj.Radius))
+        Else If PropName = 'StartAngle' Then Result := FloatToJsonStr(ArcObj.StartAngle)
+        Else If PropName = 'EndAngle' Then Result := FloatToJsonStr(ArcObj.EndAngle)
+        Else Have := False;
+    End
+    Else If Obj.ObjectId = eEllipticalArc Then
+    Begin
+        ElArcObj := Obj;
+        Have := True;
+        If PropName = 'Radius' Then Result := FloatToJsonStr(CoordToMilsF(ElArcObj.Radius))
+        Else If PropName = 'SecondaryRadius' Then
+            Result := FloatToJsonStr(CoordToMilsF(ElArcObj.SecondaryRadius))
+        Else If PropName = 'StartAngle' Then Result := FloatToJsonStr(ElArcObj.StartAngle)
+        Else If PropName = 'EndAngle' Then Result := FloatToJsonStr(ElArcObj.EndAngle)
+        Else Have := False;
+    End
+    Else If Obj.ObjectId = eEllipse Then
+    Begin
+        EllObj := Obj;
+        Have := True;
+        If PropName = 'Radius' Then Result := FloatToJsonStr(CoordToMilsF(EllObj.Radius))
+        Else If PropName = 'SecondaryRadius' Then
+            Result := FloatToJsonStr(CoordToMilsF(EllObj.SecondaryRadius))
+        Else Have := False;
+    End
+    Else If Obj.ObjectId = eImage Then
+    Begin
+        ImgObj := Obj;
+        Have := True;
+        If PropName = 'EmbedImage' Then Result := BoolToJsonStr(ImgObj.EmbedImage)
+        Else If PropName = 'KeepAspect' Then Result := BoolToJsonStr(ImgObj.KeepAspect)
+        Else Have := False;
+    End
+    Else If Obj.ObjectId = ePolyline Then
+    Begin
+        PolyObj := Obj;
+        Have := True;
+        If PropName = 'StartLineShape' Then Result := LineShapeName(PolyObj.StartLineShape)
+        Else If PropName = 'EndLineShape' Then Result := LineShapeName(PolyObj.EndLineShape)
+        Else If PropName = 'LineShapeSize' Then Result := IntToStr(PolyObj.LineShapeSize)
+        Else Have := False;
+    End;
+    If Not Have Then NotePropertyDiag('unreadable', PropName);
+End;
+
+{ Write, then read back: True only when the shape holds the value asked    }
+{ for. A radius is a number above 0 and up to 100000 mils, an angle a      }
+{ number from -360 to 360, a switch true or false, an end shape a name or  }
+{ number LineShapeOrdinal knows, LineShapeSize 0 to 3 or smallest, small,  }
+{ medium, large. Anything else is refused before the shape is touched.     }
+Function SchSetShape(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    ArcObj : ISch_Arc;
+    ElArcObj : ISch_EllipticalArc;
+    EllObj : ISch_Ellipse;
+    ImgObj : ISch_Image;
+    PolyObj : ISch_Polyline;
+    Owner, N : Integer;
+    F : Double;
+    B : Boolean;
+    Got : String;
+Begin
+    Result := False;
+    { The setter has asked already; asked again here because the branches }
+    { below write the last member of a shape for any name they do not      }
+    { list, and a write is rare enough that the second look costs nothing. }
+    If SchMemberGate(Obj, PropName) <> 1 Then Exit;
+    Owner := SchShapeOwner(PropName);
+    F := 0;
+    N := 0;
+    B := False;
+    If Owner <= 3 Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        F := StrToFloatDef(Trim(Value), 0);
+        If (Owner <= 2) And ((F <= 0) Or (F > 100000)) Then Exit;
+        If (Owner = 3) And ((F < -360) Or (F > 360)) Then Exit;
+    End
+    Else If Owner = 4 Then
+    Begin
+        If LowerCase(Trim(Value)) = 'true' Then B := True
+        Else If LowerCase(Trim(Value)) <> 'false' Then Exit;
+    End
+    Else If PropName = 'LineShapeSize' Then
+    Begin
+        N := SchLineWidthParam(Value);
+        If N < 0 Then Exit;
+    End
+    Else
+    Begin
+        N := LineShapeOrdinal(Value);
+        If N < 0 Then Exit;
+    End;
+
+    If Obj.ObjectId = eArc Then
+    Begin
+        ArcObj := Obj;
+        If PropName = 'Radius' Then ArcObj.Radius := MilsToCoordF(F)
+        Else If PropName = 'StartAngle' Then ArcObj.StartAngle := F
+        Else ArcObj.EndAngle := F;
+    End
+    Else If Obj.ObjectId = eEllipticalArc Then
+    Begin
+        ElArcObj := Obj;
+        If PropName = 'Radius' Then ElArcObj.Radius := MilsToCoordF(F)
+        Else If PropName = 'SecondaryRadius' Then ElArcObj.SecondaryRadius := MilsToCoordF(F)
+        Else If PropName = 'StartAngle' Then ElArcObj.StartAngle := F
+        Else ElArcObj.EndAngle := F;
+    End
+    Else If Obj.ObjectId = eEllipse Then
+    Begin
+        EllObj := Obj;
+        If PropName = 'Radius' Then EllObj.Radius := MilsToCoordF(F)
+        Else EllObj.SecondaryRadius := MilsToCoordF(F);
+    End
+    Else If Obj.ObjectId = eImage Then
+    Begin
+        ImgObj := Obj;
+        If PropName = 'EmbedImage' Then ImgObj.EmbedImage := B
+        Else ImgObj.KeepAspect := B;
+    End
+    Else If Obj.ObjectId = ePolyline Then
+    Begin
+        PolyObj := Obj;
+        If PropName = 'StartLineShape' Then PolyObj.StartLineShape := N
+        Else If PropName = 'EndLineShape' Then PolyObj.EndLineShape := N
+        Else PolyObj.LineShapeSize := N;
+    End;
+
+    Got := SchGetShape(Obj, PropName);
+    If Owner <= 2 Then Result := (Got <> '') And (Abs(StrToFloatDef(Got, -1) - F) < 0.001)
+    Else If Owner = 3 Then Result := (Got <> '') And SchAngleSame(StrToFloatDef(Got, 0), F)
+    Else If Owner = 4 Then Result := Got = BoolToJsonStr(B)
+    Else If PropName = 'LineShapeSize' Then Result := Got = IntToStr(N)
+    Else Result := LineShapeOrdinal(Got) = N;
+End;
+
 { Preflight only the known unsupported property/type pairs. Preserve the
   existing treatment of other names; do not guess a complete capability map. }
 Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
@@ -1425,6 +1733,7 @@ Begin
                 Or (((PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin')
                     Or (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin'))
                     And (Obj.ObjectId <> ePin))
+                Or ((SchShapeOwner(PropName) > 0) And (SchMemberGate(Obj, PropName) <> 1))
                 Or ((SchExtraOwner(PropName) > 0) And (Not SchExtraFits(Obj, PropName))) Then
             Begin
                 Result := PropName;
@@ -2428,7 +2737,7 @@ Var
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     RR : ISch_RoundRectangle;
-    ArcObj : ISch_Arc;
+    ImgObj : ISch_Image;
     SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
@@ -2445,6 +2754,8 @@ Begin
     Try
         // Identity
         If Extra > 0 Then Result := SchGetExtra(Obj, PropName)
+        { Arc and ellipse radii and angles, image and polyline settings. }
+        Else If SchShapeOwner(PropName) > 0 Then Result := SchGetShape(Obj, PropName)
         Else If PropName = 'ObjectId'    Then Result := IntToStr(Obj.ObjectId)
         // Read only, on any schematic object: Altium's description and
         // identifier of it, and the compile error it carries (empty when
@@ -2487,6 +2798,14 @@ Begin
                 FrameObj := Obj;
                 Crn := FrameObj.Corner;
                 Have := True;
+            End
+            { An image spans Location to Corner, the member Gen_PlaceImage }
+            { writes.                                                       }
+            Else If Obj.ObjectId = eImage Then
+            Begin
+                ImgObj := Obj;
+                Crn := ImgObj.Corner;
+                Have := True;
             End;
             If Have Then
             Begin
@@ -2509,24 +2828,6 @@ Begin
                     Result := FloatToJsonStr(CoordToMilsF(RR.CornerXRadius))
                 Else
                     Result := FloatToJsonStr(CoordToMilsF(RR.CornerYRadius));
-            End
-            Else
-                NotePropertyDiag('unreadable', PropName);
-        End
-        { An arc's radius and angles live on ISch_Arc only: the same       }
-        { narrowing, read in mils and degrees.                             }
-        Else If (PropName = 'Radius') Or (PropName = 'StartAngle')
-            Or (PropName = 'EndAngle') Then
-        Begin
-            If Obj.ObjectId = eArc Then
-            Begin
-                ArcObj := Obj;
-                If PropName = 'Radius' Then
-                    Result := FloatToJsonStr(CoordToMilsF(ArcObj.Radius))
-                Else If PropName = 'StartAngle' Then
-                    Result := FloatToJsonStr(ArcObj.StartAngle)
-                Else
-                    Result := FloatToJsonStr(ArcObj.EndAngle);
             End
             Else
                 NotePropertyDiag('unreadable', PropName);
@@ -2697,7 +2998,16 @@ Begin
         End
         Else If (PropName = 'Filename') Or (PropName = 'FileName')
              Or (PropName = 'SheetFileName') Or (PropName = 'SheetFileName.Text') Then
-            Result := GetSheetSymbolText(Obj, 'Filename')
+        Begin
+            { An image names the picture it shows; a sheet symbol its sheet. }
+            If (Obj.ObjectId = eImage) And (PropName = 'FileName') Then
+            Begin
+                ImgObj := Obj;
+                Result := ImgObj.FileName;
+            End
+            Else
+                Result := GetSheetSymbolText(Obj, 'Filename');
+        End
         Else If PropName = 'Comment'         Then Result := GetSchComponentSubText(Obj, 'Comment')
         Else If PropName = 'Comment.Text'    Then Result := GetSchComponentSubText(Obj, 'Comment')
         Else If SchLabelPropWhich(PropName) <> '' Then
@@ -3155,6 +3465,7 @@ Var
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     RR : ISch_RoundRectangle;
+    ImgObj : ISch_Image;
     SymObj : ISch_SheetSymbol;
     EnumVal : Integer;
     Matched : Boolean;
@@ -3188,6 +3499,10 @@ Begin
         Begin
             WroteOK := SchSetExtra(Obj, PropName, Value);
         End
+        { Arc and ellipse radii and angles, image and polyline settings,   }
+        { on the shapes that carry them; read back by SchSetShape.         }
+        Else If SchShapeOwner(PropName) > 0 Then
+            WroteOK := SchSetShape(Obj, PropName, Value)
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
         // the TLocation record via the GetState_Location reader; writing
         // directly to `.X` / `.Y` on that copy is silently discarded. Read
@@ -3269,7 +3584,22 @@ Begin
                 Else
                     Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
                 FrameObj.Corner := Crn;
-            End;
+            End
+            { The far corner of an image sets its size. }
+            Else If Obj.ObjectId = eImage Then
+            Begin
+                ImgObj := Obj;
+                Crn := ImgObj.Corner;
+                If PropName = 'Corner.X' Then
+                    Crn.X := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+                ImgObj.Corner := Crn;
+            End
+            { Any other type has no Corner: say so rather than report a    }
+            { write that was never made.                                    }
+            Else
+                Matched := False;
         End
         // A round rectangle's corner radii, decimal mils, on that type only
         // (typed local, as Corner above). Read back by the caller's query.
@@ -3425,7 +3755,18 @@ Begin
         // SetSheetSymbolText.
         Else If (PropName = 'Filename') Or (PropName = 'FileName')
              Or (PropName = 'SheetFileName') Or (PropName = 'SheetFileName.Text') Then
-            WroteOK := SetSheetSymbolText(Obj, 'Filename', Value)
+        Begin
+            { An image takes the picture file it shows (give EmbedImage    }
+            { after it to keep the picture in the sheet).                   }
+            If (Obj.ObjectId = eImage) And (PropName = 'FileName') Then
+            Begin
+                ImgObj := Obj;
+                ImgObj.FileName := Value;
+                WroteOK := (ImgObj.FileName = Value);
+            End
+            Else
+                WroteOK := SetSheetSymbolText(Obj, 'Filename', Value);
+        End
         Else If (PropName = 'Comment') Or (PropName = 'Comment.Text') Then
             SetSchComponentSubText(Obj, 'Comment', Value)
         { A placed part's designator must be visible on the schematic even
@@ -3862,6 +4203,8 @@ Begin
     Result := (U = 'LOCATION.X') Or (U = 'LOCATION.Y') Or
         (U = 'CORNER.X') Or (U = 'CORNER.Y') Or
         (U = 'CORNERXRADIUS') Or (U = 'CORNERYRADIUS') Or
+        (U = 'RADIUS') Or (U = 'SECONDARYRADIUS') Or
+        (U = 'STARTANGLE') Or (U = 'ENDANGLE') Or (U = 'LINESHAPESIZE') Or
         (U = 'WIDTH') Or (U = 'PINLENGTH') Or
         (U = 'CONNECTIONX') Or (U = 'CONNECTIONY') Or
         (U = 'XSIZE') Or (U = 'YSIZE') Or (U = 'DISTANCEFROMTOP') Or
@@ -5735,10 +6078,16 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No library component is selected');
             Exit;
         End;
+        { Through the library, as every lib_add_symbol_* writer adds: an    }
+        { object added to the symbol on screen with AddSchObject is in the  }
+        { data but not drawn and not found by a query until the view is     }
+        { rebuilt. The part on screen owns it unless OwnerPartId was given. }
+        If Pos('OwnerPartId=', PropsStr) = 0 Then SetOwnerPart(NewObj, Component);
         SchBeginEdit(SchLib, '');
-        Component.AddSchObject(NewObj);
-        SchRegisterObject(Component, NewObj);
-        SchEndEdit(SchLib, '');
+        AddLibSymbolPrim(SchLib, Component, NewObj);
+        SchEndEdit(SchLib, 'Edit');
+        MarkLibDirty(SchLib);
+        Try SchLib.GraphicallyInvalidate; Except End;
     End
     Else
     Begin
@@ -5765,7 +6114,11 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
-    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"' + ObjTypeStr + '"}');
+    { What was not written: a property name the object does not take, or a }
+    { value it did not keep (an arc radius read back different). The       }
+    { object is placed either way, as before.                              }
+    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"'
+        + EscapeJsonString(ObjTypeStr) + '","properties":' + RenderPropertyDiagJson(0) + '}');
 End;
 
 {..............................................................................}
@@ -15631,11 +15984,13 @@ Var
     NewObj : ISch_GraphicalObject;
     ActiveDoc : ISch_Document;
     ContainerStr : String;
-    FailuresJson, ItemReason, UnsupportedProp : String;
-    FirstFailure : Boolean;
+    FailuresJson, ItemReason, UnsupportedProp, ProblemsJson, Diag : String;
+    FirstFailure, LibTouched : Boolean;
 Begin
     ResetPropertyDiag(0);
     SchDoc := Nil;
+    SchLib := Nil;
+    LibTouched := False;
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
     Begin
@@ -15649,6 +16004,7 @@ Begin
     ActiveDoc := SchServer.GetCurrentSchDocument;
     Remaining := Operations;
     FailuresJson := '';
+    ProblemsJson := '';
     FirstFailure := True;
 
     If ActiveDoc <> Nil Then
@@ -15670,7 +16026,16 @@ Begin
             If ContainerStr = '' Then ContainerStr := 'document';
 
             ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
-            If ObjTypeInt = -1 Then
+            { A create goes on the document in front, as obj_create says. A }
+            { scope naming another document was read and dropped, so the    }
+            { object went on whichever sheet was in front and the reply     }
+            { did not say so; it is refused instead.                        }
+            If LowerCase(Trim(Scope)) <> 'active_doc' Then
+            Begin
+                Inc(Failed);
+                ItemReason := 'SCOPE_NOT_SUPPORTED';
+            End
+            Else If ObjTypeInt = -1 Then
             Begin
                 Inc(Failed);
                 ItemReason := 'INVALID_TYPE';
@@ -15705,8 +16070,11 @@ Begin
                                 Component := SchLib.CurrentSchComponent;
                                 If Component <> Nil Then
                                 Begin
-                                    Component.AddSchObject(NewObj);
-                                    SchRegisterObject(Component, NewObj);
+                                    { Through the library, as Gen_CreateObject. }
+                                    If Pos('OwnerPartId=', PropsStr) = 0 Then
+                                        SetOwnerPart(NewObj, Component);
+                                    AddLibSymbolPrim(SchLib, Component, NewObj);
+                                    LibTouched := True;
                                     Inc(Created);
                                 End
                                 Else
@@ -15738,6 +16106,17 @@ Begin
                                 SchRegisterObject(SchDoc, NewObj);
                                 Inc(Created);
                             End;
+                        End;
+
+                        { Placed, with a property it did not take: say which. }
+                        Diag := RenderPropertyDiagJson(0);
+                        If (ItemReason = '') And ((Pos('"unknown_count":0,', Diag) = 0)
+                            Or (Pos('"failed_count":0,', Diag) = 0)) Then
+                        Begin
+                            If ProblemsJson <> '' Then ProblemsJson := ProblemsJson + ',';
+                            ProblemsJson := ProblemsJson + '{"index":' + IntToStr(OpCount - 1)
+                                + ',"object_type":"' + EscapeJsonString(ObjTypeStr)
+                                + '","properties":' + Diag + '}';
                         End;
                     End;
                 End;
@@ -15773,11 +16152,17 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    If LibTouched Then
+    Begin
+        MarkLibDirty(SchLib);
+        Try SchLib.GraphicallyInvalidate; Except End;
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"created":' + IntToStr(Created) +
         ',"failed":' + IntToStr(Failed) +
         ',"total":' + IntToStr(OpCount) +
-        ',"failures":[' + FailuresJson + ']}');
+        ',"failures":[' + FailuresJson + ']' +
+        ',"property_problems":[' + ProblemsJson + ']}');
 End;
 
 {..............................................................................}
