@@ -5381,6 +5381,85 @@ End;
 { Params: variant (name or description), designator, set ('Name=Value'       }
 { items joined by '~~'), clear (names joined by '~~'), project_path.          }
 {..............................................................................}
+{..............................................................................}
+{ Proj_RemoveParameter - remove one project parameter by name and write the  }
+{ project file (only that file). DM_RemoveParameterByName does nothing and   }
+{ raises nothing for a name that is not there, so the parameter list is      }
+{ checked before (NOT_FOUND) and after (removed is read back).               }
+{ Params: name (required), project_path (optional).                          }
+{..............................................................................}
+Function Proj_RemoveParameter(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, ParamName : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Param : IParameter;
+    I, Before, After : Integer;
+    Found, Still, FileSaved : Boolean;
+Begin
+    ParamName := ExtractJsonValue(Params, 'name');
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    If ParamName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'name is required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
+        Exit;
+    End;
+    If ProjectPath <> '' Then
+        Project := FindProjectByPath(Workspace, ProjectPath)
+    Else
+        Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'No project found');
+        Exit;
+    End;
+    ProjectPath := Project.DM_ProjectFullPath;
+    If Not FileExists(ProjectPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND',
+            'The project in focus is "' + ProjectPath
+            + '", not a project file; pass project_path. Nothing was removed.');
+        Exit;
+    End;
+    Found := False;
+    Before := Project.DM_ParameterCount;
+    For I := 0 To Before - 1 Do
+    Begin
+        Param := Project.DM_Parameters(I);
+        If (Param <> Nil) And (Param.DM_Name = ParamName) Then Found := True;
+    End;
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'The project has no parameter "' + ParamName + '". Nothing was removed.');
+        Exit;
+    End;
+    Project.DM_RemoveParameterByName(ParamName);
+    After := Project.DM_ParameterCount;
+    Still := False;
+    For I := 0 To After - 1 Do
+    Begin
+        Param := Project.DM_Parameters(I);
+        If (Param <> Nil) And (Param.DM_Name = ParamName) Then Still := True;
+    End;
+    FileSaved := False;
+    If Not Still Then FileSaved := SaveProjectFile(Project);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', Not Still) + ','
+        + JsonStr('name', ParamName) + ','
+        + JsonBool('removed', Not Still) + ','
+        + JsonInt('parameters_before', Before) + ','
+        + JsonInt('parameters_after', After) + ','
+        + JsonBool('project_file_saved', FileSaved) + ','
+        + JsonStr('project_path', ProjectPath)));
+End;
+
 Function Proj_SetParameterVariation(Params : String; RequestId : String) : String;
 Var
     ProjectPath, VarWanted, Desig, SetStr, ClearStr, Item, PName, PValue : String;
@@ -6232,6 +6311,104 @@ End;
 
 { The project's documents in project order, its search paths and its        }
 { generated documents, as JSON members (no braces).                         }
+{..............................................................................}
+{ Class generation options (Project Options > Class Generation). The         }
+{ interfaces IProjectClassGenerationOptions / IDocumentClassGenerationOptions }
+{ are not named in the script engine, so the objects are held in Variants;  }
+{ every member read and written here was proven on AD 25.8.1.               }
+{ NetClassAutoScope: 0 none, 1 local nets only, 2 all nets.                  }
+{..............................................................................}
+Function ProjectClassGenJson(Project : IProject) : String;
+Var
+    Opts : Variant;
+Begin
+    Result := '';
+    Try
+        Opts := Project.DM_GetProjectClassGenerationOptions;
+        Result := JsonBool('comp_class_manual', Opts.CompClassManualEnabled) + ','
+            + JsonBool('comp_class_manual_room', Opts.CompClassManualRoomEnabled) + ','
+            + JsonBool('net_class_auto_bus', Opts.NetClassAutoBusEnabled) + ','
+            + JsonBool('net_class_auto_comp', Opts.NetClassAutoCompEnabled) + ','
+            + JsonBool('net_class_auto_named_harness', Opts.NetClassAutoNamedHarnessEnabled) + ','
+            + JsonBool('net_class_manual', Opts.NetClassManualEnabled) + ','
+            + JsonBool('net_class_separate_bus_sections', Opts.NetClassSeparateForBusSections);
+    Except
+        Result := '';
+    End;
+    Result := '{' + Result + '}';
+End;
+
+Function DocumentClassGenJson(Project : IProject; Path : String) : String;
+Var
+    Opts : Variant;
+Begin
+    Result := '';
+    Try
+        Opts := Project.DM_DocumentClassGenerationOptions(Path);
+        Result := JsonStr('path', Path) + ','
+            + JsonBool('comp_class_auto', Opts.CompClassAutoEnabled) + ','
+            + JsonBool('comp_class_auto_room', Opts.CompClassAutoRoomEnabled) + ','
+            + JsonBool('generate_class_cluster', Opts.GenerateClassCluster) + ','
+            + JsonInt('net_class_auto_scope', Opts.NetClassAutoScope);
+    Except
+        Result := JsonStr('path', Path);
+    End;
+    Result := '{' + Result + '}';
+End;
+
+{ Every schematic sheet of the project with its class generation options. }
+Function ClassGenJson(Project : IProject) : String;
+Var
+    Docs, Path : String;
+    Doc : IDocument;
+    I : Integer;
+Begin
+    Docs := '';
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
+        Path := Doc.DM_FullPath;
+        If Docs <> '' Then Docs := Docs + ',';
+        Docs := Docs + DocumentClassGenJson(Project, Path);
+    End;
+    Result := JsonRaw('project', ProjectClassGenJson(Project)) + ','
+        + JsonRaw('documents', '[' + Docs + ']');
+End;
+
+{ One class generation flag: '' = keep, 'true' / 'false' = write and read }
+{ back. Returns the field name when the write did not take, else ''.      }
+Function SetProjectClassGenFlag(Opts : Variant; Field, Value : String) : String;
+Var
+    Want, Got : Boolean;
+Begin
+    Result := '';
+    If Value = '' Then Exit;
+    Want := Value = 'true';
+    Got := Not Want;
+    Try
+        If Field = 'comp_class_manual' Then
+        Begin Opts.CompClassManualEnabled := Want; Got := Opts.CompClassManualEnabled; End
+        Else If Field = 'comp_class_manual_room' Then
+        Begin Opts.CompClassManualRoomEnabled := Want; Got := Opts.CompClassManualRoomEnabled; End
+        Else If Field = 'net_class_auto_bus' Then
+        Begin Opts.NetClassAutoBusEnabled := Want; Got := Opts.NetClassAutoBusEnabled; End
+        Else If Field = 'net_class_auto_comp' Then
+        Begin Opts.NetClassAutoCompEnabled := Want; Got := Opts.NetClassAutoCompEnabled; End
+        Else If Field = 'net_class_auto_named_harness' Then
+        Begin Opts.NetClassAutoNamedHarnessEnabled := Want; Got := Opts.NetClassAutoNamedHarnessEnabled; End
+        Else If Field = 'net_class_manual' Then
+        Begin Opts.NetClassManualEnabled := Want; Got := Opts.NetClassManualEnabled; End
+        Else If Field = 'net_class_separate_bus_sections' Then
+        Begin Opts.NetClassSeparateForBusSections := Want; Got := Opts.NetClassSeparateForBusSections; End;
+    Except
+        Got := Not Want;
+    End;
+    If Got <> Want Then Result := '"' + Field + '",';
+End;
+
 Function ProjectSetupJson(Project : IProject) : String;
 Var
     Docs, Paths, Gens, Path : String;
@@ -6241,6 +6418,7 @@ Var
     Order : TStringList;
     OutPath : String;
     Sub, AllowPort, AllowEntry, AppendSheet, SwapLabel, SwapPin : Boolean;
+    SinglePin, AutoNumber, NameHier, PowerFirst : Boolean;
 Begin
     Order := TStringList.Create;
     Total := Project.DM_LogicalDocumentCount + Project.DM_PhysicalDocumentCount;
@@ -6307,6 +6485,12 @@ Begin
     Try AppendSheet := Project.DM_GetAppendSheetNumberToLocalNets; Except End;
     Try SwapLabel := Project.DM_GetPinSwapBy_Netlabel; Except End;
     Try SwapPin := Project.DM_GetPinSwapBy_Pin; Except End;
+    SinglePin := False; AutoNumber := False; NameHier := False; PowerFirst := False;
+    Try SinglePin := Project.DM_GetNetlistSinglePinNets; Except End;
+    Try AutoNumber := Project.DM_GetAutoSheetNumbering; Except End;
+    { Read only: the script engine has no setter for these two. }
+    Try NameHier := Project.DM_GetNameNetsHierarchically; Except End;
+    Try PowerFirst := Project.DM_GetPowerPortNamesTakePriority; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
@@ -6316,7 +6500,12 @@ Begin
         + JsonStr('output_path', OutPath) + ','
         + JsonBool('append_sheet_number_to_local_nets', AppendSheet) + ','
         + JsonBool('pin_swap_by_net_label', SwapLabel) + ','
-        + JsonBool('pin_swap_by_pin', SwapPin);
+        + JsonBool('pin_swap_by_pin', SwapPin) + ','
+        + JsonBool('single_pin_nets', SinglePin) + ','
+        + JsonBool('auto_sheet_numbering', AutoNumber) + ','
+        + JsonBool('name_nets_hierarchically', NameHier) + ','
+        + JsonBool('power_port_names_take_priority', PowerFirst) + ','
+        + JsonRaw('class_generation', '{' + ClassGenJson(Project) + '}');
 End;
 
 {..............................................................................}
@@ -6334,12 +6523,16 @@ Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
     ModeStr, OutStr, AppendStr, SwapLabelStr, SwapPinStr : String;
+    SinglePinStr, AutoNumStr, CGDoc, CCAutoStr, CCRoomStr, ClusterStr, ScopeStr : String;
+    CGFields, Field, FieldValue : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
+    Opts, DocOpts : Variant;
     I, NewIdx, Was, NowIdx, PathsBefore : Integer;
-    Changed, Found : Boolean;
+    Changed, Found, HaveOpts, DocOK : Boolean;
 Begin
+    HaveOpts := False;
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     MoveDoc := ExtractJsonValue(Params, 'move_document');
     MoveTo := ExtractJsonValue(Params, 'move_to_index');
@@ -6352,9 +6545,28 @@ Begin
     AppendStr := LowerCase(ExtractJsonValue(Params, 'append_sheet_number_to_local_nets'));
     SwapLabelStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_net_label'));
     SwapPinStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_pin'));
+    SinglePinStr := LowerCase(ExtractJsonValue(Params, 'single_pin_nets'));
+    AutoNumStr := LowerCase(ExtractJsonValue(Params, 'auto_sheet_numbering'));
+    CGDoc := ExtractJsonValue(Params, 'class_gen_document');
+    CCAutoStr := LowerCase(ExtractJsonValue(Params, 'comp_class_auto'));
+    CCRoomStr := LowerCase(ExtractJsonValue(Params, 'comp_class_auto_room'));
+    ClusterStr := LowerCase(ExtractJsonValue(Params, 'generate_class_cluster'));
+    ScopeStr := ExtractJsonValue(Params, 'net_class_auto_scope');
     If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
+        Exit;
+    End;
+    If (ScopeStr <> '') And (ScopeStr <> '0') And (ScopeStr <> '1') And (ScopeStr <> '2') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'net_class_auto_scope is 0, 1 or 2');
+        Exit;
+    End;
+    If (CGDoc = '') And ((CCAutoStr <> '') Or (CCRoomStr <> '') Or (ClusterStr <> '') Or (ScopeStr <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'comp_class_auto, comp_class_auto_room, generate_class_cluster and '
+            + 'net_class_auto_scope are per sheet: name it in class_gen_document');
         Exit;
     End;
     Workspace := GetWorkspace;
@@ -6362,6 +6574,11 @@ Begin
     If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    If (CGDoc <> '') And (Project.DM_IndexOfSourceDocument(CGDoc) < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'Not in the project: ' + CGDoc);
+        Exit;
+    End;
     Changed := False;
     NotApplied := '';
     Was := -1; NowIdx := -1;
@@ -6451,6 +6668,99 @@ Begin
         Changed := True;
         If Project.DM_GetPinSwapBy_Pin <> (SwapPinStr = 'true') Then
             NotApplied := NotApplied + '"pin_swap_by_pin",';
+    End;
+    If SinglePinStr <> '' Then
+    Begin
+        Project.DM_SetNetlistSinglePinNets(SinglePinStr = 'true');
+        Changed := True;
+        If Project.DM_GetNetlistSinglePinNets <> (SinglePinStr = 'true') Then
+            NotApplied := NotApplied + '"single_pin_nets",';
+    End;
+    If AutoNumStr <> '' Then
+    Begin
+        Project.DM_SetAutoSheetNumbering(AutoNumStr = 'true');
+        Changed := True;
+        If Project.DM_GetAutoSheetNumbering <> (AutoNumStr = 'true') Then
+            NotApplied := NotApplied + '"auto_sheet_numbering",';
+    End;
+    { Project-wide class generation: one read-back per flag. }
+    CGFields := 'comp_class_manual,comp_class_manual_room,net_class_auto_bus,'
+        + 'net_class_auto_comp,net_class_auto_named_harness,net_class_manual,'
+        + 'net_class_separate_bus_sections';
+    While CGFields <> '' Do
+    Begin
+        I := Pos(',', CGFields);
+        If I = 0 Then Begin Field := CGFields; CGFields := ''; End
+        Else Begin Field := Copy(CGFields, 1, I - 1); CGFields := Copy(CGFields, I + 1, Length(CGFields)); End;
+        FieldValue := LowerCase(ExtractJsonValue(Params, Field));
+        If FieldValue = '' Then Continue;
+        Changed := True;
+        If Not HaveOpts Then
+        Begin
+            Try
+                Opts := Project.DM_GetProjectClassGenerationOptions;
+                HaveOpts := True;
+            Except
+                HaveOpts := False;
+            End;
+        End;
+        If HaveOpts Then
+            NotApplied := NotApplied + SetProjectClassGenFlag(Opts, Field, FieldValue)
+        Else
+            NotApplied := NotApplied + '"' + Field + '",';
+    End;
+    { One sheet's class generation. }
+    If (CCAutoStr <> '') Or (CCRoomStr <> '') Or (ClusterStr <> '') Or (ScopeStr <> '') Then
+    Begin
+        Changed := True;
+        DocOK := False;
+        Try
+            DocOpts := Project.DM_DocumentClassGenerationOptions(CGDoc);
+            DocOK := True;
+        Except
+            DocOK := False;
+        End;
+        If DocOK And (CCAutoStr <> '') Then
+        Begin
+            Try
+                DocOpts.CompClassAutoEnabled := CCAutoStr = 'true';
+                If DocOpts.CompClassAutoEnabled <> (CCAutoStr = 'true') Then
+                    NotApplied := NotApplied + '"comp_class_auto",';
+            Except
+                NotApplied := NotApplied + '"comp_class_auto",';
+            End;
+        End;
+        If DocOK And (CCRoomStr <> '') Then
+        Begin
+            Try
+                DocOpts.CompClassAutoRoomEnabled := CCRoomStr = 'true';
+                If DocOpts.CompClassAutoRoomEnabled <> (CCRoomStr = 'true') Then
+                    NotApplied := NotApplied + '"comp_class_auto_room",';
+            Except
+                NotApplied := NotApplied + '"comp_class_auto_room",';
+            End;
+        End;
+        If DocOK And (ClusterStr <> '') Then
+        Begin
+            Try
+                DocOpts.GenerateClassCluster := ClusterStr = 'true';
+                If DocOpts.GenerateClassCluster <> (ClusterStr = 'true') Then
+                    NotApplied := NotApplied + '"generate_class_cluster",';
+            Except
+                NotApplied := NotApplied + '"generate_class_cluster",';
+            End;
+        End;
+        If DocOK And (ScopeStr <> '') Then
+        Begin
+            Try
+                DocOpts.NetClassAutoScope := StrToInt(ScopeStr);
+                If DocOpts.NetClassAutoScope <> StrToInt(ScopeStr) Then
+                    NotApplied := NotApplied + '"net_class_auto_scope",';
+            Except
+                NotApplied := NotApplied + '"net_class_auto_scope",';
+            End;
+        End;
+        If Not DocOK Then NotApplied := NotApplied + '"class_gen_document",';
     End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -8712,6 +9022,7 @@ Begin
         'rename_document':   Result := Proj_RenameDocument(Params, RequestId);
         'get_parameters':    Result := Proj_GetParameters(Params, RequestId);
         'set_parameter':     Result := Proj_SetParameter(Params, RequestId);
+        'remove_parameter':  Result := Proj_RemoveParameter(Params, RequestId);
         'push_params_to_sheets': Result := Proj_PushParamsToSheets(Params, RequestId);
         'compile':           Result := Proj_Compile(Params, RequestId);
         'get_focused':       Result := Proj_GetFocused(RequestId);

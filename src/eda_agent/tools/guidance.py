@@ -1456,20 +1456,27 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "task": "Reorder a project's documents or add library search paths",
         "keywords": ("order", "reorder", "document", "sheet", "search",
                      "path", "port", "entry", "names", "identifier",
-                     "scope", "hierarchy", "output"),
+                     "scope", "hierarchy", "output", "class", "generation",
+                     "single", "numbering"),
         "when": (("reorder",), ("search", "path"), ("document", "order"),
                  ("port", "net", "names"), ("net", "identifier", "scope"),
-                 ("output", "path")),
+                 ("output", "path"), ("class", "generation"),
+                 ("single", "pin", "nets"), ("sheet", "numbering"),
+                 ("remove", "project", "parameter")),
         "document_kind": "project",
         "backends": ("altium",),
-        "use": ["proj_project_setup", "proj_save", "proj_get_options"],
+        "use": ["proj_project_setup", "proj_save", "proj_get_options",
+                "proj_remove_parameter"],
         "avoid": [("proj_set_parameter", "makes a user parameter of that "
                                          "name; the option does not change")],
         "note": ("proj_project_setup also sets the net identifier scope "
                  "(hierarchy_mode: automatic, flat, hierarchical, global, "
                  "strict_hierarchical), the output path, sheet numbers on "
-                 "local net names and the pin swap options. Changes stay in "
-                 "memory until proj_save."),
+                 "local net names, the pin swap options, single pin nets, "
+                 "automatic sheet numbering and class generation (project "
+                 "wide and per sheet). Changes stay in memory until "
+                 "proj_save. proj_remove_parameter removes a project "
+                 "parameter."),
     },
     {
         "task": "Show pad and via net names, single layer mode or highlighting on boards",

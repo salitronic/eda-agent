@@ -35,6 +35,12 @@ _OPTIONS = {
         "the project's output path, read by proj_get_options. Setting a "
         "parameter of this name does not move the output directory; "
         "proj_project_setup output_path does"),
+    "single_pin_nets": (
+        "the project option Allow Single Pin Nets. Set it with "
+        "proj_project_setup single_pin_nets, then proj_save"),
+    "auto_sheet_numbering": (
+        "the project option that has Altium number the sheets. Set it with "
+        "proj_project_setup auto_sheet_numbering, then proj_save"),
     "project_name": (
         "read by proj_get_options and derived from the file name. A "
         "parameter of this name does not rename the project"),
