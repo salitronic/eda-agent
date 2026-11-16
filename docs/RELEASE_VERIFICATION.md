@@ -1,4 +1,4 @@
-# Release verification: 2026.11.15.1
+# Release verification: 2026.11.16.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -430,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.15.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.16.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4110,7 +4110,11 @@ Scratch copies only, closed without saving.
    real newline beside it or with `typed_breaks=False`.
 9. A DbLib with `QuoteTableNames=0` sends its table names bare (FPC
    tests; not measured against a database here).
-10. An unreadable pad shape in the board geometry reads `Unknown` and is
+10. `get_dblib_record` (and `sch_relink_components` with `verify=true`) on
+    a DbLib whose LeftQuote/RightQuote is not `[ ]`, `" "` or `` ` ` ``
+    (MySQL over ODBC with `}` / `{`) sends the key column bare, or scans
+    the table when the name needs quoting (FPC tests; not yet run live).
+11. An unreadable pad shape in the board geometry reads `Unknown` and is
     drawn as its whole box.
 
 ## 79. Pull requests of 2026-11-13

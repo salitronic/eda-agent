@@ -20621,6 +20621,23 @@ Begin
     If Trim(DbLibGlobalValue(Lines, 'QuoteTableNames')) = '0' Then Result := '';
 End;
 
+{ The quote a column name takes in a WHERE clause: the DbLib's own pair only  }
+{ when it is one an SQL dialect really quotes names with ([ ], " ", ` `),   }
+{ else none. A DbLib on MySQL over ODBC can carry another pair (YBI_DB has   }
+{ LeftQuote=} and RightQuote={), and a column sent as }PN{ is a syntax error }
+{ that Altium raises as a dialog. Left picks which side to return.          }
+Function DbLibColumnQuote(LeftQ : String; RightQ : String; Left : Boolean) : String;
+Var
+    Pair : String;
+Begin
+    Result := '';
+    Pair := LeftQ + RightQ;
+    If (Pair = '[]') Or (Pair = '""') Or (Pair = '``') Then
+    Begin
+        If Left Then Result := LeftQ Else Result := RightQ;
+    End;
+End;
+
 Function DbLibQuoteIdent(Name : String; LeftQ : String; RightQ : String) : String;
 Var
     I : Integer;
@@ -21789,12 +21806,10 @@ Begin
 
         If ErrCode = '' Then
         Begin
-            QKey := DbLibQuoteIdent(KeyField, LeftQ, RightQ);
-            If QKey = '' Then
-            Begin
-                ErrCode := 'KEY_FIELD_REFUSED';
-                ErrMsg := 'The key column name holds a character that cannot be quoted safely';
-            End;
+            { '' when the column cannot go into a WHERE safely; the lookup }
+            { then reads the table and compares here, which needs no name. }
+            QKey := DbLibQuoteIdent(KeyField, DbLibColumnQuote(LeftQ, RightQ, True),
+                DbLibColumnQuote(LeftQ, RightQ, False));
         End;
 
         If ErrCode = '' Then
@@ -21804,14 +21819,17 @@ Begin
             { does the lookup and the value never becomes SQL text.       }
             ParamWorked := False;
             Q := TADOQuery.Create(Nil);
-            Try
-                Q.Connection := Conn;
-                Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE ' + QKey + ' = :dblibkey');
-                Q.Parameters.ParamByName('dblibkey').Value := KeyValue;
-                Q.Open;
-                ParamWorked := True;
-            Except
-                ParamWorked := False;
+            If QKey <> '' Then
+            Begin
+                Try
+                    Q.Connection := Conn;
+                    Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE ' + QKey + ' = :dblibkey');
+                    Q.Parameters.ParamByName('dblibkey').Value := KeyValue;
+                    Q.Open;
+                    ParamWorked := True;
+                Except
+                    ParamWorked := False;
+                End;
             End;
             If ParamWorked Then
             Begin
