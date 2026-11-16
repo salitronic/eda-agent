@@ -101,7 +101,7 @@ _ROUTINES = [
     "DbLibDoubled", "DbLibIsSecretKey", "DbLibRedactConnStr", "DbLibConnHasSecret",
     "DbLibConnValue", "DbLibSetConnValue", "DbLibIsJetOrAce", "DbLibIsAbsolutePath",
     "DbLibConnectionForRead", "DbLibConnKind", "DbLibIsPlainIdentChar",
-    "DbLibTableQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
+    "DbLibTableQuote", "DbLibColumnQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
     "DbLibKeyField",
     "DbLibFootprintFields",
 ]
@@ -259,6 +259,31 @@ def test_quote_table_names_off_sends_the_table_name_bare(tmp_path):
     # unset and 1 quote; 0 sends a plain name bare and refuses one that
     # would need quoting
     assert out == ["[ICs]", "ic", "<>", "[ICs]"]
+
+
+def test_a_key_column_takes_only_a_real_sql_quote_pair(tmp_path):
+    # YBI_DB.DbLib (MySQL over ODBC) carries LeftQuote=} RightQuote={; the
+    # keyed lookup sent "}PN{ = ?" and MySQL raised a syntax error dialog.
+    def key(name, lq, rq):
+        return (f"'<' + DbLibQuoteIdent({_pas(name)}, DbLibColumnQuote({_pas(lq)}, "
+                f"{_pas(rq)}, True), DbLibColumnQuote({_pas(lq)}, {_pas(rq)}, False)) + '>'")
+    _check(tmp_path, [
+        (key("PN", "}", "{"), "<PN>"),
+        (key("Part Number", "}", "{"), "<>"),       # no safe form: scan instead
+        (key("Part Number", "[", "]"), "<[Part Number]>"),
+        (key("Part Number", "`", "`"), "<`Part Number`>"),
+        (key("Part Number", '"', '"'), '<"Part Number">'),
+        (key("PN", "", ""), "<PN>"),
+        (key("PN", "[", "["), "<PN>"),
+    ])
+
+
+def test_the_keyed_lookup_scans_when_the_key_cannot_be_quoted():
+    code = (SCRIPTS / "Library.pas").read_text(encoding="utf-8", errors="replace")
+    body = _routine(code, "Lib_GetDbLibRecord")
+    assert "DbLibQuoteIdent(KeyField, DbLibColumnQuote(" in body
+    assert "If QKey <> '' Then" in body
+    assert "KEY_FIELD_REFUSED" not in body
 
 
 def test_access_is_opened_read_only_and_nothing_else_is_touched(tmp_path):
