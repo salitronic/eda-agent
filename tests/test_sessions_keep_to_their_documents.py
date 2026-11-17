@@ -157,8 +157,14 @@ def test_bringing_a_document_forward_neither_claims_nor_is_refused():
 # -- one tag per Claude session ------------------------------------------------
 
 class _Proc:
-    def __init__(self, pid, name, cmd=(), parents=()):
+    def __init__(self, pid, name, cmd=(), parents=(), env=None):
         self.pid, self._name, self._cmd, self._parents = pid, name, list(cmd), list(parents)
+        self._env = env
+
+    def environ(self):
+        if self._env is None:
+            raise PermissionError("not readable")
+        return self._env
 
     def name(self):
         return self._name
@@ -176,6 +182,7 @@ class _Proc:
 def _tag_under(monkeypatch, chain):
     import psutil
     monkeypatch.delenv(ab.CLAUDE_SOCKET_ENV, raising=False)
+    monkeypatch.delenv(ab.SESSION_ENV, raising=False)
     monkeypatch.setattr(psutil, "Process", lambda: _Proc(1, "python.exe", parents=chain))
     return ab._claude_session_tag()
 
@@ -209,6 +216,34 @@ def test_a_server_whose_launcher_exited_keeps_its_sessions_tag(monkeypatch):
     other = ab._claude_session_tag()
     assert orphan == attached != other
     assert re.fullmatch(r"[0-9a-f]{8}", orphan)
+
+
+def test_a_server_started_with_a_cut_down_environment_finds_its_session(monkeypatch):
+    """A detached script starts its own server and passes on only a few
+    variables: the server has none of Claude Code's and no Claude process
+    above it. Each run was a new session, refused the board the run before
+    wrote. The script above still has the variable."""
+    one = {ab.CLAUDE_SOCKET_ENV: r"\\.\pipe\LOCAL\cc-msg-1"}
+    two = {ab.CLAUDE_SOCKET_ENV: r"\\.\pipe\LOCAL\cc-msg-2"}
+    run_a = _tag_under(monkeypatch, [_Proc(10, "python.exe", env=one),
+                                     _Proc(7, "bash.exe", env={})])
+    run_b = _tag_under(monkeypatch, [_Proc(11, "python.exe", env=one),
+                                     _Proc(8, "bash.exe")])
+    other = _tag_under(monkeypatch, [_Proc(12, "python.exe", env=two)])
+    monkeypatch.setenv(ab.CLAUDE_SOCKET_ENV, one[ab.CLAUDE_SOCKET_ENV])
+    in_shell = ab._claude_session_tag()
+    assert run_a == run_b == in_shell != other
+
+
+def test_the_tag_is_handed_down_to_the_processes_a_server_starts(monkeypatch):
+    import os
+    assert os.environ[ab.SESSION_ENV] == ab._SESSION_TAG
+    handed = {ab.SESSION_ENV: "0a1b2c3d"}
+    assert _tag_under(monkeypatch, [_Proc(10, "python.exe", env=handed)]) == "0a1b2c3d"
+    monkeypatch.setenv(ab.SESSION_ENV, "0A1B2C3D")
+    assert ab._claude_session_tag() == "0a1b2c3d"
+    monkeypatch.setenv(ab.CLAUDE_SOCKET_ENV, r"\\.\pipe\LOCAL\cc-msg-1")
+    assert ab._claude_session_tag() != "0a1b2c3d"
 
 
 def test_a_server_outside_claude_gets_its_own_tag(monkeypatch):

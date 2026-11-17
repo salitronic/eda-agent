@@ -335,6 +335,9 @@ def _close_dir_watcher(handle) -> None:
 #: Set by Claude Code in every process it starts; one per Claude process.
 CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
 
+#: The session's tag, set here for the processes this one starts.
+SESSION_ENV = "EDA_AGENT_SESSION"
+
 
 def _claude_session_tag() -> str:
     """Eight hex digits naming the Claude session this server runs under.
@@ -353,14 +356,43 @@ def _claude_session_tag() -> str:
     and Altium refused that session's writes as another's. Without the
     variable (another client), the nearest Claude process above this one,
     its pid and start time; random when there is none (a script, a test).
+
+    A server started with a cut-down environment has neither variable (a
+    script that starts its own server as an MCP client passes on only a
+    few), and when that script runs detached no Claude process is above it
+    either: each run was a new session and refused the board the run
+    before it wrote. So the variables are also read from the processes
+    above this one, nearest first, where the script itself still has them.
+
+    The tag found is put in EDA_AGENT_SESSION for the processes this one
+    starts, and is read back where Claude Code's variable is missing.
+    Nobody has to set it.
     """
     import hashlib
-    socket = os.environ.get(CLAUDE_SOCKET_ENV, "").strip()
-    if socket:
-        return hashlib.sha1(f"socket:{socket}".encode()).hexdigest()[:8]
+
+    def from_env(env) -> str:
+        socket = str(env.get(CLAUDE_SOCKET_ENV, "")).strip()
+        if socket:
+            return hashlib.sha1(f"socket:{socket}".encode()).hexdigest()[:8]
+        named = str(env.get(SESSION_ENV, "")).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{8}", named):
+            return named
+        if named:
+            return hashlib.sha1(f"named:{named}".encode()).hexdigest()[:8]
+        return ""
+
+    tag = from_env(os.environ)
+    if tag:
+        return tag
     try:
         import psutil
         for parent in psutil.Process().parents():
+            try:
+                tag = from_env(parent.environ())
+            except Exception:  # noqa: BLE001 - not readable: go by its name
+                tag = ""
+            if tag:
+                return tag
             name = parent.name().lower()
             if name in ("claude.exe", "claude") or (
                     name.startswith("node") and any(
@@ -378,6 +410,7 @@ def _claude_session_tag() -> str:
 #: that is alone (ScanForRequestFile in Main.pas), and gives documents to the
 #: session that writes them.
 _SESSION_TAG = _claude_session_tag()
+os.environ[SESSION_ENV] = _SESSION_TAG
 _SEQUENCE = itertools.count(1)
 
 

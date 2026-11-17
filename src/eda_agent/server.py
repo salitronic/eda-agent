@@ -283,6 +283,11 @@ def build_server_instructions(
            "result in order.\n")
         + "A single call works as it always has.\n"
         "\n"
+        "NO SERVER OF YOUR OWN. Call these tools through this connection.\n"
+        "Never write a script that starts eda-agent as its own MCP server\n"
+        "to call tools in a loop: that server is refused. Many objects go\n"
+        "in one call's items.\n"
+        "\n"
         + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
            "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
            "goes straight to its objects; any other condition (X=, Y=, Name)\n"
@@ -787,6 +792,12 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # main thread's stdout intact for the MCP JSON-RPC stream.
     _install_stdio_guard()
     sys.stdout.flush()
+
+    from . import launch_guard
+    launcher = launch_guard.script_launcher()
+    if launcher:
+        print(launch_guard.refusal(launcher), file=sys.stderr, flush=True)
+        return 2
 
     setup_logging()
     logger.info("Starting EDA Agent MCP Server")
