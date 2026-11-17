@@ -8964,19 +8964,36 @@ def register_pcb_tools(mcp):
         Returns:
             Dictionary with "placed" and "failed" counts, "unknown_layers"
             naming any layer pair and "unknown_nets" any net that did not
-            resolve; a via on an unknown net is not placed.
+            resolve; a via on an unknown net is not placed. Error BAD_VIA,
+            with nothing placed, when an entry has a key that is not read
+            or a hole that is not smaller than its pad.
         """
         vias, refusal = items_from_file(vias, file, "vias")
         if refusal:
             return refusal
         parts = []
-        for v in vias:
+        known = {"x", "y", "size", "hole_size", "size_mm", "hole_size_mm",
+                 "low_layer", "high_layer", "net"}
+        for n, v in enumerate(vias):
+            strange = sorted(set(v) - known)
+            if strange:
+                return {"success": False, "error": "BAD_VIA",
+                        "reason": f"via {n} has {', '.join(strange)}, which is not read; a "
+                                  f"via takes {', '.join(sorted(known))}. Nothing was placed."}
             size = v.get("size", 50)
             hole = v.get("hole_size", 28)
             if v.get("size_mm") is not None:
                 size = float(v["size_mm"]) * MILS_PER_MM
             if v.get("hole_size_mm") is not None:
                 hole = float(v["hole_size_mm"]) * MILS_PER_MM
+            try:
+                sized = 0 < float(hole) < float(size)
+            except (TypeError, ValueError):
+                sized = False
+            if not sized:
+                return {"success": False, "error": "BAD_VIA",
+                        "reason": f"via {n} has size {size} and hole {hole}: the hole must "
+                                  "be above 0 and smaller than the pad. Nothing was placed."}
             parts.append(",".join([
                 _mils(v["x"]), _mils(v["y"]),
                 _mils(size), _mils(hole),

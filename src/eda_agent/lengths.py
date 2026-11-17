@@ -152,6 +152,7 @@ ADDED: dict[str, frozenset[str]] = {
     "lib_set_via_properties": frozenset({"size"}),
     "pcb_place_via": frozenset({"size"}),
     "pcb_place_via_array": frozenset({"size"}),
+    "pcb_place_vias": frozenset({"size"}),
     "pcb_place_text": frozenset({"margin"}),
     "sch_place_text_frame": frozenset({"text_margin"}),
     "pcb_set_grids": frozenset({"track", "via", "visible", "visible_big",
@@ -205,6 +206,7 @@ LENGTH_STRINGS: dict[str, frozenset[str]] = {
 NESTED_NAMES: dict[str, frozenset[str]] = {
     # The guard a lib_get_pad_geometry read gives (x_mils in a mil session).
     "lib_set_pad_geometry": frozenset({"x_mm", "y_mm"}),
+    "pcb_place_vias": frozenset({"size_mm", "hole_size_mm"}),
 }
 
 #: Tools whose ``value`` arguments are a length for some kinds only.

@@ -400,3 +400,17 @@ def test_a_list_given_as_a_file_is_converted_like_the_same_list_inline(workspace
     assert out["placed"] == 1 and seen["file"] == ""
     track = seen["tracks"][0]
     assert (track["x1"], track["x2"], track["width"]) == (1000, 2000, 10)
+
+
+@pytest.mark.parametrize("unit", ["mil", "mm"])
+def test_a_via_in_a_list_keeps_the_size_it_was_given(unit):
+    out = lengths.args_in("pcb_place_vias", {"vias": [
+        {"x": 0, "y": 0, "size": 20, "hole_size": 10},
+        {"x": 0, "y": 0, "size_mm": 0.5, "hole_size_mm": 0.25}]},
+        unit, {"vias", "board_path", "file"})
+    plain, named = out["vias"]
+    k = 1 if unit == "mil" else lengths.MILS_PER_MM
+    assert plain["size"] == pytest.approx(20 * k)
+    assert plain["hole_size"] == pytest.approx(10 * k)
+    # The names the tool reads, in the unit they say.
+    assert named == {"x": 0, "y": 0, "size_mm": 0.5, "hole_size_mm": 0.25}
