@@ -4495,21 +4495,26 @@ Function StitchNear(Prim : IPCB_Primitive; X, Y, Reach : TCoord) : Boolean;
 Var
     Track : IPCB_Track;
     Arc : IPCB_Arc;
-    Ax, Ay, Bx, By, Dx, Dy, L2, T, D, Half : Double;
+    Ax, Ay, Bx, By, Dx, Dy, L2, T, D, Half, Px, Py, Ex, Ey : Double;
 Begin
     Result := True;
     If Prim.ObjectId = eTrackObject Then
     Begin
         Track := Prim;
-        Ax := Track.X1; Ay := Track.Y1; Bx := Track.X2; By := Track.Y2;
+        { Reals from the first read: a coordinate is a whole number, and   }
+        { the product of two overflows past a track 4.6 mil long.          }
+        Ax := Track.X1 * 1.0; Ay := Track.Y1 * 1.0;
+        Bx := Track.X2 * 1.0; By := Track.Y2 * 1.0;
+        Px := X * 1.0; Py := Y * 1.0;
         Dx := Bx - Ax; Dy := By - Ay;
         L2 := Dx * Dx + Dy * Dy;
-        T := 0;
-        If L2 > 0 Then T := ((X - Ax) * Dx + (Y - Ay) * Dy) / L2;
-        If T < 0 Then T := 0;
-        If T > 1 Then T := 1;
-        D := Sqrt(Sqr(X - Ax - T * Dx) + Sqr(Y - Ay - T * Dy));
-        Half := Track.Width / 2;
+        T := 0.0;
+        If L2 > 0 Then T := ((Px - Ax) * Dx + (Py - Ay) * Dy) / L2;
+        If T < 0 Then T := 0.0;
+        If T > 1 Then T := 1.0;
+        Ex := Px - Ax - T * Dx; Ey := Py - Ay - T * Dy;
+        D := Sqrt(Ex * Ex + Ey * Ey);
+        Half := Track.Width / 2.0;
         Result := D < Half + Reach;
     End
     Else If Prim.ObjectId = eArcObject Then
@@ -4518,8 +4523,9 @@ Begin
         { The distance to the arc's whole circle: near the circle outside }
         { the arc's own span this errs towards a skipped point, never     }
         { towards a via in copper.                                        }
-        D := Abs(Sqrt(Sqr(X - Arc.XCenter * 1.0) + Sqr(Y - Arc.YCenter * 1.0)) - Arc.Radius);
-        Half := Arc.LineWidth / 2;
+        Ex := X * 1.0 - Arc.XCenter * 1.0; Ey := Y * 1.0 - Arc.YCenter * 1.0;
+        D := Abs(Sqrt(Ex * Ex + Ey * Ey) - Arc.Radius * 1.0);
+        Half := Arc.LineWidth / 2.0;
         Result := D < Half + Reach;
     End;
 End;
@@ -4702,7 +4708,10 @@ Begin
                             { and the arc of a round board's edge boxes the  }
                             { whole board: measure the real distance.        }
                             HasHit := StitchNear(Hit, PX, PY, ViaSize Div 2 + Clearance);
-                    Except End;
+                    Except
+                        { What could not be measured blocks the point. }
+                        HasHit := True;
+                    End;
                     Hit := SIter.NextPCBObject;
                 End;
             Finally
@@ -21882,231 +21891,6 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_CleanupTracks - tidy stray track geometry. Two passes, selectable via     }
-{ 'mode' (slivers | merge | both; default slivers):                             }
-{   slivers - delete tracks whose length is below min_length_mils (default 1).  }
-{   merge   - join two collinear, same-layer, same-width, same-net tracks that   }
-{             meet end-to-end into one, ONLY when the shared point is a clean    }
-{             degree-2 junction (exactly those two track ends there, with no     }
-{             via / pad / arc / third track). The guard makes the merge safe to  }
-{             run on routed copper without breaking connectivity.                }
-{..............................................................................}
-Function PCB_CleanupTracks(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Iter, Iter2, SIter : IPCB_BoardIterator;
-    A, B, MergeA, MergeB : IPCB_Track;
-    SObj : IPCB_Primitive;
-    Mode : String;
-    TolC, JTolC : Integer;
-    MinLenMils : Double;
-    SliverDeleted, Merged, Guard : Integer;
-    DidWork : Boolean;
-    a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y : Double;
-    SegLen : Double;
-    Sx, Sy, FarAx, FarAy, FarBx, FarBy : Integer;
-    sax, say, sbx, sby, crossv, dotv, lna, lnb : Double;
-    TrackCnt, BlockerCnt : Integer;
-    NewT : IPCB_Track;
-    NewLayer : TLayer;
-    NewWidth : Integer;
-    NewNet : IPCB_Net;
-Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
-    Mode := ExtractJsonValue(Params, 'mode');
-    If Mode = '' Then Mode := 'slivers';
-    MinLenMils := StrToFloatDef(ExtractJsonValue(Params, 'min_length_mils'), 1);
-    TolC := MilsToCoord(2);
-    JTolC := MilsToCoord(2);
-    SliverDeleted := 0;
-    Merged := 0;
-
-    { Sliver pass: find-one-delete-restart so the iterator is never stale. }
-    If (Mode = 'slivers') Or (Mode = 'both') Then
-    Begin
-        DidWork := True;
-        While DidWork Do
-        Begin
-            DidWork := False;
-            A := Nil;
-            Iter := Board.BoardIterator_Create;
-            Try
-                Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                Iter.AddFilter_Method(eProcessAll);
-                B := Iter.FirstPCBObject;
-                While (B <> Nil) And (A = Nil) Do
-                Begin
-                    { Never delete a child primitive of a component footprint
-                      (silk ticks, courtyard lines), polygon hatch, or
-                      dimension -- only free routed copper. }
-                    If (Not B.InComponent) And (Not B.InPolygon) And (Not B.InDimension) Then
-                    Begin
-                        a1x := B.x1; a1y := B.y1; a2x := B.x2; a2y := B.y2;
-                        SegLen := Sqrt((a2x - a1x) * (a2x - a1x) + (a2y - a1y) * (a2y - a1y));
-                        If SegLen < MilsToCoordF(MinLenMils) Then A := B;
-                    End;
-                    B := Iter.NextPCBObject;
-                End;
-            Finally
-                Board.BoardIterator_Destroy(Iter);
-            End;
-            If A <> Nil Then
-            Begin
-                PcbBeginEdit(0);
-                Try
-                    Board.RemovePCBObject(A);
-                Finally
-                    PcbEndEdit(0);
-                End;
-                SliverDeleted := SliverDeleted + 1;
-                DidWork := True;
-            End;
-        End;
-    End;
-
-    { Merge pass: find-one-merge-restart. The search runs entirely inside the    }
-    { iterators using base members + typed x1/x2; the board mutation is deferred  }
-    { until both iterators are destroyed so NextPCBObject never sees a stale set. }
-    If (Mode = 'merge') Or (Mode = 'both') Then
-    Begin
-        DidWork := True;
-        Guard := 0;
-        While DidWork And (Guard < 20000) Do
-        Begin
-            DidWork := False;
-            Guard := Guard + 1;
-            MergeA := Nil; MergeB := Nil;
-            FarAx := 0; FarAy := 0; FarBx := 0; FarBy := 0;
-
-            Iter := Board.BoardIterator_Create;
-            Try
-                Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                Iter.AddFilter_Method(eProcessAll);
-                A := Iter.FirstPCBObject;
-                While (A <> Nil) And (MergeA = Nil) Do
-                Begin
-                    Iter2 := Board.BoardIterator_Create;
-                    Try
-                        Iter2.AddFilter_ObjectSet(MkSet(eTrackObject));
-                        Iter2.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                        Iter2.AddFilter_Method(eProcessAll);
-                        B := Iter2.FirstPCBObject;
-                        While (B <> Nil) And (MergeA = Nil) Do
-                        Begin
-                            If (A.I_ObjectAddress <> B.I_ObjectAddress)
-                               And (A.Layer = B.Layer) And (A.Width = B.Width)
-                               And (TrackNetNm(A) = TrackNetNm(B))
-                               { only merge free routed copper -- never child
-                                 primitives of footprints/polygons/dimensions }
-                               And (Not A.InComponent) And (Not A.InPolygon) And (Not A.InDimension)
-                               And (Not B.InComponent) And (Not B.InPolygon) And (Not B.InDimension) Then
-                            Begin
-                                a1x := A.x1; a1y := A.y1; a2x := A.x2; a2y := A.y2;
-                                b1x := B.x1; b1y := B.y1; b2x := B.x2; b2y := B.y2;
-                                { locate the single shared endpoint S; A2/B2 are the far ends }
-                                If PointsNearC(Round(a1x), Round(a1y), Round(b1x), Round(b1y), TolC) Then
-                                Begin Sx := Round(a1x); Sy := Round(a1y); FarAx := Round(a2x); FarAy := Round(a2y); FarBx := Round(b2x); FarBy := Round(b2y); End
-                                Else If PointsNearC(Round(a1x), Round(a1y), Round(b2x), Round(b2y), TolC) Then
-                                Begin Sx := Round(a1x); Sy := Round(a1y); FarAx := Round(a2x); FarAy := Round(a2y); FarBx := Round(b1x); FarBy := Round(b1y); End
-                                Else If PointsNearC(Round(a2x), Round(a2y), Round(b1x), Round(b1y), TolC) Then
-                                Begin Sx := Round(a2x); Sy := Round(a2y); FarAx := Round(a1x); FarAy := Round(a1y); FarBx := Round(b2x); FarBy := Round(b2y); End
-                                Else If PointsNearC(Round(a2x), Round(a2y), Round(b2x), Round(b2y), TolC) Then
-                                Begin Sx := Round(a2x); Sy := Round(a2y); FarAx := Round(a1x); FarAy := Round(a1y); FarBx := Round(b1x); FarBy := Round(b1y); End
-                                Else
-                                    Sx := -MAX_INT;  { sentinel: no shared endpoint }
-
-                                If Sx <> -MAX_INT Then
-                                Begin
-                                    { collinear continuation: far ends point opposite directions through S }
-                                    { Reals, or the squares below overflow. }
-                                    sax := (FarAx - Sx) * 1.0; say := (FarAy - Sy) * 1.0;
-                                    sbx := (FarBx - Sx) * 1.0; sby := (FarBy - Sy) * 1.0;
-                                    lna := Sqrt(sax * sax + say * say);
-                                    lnb := Sqrt(sbx * sbx + sby * sby);
-                                    If (lna > 0) And (lnb > 0) Then
-                                    Begin
-                                        crossv := Abs(sax * sby - say * sbx) / (lna * lnb);
-                                        dotv := sax * sbx + say * sby;
-                                        If (crossv < 0.02) And (dotv < 0) Then
-                                        Begin
-                                            { degree-2 junction guard at S using base members only }
-                                            TrackCnt := 0; BlockerCnt := 0;
-                                            SIter := Board.SpatialIterator_Create;
-                                            Try
-                                                SIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject));
-                                                SIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                                                SIter.AddFilter_Area(Sx - JTolC, Sy - JTolC, Sx + JTolC, Sy + JTolC);
-                                                SObj := SIter.FirstPCBObject;
-                                                While SObj <> Nil Do
-                                                Begin
-                                                    If SObj.ObjectId = eTrackObject Then TrackCnt := TrackCnt + 1
-                                                    Else BlockerCnt := BlockerCnt + 1;
-                                                    SObj := SIter.NextPCBObject;
-                                                End;
-                                            Finally
-                                                Board.SpatialIterator_Destroy(SIter);
-                                            End;
-
-                                            If (TrackCnt = 2) And (BlockerCnt = 0) Then
-                                            Begin
-                                                MergeA := A; MergeB := B;
-                                                NewLayer := A.Layer; NewWidth := A.Width; NewNet := A.Net;
-                                            End;
-                                        End;
-                                    End;
-                                End;
-                            End;
-                            B := Iter2.NextPCBObject;
-                        End;
-                    Finally
-                        Board.BoardIterator_Destroy(Iter2);
-                    End;
-                    A := Iter.NextPCBObject;
-                End;
-            Finally
-                Board.BoardIterator_Destroy(Iter);
-            End;
-
-            If MergeA <> Nil Then
-            Begin
-                PcbBeginEdit(0);
-                Try
-                    NewT := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
-                    NewT.Layer := NewLayer;
-                    NewT.Width := NewWidth;
-                    NewT.x1 := FarAx; NewT.y1 := FarAy;
-                    NewT.x2 := FarBx; NewT.y2 := FarBy;
-                    BindPrimitiveToNet(NewNet, NewT);
-                    Board.AddPCBObject(NewT);
-                    PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-                        PCBM_BoardRegisteration, NewT.I_ObjectAddress);
-                    Board.RemovePCBObject(MergeA);
-                    Board.RemovePCBObject(MergeB);
-                Finally
-                    PcbEndEdit(0);
-                End;
-                Merged := Merged + 1;
-                DidWork := True;
-            End;
-        End;
-    End;
-
-    MarkDocDirtyByPath(Board.FileName);
-    Result := BuildSuccessResponse(RequestId,
-        '{"slivers_deleted":' + IntToStr(SliverDeleted)
-        + ',"merged":' + IntToStr(Merged)
-        + ',"mode":"' + EscapeJsonString(Mode) + '"}');
-End;
-
-{..............................................................................}
 { PCB_PlaceThievingPads - fill bare copper area with a grid of small isolated   }
 { pads (thieving) so plating current spreads evenly. A grid point is skipped     }
 { whenever ANY existing primitive (track / arc / via / pad / fill / region /     }
@@ -26128,7 +25912,9 @@ Begin
                     If Prim.ObjectId = eTrackObject Then
                     Begin
                         Trk := Prim;
-                        LenMils := LenMils + CoordToMilsF(Round(Sqrt(Sqr(Trk.x2 - Trk.x1) + Sqr(Trk.y2 - Trk.y1))));
+                        LenMils := LenMils + CoordToMilsF(Round(Sqrt(
+                            (Trk.x2 * 1.0 - Trk.x1) * (Trk.x2 * 1.0 - Trk.x1)
+                            + (Trk.y2 * 1.0 - Trk.y1) * (Trk.y2 * 1.0 - Trk.y1))));
                     End
                     Else
                     Begin
@@ -29728,8 +29514,12 @@ Begin
                                 Track.Width := WW;
                                 Track.EndModify;
                                 { Read back: a width or end that did not take counts. }
-                                If (Track.X1 <> WX1) Or (Track.Y1 <> WY1) Or (Track.X2 <> WX2)
-                                    Or (Track.Y2 <> WY2) Or (Track.Width <> WW) Then Inc(WireOff);
+                                { Altium may hold the two ends in the other order.    }
+                                If (Track.Width <> WW)
+                                    Or (((Track.X1 <> WX1) Or (Track.Y1 <> WY1)
+                                         Or (Track.X2 <> WX2) Or (Track.Y2 <> WY2))
+                                    And ((Track.X1 <> WX2) Or (Track.Y1 <> WY2)
+                                         Or (Track.X2 <> WX1) Or (Track.Y2 <> WY1))) Then Inc(WireOff);
                             End;
                         End
                         Else If KindNo = 2 Then
@@ -32904,7 +32694,6 @@ Begin
         'apply_via_template':      Result := PCB_ApplyViaTemplate(Params, RequestId);
         'copy_designators_to_mech': Result := PCB_CopyDesignatorsToMechLayer(Params, RequestId);
         'trim_extend_track':       Result := PCB_TrimExtendTrack(Params, RequestId);
-        'cleanup_tracks':          Result := PCB_CleanupTracks(Params, RequestId);
         'unroute':                 Result := PCB_Unroute(Params, RequestId);
         'place_thieving_pads':     Result := PCB_PlaceThievingPads(Params, RequestId);
         'move_tracks_to_layer':    Result := PCB_MoveTracksToLayer(Params, RequestId);

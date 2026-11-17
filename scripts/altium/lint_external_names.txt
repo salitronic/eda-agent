@@ -398,7 +398,6 @@ ShowMessage
 SignalLayers
 Sin
 Sleep
-Sqr
 StringOfChar
 StringReplace
 TADOConnection

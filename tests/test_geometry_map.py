@@ -412,7 +412,10 @@ def test_a_moved_track_or_arc_is_read_back_width_included():
     write that did not take is counted."""
     body = _routine("PCB_ApplyFreePrimitives")
     track = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Track.Width);"):]
-    assert track.index("Track.EndModify;") < track.index("(Track.Width <> WW) Then Inc(WireOff);")
+    assert track.index("Track.EndModify;") < track.index("If (Track.Width <> WW)")
+    # The two ends may read back in the other order; anything else counts.
+    check = track[track.index("If (Track.Width <> WW)"):track.index("Then Inc(WireOff);")]
+    assert "(Track.X1 <> WX1)" in check and "(Track.X1 <> WX2)" in check
     arc = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Arc.LineWidth);"):]
     assert arc.index("Arc.EndModify;") < arc.index("(Arc.LineWidth <> WW) Then Inc(WireOff);")
     raw = PCB.read_text(encoding="ascii")

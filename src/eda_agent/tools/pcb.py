@@ -90,6 +90,29 @@ def items_from_file(inline: Optional[list], file: str, key: str
     return data, None
 
 
+def _map_summary(reply: Any) -> Any:
+    """A geometry-map reply cut down to its counts: per kind with entries,
+    what matched and what did not (with a few samples when something did
+    not), and the apply pass without its per-kind table."""
+    if not isinstance(reply, dict) or "match" not in reply:
+        return reply
+    out = {k: reply[k] for k in ("board", "dry_run", "success", "error", "out_of_range")
+           if k in reply}
+    match = {}
+    for kind, rep in reply["match"].items():
+        if not isinstance(rep, dict) or not rep.get("entries"):
+            continue
+        row = {k: rep.get(k, 0) for k in ("entries", "matched", "unmatched",
+                                          "ambiguous", "refused")}
+        if rep.get("samples") and row["matched"] != row["entries"]:
+            row["samples"] = rep["samples"][:5]
+        match[kind] = row
+    out["match"] = match
+    if isinstance(reply.get("apply"), dict):
+        out["apply"] = {k: v for k, v in reply["apply"].items() if k != "by_kind"}
+    return out
+
+
 #: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
 #: names them.
 _DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
@@ -4554,6 +4577,7 @@ def register_pcb_tools(mcp):
     async def pcb_cleanup_tracks(
         mode: str = "slivers",
         min_length_mils: float = 1,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Tidy stray track geometry: delete slivers and/or merge collinear runs.
 
@@ -4568,19 +4592,108 @@ def register_pcb_tools(mcp):
           safe to run on routed copper without breaking connectivity.
         - "both": slivers pass, then merge pass.
 
+        A straight chain of any number of tracks becomes one track. Free
+        tracks on every layer are taken; a footprint's own, a pour's and a
+        dimension's are not. The whole change is one edit in Altium.
+        Stepped runs are pcb_tidy_tracks' work, not this tool's.
+
         Args:
             mode: "slivers", "merge", or "both" (default "slivers").
             min_length_mils: Sliver threshold (default 1).
+            dry_run: Work the change out and match it to the board
+                without writing it.
 
         Returns:
-            {"slivers_deleted", "merged", "mode"}.
+            {"slivers_deleted", "merged", "mode", "tracks" (looked at),
+            "joints_kept" (straight joints left alone, by why: junction,
+            pad, via, arc, third_track, net_unknown), "map" (what was
+            matched and applied)}.
         """
+        import asyncio
+        from pathlib import Path
+
+        from ..config import get_config
+        from ..geometry_map import COORD_PER_MIL, _norm_layer, parse_dump
+        from ..layout import cleanup
+        from ..layout.read_altium import board_stamp, read_live_board
+
+        if mode not in ("slivers", "merge", "both"):
+            return {"success": False, "error": "mode is slivers, merge or both"}
         bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.cleanup_tracks",
-            {"mode": mode, "min_length_mils": str(min_length_mils)},
-            timeout=120.0,
-        )
+        stamp = await asyncio.to_thread(
+            board_stamp, lambda cmd, params: bridge.send_command(cmd, params, timeout=60.0))
+        board_path = str((stamp or {}).get("file") or "")
+        if not board_path:
+            return {"success": False, "error": "NO_PCB: no board is in front"}
+        workspace = Path(bridge.config.workspace_dir)
+        dump_path = workspace / "cleanup_tracks_dump.tsv"
+        dumped = await bridge.send_command_async(
+            "pcb.dump_free_primitives",
+            {"out_path": str(dump_path), "board_path": board_path, "kinds": "track"},
+            timeout=_GEOMETRY_MAP_TIMEOUT)
+        if not isinstance(dumped, dict) or "tracks" not in dumped:
+            return dumped
+        import locale
+        dump = parse_dump(dump_path.read_text(
+            encoding=locale.getpreferredencoding(False), errors="replace"))
+
+        # A net is known for copper only, from the board read; a merge
+        # needs it, a sliver does not.
+        nets: dict[tuple, Optional[str]] = {}
+        block = None
+        others: list = []
+        copper: set[str] = set()
+        if mode != "slivers":
+            try:
+                board = await asyncio.to_thread(read_live_board, board_path)
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return {"success": False, "error": f"board read failed: {exc}"}
+            copper = {_norm_layer(n) for n in board.copper_layers()}
+            for t in board.tracks:
+                if t.comp:
+                    others.append(cleanup.Piece(_norm_layer(t.layer), t.x1, t.y1,
+                                                t.x2, t.y2, t.width, t.net))
+                    continue
+                key = (_norm_layer(t.layer),
+                       frozenset(((round(t.x1, 2), round(t.y1, 2)),
+                                  (round(t.x2, 2), round(t.y2, 2)))))
+                # Two tracks on the same ends with different nets: not known.
+                nets[key] = t.net if nets.get(key, t.net) == t.net else None
+            found = cleanup.blockers(board)
+
+            def block(layer, s):
+                return found(names.get(layer, layer), s)
+            names = {_norm_layer(n): n for n in board.copper_layers()}
+
+        pieces = []
+        for _ord, lyr, w, x1, y1, x2, y2 in dump.tracks:
+            layer = _norm_layer(dump.layers.get(lyr, str(lyr)))
+            ends = [v / COORD_PER_MIL for v in (x1, y1, x2, y2)]
+            net: Optional[str] = ""
+            if layer in copper:
+                net = nets.get((layer, frozenset(((round(ends[0], 2), round(ends[1], 2)),
+                                                  (round(ends[2], 2), round(ends[3], 2))))))
+            pieces.append(cleanup.Piece(layer, *ends, w / COORD_PER_MIL, net))
+        todo = cleanup.plan(pieces, mode, float(min_length_mils), block, others)
+        out: dict[str, Any] = {
+            "slivers_deleted": len(todo.slivers), "merged": todo.merged, "mode": mode,
+            "tracks": len(pieces), "joints_kept": todo.kept_joints, "dry_run": dry_run}
+        if not todo.slivers and not todo.merges:
+            return out
+
+        def key(t):
+            return [t.x1, t.y1, t.x2, t.y2]
+        geometry_map = {
+            "tracks": [{"layer": t.layer, "width": t.width, "key": key(t), "new": new}
+                       for t, new, _gone in todo.merges],
+            "delete": [{"kind": "track", "layer": t.layer, "width": t.width, "key": key(t)}
+                       for t in todo.slivers + [g for _t, _n, gone in todo.merges for g in gone]]}
+        map_path = get_config().workspace_dir / "cleanup_tracks_map.json"
+        map_path.write_text(json.dumps(geometry_map), encoding="utf-8")
+        out["map"] = _map_summary(await pcb_apply_geometry_map(
+            map_path=str(map_path), board_path=board_path, kinds="track",
+            dry_run=dry_run, repour=False))
+        return out
 
     @mcp.tool()
     async def pcb_unroute(
@@ -6102,8 +6215,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             ``gloss`` (runs, relaid, length and bends before and after,
-            nets), ``removed`` and ``added`` track counts, and the
-            geometry-map reply (``match``, and ``apply`` when written).
+            nets), ``removed`` and ``added`` track counts, and ``map``:
+            what matched on the board and, when written, what was applied.
         """
         import asyncio
         import json
@@ -6135,9 +6248,9 @@ def register_pcb_tools(mcp):
                         "geom": [t.x1, t.y1, t.x2, t.y2], "net": t.net} for t in added]}
         map_path = get_config().workspace_dir / "tidy_tracks_map.json"
         map_path.write_text(json.dumps(geometry_map), encoding="utf-8")
-        out["map"] = await pcb_apply_geometry_map(
+        out["map"] = _map_summary(await pcb_apply_geometry_map(
             map_path=str(map_path), board_path=board_path, kinds="track",
-            dry_run=dry_run, repour=False)
+            dry_run=dry_run, repour=False))
         return out
 
     @mcp.tool()
