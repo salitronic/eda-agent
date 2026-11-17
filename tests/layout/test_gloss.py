@@ -197,3 +197,76 @@ def test_only_the_tracks_named_are_laid_again():
     r = gloss(b, tracks=b.tracks[first:])
     assert r.relaid == 1 and r.nets == ["N"]
     assert [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "M")] == own
+
+
+def _jogged(b):
+    """A run as a grid router leaves it: two tracks in line, a 1 mil jog,
+    a long 45, a half-mil step and two more tracks in line. A pad of
+    another net over the far end keeps any shorter way in from being laid."""
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 150, -454.6, "N"),
+               _pad("U3", 150, -400, "X")]
+    pts = [(0, 0), (0, -46), (0, -380), (-0.8, -380.8), (-0.8, -382.4),
+           (71, -454.2), (71.4, -454.6), (100, -454.6), (150, -454.6)]
+    _path(b, "N", pts)
+    return pts
+
+
+def test_a_run_of_short_pieces_is_laid_in_the_fewest_segments():
+    b = _board()
+    pts = _jogged(b)
+    before = _length(b, "N")
+    r = gloss(b)
+    ts = _tracks(b, "N")
+    assert r.simplified == 1 and (r.segments_before, r.segments_after) == (8, 3)
+    assert len(ts) == 3 and all(_octilinear(t) for t in ts)
+    assert min(math.hypot(t.x2 - t.x1, t.y2 - t.y1) for t in ts) > 40
+    assert _length(b, "N") <= before + 0.01
+    assert _max_turn(b, "N") <= 45.5
+    ends = {(round(t.x1, 3), round(t.y1, 3)) for t in ts} | \
+           {(round(t.x2, 3), round(t.y2, 3)) for t in ts}
+    assert {pts[0], pts[-1]} <= ends
+    assert not run_drc(b).violations and not run_drc(b).unrouted
+
+
+def test_tracks_in_line_become_one_and_a_join_between_them_stays():
+    b = _board()
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 0, "N"), _pad("U3", 150, 200, "N")]
+    _path(b, "N", [(0, 0), (60, 0), (150, 0), (220, 0), (300, 0)])
+    _path(b, "N", [(150, 0), (150, 200)])
+    r = gloss(b)
+    ts = _tracks(b, "N")
+    assert r.simplified == 2 and len(ts) == 3
+    assert sum(1 for t in ts if (150, 0) in ((t.x1, t.y1), (t.x2, t.y2))) == 3
+    assert not run_drc(b).unrouted
+
+
+def test_a_jog_another_net_needs_is_kept():
+    b = _board()
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 400, 0, "N"), _pad("U3", 200, 0, "X")]
+    _path(b, "N", [(0, 0), (120, 0), (160, 40), (240, 40), (280, 0), (400, 0)])
+    r = gloss(b)
+    assert r.simplified == 0 and len(_tracks(b, "N")) == 5
+    assert not run_drc(b).violations
+
+
+def test_a_fenced_net_is_laid_again_only_inside_its_region_and_out_of_its_keep_outs():
+    def detour():
+        b = _board()
+        b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N")]
+        _path(b, "N", [(0, 0), (0, 200), (300, 200)])
+        return b
+    # The region hugs the L the net was laid in: the 45 cut leaves it.
+    ell = [(-30, -30), (30, -30), (30, 170), (330, 170), (330, 230), (-30, 230)]
+    b = detour()
+    assert gloss(b, fences={"N": ([ell], [])}).relaid == 0
+    assert _tracks(b, "N")[0].x2 == 0 and _length(b, "N") == 500
+    # A keep-out on the diagonal holds it the same way.
+    b = detour()
+    assert gloss(b, fences={"N": (None, [[(100, 40), (200, 40), (200, 120), (100, 120)]])}).relaid == 0
+    # A region round both: laid again as without one.
+    b = detour()
+    assert gloss(b, fences={"N": ([[(-50, -50), (350, -50), (350, 250), (-50, 250)]], [])}).relaid == 1
+    assert abs(_length(b, "N") - (100 + 200 * math.sqrt(2))) < 0.01
+    # Another net's fence does not hold this one.
+    b = detour()
+    assert gloss(b, fences={"M": ([ell], [])}).relaid == 1

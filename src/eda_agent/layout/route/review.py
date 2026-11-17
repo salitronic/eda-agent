@@ -165,26 +165,21 @@ def copper_length(board: LayoutBoard, net: str) -> float:
 
 def _reference_cover(board: LayoutBoard, net: str, layer: str):
     """A test (x, y) -> whether copper of ``net`` (a plane, a pour or its
-    outline, a region) lies on a copper layer next to ``layer``."""
-    from .. import geom
+    outline, a region) lies on a copper layer next to ``layer``, clear of
+    the other nets' pads, tracks and vias there (brief.reference_layers)."""
+    from ..rules import RuleSet
+    from .brief import reference_layers, referenced
 
-    order = board.copper_layers()
-    if layer not in order:
-        return lambda x, y: False
-    i = order.index(layer)
-    near = [order[k] for k in (i - 1, i + 1) if 0 <= k < len(order)]
-    if any(l.name in near and l.kind == "plane" and l.plane_net == net for l in board.layers):
-        return lambda x, y: True
-    shapes = [geom.polygon(r.outline, r.holes) for r in board.regions
-              if r.layer in near and r.net == net and len(r.outline) >= 3
-              and r.kind in ("pour", "copper", "pour_boundary")]
-    return lambda x, y: any(geom.point_in_poly(x, y, s) for s in shapes)
+    gap = RuleSet.from_board(board).default_clearance()
+    layers = reference_layers(board, net, layer, gap)
+    return lambda x, y: referenced(layers, gap, x, y)
 
 
 def reference_gaps(board: LayoutBoard, tracks: list[dict], brief: Brief) -> dict[str, dict]:
     """Per net with a ``reference`` in the brief: the length of its new
-    tracks with no copper of that net on a layer next to them, and where
-    the first such stretch is."""
+    tracks with no copper of that net on a layer next to them, or only
+    where another net's pad, track or via cuts it (by the clearance), and
+    where the first such stretch is."""
     out: dict[str, dict] = {}
     covers: dict[tuple, Any] = {}
     for t in tracks:
@@ -238,6 +233,97 @@ def impedance_misses(board: LayoutBoard, tracks: list[dict], brief: Brief) -> di
 
 #: Pieces a track is cut into to measure how much of it runs beside another
 #: net, mils.
+def current_misses(routed: LayoutBoard, brief: Brief, nets: Iterable[str]) -> dict[str, dict]:
+    """Net -> its narrowest track against the width its entry's current
+    needs on that layer (IPC-2221), for the nets among ``nets`` whose
+    entry gives a current and whose copper has a track too narrow."""
+    from .brief import current_widths
+
+    out: dict[str, dict] = {}
+    for net in sorted(set(nets)):
+        e = brief.of.get(net)
+        if e is None or not e.current:
+            continue
+        need = current_widths(routed, _replace_layers(e))
+        worst = None
+        for t in routed.tracks:
+            if t.net != net or t.layer not in need or t.width + 1e-6 >= need[t.layer]:
+                continue
+            if worst is None or t.width / need[t.layer] < worst[0]:
+                worst = (t.width / need[t.layer], t)
+        if worst is not None:
+            t = worst[1]
+            out[net] = {"layer": t.layer, "width": round(t.width, 2), "need": need[t.layer],
+                        "current": e.current, "at": [round(t.x1, 1), round(t.y1, 1)]}
+    return out
+
+
+def _replace_layers(e):
+    """The entry judged on every copper layer: a track on a layer the entry
+    leaves out still carries the current."""
+    from dataclasses import replace
+    return replace(e, layers=None)
+
+
+def return_via_misses(routed: LayoutBoard, brief: Brief, nets: Iterable[str]) -> dict[str, dict]:
+    """Net -> its vias with no via of its reference net within its entry's
+    return_via: the count, the farthest gap and where."""
+    out: dict[str, dict] = {}
+    for net in sorted(set(nets)):
+        e = brief.of.get(net)
+        if e is None or not e.return_via or not e.reference:
+            continue
+        refs = [v for v in routed.vias if v.net == e.reference]
+        bare = []
+        for v in routed.vias:
+            if v.net != net:
+                continue
+            gap = min((math.hypot(v.x - r.x, v.y - r.y) for r in refs), default=float("inf"))
+            if gap > e.return_via + 1e-6:
+                bare.append((gap, v))
+        if bare:
+            gap, v = max(bare, key=lambda b: b[0])
+            out[net] = {"count": len(bare), "gap": None if gap == float("inf") else round(gap, 1),
+                        "at": [round(v.x, 1), round(v.y, 1)], "limit": e.return_via,
+                        "reference": e.reference}
+    return out
+
+
+def thermal_findings(routed: LayoutBoard, brief: Brief, nets: Iterable[str]) -> list[dict]:
+    """The thermal rules measured on the copper, for parts whose pad net is
+    among ``nets`` (or every rule when ``nets`` is empty)."""
+    from .brief import thermal_measure
+
+    nets = set(nets)
+    out = []
+    for r in brief.thermal:
+        m = thermal_measure(routed, r)
+        if not m["found"] or (nets and m["net"] not in nets):
+            continue
+        if r.min_area is not None and m["area"] + 1e-6 < r.min_area:
+            out.append(_finding(f"thermal:{r.name}:area", "thermal",
+                                f"thermal {r.name}: {m['area']:g} sq mil of {m['net']} copper on "
+                                f"{m['layer']} at {m['pad']}, under its min_area {r.min_area:g} "
+                                f"({r.source}). Pour or widen the copper at the pad, or add "
+                                "copper on another layer with vias.", rule=r.name,
+                                measured=m["area"], limit=r.min_area))
+        if r.min_vias is not None and m["vias"] < r.min_vias:
+            out.append(_finding(f"thermal:{r.name}:vias", "thermal",
+                                f"thermal {r.name}: {m['vias']} {m['net']} via(s) within "
+                                f"{m['reach']:g} mil of {m['pad']}, under its min_vias "
+                                f"{r.min_vias} ({r.source}). Add thermal vias at the pad.",
+                                rule=r.name, measured=m["vias"], limit=r.min_vias))
+        if m["tj"] is not None and r.tj_max is not None and m["tj"] > r.tj_max + 1e-6:
+            out.append(_finding(f"thermal:{r.name}:tj", "thermal",
+                                f"thermal {r.name}: {r.power:g} W at {r.theta_ja:g} C/W from "
+                                f"{r.ambient:g} C gives a junction of {m['tj']:g} C, over its "
+                                f"tj_max {r.tj_max:g} ({r.source}). Lower the dissipation, a "
+                                "part with a lower theta_ja, or more copper (with the "
+                                "datasheet's theta_ja for it).", rule=r.name,
+                                measured=m["tj"], limit=r.tj_max))
+    return out
+
+
 PARALLEL_STEP = 10.0
 
 
@@ -514,6 +600,22 @@ def findings(board: LayoutBoard, routed: LayoutBoard, tracks: list[dict], vias: 
                 "or say how it should go." if opts else
                 "No option tried routes it: give a corridor, a layer, or move a part.")
         out.append(_finding(f"unrouted:{net}", "unrouted", f"{net}: not routed. {tail}", net=net))
+    from ..staircase import shapes
+    shaped = shapes(tracks, routed.pads, routed.vias, limit=50)
+    for s in shaped["staircases"]:
+        out.append(_finding(
+            f"staircase:{s['net']}:{s['layer']}:{s['at'][0]:.0f},{s['at'][1]:.0f}", "staircase",
+            f"{s['net']}: a run of {s['steps']} tiny steps from ({s['at'][0]:.1f}, "
+            f"{s['at'][1]:.1f}) on {s['layer']} instead of two or three tracks. Route the "
+            "net again, or lay that run by hand as a straight and a 45.", net=s["net"]))
+    for t in shaped["short_tracks"]:
+        out.append(_finding(
+            f"short_track:{t['net']}:{t['layer']}:{t['at'][0]:.1f},{t['at'][1]:.1f}",
+            "short_track",
+            f"{t['net']}: a track {t['length']} long and {t['width']} wide at "
+            f"({t['at'][0]:.1f}, {t['at'][1]:.1f}) on {t['layer']}, shorter than its own "
+            "width and no stub into a pad or via. Route the net again, or join the "
+            "piece to its run.", net=t["net"]))
     # The brief's measurable rules, on the whole net as the board now has it.
     lengths = {}
     for net in sorted(nets | {n for e in brief.entries if e.match for n in e.nets}):
@@ -555,7 +657,9 @@ def findings(board: LayoutBoard, routed: LayoutBoard, tracks: list[dict], vias: 
                                 f"({got[longest]:.0f}) and {shortest} ({got[shortest]:.0f}), over "
                                 f"its skew {skew:g}. Tune the short ones (pcb_tune_length) or "
                                 "route again.", group=g, measured=round(spread, 1), limit=skew))
-    for net, g in sorted(reference_gaps(board, tracks, brief).items()):
+    # On the routed board: the round's own tracks and vias on the layer
+    # next door cut the return path as the board's do.
+    for net, g in sorted(reference_gaps(routed, tracks, brief).items()):
         out.append(_finding(f"reference:{net}", "reference",
                             f"{net}: {g['uncovered']:.0f} mil of track on {g['layer']} with no "
                             f"{g['reference']} on a layer next to it (first near {g['at']}). Its "
@@ -573,6 +677,22 @@ def findings(board: LayoutBoard, routed: LayoutBoard, tracks: list[dict], vias: 
                             simulate=_simulate("impedance", net=net),
                             measured=None if m["worst"] == "none" else m["worst"],
                             limit=m["target"]))
+    for net, m in sorted(current_misses(routed, brief, nets).items()):
+        out.append(_finding(f"current:{net}", "current",
+                            f"{net}: a {m['width']:g} mil track on {m['layer']} near {m['at']}, "
+                            f"where {m['current']:g} A needs {m['need']:g} mil (IPC-2221, the "
+                            "entry's temp_rise). Widen it (pcb_set_track_width), pour the path, "
+                            "or give a thermal result as evidence.", net=net,
+                            measured=m["width"], limit=m["need"]))
+    for net, m in sorted(return_via_misses(routed, brief, nets).items()):
+        far = ("no " + m["reference"] + " via at all" if m["gap"] is None
+               else f"the farthest {m['gap']:g} mil from one, near {m['at']}")
+        out.append(_finding(f"return_via:{net}", "return_via",
+                            f"{net}: {m['count']} via(s) with no {m['reference']} via within "
+                            f"{m['limit']:g} mil, {far}. Its return current has no path between "
+                            f"the planes there: add a {m['reference']} via beside each.",
+                            net=net, measured=m["count"], limit=m["limit"]))
+    out += thermal_findings(routed, brief, nets)
     for (net, other), m in sorted(apart_misses(routed, brief, nets).items()):
         said = []
         if "gap" in m:
@@ -909,16 +1029,17 @@ def _fits(board: LayoutBoard, ref: str) -> bool:
     return True
 
 
-def _trial(board: LayoutBoard, nets, brief: Brief, stages) -> tuple[bool, dict]:
+def _trial(board: LayoutBoard, nets, brief: Brief, stages, release=None) -> tuple[bool, dict]:
     """Route ``nets`` alone on ``board`` (its copper fixed) and say whether
-    every one of them is joined within the brief, with the copper it took."""
+    every one of them is joined within the brief, with the copper it took;
+    planes given to routing only of ``release`` (route_adaptive)."""
     from ..drc import connectivity
     from .brief import broken
     from .router import route_adaptive
 
     st = dict(stages) if isinstance(stages, dict) else {}
     st["join_existing"] = True
-    r = route_adaptive(board, nets=frozenset(nets), brief=brief, stages=st)
+    r = route_adaptive(board, nets=frozenset(nets), brief=brief, stages=st, release=release)
     out = r.apply()
     groups = connectivity(out)
     new_t = out.tracks[len(board.tracks):]
@@ -983,7 +1104,7 @@ def _across(board: LayoutBoard, net: str, where: list[dict]) -> list[str]:
 
 def advise(board: LayoutBoard, routed: LayoutBoard, unrouted: Iterable[str], brief: Brief,
            unreached: list[dict], stages=None, round_nets: Iterable[str] = (),
-           seconds: float = 90.0) -> dict[str, dict]:
+           seconds: float = 90.0, release=None) -> dict[str, dict]:
     """Options for each net the round left unrouted, each tried by routing it
     so: a part beside it moved clear, a net laid before this round ripped up,
     or one rule of the brief dropped. Every option says what its trial gave;
@@ -1028,7 +1149,7 @@ def advise(board: LayoutBoard, routed: LayoutBoard, unrouted: Iterable[str], bri
                 return None
             tried += 1
             try:
-                ok, got = _trial(b() if callable(b) else b, nets, br, stages)
+                ok, got = _trial(b() if callable(b) else b, nets, br, stages, release)
             except Exception as exc:  # noqa: BLE001 - a failed trial is an answer
                 ok, got = False, {"error": str(exc)[:120]}
             res = (f"routes it: {got['length']} mil, {got['vias']} vias on "

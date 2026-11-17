@@ -690,8 +690,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_route_brief", "pcb_route_round", "design_job_result",
-                "pcb_route_simulate", "pcb_autoroute_apply", "pcb_move_components",
-                "pcb_unroute"],
+                "pcb_route_simulate", "pcb_autoroute_apply", "pcb_route_review",
+                "pcb_move_components", "pcb_unroute"],
         "avoid": [
             ("pcb_autoroute", "one run for the whole board decides every net "
                               "itself and gives no advice on the nets it "
@@ -711,7 +711,21 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "when the user specifically asks for it and has set \"Altium "
             "autorouter\" to Allowed on the Config tab. "
             "You decide how the board is routed; the router does the "
-            "mechanical work and obeys. pcb_route_brief with no changes "
+            "mechanical work and obeys, and lays nothing you have not "
+            "decided: every net needs an entry with its layers and the "
+            "reason first (one entry for a group of plain nets), with the "
+            "route you want in mind, confirmed in a later call with what "
+            "you verified on the board for each net against the facts "
+            "the reply gives (to_confirm); a read lists the undecided ones. "
+            "Plan the board before the first round, never hand it over "
+            "to be routed whole. Layers decide return paths: an inner "
+            "plane is routed on only if an entry names its layer, so keep "
+            "the planes next to the outer layers whole and give a middle "
+            "ground or a supply layer first (summary.plane_declined says "
+            "what one would close). On two layers, route on the side "
+            "facing the solid pour, without vias where a net fits; the "
+            "parts' pads cut the pour on their own side. "
+            "pcb_route_brief with no changes "
             "lists the critical nets (pairs, clocks, switching nodes, "
             "high-current paths, antenna feeds) and what to read for "
             "each: read the datasheet's layout section and the "
@@ -749,7 +763,10 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "pcb_autoroute_apply refuses while a finding is unanswered: "
             "route again, or accept each with its reason (and evidence, "
             "a simulation's result, where one decides it). A route you "
-            "draw yourself is kept by every later round. The user's "
+            "draw yourself is kept by every later round; pcb_route_review "
+            "measures it against the brief the same way (current against "
+            "IPC-2221, loops, decoupling, spacing, shape), so check your "
+            "own copper with it before going on. The user's "
             "Routing discipline on the Config tab can make the brief and "
             "the findings advisory or off; replies then carry "
             "routing_discipline. Only the user changes it."),
@@ -777,8 +794,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "and a chosen gap. pcb_create_diff_pair names the pair; "
             "pcb_create_design_rule rule_type differential_pairs with scope "
             "InDifferentialPair('<name>') sets the gap, and "
-            "pcb_set_rule_properties its widths. pcb_autoroute routes the pair "
-            "first, coupled at that width and gap, and reports it under "
+            "pcb_set_rule_properties its widths. Once its pcb_route_brief "
+            "entry decides it (layers, impedance, source), pcb_autoroute "
+            "routes the pair first, coupled at that width and gap, and reports it under "
             "pairs (length, skew); a pair it reports with a note was routed "
             "at defaults, not to an impedance. Keep a solid ground plane "
             "beside it: each pair's ``reference`` names the plane next to its "

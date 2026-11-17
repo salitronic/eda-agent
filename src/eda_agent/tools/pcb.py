@@ -6204,7 +6204,8 @@ def register_pcb_tools(mcp):
         axis, crosses no other pad of its net, keeps every join it had, and
         clears every other net, the board edge and keep-outs by the board's
         rules. A run is changed only when it gets shorter, or as short with
-        fewer bends. Footprint tracks and arcs are left as they are. Altium's
+        fewer bends. The board's pcb_route_brief holds too: its areas,
+        spacings and barriers, and each net's region and keep-outs. Footprint tracks and arcs are left as they are. Altium's
         own Gloss is pcb_gloss.
 
         Args:
@@ -6231,13 +6232,26 @@ def register_pcb_tools(mcp):
             return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001 - reported to the caller
             return {"error": f"board read failed: {exc}"}
+        # The board's routing brief holds here as it does for the router:
+        # its spacings, barriers and areas, and each net's region and
+        # keep-outs.
+        from ..layout.route import brief as brief_mod
+        brief = brief_mod.load(board_path)
+        fences = {n: (e.region, e.keep_out) for n, e in brief.of.items()
+                  if e.region or e.keep_out}
         before = list(board.tracks)
-        report = await asyncio.to_thread(gloss, board, None, nets, layers)
+        report = await asyncio.to_thread(
+            gloss, board, None, nets, layers, spacing=brief.spacing_pairs(board),
+            barriers=brief.barrier_sides(board), areas=brief.areas, fences=fences)
         now = {id(t) for t in board.tracks}
         was = {id(t) for t in before}
         removed = [t for t in before if id(t) not in now]
         added = [t for t in board.tracks if id(t) not in was]
-        out: dict[str, Any] = {"gloss": report.as_dict(), "removed": len(removed),
+        told = report.as_dict()
+        # A whole board's net names are a long list: the count and the first few.
+        told["net_count"] = len(told["nets"])
+        told["nets"] = told["nets"][:25]
+        out: dict[str, Any] = {"gloss": told, "removed": len(removed),
                                "added": len(added)}
         if not removed:
             return {**out, "dry_run": dry_run}

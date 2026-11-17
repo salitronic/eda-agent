@@ -190,8 +190,11 @@ class RouteRules:
 
     def width(self, net: str, pads=(), cap: bool = True) -> float:
         """The rule's preferred width, but never wider than the narrowest
-        pad the net lands on (unless ``cap`` is False: the router then
-        necks down at that pad alone), nor narrower than the rule's minimum.
+        pad the net lands on, nor narrower than the rule's minimum. With
+        ``cap`` False the router necks down at the narrow pads alone, and
+        the net is held to its widest pad instead: one fine-pitch pin does
+        not make a supply net thin, and a rule that prefers its maximum
+        does not lay a track wider than anything it joins.
 
         A rule's preferred width is not always a width anyone routes: a
         rule can prefer its maximum, far wider than the board is routed
@@ -206,8 +209,8 @@ class RouteRules:
         w = self.rules.width(self.facts(net, "track"))
         width = w.get("preferred") or w.get("min") or 6.0
         sizes = [min(c.w, c.h) for p in pads for c in p.copper if min(c.w, c.h) > 0]
-        if sizes and cap:
-            width = min(width, min(sizes))
+        if sizes:
+            width = min(width, min(sizes) if cap else max(sizes))
         if w.get("min"):
             width = max(width, w["min"])
         return width

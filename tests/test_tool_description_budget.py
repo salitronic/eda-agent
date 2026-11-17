@@ -26,6 +26,8 @@ OVER_LIMIT = {
     "pcb_plan_placement": 4_171, "lib_set_pad_properties": 3_714,
     "lib_create_footprint_from_package": 3_229, "sch_editor_options": 3_223,
     "sch_preview_template": 3_095,
+    # Every rule the AI can give the router, and the decide-confirm steps.
+    "pcb_route_brief": 3_400,
 }
 
 

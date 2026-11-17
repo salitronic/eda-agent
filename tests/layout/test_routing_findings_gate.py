@@ -119,6 +119,32 @@ def test_length_skew_and_return_plane_are_measured_and_put_to_the_ai():
     assert not [f for f in res["findings"] if f["check"] == "reference"]
 
 
+def test_the_return_path_is_cut_by_other_nets_pads_tracks_and_vias_on_the_next_layer():
+    from eda_agent.layout.model import Track, Via
+    from eda_agent.layout.route.review import reference_gaps
+
+    b = _board()
+    b.regions.append(Region("BottomLayer", [(0, 0), (600, 0), (600, 400), (0, 400)], [],
+                            "GND", "pour_boundary"))
+    brief = B.Brief.from_list([{"nets": ["A"], "reference": "GND"}])
+    run = [{"x1": 100, "y1": 200, "x2": 500, "y2": 200, "width": 10, "layer": "TopLayer",
+            "net_name": "A"}]
+    assert not reference_gaps(b, run, brief)
+    # GND's own copper next door is its return path, not a hole in it.
+    b.tracks.append(Track("BottomLayer", 150, 0, 150, 400, 10, net="GND"))
+    assert not reference_gaps(b, run, brief)
+    cuts = [("a pad", lambda: b.pads.append(
+                Pad("R9", "1", 300, 200, net="B", copper=[PadCopper("BottomLayer", "rect", 40, 40)]))),
+            ("a track", lambda: b.tracks.append(Track("BottomLayer", 300, 0, 300, 400, 10, net="B"))),
+            ("a via", lambda: b.vias.append(Via(300, 200, 24, 12, "TopLayer", "BottomLayer", net="B")))]
+    for what, cut in cuts:
+        keep = (list(b.pads), list(b.tracks), list(b.vias))
+        cut()
+        g = reference_gaps(b, run, brief).get("A")
+        assert g and 10 <= g["uncovered"] <= 80 and abs(g["at"][0] - 300) <= 40, what
+        b.pads, b.tracks, b.vias = keep
+
+
 def test_a_round_reaches_pads_along_their_axes_and_the_review_has_nothing_to_ask():
     # Live, nearly every round's review found a track ending on a pad at 45
     # degrees; rounds now route with axis entries.
@@ -189,8 +215,8 @@ def test_the_axis_meets_the_next_corner_on_45_degrees():
 def test_a_piece_off_the_45_degree_grid_is_a_finding():
     from eda_agent.layout.route import review
 
-    t = {"x1": 0, "y1": 0, "x2": 3, "y2": 1, "width": 6, "layer": "TopLayer", "net_name": "N"}
-    ok = dict(t, x2=3, y2=3)
+    t = {"x1": 0, "y1": 0, "x2": 30, "y2": 10, "width": 6, "layer": "TopLayer", "net_name": "N"}
+    ok = dict(t, x2=30, y2=30)
     b = _board()
     found = review.findings(b, b, [t, ok], [], B.Brief(), ["N"], {}, {}, {}, {})
     assert [f["id"] for f in found] == ["angle:N"] and found[0]["measured"] == 1

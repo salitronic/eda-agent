@@ -192,7 +192,9 @@ async def test_apply_does_not_repour_a_board_with_no_pour_or_plane(monkeypatch, 
 
 def _autoroute(monkeypatch, tmp_path, board):
     from eda_agent.layout import read_altium
-    install_bridge_fake(monkeypatch, tmp_path, object())
+    workspace = install_bridge_fake(monkeypatch, tmp_path, object())
+    # The options, not the brief: the user's Routing discipline off.
+    (workspace / "preferences.json").write_text('{"routing": "off"}')
     monkeypatch.setattr(read_altium, "read_live_board", lambda path: board)
     sent = {}
 
@@ -223,7 +225,8 @@ async def test_autoroute_passes_the_entry_and_join_options_to_the_job(monkeypatc
                      join_existing=True, exclude_layers=["BottomLayer"])
     assert out["job_id"] == "job-1"
     st = sent["stages"]
-    assert st["axis_entry"] and st["neck_pads"] and st["join_existing"]
+    assert st["axis_entry"] and st["join_existing"]
+    assert "neck_pads" not in st, "on is the router's default; only off is sent"
     assert st["exclude_layers"] == ("BottomLayer",)
 
 

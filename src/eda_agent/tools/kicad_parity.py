@@ -436,6 +436,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_route_brief": "the brief rules the in-house router, which reads Altium boards",
     "pcb_route_round": "the in-house router reads Altium boards; KiCad has no autorouter",
     "pcb_route_simulate": "simulates the in-house router's findings on an Altium board's copper",
+    "pcb_route_review": "measures an Altium board's copper against the in-house router's brief",
     "pcb_add_teardrops": "teardrops are set in KiCad's dialog; no API call",
     "pcb_remove_teardrops": "teardrops are set in KiCad's dialog; no API call",
     "pcb_set_dielectric": _STACKUP_RO,

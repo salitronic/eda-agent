@@ -180,3 +180,30 @@ def test_a_width_too_wide_for_the_gap_is_named_even_after_the_rip_ups():
     assert width and width[0]["routes"]
     assert width[0]["apply"]["drop"] == [{"nets": ["A"], "rules": ["width"]}]
     assert opts[0] is width[0], "the option that routes comes first"
+
+
+def test_a_fenced_net_is_laid_again_clean_and_stays_inside():
+    import math
+    wall = [(250, 150), (350, 150), (350, 400), (250, 400)]
+    region = [(50, 60), (550, 60), (550, 260), (50, 260)]
+    res = route_job({"board": _board(), "brief": [
+        {"nets": ["A"], "layers": ["TopLayer"], "keep_out": [wall], "region": [region],
+         "max_vias": 0}]})
+    ts = _tracks(res)
+    assert ts and res["summary"]["completion"] == 1.0 and not res["brief"]["outside_brief"]
+    assert not B.broken(B.Brief.from_list([{"nets": ["A"], "keep_out": [wall], "region": [region]}]),
+                        [_T(t) for t in ts], [])
+    # Between the pads (a round pad is entered at its centre from any side)
+    # the runs are 45/90, round the wall in a few of them, not a staircase
+    # of grid steps (16 pieces as routed).
+    centres = {(100.0, 200.0), (500.0, 200.0)}
+    for t in ts:
+        if {(round(t["x1"], 1), round(t["y1"], 1)), (round(t["x2"], 1), round(t["y2"], 1))} & centres:
+            continue
+        ang = math.degrees(math.atan2(t["y2"] - t["y1"], t["x2"] - t["x1"])) % 45.0
+        assert min(ang, 45.0 - ang) < 0.05
+    assert len(ts) <= 6
+
+
+def _T(t):
+    return Track(t["layer"], t["x1"], t["y1"], t["x2"], t["y2"], t["width"], net=t["net_name"])

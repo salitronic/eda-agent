@@ -129,10 +129,12 @@ class StageOptions:
     # out of the centre, never slantwise across the pad's copper or its
     # corner. An IC's elongated pin is left only through its short ends.
     axis_entry: bool = False
-    # Route a net at its rule's width even where one of its pads is
-    # narrower, necking down to that pad's width only on the stub into it.
-    # Off: a net is routed at what its narrowest pad takes, all the way.
-    neck_pads: bool = False
+    # Route a net whose width rule is wider than most (Router._supplies) at
+    # that width even where one of its pads is narrower, necking down to the
+    # pad's width only on the stub into it; every other net at what its
+    # narrowest pad takes. Off: those too, so one fine-pitch pin makes a
+    # whole supply net thin.
+    neck_pads: bool = True
     # Route only what the board's own copper leaves apart: a net its
     # tracks already join whole is not routed, and one partly joined is
     # routed by joining its pieces, each reachable anywhere along its
@@ -171,7 +173,7 @@ class StageOptions:
             return cls(diff_pairs=False, plane_fanout=False, pin_lanes=False, bus_lanes=False,
                        class_order=False, pad_vias="any", fallback=False, bends=False,
                        straight=False, global_stall=False, exact_pad_via=False,
-                       quick_release=False)
+                       quick_release=False, neck_pads=False)
         known = {f.name for f in fields(cls)}
         bad = set(value) - known
         if bad:

@@ -144,10 +144,12 @@ def dialogs_auto(workspace: Optional[Path] = None) -> bool:
 #: What each routing discipline level asks of the AI. At every level the
 #: brief the AI gave is obeyed; the levels differ in what is asked for first.
 ROUTING: dict[str, str] = {
-    "enforced": ("a critical net needs a sourced brief entry before it is routed, and "
-                 "a round is applied only once every finding is answered"),
-    "advisory": ("a critical net without a brief entry is routed and named, and the "
-                 "findings are reported but nothing waits for an answer"),
+    "enforced": ("the router lays only nets the AI has decided in the brief (their layers "
+                 "and why), a critical net also needs the entry's source, and a round is "
+                 "applied only once every finding is answered"),
+    "advisory": ("a net the AI has not decided, or a critical net without a sourced entry, "
+                 "is routed and named, and the findings are reported but nothing waits "
+                 "for an answer"),
     "off": ("no brief entry is asked for and nothing waits on findings; the brief "
             "the AI gives is still obeyed"),
 }

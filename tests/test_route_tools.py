@@ -92,6 +92,7 @@ def test_register_exposes_route_tools(tools):
         "pcb_route_brief",
         "pcb_route_round",
         "pcb_route_simulate",
+        "pcb_route_review",
         "pcb_autoplace",
         "pcb_autoplace_apply",
     }

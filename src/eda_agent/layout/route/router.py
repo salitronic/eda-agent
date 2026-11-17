@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -160,7 +160,7 @@ class RouteReport:
 
 class Router:
     def __init__(self, board: LayoutBoard, rules: RuleSet | None = None,
-                 pitch: float | None = None, max_iterations: int = 25,
+                 pitch: float | None = None, max_iterations: int = 40,
                  via_cost: float = 30.0, greed: float = 1.0,
                  planes: bool = True, released: frozenset = frozenset(),
                  global_routing: bool = True, nets: frozenset | None = None,
@@ -178,6 +178,9 @@ class Router:
         self.only = frozenset(nets) if nets else None
         self.rules = rules or RuleSet.from_board(board)
         self.log = log or (lambda s: None)
+        # Rounds of negotiation at most. 40: on the 160-board benchmark 22
+        # connections more than 25 and two boards more fully routed, for 30%
+        # more routing time; 50 added one connection more.
         self.max_iterations = max_iterations
         self.via_base = via_cost
         # PathFinder: how fast sharing gets dearer each round, and how much
@@ -202,13 +205,21 @@ class Router:
         self.brief_walls: list = []
         pads_of = board.pads_by_net()
         widths = [self.rr.width(n, pads_of.get(n, [])) for n in nets] or [6.0]
+        # The nets neck_pads keeps at their rule's width (_supplies).
+        self.neck_nets = self._supplies(nets) if self.options.neck_pads else frozenset()
+        if self.options.neck_pads and not any(
+                self.rr.width(n, pads_of.get(n, []), cap=False) > w + 1e-9
+                for n, w in zip(nets, widths) if n in self.neck_nets):
+            # No supply here is wider than its narrowest pad: nothing to neck.
+            self.options = replace(self.options, neck_pads=False)
         self.w_def = float(np.median(widths))
         self.c = self.rr.default_clearance
         self.pitch = pitch or self._pitch_for(min(widths), self.c)
         if self.options.neck_pads:
             # The grid is cut for the narrow widths a net may fall back to;
             # the fields and their reach are kept for the full ones.
-            widths = [self.rr.width(n, pads_of.get(n, []), cap=False) for n in nets] or [6.0]
+            widths = [self.rr.width(n, pads_of.get(n, []), cap=n not in self.neck_nets)
+                      for n in nets] or [6.0]
         vmax = max((v.diameter for n in nets for v in self.rr.vias(n)), default=20.0)
         self._clearance_groups(nets, net_id)
         # The distance fields reach as far as the largest clearance any
@@ -218,6 +229,9 @@ class Router:
                  + max(widths) / 2 + vmax / 2 + 2 * self.pitch)
         # Inner layers a pour covers become planes, and are not routed on.
         self.released = frozenset(released)
+        # A plane route_adaptive would have given to routing and was not
+        # allowed to (route_adaptive's release).
+        self.declined: dict | None = None
         self.pour_planes = [p for p in self._pour_planes() if p.layer not in self.released] \
             if planes else []
         on_planes = {p.layer for p in self.pour_planes}
@@ -607,7 +621,7 @@ class Router:
                 continue
             plane = planes.get(net)
             nid = self.grid.net_id[net]
-            width = self.rr.width(net, pads, cap=not self.options.neck_pads)
+            width = self.rr.width(net, pads, cap=net not in self.neck_nets)
             vias = self.rr.vias(net)
             terms = [self._terminal(index[id(p)], p, nid, width) for p in pads]
             if any(t.neck is not None and not len(t.cells) for t in terms):
@@ -641,6 +655,22 @@ class Router:
     def _in_plane(self, plane: np.ndarray, pad: Pad) -> bool:
         ci, cj = self.grid.spec.cell(pad.x, pad.y)
         return 0 <= ci < self.nx and 0 <= cj < self.ny and bool(plane[cj, ci])
+
+    def _supplies(self, nets) -> frozenset:
+        """The nets neck_pads routes at their rule's width: those whose
+        width rule asks more than 1.25 times the board's usual, and those
+        the brief sets a width for. Every other net is routed at what its
+        narrowest pad takes. On the 160-board benchmark necking every net
+        made 141 connections fewer and 8 boards fewer fully routed; these
+        alone, 3 fewer. A rail is not among them: its pour carries the
+        current, and necking the rails as well cost 50 connections."""
+        rule = {}
+        for n in nets:
+            w = self.rr.rules.width(self.rr.facts(n, "track"))
+            rule[n] = w.get("preferred") or w.get("min") or 6.0
+        usual = float(np.median(list(rule.values()))) if rule else 6.0
+        return frozenset(n for n in nets if rule[n] > 1.25 * usual + EPS
+                         or n in self.rr.width_set)
 
     def _rank(self, job: NetJob) -> int:
         """0 for a high-current net (a rule asks it wider than most), 1 for
@@ -3400,58 +3430,83 @@ def _straight_runs(cells):
     return out
 
 
-def releasable(router: Router) -> str | None:
-    """The plane layer to give back to routing, if any may go.
+def releasable(router: Router, allowed=None) -> str | None:
+    """The plane layer to give back to routing, if any may go, of the
+    ``allowed`` layers when given.
 
-    First a net's second plane or more. Of those, a plane lying between
-    two other planes first, since a plane next to an outer layer is that
-    layer's reference; then the one furthest down the stack. On the
+    A plane next to an outer layer is that layer's reference, so it goes
+    last: first the planes that face no outer layer, then those that do.
+    Within each, first a net's second plane or more: a plane lying between
+    two other planes first, then the one furthest down the stack. On the
     public boards the person routed on exactly such a middle ground layer
     and kept the outer ones whole.
 
-    Then, when no net has a plane to spare, a net's only plane, as a
+    Then, when no net has a plane to spare there, a net's only plane, as a
     layer shared by that pour and the routing (its net is then routed in
     tracks, and the pour fills round everything afterwards). The layer
     whose nets have the fewest pads goes first, and the board keeps at
     least one plane. A dense BGA can need exactly that: the only way out
-    from under its balls is through a supply pour's layer.
+    from under its balls is through a supply pour's layer. On a six-layer
+    public board the person routed on a supply layer and kept the ground
+    planes under both outer layers whole.
     """
     per_net: dict[str, list[str]] = {}
     for p in router.pour_planes:
         per_net.setdefault(p.net, []).append(p.layer)
     order = router.board.copper_layers()
     planes = {p.layer for p in router.pour_planes}
-    candidates = []
+    outer = {order[0], order[-1]}
+
+    def faces_outer(layer: str) -> bool:
+        i = order.index(layer)
+        return order[i - 1] in outer or (i + 1 < len(order) and order[i + 1] in outer)
+
+    spare = []
     for net, layers in per_net.items():
         if len(set(layers)) < 2:
             continue
         for layer in set(layers):
             i = order.index(layer)
             sandwiched = order[i - 1] in planes and order[i + 1] in planes
-            candidates.append((not sandwiched, -i, layer))
-    if candidates:
-        return min(candidates)[2]
-    if len(planes) < 2:
-        return None
-    pads = router.board.pads_by_net()
-    load = {}
-    for p in router.pour_planes:
-        load[p.layer] = load.get(p.layer, 0) + len(pads.get(p.net, []))
-    return min(load, key=lambda layer: (load[layer], -order.index(layer)))
+            spare.append((not sandwiched, -i, layer))
+    spare = [c for c in spare if allowed is None or c[2] in allowed]
+    load: dict[str, int] = {}
+    if len(planes) >= 2:
+        pads = router.board.pads_by_net()
+        for p in router.pour_planes:
+            if allowed is None or p.layer in allowed:
+                load[p.layer] = load.get(p.layer, 0) + len(pads.get(p.net, []))
+    for facing in (False, True):
+        c = [x for x in spare if faces_outer(x[2]) == facing]
+        if c:
+            return min(c)[2]
+        here = [l for l in load if faces_outer(l) == facing]
+        if here:
+            return min(here, key=lambda layer: (load[layer], -order.index(layer)))
+    return None
 
 
 def route_adaptive(board: LayoutBoard, log: Callable[[str], None] | None = None,
-                   **kwargs) -> Router:
+                   release=None, **kwargs) -> Router:
     """Route with every covered inner layer as a plane; while that leaves
     connections unmade, give a redundant plane back to routing and route
-    again. The best attempt is kept."""
+    again. The best attempt is kept.
+
+    ``release``: the layers that may be given back (None: any). Which
+    layers stay planes is the AI's decision: when the plane the router
+    would give next is not among them, it stops there and the router it
+    returns names that plane in ``declined`` (layer, net, connections
+    unmade), for the AI to decide."""
     log = log or (lambda s: None)
+    allowed = None if release is None else frozenset(release)
     released: set = set()
     best = None
     prev = None
+    declined = None
     while True:
         r = Router(board, released=frozenset(released), log=log, **kwargs)
-        r.report = r.run(stall_abort=releasable(r) is not None, warm=prev)
+        # A stalled run stops early only when a plane may be given next.
+        r.report = r.run(stall_abort=releasable(r, allowed) is not None, warm=prev)
         prev = r
         # After the clean-up nothing conflicts: what could not be made
         # legal is counted as failed. The count before it is no score.
@@ -3461,11 +3516,18 @@ def route_adaptive(board: LayoutBoard, log: Callable[[str], None] | None = None,
             best = (score, r)
         if score == 0:
             break
-        layer = releasable(r)
+        layer = releasable(r, allowed)
         if layer is None:
+            wanted = releasable(r) if allowed is not None else None
+            if wanted is not None:
+                declined = {"layer": wanted,
+                            "net": next(p.net for p in r.pour_planes if p.layer == wanted),
+                            "unrouted": r.report.failed}
             break
         released.add(layer)
-    return _fallback(board, best[1], log, kwargs)
+    out = _fallback(board, best[1], log, kwargs)
+    out.declined = declined
+    return out
 
 
 def _fallback(board: LayoutBoard, best: Router, log, kwargs) -> Router:

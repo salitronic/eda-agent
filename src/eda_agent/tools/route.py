@@ -147,6 +147,40 @@ def _unbriefed(needed: list[dict[str, Any]], level: str) -> dict[str, Any]:
     return {"brief_needed" if level == "enforced" else "routed_without_brief": needed}
 
 
+def _routable(board) -> list[str]:
+    """The nets the router would join: two pads or more."""
+    return sorted(n for n, pads in board.pads_by_net().items() if n and len(pads) >= 2)
+
+
+def _release(brief, level: str):
+    """The inner layers the router may give from plane to routing: those an
+    entry of the brief names in its layers (None under the off discipline:
+    any it needs)."""
+    if level == "off":
+        return None
+    return sorted({l for e in brief.of.values() if e.layers for l in e.layers})
+
+
+def _undecided(found: list[dict[str, str]], level: str) -> dict[str, Any]:
+    """The nets a reply names as not decided by the AI yet: held back when
+    enforced, routed and named when advisory, not named when off."""
+    from ..layout.route.brief import UNDECIDED_LISTED
+
+    if not found or level == "off":
+        return {}
+    key = "decision_needed" if level == "enforced" else "routed_undecided"
+    return {key: found[:UNDECIDED_LISTED], f"{key}_count": len(found)}
+
+
+#: What a reply holding back undecided nets says to do.
+DECIDE_FIRST = ("decide these nets first in pcb_route_brief: an entry with their layers and "
+                "the reason (one entry can decide a group of plain nets), with the route you "
+                "want in mind; then, in a later call, confirm what you verified on the board "
+                "for each net against the to_confirm facts it gives, how sure you are it is "
+                "the best choice (confidence 80 or more) and the alternative you weighed; the "
+                "router then lays what you decided")
+
+
 def register_route_tools(mcp):
     """Register routing tools with the MCP server."""
 
@@ -161,35 +195,35 @@ def register_route_tools(mcp):
         bus_lanes: bool = True,
         gloss: bool = True,
         axis_entry: bool = False,
-        neck_pads: bool = False,
+        neck_pads: bool = True,
         join_existing: bool = False,
         exclude_layers: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Route many nets in one run; to route a board use pcb_route_round.
 
-        Rounds (pcb_route_brief, then pcb_route_round) route one group at
-        a time, stop for your review after each and advise on nets left
-        unrouted. This runs as a job.
+        Rounds (pcb_route_round) route a group at a time, stop for your
+        review and advise on nets left unrouted. This runs as a job.
 
-        Reads the board exactly, routes in the background and returns a job
-        id at once. Poll design_job_status; design_job_result gives the
-        tracks and vias, the DRC verdict, the pours used as planes and the
-        same ``review`` a round gives (per-net figures, a picture,
+        Returns a job id at once. Poll design_job_status; design_job_result
+        gives the tracks and vias, the DRC verdict, the pours used as planes
+        and the same ``review`` a round gives (per-net figures, a picture,
         ``questions``). Nothing is written until pcb_autoroute_apply, which
         refuses while a finding is unanswered. Stages, each fixed
         for the next: differential pairs, plane fanout, IC pin lanes,
         buses, then the rest by priority. Bends are 45 degrees or less and
-        no via goes in a passive's pad. Obeys the board's routing brief
-        (pcb_route_brief); a critical net without one is left out and
-        listed in brief_needed. The user's Routing discipline on the Config
-        tab can make that advisory or off; the reply then says so.
+        no via goes in a passive's pad. Lays only what pcb_route_brief
+        decides: a net with no entry giving layers and reason is left out
+        (decision_needed), a critical one without a source too
+        (brief_needed). Routing discipline on the Config tab (the user's)
+        can make that advisory or off.
 
         Args:
             expect_file: Full path of the board; refused if another board
                 is focused.
             nets: Route only these nets (default: every net with 2+ pads).
-            use_planes: Use inner layers a pour covers as planes (default
-                True).
+            use_planes: Inner layers a pour covers are planes (default
+                True); routed on only if a brief entry names the layer
+                (else summary.plane_declined).
             diff_pairs: Route differential pairs (defined, else _P/_N,
                 +/-, DP/DM names) first, coupled (default True).
             plane_fanout: Dog-bone via for every plane-net surface pad
@@ -200,12 +234,12 @@ def register_route_tools(mcp):
                 lanes (default True).
             gloss: Lay the routed tracks again as the shortest clean 45/90
                 runs, pad entries straight along a pad axis (default
-                True); the board's own tracks are left as they are.
+                True).
             axis_entry: Reach surface pads only straight out of their centre
                 along an axis, turning clear of the pad; an IC's long pin
                 only through its ends.
-            neck_pads: Route a net at its rule width, narrowing only on the
-                stub into a pad narrower than the track.
+            neck_pads: A net with a wider width rule than most keeps it,
+                necking into a narrower pad (default True).
             join_existing: Route only what the board's copper leaves apart;
                 a net it joins whole is left alone.
             exclude_layers: Copper layers no route may use (not one a
@@ -233,12 +267,14 @@ def register_route_tools(mcp):
                   "pin_lanes": bool(pin_lanes), "bus_lanes": bool(bus_lanes)}
         # Only what was asked for: the rest keep the router's own defaults.
         extra = {k: v for k, v in (("axis_entry", bool(axis_entry)),
-                                   ("neck_pads", bool(neck_pads)),
                                    ("join_existing", bool(join_existing)),
                                    ("exclude_layers", tuple(exclude_layers or ()))) if v}
+        asked = any(stages.values()) or any(extra.values())
+        if not neck_pads:
+            extra["neck_pads"] = False
         # All four off is the router before the stages (StageOptions.coerce
         # False), not the stages' other defaults with four switches flipped.
-        if not any(stages.values()) and not any(extra.values()):
+        if not asked:
             stages = False
         else:
             stages.update(extra)
@@ -259,23 +295,30 @@ def register_route_tools(mcp):
                     "brief_errors": chk["errors"], "fix": "pcb_route_brief"}
         level, said = _discipline()
         unbriefed = _unbriefed(chk["needed"], level)
-        left_out = {x["net"] for x in chk["needed"]} if level == "enforced" else set()
+        asked_for = [n for n in (nets or _routable(board))]
+        open_ = brief_mod.undecided(brief, asked_for, skip=[x["net"] for x in chk["needed"]])
+        undecided = _undecided(open_, level)
+        left_out = ({x["net"] for x in chk["needed"]} | {x["net"] for x in open_}
+                    if level == "enforced" else set())
         if left_out:
             nets = [n for n in (nets or board.nets()) if n not in left_out]
             if not nets:
-                return {"error": "every net asked for needs a routing brief first",
-                        "brief_needed": chk["needed"], "next_step": "pcb_route_brief"}
+                return {"error": "the router lays only what you decided, and no net asked "
+                                 "for is decided yet; nothing was routed",
+                        **unbriefed, **undecided,
+                        "next_step": DECIDE_FIRST}
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": list(nets) if nets else None, "planes": use_planes,
              "stages": stages, "gloss": bool(gloss), "brief": brief,
+             "release": _release(brief, level),
              # Reviewed like a round: the findings wait on an answer before
              # pcb_autoroute_apply writes. Advice on unrouted nets is a round's.
              "review": True, "advise": False})
         return {
             "job_id": job_id,
             "board": board.name,
-            **unbriefed, **said,
+            **unbriefed, **undecided, **said,
             "read": {"pads": len(board.pads), "components": len(board.components),
                      "nets": len(board.nets()), "layers": board.copper_layers()},
             "next_step": "call design_job_status(job_id, wait_seconds=90) "
@@ -306,45 +349,45 @@ def register_route_tools(mcp):
         remove_orient: Optional[list[str]] = None,
         pdn: Optional[list[dict[str, Any]]] = None,
         remove_pdn: Optional[list[str]] = None,
+        thermal: Optional[list[dict[str, Any]]] = None,
+        remove_thermal: Optional[list[str]] = None,
+        confirm: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Set, change or read the board's routing brief: how the nets that
         matter are to be routed, which the router obeys.
 
-        You decide; the router lays it. Before routing a critical net
-        (differential pair, clock, switching node, high current, antenna
-        feed: the reply names them) read its datasheet's layout section and
-        the standards and give it a sourced entry, or it is left out.
+        You decide; the router lays only that: a net is routed once an
+        entry gives its layers and reason (one may decide a group) and a
+        later call confirms it: confirm [{nets, verified, confidence,
+        alternative}], what you checked per net (name it and its parts; a
+        big plain group: its check_first net) against the reply's
+        to_confirm facts, how sure you are it is the best choice (0-100,
+        80 or more to route) and the other choice you weighed. A critical
+        net (the reply names them) needs a sourced entry: read the
+        datasheet's layout section and the standards first.
 
-        Entry: nets, kind, layers, width (mils; not under Altium's width
-        rule), region / keep_out (polygons, mils), max_vias, min_length /
-        max_length, match + skew, reference (the plane net under every
-        track), impedance or diff_impedance + gap, impedance_tol (%),
-        apart_from (nets or classes) with spacing (kept by the router),
-        max_parallel + parallel_gap, max_broadside (over/under on the next
-        layer); guard (net beside it), guard_gap, max_unguarded;
-        terminate (part), terminate_at (end|source), driver (pad), max_stub;
-        source (datasheet page, standard clause), reason. With an impedance
-        the check gives each layer's width on the stack.
+        Entry: nets, kind, layers, width (mils, not under the width rule),
+        region / keep_out (polygons), max_vias, min_ / max_length, match +
+        skew, reference (plane net under every track), return_via (mils: a
+        reference via that near each via of the net), impedance or
+        diff_impedance + gap, impedance_tol (%), apart_from (nets, classes)
+        + spacing, max_parallel + parallel_gap, max_broadside; guard,
+        guard_gap, max_unguarded; terminate, terminate_at (end|source),
+        driver, max_stub; current (A) + temp_rise (C, IPC-2221); source,
+        reason. An impedance or current gets each layer's width.
 
-        Areas bar all nets but those they allow: name, polygons, kind
-        (antenna...), layers, allow, source; an antenna feed needs one.
-        Loops (kept small; the router steers them in): name, members (pads
-        in current order, "C5.1"), kind (hot_loop, decoupling...),
-        max_area (sq mils) or max_length, source. A read lists
-        ``loops_found``.
-        Barriers: name, nets (or classes), apart_from (default all others),
-        creepage and/or clearance (mils), source (standard, clause, volts).
-        Assembly: via_to_pad, vias_under_parts (bool), part_gap, source.
-        Orient: name, parts, rotation (else alike), side, pins ({"D1.K":
-        "VIN"}), source.
-        Pdn: name, part (the IC), rails (its power nets), decaps (default
-        any capacitor on a rail), max_distance (mils to the pin, along the
-        copper), min_vias + via_reach (mils, at each pin and return pad),
-        source.
-
-        Each round's review measures these (a finding may name a
-        pcb_route_simulate call); pcb_autoroute_apply refuses while one is
-        open.
+        Areas bar all nets but those allowed: name, polygons, kind, layers,
+        allow, source (an antenna feed needs one). Loops: name, members
+        (pads in current order, "C5.1"), kind, max_area (sq mils) or
+        max_length, source; a read lists ``loops_found``. Barriers: name,
+        nets, apart_from, creepage / clearance, source. Assembly:
+        via_to_pad, vias_under_parts, part_gap, source. Orient: name,
+        parts, rotation, side, pins ({"D1.K": "VIN"}), source. Pdn: name,
+        part, rails, decaps, max_distance, min_vias + via_reach, source.
+        Thermal (a power part): name, part, pad (default its largest),
+        min_area (sq mils of its net's copper there), min_vias +
+        via_reach, power (W) + theta_ja (C/W) + ambient + tj_max (C),
+        source (its datasheet).
 
         Args:
             expect_file: full path of the focused board.
@@ -352,14 +395,15 @@ def register_route_tools(mcp):
             drop: [{nets, rules}] rules to take out of those nets' entries.
             remove: nets to take out of the brief.
             replace: the whole brief (an empty list clears it).
-            areas, loops, barriers, orient, pdn: to add; one of the same
-                name is replaced. remove_*: names to take out.
+            areas, loops, barriers, orient, pdn, thermal: to add; one of the
+                same name is replaced. remove_*: names to take out.
             assembly: sets the assembly rule ({} clears it).
 
         Returns:
             ``brief``, the other rules by name, ``errors`` (nothing is saved
             then), ``needed`` (critical nets with no sourced entry, why,
-            what to read), ``rounds`` and ``file``.
+            what to read), ``undecided`` (and its count), ``to_confirm``,
+            ``rounds``, ``file``.
         """
         import asyncio
         from dataclasses import replace as _replace
@@ -378,10 +422,16 @@ def register_route_tools(mcp):
         changed = any(v is not None for v in (add, drop, remove, replace, areas, remove_areas,
                                               loops, remove_loops, barriers,
                                               remove_barriers, assembly, orient,
-                                              remove_orient, pdn, remove_pdn))
+                                              remove_orient, pdn, remove_pdn, thermal,
+                                              remove_thermal, confirm))
+
+        def fresh(d: dict[str, Any]):
+            # What was verified is given only by confirm, in a later call.
+            return _replace(brief_mod.NetRules.from_dict(d), verified="", verified_for="",
+                            confidence=None, alternative="")
+
         try:
-            entries = list(b.entries) if replace is None else \
-                [brief_mod.NetRules.from_dict(d) for d in replace]
+            entries = list(b.entries) if replace is None else [fresh(d) for d in replace]
             if remove:
                 gone = set(remove)
                 entries = [_replace(e, nets=tuple(n for n in e.nets if n not in gone))
@@ -395,7 +445,8 @@ def register_route_tools(mcp):
                          "apart_from": (), "spacing": None, "max_parallel": None,
                          "parallel_gap": None, "max_broadside": None, "guard": "",
                          "guard_gap": None, "max_unguarded": None, "terminate": "",
-                         "terminate_at": "", "driver": "", "max_stub": None}
+                         "terminate_at": "", "driver": "", "max_stub": None,
+                         "current": None, "temp_rise": None, "return_via": None}
                 bad = [r for r in d.get("rules") or [] if r not in empty]
                 if bad:
                     return {"error": f"no rule {bad}; rules are {sorted(empty)}"}
@@ -411,9 +462,33 @@ def register_route_tools(mcp):
                     out.append(_replace(e, nets=hit, **{r: empty[r] for r in d["rules"]}))
                 entries = out
             for d in add or []:
-                new = brief_mod.NetRules.from_dict(d)
+                new = fresh(d)
                 entries = [_replace(e, nets=tuple(n for n in e.nets if n not in new.nets))
                            for e in entries] + [new]
+            confirm_errors: list[str] = []
+            just_set = {n for d in (add or []) + (replace or [])
+                        for n in fresh(d).nets}
+            for c in confirm or []:
+                nets_c = set(c.get("nets") or [])
+                at = [i for i, e in enumerate(entries) if e.nets and set(e.nets) == nets_c]
+                if not at:
+                    confirm_errors.append(f"confirm {sorted(nets_c)[:3]}: no entry rules exactly "
+                                          "these nets; confirm an entry by all its nets")
+                elif nets_c & just_set:
+                    confirm_errors.append(f"confirm {sorted(nets_c)[:3]}: the entry is set in "
+                                          "this call; read its facts in the reply, check the "
+                                          "decision against them, then confirm in the next call")
+                else:
+                    e = entries[at[0]]
+                    errs = brief_mod.confirm_errors(board, e, str(c.get("verified") or ""),
+                                                    c.get("confidence"),
+                                                    str(c.get("alternative") or ""))
+                    confirm_errors += errs
+                    if not errs:
+                        entries[at[0]] = _replace(e, verified=str(c["verified"]).strip(),
+                                                  verified_for=e.decision_key(),
+                                                  confidence=float(c["confidence"]),
+                                                  alternative=str(c["alternative"]).strip())
             kept = [a for a in b.areas if a.name not in set(remove_areas or [])]
             for d in areas or []:
                 new_a = brief_mod.AreaRule.from_dict(d)
@@ -439,16 +514,38 @@ def register_route_tools(mcp):
                 new_p = brief_mod.PdnRule.from_dict(d)
                 kept_pdn = [x for x in kept_pdn
                             if not (new_p.name and x.name == new_p.name)] + [new_p]
+            kept_th = [x for x in b.thermal if x.name not in set(remove_thermal or [])]
+            for d in thermal or []:
+                new_t = brief_mod.ThermalRule.from_dict(d)
+                kept_th = [x for x in kept_th
+                           if not (new_t.name and x.name == new_t.name)] + [new_t]
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             return {"error": f"an entry is malformed: {exc}"}
         b2 = brief_mod.Brief((e for e in entries if e.nets), kept, kept_loops, kept_bars,
-                             kept_asm, kept_or, kept_pdn)
+                             kept_asm, kept_or, kept_pdn, kept_th)
         chk = brief_mod.check(board, b2)
+        chk["errors"] = chk["errors"] + confirm_errors
         res: dict[str, Any] = {"brief": b2.as_list(), "areas": b2.areas_list(),
                                "loops": b2.loops_list(), "barriers": b2.barriers_list(),
                                "assembly": b2.assembly_dict(), "orient": b2.orient_list(),
-                               "pdn": b2.pdn_list(),
+                               "pdn": b2.pdn_list(), "thermal": b2.thermal_list(),
                                "errors": chk["errors"], "needed": chk["needed"]}
+        open_ = brief_mod.undecided(b2, _routable(board), skip=[x["net"] for x in chk["needed"]])
+        res["undecided"] = open_[:brief_mod.UNDECIDED_LISTED]
+        res["undecided_count"] = len(open_)
+        # The board's facts for each decision still to confirm, to check it
+        # against before confirm.
+        todo, room = [], brief_mod.UNDECIDED_LISTED
+        for e in b2.entries:
+            if e.confirmed or not e.layers or room <= 0:
+                continue
+            item = {"nets": list(e.nets), "facts": brief_mod.facts(board, e.nets[:room])}
+            if len(e.nets) > brief_mod.GROUP_CHECK:
+                item["check_first"] = brief_mod.hardest(board, e.nets)
+            todo.append(item)
+            room -= len(e.nets)
+        if todo:
+            res["to_confirm"] = todo
         if not changed:
             res["loops_found"] = await asyncio.to_thread(_loops_found, board, b2)
         if chk["errors"]:
@@ -473,9 +570,11 @@ def register_route_tools(mcp):
         The rounds go: differential pairs, switching nodes, high-current
         paths, clocks, the other nets the brief rules, then the rest. A
         round routes only what the board's copper leaves apart: earlier
-        rounds and every route you laid by hand stay as they are. A
-        critical net in the round without a sourced brief entry stops the
-        round before anything is routed; the reply says what to read.
+        rounds and every route you laid by hand stay as they are. The
+        router lays only what you decided: a net in the round no brief
+        entry decides (its layers and the reason) stops the round before
+        anything is routed (decision_needed), and so does a critical net
+        without a sourced entry (brief_needed, with what to read).
         When the user has set Routing discipline to advisory or off on
         the Config tab, the round goes ahead and the reply says so.
 
@@ -495,7 +594,9 @@ def register_route_tools(mcp):
             expect_file: full path of the focused board.
             nets: route these nets as the round (default: the next round).
             advise: try options for nets left unrouted (default True).
-            use_planes: inner layers a pour covers are planes (default True).
+            use_planes: inner layers a pour covers are planes (default True);
+                one goes to routing only if a brief entry names its layer
+                (summary.plane_declined says what it would close).
 
         Returns:
             ``job_id``, ``round`` {kind, nets}, ``rounds_left``, or
@@ -541,6 +642,11 @@ def register_route_tools(mcp):
                     "next_step": "read what each names, give them entries with their "
                                  "source in pcb_route_brief, then call this again"}
         unbriefed = _unbriefed(needed, level)
+        undecided = _undecided(brief_mod.undecided(brief, todo, skip=[x["net"] for x in needed]),
+                               level)
+        if level == "enforced" and undecided:
+            return {"round": {"kind": kind, "nets": todo}, **undecided,
+                    "next_step": DECIDE_FIRST + ", then call this again"}
         # Pads reached only along their axes, ending on their centres: a
         # round is reviewed, and an angled entry is a finding to answer.
         # Where that leaves a connection unmade the fallback routes it
@@ -550,17 +656,107 @@ def register_route_tools(mcp):
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": todo, "planes": use_planes, "stages": stages,
-             "gloss": True, "brief": brief, "review": True, "advise": bool(advise)})
+             "gloss": True, "brief": brief, "release": _release(brief, level),
+             "review": True, "advise": bool(advise)})
         left = [{"kind": r["kind"], "nets": len(r["nets"])} for r in plan
                 if not set(r["nets"]) <= set(todo)]
         return {
             "job_id": job_id, "board": board.name, "round": {"kind": kind, "nets": todo},
-            "rounds_left": left, **unbriefed, **said,
+            "rounds_left": left, **unbriefed, **undecided, **said,
             "next_step": "call design_job_status(job_id, wait_seconds=90) until done (keep "
                          "calling, do not end your turn), then design_job_result: look at "
                          "review.picture, answer review.questions, then pcb_autoroute_apply "
                          "to accept, or change the brief or board and route the round again",
         }
+
+    @mcp.tool()
+    async def pcb_route_review(
+        expect_file: str,
+        nets: Optional[list[str]] = None,
+        picture: bool = True,
+    ) -> dict[str, Any]:
+        """Review the copper on the board against the routing brief, without
+        routing anything: tracks you laid by hand, an earlier round, or a
+        router job's result once applied.
+
+        The same review a round gets, on the board as it is: each brief rule
+        measured on the copper (length, skew, return plane and return vias,
+        impedance, current against IPC-2221, spacing and parallel runs,
+        guards, termination, loops, decoupling, thermal pads and junction
+        temperature, barriers, areas, assembly), then the
+        judgements (detour, vias, off-45 pieces, pad entries, staircases,
+        short tracks). Use it to check your own routing before going on, and
+        a finding's ``simulate`` call where a closed form cannot settle it.
+        Reads only; nothing waits on an answer here.
+
+        Args:
+            expect_file: full path of the focused board.
+            nets: the nets to review (default: every net with free copper).
+            picture: draw the reviewed nets (PNG, default True).
+
+        Returns:
+            ``findings`` (each id, check, text, and measured / limit where it
+            has them), ``nets`` (length, vias, layers, detour per net),
+            ``open`` (nets in scope the copper does not join yet),
+            ``picture`` and ``brief_errors`` when the brief cannot be read
+            as written.
+        """
+        import asyncio
+
+        from ..layout.read_altium import WrongBoard, read_live_board
+        from ..layout.route import brief as brief_mod
+        from ..layout.route import review
+
+        try:
+            board = await asyncio.to_thread(read_live_board, expect_file)
+        except WrongBoard as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"error": f"board read failed: {exc}"}
+        brief = brief_mod.load(expect_file)
+
+        def run() -> dict[str, Any]:
+            chk = brief_mod.check(board, brief)
+            free = [t for t in board.tracks if t.net and not t.comp and not t.keepout]
+            free_vias = [v for v in board.vias if v.net and not v.comp]
+            scope = set(nets) if nets else (
+                {t.net for t in free} | {v.net for v in free_vias}
+                | {brief_mod.thermal_measure(board, r).get("net") for r in brief.thermal}) - {None, ""}
+            unknown = sorted(scope - set(board.nets()))
+            if unknown:
+                return {"error": f"no such nets on the board: {unknown[:10]}"}
+            tracks = [{"x1": t.x1, "y1": t.y1, "x2": t.x2, "y2": t.y2, "width": t.width,
+                       "layer": t.layer, "net_name": t.net} for t in free if t.net in scope]
+            vias = [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
+                     "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
+                    for v in free_vias if v.net in scope]
+            pads_of = board.pads_by_net()
+            metrics = review.net_metrics(tracks, vias, pads_of)
+            planes = {r.net for r in board.regions if r.net and r.kind == "pour"}
+            found = review.findings(board, board, tracks, vias, brief, scope, metrics, {}, {},
+                                    {}, planes=planes,
+                                    entries=review.pad_entries(tracks, pads_of))
+            out: dict[str, Any] = {
+                "board": board.name, "reviewed": len(scope), "findings": found,
+                "nets": {n: m for n, m in metrics.items() if n in scope},
+                "open": sorted(scope & review.open_nets(board))}
+            if chk["errors"]:
+                out["brief_errors"] = chk["errors"]
+            if picture and scope:
+                import time as _time
+                from pathlib import Path as _Path
+
+                from ..config import get_config
+                folder = _Path(get_config().workspace_dir) / "route_reviews"
+                name = f"{_Path(board.name).stem}_{_time.strftime('%Y%m%d_%H%M%S')}.png"
+                try:
+                    out["picture"] = review.picture(board, tracks, vias, sorted(scope), brief,
+                                                    [], folder / name)
+                except Exception as exc:  # noqa: BLE001 - the picture is a help
+                    out["picture"] = f"no picture: {exc}"
+            return out
+
+        return await asyncio.to_thread(run)
 
     @mcp.tool()
     async def pcb_autoroute_apply(
@@ -936,7 +1132,8 @@ def register_route_tools(mcp):
             moved += int(r.get("moves_applied", 0))
             failed += int(r.get("failed", 0))
         out.update(moved=moved, failed=failed, expected=len(moves))
-        out["notes"].append("Then pcb_autoroute to route the placed board.")
+        out["notes"].append("Then decide the routing in pcb_route_brief and route it in "
+                            "rounds with pcb_route_round.")
         # The live view: the board this job placed, now written to Altium.
         from ..design import live
         pub = live.publish_applied(result.get("live_version"),

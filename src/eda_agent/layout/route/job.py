@@ -46,20 +46,22 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     r = route_adaptive(board, nets=frozenset(nets) if nets else None,
                        planes=bool(params.get("planes", True)),
                        stages=params.get("stages"),
-                       log=live.progress_logger("route"), brief=brief)
+                       log=live.progress_logger("route"), brief=brief,
+                       release=params.get("release"))
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
     # the board's tracks before it stay as they are (gloss.py).
     glossed = None
     if params.get("gloss", True):
         from .gloss import gloss
-        # A net the brief gives an area is left as routed: the straightest
-        # run between its ends can cross the area's edge.
-        fenced = {n for n, e in brief.of.items() if e.region or e.keep_out}
-        glossed = gloss(out, tracks=[t for t in out.tracks[len(board.tracks):]
-                                     if t.net not in fenced],
+        # A net the brief fences keeps to its region and out of its
+        # keep-outs as it is laid again.
+        fences = {n: (e.region, e.keep_out) for n, e in brief.of.items()
+                  if e.region or e.keep_out}
+        glossed = gloss(out, tracks=out.tracks[len(board.tracks):],
                         spacing=brief.spacing_pairs(out),
-                        barriers=brief.barrier_sides(out)).as_dict()
+                        barriers=brief.barrier_sides(out),
+                        areas=brief.areas, fences=fences).as_dict()
     new_tracks = out.tracks[len(board.tracks):]
     new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
     mask_note = _mask_like_board(board, out.vias[len(board.vias):])
@@ -115,6 +117,9 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "planes": sorted({f"{p.layer}:{p.net}" for p in r.pour_planes}),
             "pours": sorted({f"{r.grid.layers[p.li]}:{p.net}" for p in r.pours}),
             "released_planes": sorted(r.released),
+            # The plane it would have given to routing next, had the AI
+            # allowed it (release): connections are left unmade instead.
+            "plane_declined": r.declined,
             "old_pours": old_pours,
             "iterations": rep.iterations,
             "seconds": round(time.perf_counter() - t0, 1),
@@ -178,7 +183,8 @@ def _review(board: LayoutBoard, out: LayoutBoard, brief, res: dict, params: dict
     if res["unrouted"] and params.get("advise", True):
         advice = review.advise(board, out, res["unrouted"], brief, stages["unreached"],
                                stages=params.get("stages"), round_nets=nets,
-                               seconds=float(params.get("advise_seconds", 90.0)))
+                               seconds=float(params.get("advise_seconds", 90.0)),
+                               release=params.get("release"))
     held = res["brief"]["outside_brief"]
     pic = None
     try:
@@ -281,6 +287,16 @@ def _without_old_pours(board: LayoutBoard) -> tuple[LayoutBoard, list[str]]:
 
 def _notes(r) -> list[str]:
     notes = []
+    if r.declined:
+        d = r.declined
+        notes.append(
+            f"{d['unrouted']} connection{' is' if d['unrouted'] == 1 else 's are'} unmade "
+            f"with {d['layer']} kept as the "
+            f"{d['net']} plane. Giving that layer to routing may close them, at the cost of "
+            f"the plane: the return path of the layers next to it, and its stitching. That "
+            f"is your decision: to allow it, name {d['layer']} in the layers of the entries "
+            "that may use it (pcb_route_brief); otherwise move parts or route those "
+            "connections yourself.")
     if r.pour_planes:
         notes.append(
             "The routes rely on these inner-layer pours as planes: "

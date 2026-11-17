@@ -48,15 +48,26 @@ A brief is a list of entries, one per net or group of nets:
   ``driver`` the pad that drives it (U1.12); ``max_stub``, the most mils
   of copper from the trunk (driver to the far end) to any other pad, or
   for a source termination from the driver to the part.
+* ``return_via``: mils. Where the net changes layer through a via, its
+  return current changes plane too; a via of the ``reference`` net must
+  stand within this distance of each of the net's vias, which the review
+  measures.
+* ``current``: the current the net carries, amps, and ``temp_rise``, the
+  rise allowed over ambient, degrees C (default TEMP_RISE). The check gives
+  the width IPC-2221's closed form needs on each layer the entry may use,
+  for that layer's copper, and the entry's width must meet it; the review
+  measures every track of the net against it.
 * ``source``: where the rules come from: a datasheet and its page, a
   standard and its clause (IPC-2221, IPC-2141, IPC-2152), an application
   note. Required for a net the router finds critical.
 * ``reason``: why, in a sentence, for the review.
 
-A net the router finds critical (a differential pair, a clock, a switching
-node, a high-current path, an antenna feed) is not routed without an entry
-that gives its source: the reply names it, says why it is critical and what
-to read.
+The router lays only what the AI has decided: a net is routed once an
+entry rules it with its ``layers`` and a ``reason`` (one entry may decide
+a group of plain nets). A net the router finds critical (a differential
+pair, a clock, a switching node, a high-current path, an antenna feed)
+also needs the entry's source: the reply names it, says why it is
+critical and what to read.
 
 A brief also holds ``areas``: places on the board no net may route through
 (an antenna's keep-out, a creepage gap, a mounting area), on the layers
@@ -88,6 +99,13 @@ its ``rails`` (the power nets of its pins), the ``decaps`` that serve them
 (mils from a decoupling capacitor to its pin, along the copper when the
 copper joins them, else straight), ``min_vias`` within ``via_reach`` mils
 of each power pin and of each capacitor's return pad, and its source.
+
+And ``thermal``: a power part's heat path, each rule a ``part`` and its
+thermal ``pad`` (default its largest), ``min_area`` (square mils of its
+net's copper on the pad's layer that the pad sits in), ``min_vias``
+within ``via_reach`` mils of the pad, and the datasheet's ``power`` (W),
+``theta_ja`` (C/W, at the copper the datasheet assumes), ``ambient`` and
+``tj_max`` (C), from which the review gives the junction temperature.
 """
 
 from __future__ import annotations
@@ -126,6 +144,39 @@ CRITICAL: dict[str, str] = {
                 "and its reference plane, and the keep-out round the antenna on every layer "
                 "(give it as an area of kind antenna, the feed allowed in)"),
 }
+
+
+#: The confidence, 0 to 100, a decision needs before the router lays it.
+MIN_CONFIDENCE = 80.0
+#: An entry's fields that record its confirmation, not the decision.
+_CONFIRMATION = ("verified", "verified_for", "confidence", "alternative")
+
+#: Degrees C a track may rise over ambient when the entry gives no temp_rise.
+TEMP_RISE = 10.0
+
+
+def current_width(current: float, temp_rise: float, copper_mils: float,
+                  outer: bool) -> float:
+    """The track width, mils, IPC-2221's closed form needs to carry
+    ``current`` amps at ``temp_rise`` degrees C over ambient in copper
+    ``copper_mils`` thick: I = k dT^0.44 A^0.725, A in square mils, k 0.048
+    on an outer layer and 0.024 on an inner one."""
+    k = 0.048 if outer else 0.024
+    area = (current / (k * temp_rise ** 0.44)) ** (1 / 0.725)
+    return area / copper_mils
+
+
+def current_widths(board: LayoutBoard, e: "NetRules") -> dict[str, float]:
+    """Layer -> the width the entry's current needs there, for the copper
+    layers it may use (all of them when it names none)."""
+    if not e.current:
+        return {}
+    layers = sorted(board.layers, key=lambda l: l.order)
+    names = [l.name for l in layers]
+    rise = e.temp_rise or TEMP_RISE
+    return {l.name: round(current_width(e.current, rise, l.copper_mils or 1.4,
+                                        l.name in (names[0], names[-1])), 1)
+            for l in layers if not e.layers or l.name in e.layers}
 
 
 def _num(d: dict[str, Any], key: str) -> Optional[float]:
@@ -351,6 +402,86 @@ class PdnRule:
 
 
 @dataclass
+class ThermalRule:
+    """A power part's heat path: the copper and vias at its thermal pad,
+    and its junction temperature from its datasheet's figures."""
+
+    name: str
+    part: str
+    pad: str = ""
+    min_area: Optional[float] = None
+    min_vias: Optional[int] = None
+    via_reach: Optional[float] = None
+    power: Optional[float] = None
+    theta_ja: Optional[float] = None
+    ambient: Optional[float] = None
+    tj_max: Optional[float] = None
+    source: str = ""
+    reason: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ThermalRule":
+        return cls(name=str(d.get("name") or d.get("part") or "").strip(),
+                   part=str(d.get("part") or "").strip(), pad=str(d.get("pad") or "").strip(),
+                   min_area=_num(d, "min_area"),
+                   min_vias=int(d["min_vias"]) if d.get("min_vias") not in (None, "") else None,
+                   via_reach=_num(d, "via_reach"), power=_num(d, "power"),
+                   theta_ja=_num(d, "theta_ja"), ambient=_num(d, "ambient"),
+                   tj_max=_num(d, "tj_max"), source=str(d.get("source") or "").strip(),
+                   reason=str(d.get("reason") or "").strip())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v not in (None, "", [], ())}
+
+    @property
+    def tj(self) -> Optional[float]:
+        """The junction temperature its figures give, C."""
+        if None in (self.power, self.theta_ja, self.ambient):
+            return None
+        return round(self.ambient + self.power * self.theta_ja, 1)
+
+
+#: Mils round a thermal pad its vias are counted in when the rule gives no reach.
+THERMAL_REACH = 100.0
+
+
+def thermal_pad(board: LayoutBoard, rule: ThermalRule):
+    """The rule's pad on the board: the one named, else the part's largest."""
+    pads = [p for p in board.pads if p.comp == rule.part and p.copper]
+    if rule.pad:
+        pads = [p for p in pads if p.name == rule.pad]
+    return max(pads, key=lambda p: max(c.w * c.h for c in p.copper), default=None)
+
+
+def _poly_area(ring) -> float:
+    return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]))) / 2
+
+
+def thermal_measure(board: LayoutBoard, rule: ThermalRule) -> dict[str, Any]:
+    """What the board gives the rule's pad: the area of its net's copper on
+    the pad's layer that the pad sits in (pours, fills and regions, holes
+    taken out; at least the pad's own copper), the vias of its net within the
+    reach, and the junction temperature its figures give."""
+    p = thermal_pad(board, rule)
+    if p is None:
+        return {"pad": "", "found": False}
+    layer = next((c.layer for c in p.copper), "")
+    own = max(c.w * c.h for c in p.copper)
+    area = 0.0
+    for r in board.regions:
+        if (r.net == p.net and p.net and r.layer == layer and len(r.outline) >= 3
+                and r.kind not in ("cutout", "keepout") and _inside([r.outline], p.x, p.y)):
+            area += _poly_area(list(r.outline)) - sum(_poly_area(list(h)) for h in r.holes
+                                                       if len(h) >= 3)
+    area = max(area, own)       # a pour the pad sits in holds the pad
+    reach = rule.via_reach or THERMAL_REACH
+    vias = sum(1 for v in board.vias if v.net == p.net and p.net
+               and math.hypot(v.x - p.x, v.y - p.y) <= reach)
+    return {"pad": p.key, "net": p.net, "layer": layer, "found": True,
+            "area": round(area), "vias": vias, "reach": reach, "tj": rule.tj}
+
+
+@dataclass
 class NetRules:
     nets: tuple[str, ...]
     kind: str = ""
@@ -380,8 +511,31 @@ class NetRules:
     terminate_at: str = ""
     driver: str = ""
     max_stub: Optional[float] = None
+    current: Optional[float] = None
+    temp_rise: Optional[float] = None
+    return_via: Optional[float] = None
     source: str = ""
     reason: str = ""
+    #: What the AI checked on the board for these nets, given in a later
+    #: call than the entry, and the decision it was checked against.
+    verified: str = ""
+    verified_for: str = ""
+    #: How sure the AI is, 0 to 100, that this is the best choice, and the
+    #: other choice it weighed it against and why that one lost.
+    confidence: Optional[float] = None
+    alternative: str = ""
+
+    def decision_key(self) -> str:
+        """A digest of the decision itself: a change to the entry makes it
+        new, and what was verified no longer stands for it."""
+        d = {k: v for k, v in self.as_dict().items() if k not in _CONFIRMATION}
+        d["nets"] = sorted(self.nets)
+        return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+    @property
+    def confirmed(self) -> bool:
+        return (bool(self.verified) and self.verified_for == self.decision_key()
+                and (self.confidence or 0) >= MIN_CONFIDENCE)
 
     @property
     def target_ohms(self) -> Optional[float]:
@@ -430,8 +584,15 @@ class NetRules:
             terminate_at=str(d.get("terminate_at") or "").strip().lower(),
             driver=str(d.get("driver") or "").strip(),
             max_stub=_num(d, "max_stub"),
+            current=_num(d, "current"),
+            temp_rise=_num(d, "temp_rise"),
+            return_via=_num(d, "return_via"),
             source=str(d.get("source") or "").strip(),
-            reason=str(d.get("reason") or "").strip())
+            reason=str(d.get("reason") or "").strip(),
+            verified=str(d.get("verified") or "").strip(),
+            verified_for=str(d.get("verified_for") or "").strip(),
+            confidence=_num(d, "confidence"),
+            alternative=str(d.get("alternative") or "").strip())
 
     def as_dict(self) -> dict[str, Any]:
         out = {k: v for k, v in asdict(self).items() if v not in (None, "", [], ())}
@@ -449,7 +610,7 @@ class Brief:
     def __init__(self, entries: Iterable[NetRules] = (), areas: Iterable[AreaRule] = (),
                  loops: Iterable[LoopRule] = (), barriers: Iterable[BarrierRule] = (),
                  assembly: Optional[AssemblyRule] = None, orient: Iterable[OrientRule] = (),
-                 pdn: Iterable[PdnRule] = ()):
+                 pdn: Iterable[PdnRule] = (), thermal: Iterable[ThermalRule] = ()):
         self.entries = list(entries)
         self.areas = list(areas)
         self.loops = list(loops)
@@ -457,6 +618,7 @@ class Brief:
         self.assembly = assembly
         self.orient = list(orient)
         self.pdn = list(pdn)
+        self.thermal = list(thermal)
         self.of: dict[str, NetRules] = {}
         for e in self.entries:
             for n in e.nets:
@@ -469,19 +631,21 @@ class Brief:
                   barriers: Iterable[dict[str, Any]] = (),
                   assembly: Optional[dict[str, Any]] = None,
                   orient: Iterable[dict[str, Any]] = (),
-                  pdn: Iterable[dict[str, Any]] = ()) -> "Brief":
+                  pdn: Iterable[dict[str, Any]] = (),
+                  thermal: Iterable[dict[str, Any]] = ()) -> "Brief":
         return cls((NetRules.from_dict(d) for d in items or []),
                    (AreaRule.from_dict(d) for d in areas or []),
                    (LoopRule.from_dict(d) for d in loops or []),
                    (BarrierRule.from_dict(d) for d in barriers or []),
                    AssemblyRule.from_dict(assembly),
                    (OrientRule.from_dict(d) for d in orient or []),
-                   (PdnRule.from_dict(d) for d in pdn or []))
+                   (PdnRule.from_dict(d) for d in pdn or []),
+                   (ThermalRule.from_dict(d) for d in thermal or []))
 
     def keeping(self, entries: Iterable[NetRules]) -> "Brief":
         """This brief with other net entries, every other rule kept."""
         return Brief(entries, self.areas, self.loops, self.barriers, self.assembly,
-                     self.orient, self.pdn)
+                     self.orient, self.pdn, self.thermal)
 
     def as_list(self) -> list[dict[str, Any]]:
         return [e.as_dict() for e in self.entries]
@@ -503,6 +667,9 @@ class Brief:
 
     def pdn_list(self) -> list[dict[str, Any]]:
         return [r.as_dict() for r in self.pdn]
+
+    def thermal_list(self) -> list[dict[str, Any]]:
+        return [r.as_dict() for r in self.thermal]
 
     def barrier_sides(self, board: LayoutBoard) -> list[tuple[frozenset, Optional[frozenset], float]]:
         """Each barrier as (one side's nets, the other's or None for every
@@ -530,7 +697,7 @@ class Brief:
 
     def __bool__(self) -> bool:
         return bool(self.entries or self.areas or self.loops or self.barriers
-                    or self.assembly or self.orient or self.pdn)
+                    or self.assembly or self.orient or self.pdn or self.thermal)
 
 
 # --- what the router finds critical ---------------------------------------------
@@ -651,6 +818,22 @@ def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None
                     errors.append(f"{tag}: width {e.width:g} is under the board's width rule "
                                   f"for {n} ({rr.min_width(n):g}); change the rule in Altium "
                                   "first so DRC agrees")
+        if e.return_via is not None and (e.return_via <= 0 or not e.reference):
+            errors.append(f"{tag}: return_via needs a reference net, and a distance over 0")
+        if e.current is not None:
+            if e.current <= 0 or (e.temp_rise is not None and e.temp_rise <= 0):
+                errors.append(f"{tag}: current and temp_rise must be over 0")
+            else:
+                need = current_widths(board, e)
+                short = {l: w for l, w in need.items()
+                         if e.width is None or e.width + 1e-6 < w}
+                if short:
+                    errors.append(
+                        f"{tag}: {e.current:g} A at {e.temp_rise or TEMP_RISE:g} C rise needs "
+                        + ", ".join(f"{w:g} mil on {l}" for l, w in short.items())
+                        + " (IPC-2221)" + ("; give that width" if e.width is None else
+                                           f", over its width {e.width:g}")
+                        + ", or leave those layers out")
         for ring in (e.region or []) + e.keep_out:
             if len(ring) < 3:
                 errors.append(f"{tag}: a polygon needs 3 points or more")
@@ -701,6 +884,7 @@ def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None
     errors += _barrier_errors(board, brief, net_id)
     errors += _assembly_errors(board, brief, net_id)
     errors += _pdn_errors(board, brief, net_id)
+    errors += _thermal_errors(board, brief)
     found = critical_nets(board, widths)
     wanted = set(nets) if nets else set(names)
     needed = []
@@ -714,6 +898,146 @@ def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None
             needed.append({"net": n, "kind": found[n], "why": why, "read": CRITICAL[found[n]]})
     return {"ok": not errors, "errors": errors, "needed": needed,
             "briefed": sorted(seen), "critical": found}
+
+
+#: How many undecided nets a reply lists by name; the count gives the rest.
+UNDECIDED_LISTED = 40
+
+
+def undecided(brief: Brief, nets: Iterable[str], skip: Iterable[str] = ()) -> list[dict[str, str]]:
+    """The nets among ``nets`` the AI has not decided yet: no entry rules
+    them, their entry names no layers or gives no reason (or source), or
+    the AI has not confirmed, in a later call, what it verified on the
+    board for them. The router lays only what was decided; one entry can
+    decide a group. ``skip``: nets reported already (critical ones
+    without a source)."""
+    out = []
+    for n in sorted(set(nets) - set(skip)):
+        e = brief.of.get(n)
+        why = ("no entry" if e is None else "its entry names no layers" if not e.layers
+               else "its entry gives no reason" if not (e.reason or e.source)
+               else "not confirmed: what was verified for it is not given, or the entry "
+                    "changed since" if not e.confirmed else "")
+        if why:
+            out.append({"net": n, "why": why})
+    return out
+
+
+#: Pads a fact sheet lists per net; the count gives the rest.
+FACT_PADS = 12
+
+
+def facts(board: LayoutBoard, nets: Iterable[str]) -> list[dict[str, Any]]:
+    """What the board shows about each net, for the AI to check its
+    decision against before it confirms it: the pads it joins, the layers
+    of its surface pads, the span between its farthest pads (mils) and
+    the critical kind the router finds it to be, if any."""
+    pads_of = board.pads_by_net()
+    found = critical_nets(board)
+    out = []
+    for n in sorted(set(nets)):
+        pads = pads_of.get(n, [])
+        span = max((math.hypot(a.x - b.x, a.y - b.y) for a in pads for b in pads), default=0.0)
+        out.append({"net": n, "pads": [p.key for p in pads[:FACT_PADS]], "pad_count": len(pads),
+                    "smd_layers": sorted({c.layer for p in pads if p.is_smd for c in p.copper}),
+                    "span": round(span, 1), "critical": found.get(n, "")})
+    return out
+
+
+def _named(text: str, word: str) -> bool:
+    import re
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(word.upper()) + r"(?![A-Za-z0-9_])",
+                     text.upper()) is not None
+
+
+#: An entry of more plain nets than this is confirmed by its hardest net.
+GROUP_CHECK = 4
+
+
+def hardest(board: LayoutBoard, nets: Iterable[str]) -> str:
+    """The net of a group whose pads lie farthest apart: the one to check
+    a group's decision against."""
+    best, far = "", -1.0
+    for f in facts(board, nets):
+        if f["span"] > far:
+            best, far = f["net"], f["span"]
+    return best
+
+
+def confirm_errors(board: LayoutBoard, entry: NetRules, verified: str,
+                   confidence: Any = None, alternative: str = "") -> list[str]:
+    """Why a confirmation does not stand: ``verified`` must say more than
+    the entry's reason and name each net with a part it joins (an entry of
+    more than GROUP_CHECK nets, none critical, by its hardest net only,
+    which ``to_confirm`` names); ``confidence``, 0 to 100, that this is the
+    best choice, must reach MIN_CONFIDENCE; and ``alternative`` must name
+    the other choice weighed and why it lost."""
+    text = (verified or "").strip()
+    tag = f"confirm ({', '.join(entry.nets[:3])}{'...' if len(entry.nets) > 3 else ''})"
+    try:
+        sure = float(confidence)
+    except (TypeError, ValueError):
+        return [f"{tag}: give confidence, 0 to 100, that this is the best choice for these nets"]
+    if not 0 <= sure <= 100:
+        return [f"{tag}: confidence is 0 to 100"]
+    if sure < MIN_CONFIDENCE:
+        return [f"{tag}: confidence {sure:g} is under {MIN_CONFIDENCE:g}, so the router will not "
+                "lay it. Weigh the other choices again, read what the decision rests on (the "
+                "datasheet, the standard, the board around the nets), or ask the user; then "
+                "change the decision or confirm it when you are sure"]
+    alt = (alternative or "").strip()
+    if not alt or alt.lower() in (text.lower(), (entry.reason or "").strip().lower()):
+        return [f"{tag}: name the other choice you weighed (another layer, path, via place or "
+                "width) and why it is worse"]
+    if not text:
+        return [f"{tag}: say what you verified on the board for these nets"]
+    if text.lower() == (entry.reason or "").strip().lower():
+        return [f"{tag}: the reason again is not a check; say what you verified on the board"]
+    pads_of = board.pads_by_net()
+    nets = list(entry.nets)
+    if len(nets) > GROUP_CHECK and not set(nets) & set(critical_nets(board)):
+        nets = [hardest(board, nets)]
+    errs = []
+    for n in nets:
+        if not _named(text, n):
+            errs.append(f"{tag}: {n} is not named; say what you checked for each net")
+            continue
+        parts = sorted({p.comp for p in pads_of.get(n, []) if p.comp})
+        if parts and not any(_named(text, c) for c in parts):
+            errs.append(f"{tag}: for {n} name the parts you checked it joins "
+                        f"({', '.join(parts[:6])})")
+    return errs
+
+
+def _thermal_errors(board: LayoutBoard, brief: Brief) -> list[str]:
+    """Why a thermal rule of the brief cannot be measured as written."""
+    out: list[str] = []
+    seen: set[str] = set()
+    refs = {c.ref for c in board.components} | {p.comp for p in board.pads if p.comp}
+    for k, r in enumerate(brief.thermal):
+        tag = f"thermal {k + 1} ({r.name or r.part or 'unnamed'})"
+        if r.name in seen:
+            out.append(f"{tag}: another thermal rule has the name {r.name!r}")
+        seen.add(r.name)
+        if r.part not in refs:
+            out.append(f"{tag}: no part {r.part!r} on the board")
+            continue
+        if thermal_pad(board, r) is None:
+            out.append(f"{tag}: {r.part} has no pad {r.pad!r}" if r.pad
+                       else f"{tag}: {r.part} has no copper pad")
+        if not r.source:
+            out.append(f"{tag}: give its source (the part's datasheet: thermal pad, "
+                       "theta_ja, tj_max)")
+        figs = (r.power, r.theta_ja, r.ambient, r.tj_max)
+        if any(f is not None for f in figs) and any(f is None for f in figs):
+            out.append(f"{tag}: power, theta_ja, ambient and tj_max go together")
+        for nm, v in (("min_area", r.min_area), ("via_reach", r.via_reach),
+                      ("power", r.power), ("theta_ja", r.theta_ja)):
+            if v is not None and v <= 0:
+                out.append(f"{tag}: {nm} must be over 0")
+        if r.min_vias is not None and r.min_vias < 0:
+            out.append(f"{tag}: min_vias cannot be negative")
+    return out
 
 
 def _barrier_errors(board: LayoutBoard, brief: Brief, net_id: dict[str, int]) -> list[str]:
@@ -1037,6 +1361,74 @@ def masks(router, brief: Brief) -> dict[str, tuple[np.ndarray, Optional[np.ndarr
     return out
 
 
+#: Bucket size, mils, of the holes reference_layers indexes.
+HOLE_BUCKET = 100.0
+
+
+def reference_layers(board: LayoutBoard, net: str, layer: str, gap: float) -> list[tuple]:
+    """Where copper of ``net`` lies on each copper layer next to ``layer``:
+    one (shapes, holes) per such layer. ``shapes`` are its planes, pours
+    and regions there (None: the whole layer is its plane); ``holes``, an
+    index for ``referenced``, the other nets' copper on that layer that its
+    copper clears by ``gap``: pads (a through-hole pad by its hole where it
+    has no copper there), tracks, and vias through the layer. A track on
+    ``layer`` has its return path where it lies over a shape and clear of
+    every hole of one of them."""
+    from .. import geom
+
+    order = board.copper_layers()
+    if layer not in order:
+        return []
+    i = order.index(layer)
+    out = []
+    for k in (i - 1, i + 1):
+        if not 0 <= k < len(order):
+            continue
+        near = order[k]
+        plane = any(l.name == near and l.kind == "plane" and l.plane_net == net
+                    for l in board.layers)
+        shapes = [geom.polygon(r.outline, r.holes) for r in board.regions
+                  if r.layer == near and r.net == net and len(r.outline) >= 3
+                  and r.kind in ("pour", "copper", "pour_boundary", "plane")]
+        if not plane and not shapes:
+            continue
+        holes = []
+        for p in board.pads:
+            if p.net == net:
+                continue
+            sh = p.shape_on(near)
+            if sh is None and p.hole > 0:
+                sh = geom.circle(p.x, p.y, p.hole)
+            if sh is not None:
+                holes.append(sh)
+        holes += [geom.capsule(t.x1, t.y1, t.x2, t.y2, t.width) for t in board.tracks
+                  if t.layer == near and t.net != net and not t.keepout]
+        holes += [geom.circle(v.x, v.y, v.diameter) for v in board.vias if v.net != net
+                  and near in board.layers_between(v.low_layer, v.high_layer)]
+        index: dict[tuple[int, int], list] = {}
+        for h in holes:
+            x0, y0, x1, y1 = h.bbox
+            for bx in range(int((x0 - gap) // HOLE_BUCKET), int((x1 + gap) // HOLE_BUCKET) + 1):
+                for by in range(int((y0 - gap) // HOLE_BUCKET), int((y1 + gap) // HOLE_BUCKET) + 1):
+                    index.setdefault((bx, by), []).append(h)
+        out.append((None if plane else shapes, index))
+    return out
+
+
+def referenced(layers: list[tuple], gap: float, x: float, y: float) -> bool:
+    """Whether (x, y) has its return path in ``layers`` (reference_layers)."""
+    from .. import geom
+
+    probe = geom.circle(x, y, 0.0)
+    key = (int(x // HOLE_BUCKET), int(y // HOLE_BUCKET))
+    for shapes, index in layers:
+        if shapes is not None and not any(geom.point_in_poly(x, y, s) for s in shapes):
+            continue
+        if not any(geom.clearance(probe, h) < gap for h in index.get(key, ())):
+            return True
+    return False
+
+
 def loop_hulls(router, brief: Brief) -> dict[str, np.ndarray]:
     """Net -> the cells, (ny, nx) bool, inside the hull of the pads of the
     brief's loops it is in, grown by its widest pad and two grid steps: the
@@ -1151,7 +1543,8 @@ def load(board_path: str) -> Brief:
         return Brief()
     return Brief.from_list(data.get("entries", []), data.get("areas", []), data.get("loops", []),
                            data.get("barriers", []), data.get("assembly"),
-                           data.get("orient", []), data.get("pdn", []))
+                           data.get("orient", []), data.get("pdn", []),
+                           data.get("thermal", []))
 
 
 def save(board_path: str, brief: Brief) -> Path:
@@ -1166,7 +1559,8 @@ def save(board_path: str, brief: Brief) -> Path:
                                "barriers": brief.barriers_list(),
                                "assembly": brief.assembly_dict(),
                                "orient": brief.orient_list(),
-                               "pdn": brief.pdn_list()},
+                               "pdn": brief.pdn_list(),
+                               "thermal": brief.thermal_list()},
                               indent=1), encoding="utf-8")
     replace_with_retry(tmp, path)
     return path

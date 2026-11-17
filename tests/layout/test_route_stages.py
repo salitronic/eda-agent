@@ -255,7 +255,9 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
         async def send_command_async(self, command, params=None, timeout=None):
             raise AssertionError(command)
 
-    install_bridge_fake(monkeypatch, tmp_path, _NoBridge())
+    workspace = install_bridge_fake(monkeypatch, tmp_path, _NoBridge())
+    # The switches, not the brief: the user's Routing discipline off.
+    (workspace / "preferences.json").write_text('{"routing": "off"}')
     monkeypatch.setattr(read_altium, "read_live_board", lambda path: _pair_board())
     sent = {}
 
@@ -295,6 +297,10 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
     plain = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] is False
     assert plain.legacy()
+    # Necking at narrow pads is the router's default; only "off" is sent.
+    await tools["pcb_autoroute"](expect_file=r"C:.PcbDoc", neck_pads=False)
+    assert sent["params"]["stages"]["neck_pads"] is False
+    assert not StageOptions.coerce(sent["params"]["stages"]).neck_pads
 
 
 def test_the_job_reports_the_stages_and_takes_their_switches():

@@ -21,6 +21,13 @@ the shortest octilinear path between its ends that
 
 A run is changed only when the new one is shorter, or as short with
 fewer bends.
+
+Every run is then laid in the fewest segments (``simplify``): tracks in
+line become one, and a stretch of short jogs or off-angle pieces is
+replaced by a straight, or a straight and a 45, wherever that clears and
+is no longer. A bend inside a pad, off its centre, and a joint that only
+the round end of the next track but one reaches are part of the run, not
+joins that split it.
 """
 
 from __future__ import annotations
@@ -43,6 +50,8 @@ TOUCH = 1e-3
 GAIN = 0.5
 #: Slack on the 90 degree turn limit, in degrees.
 TURN_SLACK = 0.5
+#: The most points of a run one replacement may span.
+SPAN = 8
 
 
 #: Why a run was kept, by the furthest check a shorter path got past.
@@ -61,9 +70,20 @@ class GlossReport:
     nets: list[str] = field(default_factory=list)
     kept: dict = field(default_factory=dict)
     blocked_by: dict = field(default_factory=dict)
+    #: Runs laid again in fewer segments, and their track counts.
+    simplified: int = 0
+    segments_before: int = 0
+    segments_after: int = 0
+    #: Runs of tiny steps (layout/staircase.py) no clear path could replace.
+    staircases_left: list = field(default_factory=list)
+    staircase_count: int = 0
 
     def as_dict(self) -> dict:
         return {"runs": self.runs, "relaid": self.relaid, "kept": dict(self.kept),
+                "simplified": self.simplified, "segments_before": self.segments_before,
+                "segments_after": self.segments_after,
+                "staircase_count": self.staircase_count,
+                "staircases_left": list(self.staircases_left),
                 "blocked_by": dict(self.blocked_by),
                 "length_before": round(self.length_before, 3),
                 "length_after": round(self.length_after, 3),
@@ -242,10 +262,17 @@ def _edge_gap(rules: RuleSet) -> float:
 
 
 class _Gloss:
-    def __init__(self, board: LayoutBoard, rules: RuleSet, spacing=None, barriers=()):
+    def __init__(self, board: LayoutBoard, rules: RuleSet, spacing=None, barriers=(),
+                 areas=(), fences=None):
         self.board = board
         self.rules = rules
         self.copper = _Copper(board, rules, spacing, barriers)
+        # The routing brief's areas (brief.AreaRule): no track of a net an
+        # area bars may be laid into it.
+        self.areas = [(a, [geom.polygon(ring) for ring in a.polygons]) for a in areas]
+        # A net's own region and keep-outs from its brief entry: net ->
+        # (region rings or None, keep-out rings).
+        self.fences = dict(fences or {})
         self.edge_gap = _edge_gap(rules)
         self.outline = board.outline_shape() if len(board.outline) >= 3 else None
         self.reach = max(rules.max_clearance(), self.edge_gap, 1.0,
@@ -260,6 +287,28 @@ class _Gloss:
         return [t for t in self.board.tracks
                 if t.net == net and t.layer == layer and not t.comp and not t.keepout
                 and math.hypot(t.x2 - t.x1, t.y2 - t.y1) > SNAP]
+
+    @staticmethod
+    def _next_but_one(it: Item, here, ends) -> bool:
+        """Whether a track reaches ``here`` only with the round end it has
+        at a joint close by, and heads away from here: pieces shorter than
+        half a width lie between, so its join is at that joint, not here.
+        (A run laid again must still touch it: see _joins.)"""
+        if len(it.shape.pts) != 2:
+            return False
+        a, b = it.shape.pts
+        for end in (a, b):
+            gap = math.hypot(end[0] - here[0], end[1] - here[1])
+            if gap <= SNAP or gap > it.shape.r + TOUCH:
+                continue
+            if _key(*end) in ends:
+                other = b if end is a else a
+                # Running on past ``here`` it would lie over the run.
+                along = ((here[0] - end[0]) * (other[0] - end[0])
+                         + (here[1] - end[1]) * (other[1] - end[1]))
+                if along <= TOUCH:
+                    return True
+        return False
 
     def _runs(self, tracks: list[Track]):
         """Runs as (points, tracks), each from a fixed point to a fixed
@@ -280,10 +329,20 @@ class _Gloss:
             # Anything else of the net at this point, a track teed onto it
             # or passing through it included, makes it a join.
             own = {k_ for t in at for k_ in self.copper.of_track.get(id(t), [])}
-            probe = geom.circle(k[0] * SNAP, k[1] * SNAP, 0.0)
+            here = (k[0] * SNAP, k[1] * SNAP)
+            probe = geom.circle(here[0], here[1], 0.0)
             for k_, it in self.copper.near(at[0].layer, probe, TOUCH):
                 if it.net == at[0].net and k_ not in own \
                         and self.copper.gap(probe, k_, TOUCH) <= TOUCH:
+                    if it.kind == "track" and self._next_but_one(it, here, ends):
+                        continue
+                    # A bend inside a pad, off its centre, is the run's
+                    # own; the pad stays one of its joins. At the centre
+                    # the run is joined to the pad there.
+                    if it.kind == "pad":
+                        pad = self.board.pads[it.idx]
+                        if math.hypot(pad.x - here[0], pad.y - here[1]) > 2 * SNAP:
+                            continue
                     return True
             return False
 
@@ -360,6 +419,14 @@ class _Gloss:
             if geom.clearance(s, ko) < 0.0:
                 self.blocker = "keep-out"
                 return False
+        for area, shapes in self.areas:
+            if area.bars(net, layer) and any(geom.clearance(s, a) < 0.0 for a in shapes):
+                self.blocker = f"area {area.name or area.kind}"
+                return False
+        fence = self.fences.get(net)
+        if fence and not _within_fence(s, *fence):
+            self.blocker = "the net's region or keep-out"
+            return False
         if self.outline is not None and \
                 geom.shape_to_outline_clearance(s, self.outline) < self.edge_gap - 1e-3:
             self.blocker = "board edge"
@@ -477,6 +544,123 @@ class _Gloss:
         self.report.nets.append(net)
         return True
 
+    # -- fewest segments ------------------------------------------------------
+
+    @staticmethod
+    def _merged(pts) -> list:
+        """The path without the points it passes straight through."""
+        out = [pts[0]]
+        for p in pts[1:]:
+            if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) <= SNAP:
+                continue
+            if len(out) >= 2:
+                u, v = _dir(out[-2], out[-1]), _dir(out[-1], p)
+                if u and v and _turn(u, v) <= TURN_SLACK:
+                    out[-1] = p
+                    continue
+            out.append(p)
+        return out
+
+    @staticmethod
+    def _sharp(pts) -> int:
+        """Joints that turn more than 90 degrees."""
+        n = 0
+        for a, b, c in zip(pts, pts[1:], pts[2:]):
+            u, v = _dir(a, b), _dir(b, c)
+            if u and v and _turn(u, v) > 90.0 + TURN_SLACK:
+                n += 1
+        return n
+
+    @staticmethod
+    def _odd(pts) -> int:
+        """Segments that are neither on an axis nor at 45 degrees."""
+        return sum(1 for a, b in zip(pts, pts[1:]) if not _octilinear(a, b))
+
+    def simplify(self, net: str, layer: str, pts, seq: list[Track]) -> bool:
+        """Lay a run again in the fewest segments: straight-through joints
+        become one track, and any stretch of it that a straight, or a
+        straight and a 45, can replace is replaced, where that clears. The
+        run keeps its ends, its joins and its length; short jogs and
+        off-angle pieces go."""
+        width = seq[0].width
+        if any(abs(t.width - width) > SNAP for t in seq):
+            return False
+        mine = {k for t in seq for k in self.copper.of_track.get(id(t), [])}
+        joins = self._joins(net, layer, [t.shape() for t in seq], mine)
+        end_pads = self._pads_at(net, layer, pts[0]) | self._pads_at(net, layer, pts[-1])
+        allowed_pads = end_pads | {k for k in joins if self.copper.items[k].kind == "pad"}
+        a_pad = self._end_pad(net, layer, pts[0])
+        b_pad = self._end_pad(net, layer, pts[-1])
+        old_a = self._end_angles(net, layer, pts[0], pts[1], mine)
+        old_b = self._end_angles(net, layer, pts[-1], pts[-2], mine)
+        a_ok = bool(a_pad) and _leaves_pad(a_pad, layer, pts[0], pts[1], width)
+        b_ok = bool(b_pad) and _leaves_pad(b_pad, layer, pts[-1], pts[-2], width)
+
+        def holds(cand, laid) -> bool:
+            if self._sharp(cand) > self._sharp(laid) or self._odd(cand) > self._odd(laid):
+                return False
+            if a_ok and not _leaves_pad(a_pad, layer, cand[0], cand[1], width):
+                return False
+            if b_ok and not _leaves_pad(b_pad, layer, cand[-1], cand[-2], width):
+                return False
+            if not a_pad and self._end_angles(net, layer, cand[0], cand[1], mine) \
+                    < min(old_a, 90.0) - TURN_SLACK:
+                return False
+            if not b_pad and self._end_angles(net, layer, cand[-1], cand[-2], mine) \
+                    < min(old_b, 90.0) - TURN_SLACK:
+                return False
+            had = {(_key(*a), _key(*b)) for a, b in zip(laid, laid[1:])}
+            shapes = []
+            for a, b in zip(cand, cand[1:]):
+                s = geom.capsule(a[0], a[1], b[0], b[1], width)
+                shapes.append(s)
+                if (_key(*a), _key(*b)) not in had and not self._clears(net, layer, s):
+                    return False
+            touched = self._joins(net, layer, shapes, mine)
+            if not joins <= touched:
+                return False
+            return not any(self.copper.items[k].kind == "pad" and k not in allowed_pads
+                           for k in touched)
+
+        cur = self._merged(pts)
+        again = True
+        while again and len(cur) > 2:
+            again = False
+            n = len(cur)
+            for i in range(n - 2):
+                for j in range(min(n - 1, i + SPAN), i + 1, -1):
+                    for form in _forms(cur[i], cur[j])[:4]:
+                        cand = self._merged(cur[:i] + list(form) + cur[j + 1:])
+                        if len(cand) >= len(cur) and self._odd(cand) >= self._odd(cur):
+                            continue
+                        if len(cand) > len(cur) or _length(cand) > _length(cur) + SNAP:
+                            continue
+                        if holds(cand, cur):
+                            cur, again = cand, True
+                            break
+                    if again:
+                        break
+                if again:
+                    break
+        before = len(seq)
+        if len(cur) - 1 >= before and self._odd(cur) >= self._odd(pts):
+            return False
+        gone = {id(t) for t in seq}
+        self.board.tracks = [t for t in self.board.tracks if id(t) not in gone]
+        for t in seq:
+            self.copper.drop_track(t)
+        for a, b in zip(cur, cur[1:]):
+            t = Track(layer, a[0], a[1], b[0], b[1], width, net)
+            self.board.tracks.append(t)
+            self.copper.add_track(t)
+            if self.only is not None:
+                self.only.add(id(t))
+        self.report.simplified += 1
+        self.report.segments_before += before
+        self.report.segments_after += len(cur) - 1
+        self.report.nets.append(net)
+        return True
+
     def run(self, nets=None, layers=None, passes: int = 3, tracks=None) -> GlossReport:
         wanted = set(nets) if nets else None
         # Only runs made wholly of these tracks (and of tracks laid again
@@ -500,16 +684,56 @@ class _Gloss:
                         changed |= self.relay(net, layer, pts, seq)
             if not changed:
                 break
+        for net in names:
+            if wanted is not None and net not in wanted:
+                continue
+            for layer in lays:
+                for pts, seq in self._runs(self._free(net, layer)):
+                    if len(seq) < 2:
+                        continue
+                    if self.only is not None and any(id(t) not in self.only for t in seq):
+                        continue
+                    self.simplify(net, layer, pts, seq)
+        from ..staircase import find as find_staircases
+        left = find_staircases(
+            t for t in self.board.tracks if not t.comp and not t.keepout
+            and (wanted is None or t.net in wanted) and (not layers or t.layer in layers)
+            and (self.only is None or id(t) in self.only))
+        self.report.staircases_left = left["staircases"]
+        self.report.staircase_count = left["staircase_count"]
         return self.report
 
 
+FENCE_STEP = 5.0
+
+
+def _within_fence(s: geom.Shape, region, keep_out) -> bool:
+    """Whether a track's centre line stays inside ``region`` (when given)
+    and out of ``keep_out``, tested every FENCE_STEP mils along it, the
+    ends included: as the brief judges a route (brief.broken), and finer."""
+    from .brief import _inside
+    a, b = s.pts[0], s.pts[-1]
+    n = max(1, int(math.hypot(b[0] - a[0], b[1] - a[1]) / FENCE_STEP))
+    for i in range(n + 1):
+        x, y = a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n
+        if (region and not _inside(region, x, y)) or (keep_out and _inside(keep_out, x, y)):
+            return False
+    return True
+
+
 def gloss(board: LayoutBoard, rules: RuleSet | None = None, nets=None, layers=None,
-          passes: int = 3, tracks=None, spacing=None, barriers=()) -> GlossReport:
+          passes: int = 3, tracks=None, spacing=None, barriers=(),
+          areas=(), fences=None) -> GlossReport:
     """Lay the board's free tracks again as the shortest clean 45/90 runs,
     in place. See the module docstring for what a run may become.
     ``tracks`` limits it to runs made only of those Track objects (a
     router's own output); every other track stays as it is. ``spacing``
     and ``barriers`` the routing brief's (Brief.spacing_pairs,
-    Brief.barrier_sides), kept like clearances."""
-    return _Gloss(board, rules or RuleSet.from_board(board), spacing, barriers).run(
+    Brief.barrier_sides), kept like clearances, and ``areas`` its areas
+    (Brief.areas), which no track of a net they bar is laid into.
+    ``fences``: net -> (region rings or None, keep-out rings), from the
+    brief's entries: a net's track stays inside its region and out of its
+    keep-outs."""
+    return _Gloss(board, rules or RuleSet.from_board(board), spacing, barriers, areas,
+                  fences).run(
         nets, layers, passes, tracks)

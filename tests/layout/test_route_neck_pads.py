@@ -15,8 +15,10 @@ def _board() -> LayoutBoard:
     rules = [
         Rule("Clearance", "0", "All", "All", 1, True, {"gap": 6.0},
              "Clearance Constraint (Gap=6mil) (All),(All)"),
-        Rule("Width", "1", "All", "All", 1, True, {},
-             "Width Constraint (Min=6mil) (Max=30mil) (Preferred=20mil) (All)"),
+        Rule("Width", "1", "InNet('VIN')", "All", 0, True, {},
+             "Width Constraint (Min=6mil) (Max=30mil) (Preferred=20mil) (InNet('VIN'))"),
+        Rule("Width", "3", "All", "All", 1, True, {},
+             "Width Constraint (Min=6mil) (Max=30mil) (Preferred=8mil) (All)"),
         Rule("RoutingVias", "2", "All", "All", 1, True, {},
              "Routing Via (MinHoleWidth=10mil) (MaxHoleWidth=10mil) (PreferredHoleWidth=10mil) "
              "(MinWidth=20mil) (MaxWidth=20mil) (PreferedWidth=20mil) (All)"),
@@ -24,7 +26,8 @@ def _board() -> LayoutBoard:
     b = LayoutBoard(name="t", outline=[(0, 0), (800, 0), (800, 500), (0, 500)],
                     layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)],
                     rules=rules)
-    # A supply pin of an IC, 12 mil wide, and a big pad far off.
+    # A supply pin of an IC, 12 mil wide, and a big pad far off; the supply
+    # has a width rule of its own, the signals the board's narrow one.
     for k, x in enumerate((200, 250, 300, 350), 1):
         b.pads.append(Pad("U1", str(k), x, 250, net="VIN" if k == 2 else f"N{k}",
                           copper=[PadCopper("TopLayer", "rect", 12.0, 60.0)]))
@@ -73,3 +76,45 @@ def test_a_narrow_pad_no_stub_reaches_routes_the_net_at_its_width():
     drc = run_drc(out)
     assert drc.completion == 1.0 and not drc.violations
     assert {round(t.width, 3) for t in out.tracks if t.net == "VIN"} == {12.0}
+
+
+def test_by_default_a_supply_net_is_not_thinned_by_one_narrow_pin():
+    r = Router(_board())
+    assert r.options.neck_pads
+    r.run()
+    out = r.apply()
+    drc = run_drc(out)
+    assert drc.completion == 1.0 and not drc.violations
+    assert {round(t.width, 3) for t in out.tracks if t.net == "VIN"} == {12.0, 20.0}
+
+
+def test_a_net_is_held_to_its_widest_pad_when_the_rule_prefers_far_more():
+    b = _board()
+    b.rules[1].descriptor = "Width Constraint (Min=6mil) (Max=200mil) (Preferred=200mil) (InNet('VIN'))"
+    r = Router(b)
+    r.run()
+    out = r.apply()
+    assert run_drc(out).completion == 1.0
+    assert max(t.width for t in out.tracks if t.net == "VIN") == 80.0
+
+
+def test_with_no_pad_narrower_than_the_track_nothing_changes():
+    b = _board()
+    for p in b.pads:
+        p.copper = [PadCopper("TopLayer", "rect", 60.0, 60.0)]
+    assert not Router(b).options.neck_pads
+
+
+def test_a_signal_is_not_widened_to_its_rule_only_a_supply_is():
+    b = _board()
+    # A signal from a 7 mil pin to the far pad: the board's width rule (8
+    # mil) is not its own, so it keeps what its narrowest pad takes.
+    b.pads.append(Pad("U1", "5", 400, 250, net="S", copper=[PadCopper("TopLayer", "rect", 7.0, 60.0)]))
+    b.pads.append(Pad("J1", "2", 650, 100, net="S", copper=[PadCopper("TopLayer", "rect", 80.0, 80.0)]))
+    r = Router(b)
+    assert r.options.neck_pads and "VIN" in r.neck_nets and "S" not in r.neck_nets
+    r.run()
+    out = r.apply()
+    assert run_drc(out).completion == 1.0
+    assert {round(t.width, 3) for t in out.tracks if t.net == "S"} == {7.0}
+    assert {round(t.width, 3) for t in out.tracks if t.net == "VIN"} == {12.0, 20.0}
