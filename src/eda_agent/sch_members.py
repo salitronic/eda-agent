@@ -135,6 +135,14 @@ ROWS: tuple[MemberRow, ...] = (
         note="degrees",
     ),
     MemberRow(
+        members=("Symbol", "ScaleFactor"),
+        types=("eSymbol",),
+        sdk=("ISch_Symbol",),
+        measured=("26.11",),
+        note="an IEEE symbol drawn free on a sheet: its picture's number and "
+             "its scale in mils; read only",
+    ),
+    MemberRow(
         members=("EmbedImage", "KeepAspect"),
         types=("eImage",),
         sdk=("ISch_Image",),

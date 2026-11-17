@@ -137,6 +137,7 @@ _ORIENTATION_TYPES = {
     "eLabel": "ISch_Label", "eNoERC": "ISch_NoERC",
     "eParameterSet": "ISch_ParameterSet", "eProbe": "ISch_Probe",
     "eSheetName": "ISch_SheetName", "eSheetFileName": "ISch_SheetFileName",
+    "eSymbol": "ISch_Symbol",
 }
 
 

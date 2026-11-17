@@ -897,7 +897,7 @@ def register_project_tools(mcp):
             component: Filter by component designator. Empty = all.
             net_name: Filter by net name. Empty = all.
             project_path: Optional project path. If None, uses active.
-            limit: Max pin records (default 500). Raise for big boards.
+            limit: Max pin records (default 500); 0 lists every pin.
             force_recompile: Save dirty docs and recompile from scratch
                 (5-10 s more), for a netlist that is surely fresh, e.g.
                 after the user edited sheets. ``proj_get_compile_freshness``

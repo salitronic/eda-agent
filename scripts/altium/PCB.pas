@@ -6612,6 +6612,21 @@ Begin
         Exit;
     End;
 
+    { A layer already in the stack is refused: inserting it again changes }
+    { nothing, and answering success would send the caller on to a save   }
+    { that writes nothing new.                                             }
+    Walk := LayerStack.FirstLayer;
+    While Walk <> Nil Do
+    Begin
+        If Walk.LayerID = TargetLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALREADY_IN_STACK',
+                LayerDisplayName(TargetLayer) + ' is already in the layer stack');
+            Exit;
+        End;
+        Walk := LayerStack.NextLayer(Walk);
+    End;
+
     AboveName := ExtractJsonValue(Params, 'above');
     BelowName := ExtractJsonValue(Params, 'below');
     RefObj := Nil;

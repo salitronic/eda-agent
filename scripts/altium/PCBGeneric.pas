@@ -101,7 +101,8 @@ Begin
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
             (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
             (PropName = 'JumpersVisible') Or (PropName = 'ChannelOffset') Or
-            (PropName = 'GroupNum') Or (PropName = 'FlippedOnLayer') Then Result := 6
+            (PropName = 'GroupNum') Or (PropName = 'FlippedOnLayer') Or
+            (PropName = 'NameOn') Or (PropName = 'CommentOn') Then Result := 6
     Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
             (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
             (PropName = 'OwnerPart_ID') Or (PropName = 'DrillType') Or
@@ -272,6 +273,8 @@ Begin
         Else If PropName = 'EnablePartSwapping' Then Result := BoolToJsonStr(Comp.EnablePartSwapping)
         Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA)
         Else If PropName = 'LockStrings' Then Result := BoolToJsonStr(Comp.LockStrings)
+        Else If PropName = 'NameOn' Then Result := BoolToJsonStr(Comp.NameOn)
+        Else If PropName = 'CommentOn' Then Result := BoolToJsonStr(Comp.CommentOn)
         Else If PropName = 'PrimitiveLock' Then Result := BoolToJsonStr(Comp.PrimitiveLock)
         Else If PropName = 'NameAutoPosition' Then Result := IntToStr(Comp.NameAutoPosition)
         Else If PropName = 'CommentAutoPosition' Then Result := IntToStr(Comp.CommentAutoPosition)
@@ -355,6 +358,7 @@ Begin
         (PropName = 'IgnoreViolations') Or (PropName = 'ArcPourMode') Or
         (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
         (PropName = 'LockStrings') Or (PropName = 'PrimitiveLock') Or
+        (PropName = 'NameOn') Or (PropName = 'CommentOn') Or
         (PropName = 'Inverted') Or
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
@@ -564,6 +568,8 @@ Begin
         If PropName = 'EnablePinSwapping' Then Comp.EnablePinSwapping := B
         Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B
         Else If PropName = 'LockStrings' Then Comp.LockStrings := B
+        Else If PropName = 'NameOn' Then Comp.NameOn := B
+        Else If PropName = 'CommentOn' Then Comp.CommentOn := B
         Else If PropName = 'PrimitiveLock' Then Comp.PrimitiveLock := B
         { Change*Autoposition moves the text to the anchor as well as       }
         { recording it; writing NameAutoPosition alone leaves it where it is. }
@@ -1230,6 +1236,9 @@ Begin
         Else If PropName = 'UniqueID' Then Result := Obj.UniqueID
         Else If PropName = 'IsElectricalPrim' Then Result := BoolToJsonStr(Obj.IsElectricalPrim)
         Else If PropName = 'Selected'   Then Result := BoolToJsonStr(Obj.Selected)
+        { Hidden from view (a component's designator or comment switched  }
+        { off, say); read only.                                           }
+        Else If PropName = 'IsHidden'   Then Result := BoolToJsonStr(Obj.IsHidden)
         { 'Net.Name' is accepted as well as 'Net'. Designator.Text and
           Comment.Text are already accepted alongside their bare forms,
           so a caller who used one of those infers a dotted rule that
@@ -1856,6 +1865,13 @@ Begin
         End
         Else If PropName = 'Layer'    Then SetPrimitiveLayerByName(Obj, Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
+        { Read only: a designator or comment is shown with NameOn / CommentOn. }
+        Else If PropName = 'IsHidden' Then
+        Begin
+            NotePropertyDiag('failed', PropName);
+            Result := -1;
+            Exit;
+        End
         { Locked is read as Not Moveable, so it is written the same way;   }
         { PCB_LockNetRouting writes Moveable on any primitive already.      }
         Else If PropName = 'Locked' Then Obj.Moveable := Not StrToBool(Value)
@@ -2495,7 +2511,7 @@ Begin
         (PropName = 'Layer') Or (PropName = 'Descriptor') Or
         (PropName = 'DetailString') Or (PropName = 'DRCError') Or
         (PropName = 'UniqueID') Or (PropName = 'IsElectricalPrim') Or
-        (PropName = 'Selected') Or (PropName = 'Net') Or
+        (PropName = 'Selected') Or (PropName = 'IsHidden') Or (PropName = 'Net') Or
         (PropName = 'Net.Name') Or (PropName = 'X1') Or (PropName = 'Y1') Or
         (PropName = 'X2') Or (PropName = 'Y2') Or (PropName = 'Width') Or
         (PropName = 'Radius') Or (PropName = 'StartAngle') Or
@@ -2593,7 +2609,7 @@ End;
 Function KnownPCBPropertyList(Dummy : Integer) : String;
 Begin
     Result := 'ObjectId, X, Y, Layer, Descriptor, DetailString, DRCError, '
-        + 'UniqueID, IsElectricalPrim, Selected, Net, X1, Y1, '
+        + 'UniqueID, IsElectricalPrim, Selected, IsHidden, Net, X1, Y1, '
         + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
         + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
         + 'Text, Pattern, Designator, Comment, SourceDesignator, '
@@ -2628,7 +2644,7 @@ Begin
         + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
         + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
         + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
-        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, PrimitiveLock, '
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, PrimitiveLock, NameOn, CommentOn, '
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '

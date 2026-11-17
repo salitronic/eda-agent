@@ -125,7 +125,10 @@ Begin
     Else If N = 'ellipse'         Then Result := eEllipse
     Else If N = 'ellipticalarc'   Then Result := eEllipticalArc
     Else If N = 'designator'      Then Result := eDesignator
-    Else If N = 'roundrectangle'  Then Result := eRoundRectangle;
+    Else If N = 'roundrectangle'  Then Result := eRoundRectangle
+    { An IEEE symbol drawn free on a sheet. Altium names its type eSymbol. }
+    Else If N = 'ieeesymbol'      Then Result := eSymbol
+    Else If N = 'symbol'          Then Result := eSymbol;
 End;
 
 { What the refusal should have said. }
@@ -138,6 +141,7 @@ Begin
             + 'eHarnessEntry, eSignalHarness, '
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
+            + 'eSymbol (an IEEE symbol), '
             + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
             + 'eHarnessWire, eHarnessSplice';
 End;
@@ -837,6 +841,14 @@ Begin
         If (Id = eArc) Or (Id = eEllipticalArc) Then
             Result := 1;
     End
+    Else If (PropName = 'Symbol') Or (PropName = 'ScaleFactor') Then
+    Begin
+        Result := 0;
+        If Obj = Nil Then Exit;
+        Id := Obj.ObjectId;
+        If (Id = eSymbol) Then
+            Result := 1;
+    End
     Else If (PropName = 'EmbedImage') Or (PropName = 'KeepAspect') Then
     Begin
         Result := 0;
@@ -1481,7 +1493,8 @@ Begin
     Else If (PropName = 'StartAngle') Or (PropName = 'EndAngle') Then Result := 3
     Else If (PropName = 'EmbedImage') Or (PropName = 'KeepAspect') Then Result := 4
     Else If (PropName = 'StartLineShape') Or (PropName = 'EndLineShape')
-        Or (PropName = 'LineShapeSize') Then Result := 5;
+        Or (PropName = 'LineShapeSize') Then Result := 5
+    Else If (PropName = 'Symbol') Or (PropName = 'ScaleFactor') Then Result := 6;
 End;
 
 { A polyline end shape by the name its Properties panel shows, or by its   }
@@ -1550,6 +1563,7 @@ Var
     EllObj : ISch_Ellipse;
     ImgObj : ISch_Image;
     PolyObj : ISch_Polyline;
+    SymObj : ISch_Symbol;
     Have : Boolean;
 Begin
     Result := '';
@@ -1600,6 +1614,16 @@ Begin
         Else If PropName = 'EndLineShape' Then Result := LineShapeName(PolyObj.EndLineShape)
         Else If PropName = 'LineShapeSize' Then Result := IntToStr(PolyObj.LineShapeSize)
         Else Have := False;
+    End
+    Else If Obj.ObjectId = eSymbol Then
+    Begin
+        { Read only through the IEEE symbol's own interface: asked of any  }
+        { other object these members stop the script.                      }
+        SymObj := Obj;
+        Have := True;
+        If PropName = 'Symbol' Then Result := IntToStr(SymObj.Symbol)
+        Else If PropName = 'ScaleFactor' Then Result := FloatToJsonStr(CoordToMilsF(SymObj.ScaleFactor))
+        Else Have := False;
     End;
     If Not Have Then NotePropertyDiag('unreadable', PropName);
 End;
@@ -1627,6 +1651,8 @@ Begin
     { list, and a write is rare enough that the second look costs nothing. }
     If SchMemberGate(Obj, PropName) <> 1 Then Exit;
     Owner := SchShapeOwner(PropName);
+    { An IEEE symbol's picture and scale are read only. }
+    If Owner = 6 Then Exit;
     F := 0;
     N := 0;
     B := False;
@@ -1760,7 +1786,7 @@ Begin
         Or (Id = eCrossSheetConnector) Or (Id = ePin) Or (Id = eParameter)
         Or (Id = eDesignator) Or (Id = eLabel) Or (Id = eNoERC)
         Or (Id = eParameterSet) Or (Id = eProbe) Or (Id = eSheetName)
-        Or (Id = eSheetFileName);
+        Or (Id = eSheetFileName) Or (Id = eSymbol);
 End;
 
 Function GetSchComponentSubText(Obj : ISch_GraphicalObject; PropName : String) : String;

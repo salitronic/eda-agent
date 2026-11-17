@@ -56,11 +56,15 @@ OWNERS = {
     "StartLineShape": {"ePolyline"},
     "EndLineShape": {"ePolyline"},
     "LineShapeSize": {"ePolyline"},
+    "Symbol": {"eSymbol"},
+    "ScaleFactor": {"eSymbol"},
 }
 
 #: Typed local -> the ObjectId branch it may be used in.
 LOCALS = {"ArcObj": "eArc", "ElArcObj": "eEllipticalArc", "EllObj": "eEllipse",
           "ImgObj": "eImage", "PolyObj": "ePolyline"}
+#: Read only, so the reader alone has them.
+READ_ONLY = {"SymObj": "eSymbol"}
 
 
 def _units():
@@ -96,10 +100,10 @@ def test_each_shape_member_is_a_row_of_the_member_table():
 
 
 def test_every_member_is_reached_through_its_own_typed_local():
-    for name in ("SchGetShape", "SchSetShape"):
+    for name, locals_ in (("SchGetShape", {**LOCALS, **READ_ONLY}), ("SchSetShape", LOCALS)):
         branches = _branches(_raw(name))
-        assert set(branches) == set(LOCALS.values()), name
-        for local, kind in LOCALS.items():
+        assert set(branches) == set(locals_.values()), name
+        for local, kind in locals_.items():
             for other, text in branches.items():
                 used = re.search(rf"\b{local}\.", text) is not None
                 assert used == (other == kind), f"{name}: {local} in {other}"

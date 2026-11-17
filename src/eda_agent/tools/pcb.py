@@ -8039,7 +8039,8 @@ def register_pcb_tools(mcp):
 
         Valid names include MidLayer1..MidLayer30 (signal layers) and
         InternalPlane1..InternalPlane16 (power / ground planes). Top / Bottom
-        are always present, they cannot be added. With ``above`` or
+        are always present, they cannot be added; a layer already in the
+        stack is refused (ALREADY_IN_STACK) and nothing is saved. With ``above`` or
         ``below`` (a layer already in the stack) it goes in at that place;
         otherwise Altium chooses.
 

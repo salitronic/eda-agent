@@ -1512,7 +1512,8 @@ Begin
                             Continue;
                         End;
                         If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
-                        If Count >= Limit Then
+                        { A limit of 0 or less is no limit: every pin. }
+                        If (Limit > 0) And (Count >= Limit) Then
                         Begin
                             LimitHit := True;
                             Break;

@@ -40,7 +40,7 @@ def test_a_pin_is_listed_once_and_an_unnamed_copy_gives_way(fns):
     skip = body.index("If (Listed.IndexOf(Key) >= 0)")
     assert "(Not IsNamedNet(NetName)) And (Named.IndexOf(Key) >= 0)" in body[skip:]
     # The limit counts listed pins, so it is checked after the repeats.
-    assert skip < body.index("If Count >= Limit Then")
+    assert skip < body.index("If (Limit > 0) And (Count >= Limit) Then")
     assert '"repeats_skipped":' in body
 
 

@@ -548,8 +548,8 @@ def register_generic_tools(mcp):
                 "Collapsed"); symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
                 (plain "polygon" and "arc" are the board's), the bare
-                "ellipse", "elliptical_arc" and "bezier", and "eDesignator" and
-                "eRoundRectangle"
+                "ellipse", "elliptical_arc" and "bezier", "eDesignator",
+                "eRoundRectangle", "eIEEESymbol" (Symbol, ScaleFactor)
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eSplitPlaneObject" (a plane layer's regions, with Net
@@ -583,11 +583,11 @@ def register_generic_tools(mcp):
                 PCB PRIMITIVES ARE FLAT, NOT DOTTED: a track's net is
                 "Net", never "Net.Name". "Net,Layer,Width" for tracks;
                 "Net,Layer,HoleSize,Size" for vias;
-                "Designator,Comment,Pattern,Rotation,X,Y" for
-                components; "Text,Height,StrokeWidth,IsDesignator" for
-                texts, and "MirrorFlag" (settable with obj_modify; the text
-                is kept where it is). Polygons ("polygon") read and, with
-                obj_modify, set their pour settings: "Name,Grid,TrackSize,
+                "Designator,Comment,Pattern,Rotation,X,Y,NameOn,CommentOn"
+                for components; "Text,Height,StrokeWidth,IsDesignator,
+                IsHidden" for texts, and "MirrorFlag" (settable; the text
+                stays put). Polygons ("polygon") read and set their pour
+                settings: "Name,Grid,TrackSize,
                 MinTrack,ArcApproximation,NeckWidthThreshold" (decimal
                 mils), "IslandAreaThreshold" (square mils),
                 "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
