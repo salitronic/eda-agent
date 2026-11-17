@@ -737,11 +737,18 @@ def _rotation_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
     return rotation_audit(board, limit=limit)
 
 
+def _track_shape_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
+    """Staircases and tracks shorter than their width; see layout/staircase."""
+    from .staircase import audit
+    return audit(board, limit=limit)
+
+
 CHECKS: dict[str, Callable[..., dict]] = {
     "placement_audit": placement_audit,
     "connectivity_summary": connectivity_summary,
     "drc": drc_summary,
     "corner_audit": corner_audit,
+    "track_shape_audit": _track_shape_audit,
     "return_via_audit": return_via_audit,
     "plane_region_audit": plane_region_audit,
     "loop_audit": _loop_audit,

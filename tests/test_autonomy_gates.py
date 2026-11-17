@@ -201,6 +201,7 @@ def test_return_via_exceptions_only_have_to_be_listed():
                                            "off_board": 0}},
             "connectivity_summary.routed": 2, "connectivity_summary.nets": 2,
             "drc.violations": 0, "corner_audit.sharper_than_45": 0,
+            "track_shape_audit.staircases": 0, "track_shape_audit.short_tracks": 0,
             "plane_region_audit.islands": 0,
             "pcb_calc_length_match": {"worst_skew_ps": 1, "skew_budget_ps": 5},
             "proj_run_erc": {"violation_count": 0}}

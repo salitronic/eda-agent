@@ -471,6 +471,9 @@ def register_design_tools(mcp) -> None:
         - ``connectivity_summary``: routed / partial / unstarted nets.
         - ``drc``: the exact clearance check.
         - ``corner_audit``: bends sharper than 45 degrees.
+        - ``track_shape_audit``: staircases (a run drawn as a chain of
+          tiny steps) and tracks shorter than their own width that are
+          no stub into a pad or via.
         - ``return_via_audit``: signal vias with no ground via within
           ``max_distance_mils``.
         - ``plane_region_audit``: pour copper broken into islands.

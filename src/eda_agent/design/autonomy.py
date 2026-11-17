@@ -113,7 +113,8 @@ class Criterion:
 #: out here so the guide does not import the layout engine to print a
 #: sentence.
 AUDIT_CHECKS = ("placement_audit", "connectivity_summary", "drc",
-                "corner_audit", "return_via_audit", "plane_region_audit",
+                "corner_audit", "track_shape_audit", "return_via_audit",
+                "plane_region_audit",
                 "loop_audit", "pad_entry_audit", "rotation_audit")
 
 _DRC = Criterion("drc", "violations", "==", 0,
@@ -132,6 +133,8 @@ _ROUTING = (
     Criterion("connectivity_summary", "routed", "==", "nets"),
     _DRC,
     Criterion("corner_audit", "sharper_than_45"),
+    Criterion("track_shape_audit", "staircases"),
+    Criterion("track_shape_audit", "short_tracks"),
 )
 _POURS = (
     Criterion("plane_region_audit", "islands"),

@@ -5903,7 +5903,7 @@ def register_pcb_tools(mcp):
                           | {"kind": "polygon", "layer", "key_first": [vx,vy]}],
              "create":   [{"kind": "track"|"arc", "layer", "width",
                            "geom": [x1,y1,x2,y2] | [cx,cy,r,start,end],
-                           "net"?, "keepout"? (default true on KeepOutLayer)}
+                           "net"?, "keepout"? (default true on KeepOutLayer), "stub"?}
                           | {"kind": "region", "layer", "contour": [[x,y],...],
                            "net"?, "teardrop"?, "keepout"?}
                           | {"kind": "via", "x", "y", "size", "hole", "net"?}
@@ -5991,6 +5991,21 @@ def register_pcb_tools(mcp):
             return {"success": False, "error": f"could not read the map: {e}"}
         if not isinstance(geometry_map, dict):
             return {"success": False, "error": "the map must be a JSON object"}
+        from ..layout import staircase
+        new_tracks = [
+            {"x1": c["geom"][0], "y1": c["geom"][1], "x2": c["geom"][2], "y2": c["geom"][3],
+             "width": c.get("width", 10), "layer": c.get("layer", ""), "net": c.get("net", ""),
+             "stub": c.get("stub", False)}
+            for c in geometry_map.get("create") or []
+            if isinstance(c, dict) and c.get("kind") == "track"
+            and isinstance(c.get("geom"), list) and len(c["geom"]) == 4
+            and str(c.get("net") or "").strip()]
+        stairs = staircase.find(new_tracks)
+        if stairs["staircase_count"]:
+            return staircase.refusal(stairs, "The map's create list")
+        shorts = staircase.short(new_tracks)
+        if shorts["short_track_count"]:
+            return staircase.short_refusal(shorts, "The map's create list")
 
         bridge = get_bridge()
         workspace = Path(bridge.config.workspace_dir)
@@ -8754,7 +8769,8 @@ def register_pcb_tools(mcp):
                 rule stays 3.937), layer (default "TopLayer"; "current" =
                 the editor's current layer, see pcb_layer_view),
                 net_name (optional, empty = no net; a net the board does
-                not have skips the track)
+                not have skips the track), stub (true marks a track
+                shorter than its width as a real stub into a pad or via)
             board_path: The board to place on, taken by its path and
                 refused when it is not open; empty acts on the board in
                 front, which another session can change between calls.
@@ -8774,11 +8790,24 @@ def register_pcb_tools(mcp):
             (tracks not placed because both ends are the same point),
             "unknown_layers" and "unknown_nets" naming what did not
             resolve, and, when any track took "current", "current_layer"
-            and "on_current_layer".
+            and "on_current_layer". Nothing is placed, with error
+            STAIRCASE_TRACKS or SHORT_TRACKS, when the tracks on a net
+            hold a run drawn as a chain of tiny steps, or a track shorter
+            than its own width that is not marked a stub.
         """
         tracks, refusal = items_from_file(tracks, file, "tracks")
         if refusal:
             return refusal
+        from ..layout import staircase
+        # Routing is judged by its shape; a drawing with no net (a curve
+        # on the overlay, a dot) is not.
+        routed = [t for t in tracks if str(t.get("net_name") or "").strip()]
+        stairs = staircase.find(routed)
+        if stairs["staircase_count"]:
+            return staircase.refusal(stairs, "The list")
+        shorts = staircase.short(routed)
+        if shorts["short_track_count"]:
+            return staircase.short_refusal(shorts, "The list")
         parts = []
         for t in tracks:
             x1 = _mils(t["x1"])
