@@ -200,6 +200,77 @@ def test_with_the_tracer_the_board_is_in_the_picture():
     assert 0.05 < (alpha > 0).mean() < 0.95             # the board, and space around it
 
 
+def _in_frame(cam, pts, width, height):
+    """Where the points land in the picture: -1..1 across and up."""
+    pos, target = np.array(cam["position"]), np.array(cam["target"])
+    forward = (target - pos) / np.linalg.norm(target - pos)
+    right = np.cross(forward, np.array(cam["up"]))
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+    rel = pts - pos
+    x, y, depth = rel @ right, rel @ up, rel @ forward
+    aspect = width / height
+    if "ortho_height" in cam:
+        half = cam["ortho_height"] / 2
+        return x / (half * aspect), y / half
+    tan_v = math.tan(math.radians(cam["fov_deg"] / 2))
+    assert depth.min() > 0
+    return x / (depth * tan_v * aspect), y / (depth * tan_v)
+
+
+@pytest.mark.parametrize("view", ["top", "bottom", "iso", "iso_back", "front", "left"])
+@pytest.mark.parametrize("size", [(1600, 1000), (800, 1200), (1000, 1000)])
+@pytest.mark.parametrize("box", [(100, 60, 1.6), (20, 180, 1.6), (40, 40, 25)])
+def test_what_is_drawn_sits_in_the_middle_with_the_same_margin_each_side(view, size, box):
+    """A long board, a tall part, an upright frame: at zoom 1 nothing is
+    cut off and the free band is the same left and right, top and bottom."""
+    w, h, top = box
+    rng = np.random.default_rng(3)
+    pts = rng.uniform((-w / 2, -h / 2, 0), (w / 2, h / 2, 1.6), (400, 3))
+    pts = np.vstack([pts, [(x, y, z) for x in (-w / 2, w / 2) for y in (-h / 2, h / 2)
+                           for z in (0, 1.6)], [(w / 4, -h / 4, top)]])
+    scene = _scene()
+    cam = E.camera(scene, E.view_for(view, None, None, 1), *size, points=pts)
+    x, y = _in_frame(cam, pts, *size)
+    fill = 1 - 2 * E.MARGIN
+    assert x.max() == pytest.approx(-x.min(), abs=2e-3)
+    assert y.max() == pytest.approx(-y.min(), abs=2e-3)
+    assert max(x.max(), y.max()) == pytest.approx(fill, abs=2e-3)
+    assert x.max() <= fill + 2e-3 and y.max() <= fill + 2e-3
+
+    closer = E.camera(scene, E.view_for(view, None, None, 2), *size, points=pts)
+    assert closer["target"] == pytest.approx(cam["target"])
+    if "ortho_height" in cam:
+        assert closer["ortho_height"] == pytest.approx(cam["ortho_height"] / 2)
+    else:
+        away = lambda c: np.linalg.norm(np.array(c["position"]) - np.array(c["target"]))
+        assert away(closer) == pytest.approx(away(cam) / 2)
+
+
+def test_the_bare_board_is_framed_when_no_points_are_given():
+    scene = _scene()
+    w, h = scene.size_mm
+    corners = np.array([(x, y, z) for x in (-w / 2, w / 2) for y in (-h / 2, h / 2)
+                        for z in (0, scene.thickness_mm)])
+    x, y = _in_frame(E.camera(scene, E.view_for("iso", None, None, 1), 1600, 1000),
+                     corners, 1600, 1000)
+    assert max(x.max(), y.max()) == pytest.approx(1 - 2 * E.MARGIN, abs=2e-3)
+
+
+def test_the_traced_picture_keeps_the_board_whole_and_centred():
+    if E.tracer() is None:
+        pytest.skip("eda-agent-render is not installed")
+    for name in ("iso", "front"):
+        img, _ = E.render(_scene(), E.view_for(name, None, None, 1, 0), 320, 200, "draft",
+                          "transparent")
+        alpha = np.asarray(img)[..., 3] > 40
+        cols, rows = np.where(alpha.any(axis=0))[0], np.where(alpha.any(axis=1))[0]
+        left, right = cols[0], 319 - cols[-1]
+        above, below = rows[0], 199 - rows[-1]
+        assert min(left, right, above, below) >= 8, name          # nothing at the edge
+        assert abs(left - right) <= 6 and abs(above - below) <= 6, name
+
+
 def test_the_tool_refuses_bad_choices_before_reading_the_board(monkeypatch):
     import asyncio
 

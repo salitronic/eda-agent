@@ -3658,11 +3658,14 @@ End;
 { generated is true only when a new file is at output_path afterwards, so a  }
 { build where the call does nothing says so and proj_export_step falls back  }
 { to the dialog route.                                                        }
-{ Params: output_path (required), format (default 0)                          }
+{ board_path names the board and brings it to the front first, in this same  }
+{ command: the exporter writes the front view, and another session's command }
+{ can put its own document in front between two of ours.                     }
+{ Params: output_path (required), format (default 0), board_path (optional)  }
 {..............................................................................}
 Function Proj_ExportSTEPApi(Params : String; RequestId : String) : String;
 Var
-    OutputPath, Problem, NotTaken : String;
+    OutputPath, Problem, NotTaken, BoardPath : String;
     Board : IPCB_Board;
     Exporter : IPCB_Board3DModelExporter;
     Proj : IProject;
@@ -3675,10 +3678,15 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'output_path is required');
         Exit;
     End;
-    Board := GetPCBBoardAnywhere(0);
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    Board := ResolvePCBBoard(BoardPath);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        If BoardPath = '' Then
+            Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open')
+        Else
+            Result := BuildErrorResponse(RequestId, 'NO_PCB', BoardPath
+                + ' is not open as a board, or did not come to the front');
         Exit;
     End;
     Exporter := Nil;

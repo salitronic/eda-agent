@@ -63,29 +63,73 @@ def view_for(name: str, azimuth: Optional[float], elevation: Optional[float],
                 depth_of_field=max(0.0, min(2.0, float(depth_of_field))))
 
 
-def camera(scene: BoardScene, view: View, width: int, height: int) -> dict[str, Any]:
+#: The empty band kept on each side of the frame at zoom 1, as a fraction
+#: of the frame's width or height.
+MARGIN = 0.06
+
+
+def camera(scene: BoardScene, view: View, width: int, height: int,
+           points: Optional[np.ndarray] = None) -> dict[str, Any]:
+    """The camera that frames ``points`` (the vertices drawn, N x 3 in mm;
+    the bare board's box without them): at zoom 1 they sit in the middle
+    of the picture with MARGIN free on the two sides they reach and at
+    least that on the other two, from any angle. ``zoom`` then moves the
+    camera in or out about that middle."""
     w, h = scene.size_mm
     t = scene.thickness_mm
-    centre = (0.0, 0.0, t / 2)
+    if points is None or len(points) == 0:
+        points = np.array([(x, y, z) for x in (-w / 2, w / 2)
+                           for y in (-h / 2, h / 2) for z in (0.0, t)], dtype=np.float64)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     az, el = math.radians(view.azimuth), math.radians(view.elevation)
     # From the target towards the camera.
-    d = (-math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el))
-    radius = 0.5 * math.sqrt(w * w + h * h + t * t)
+    d = np.array((-math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
+    up = (0.0, 0.0, 1.0) if abs(view.elevation) < 89 else (0.0, 1.0, 0.0)
+    right = np.cross(-d, np.array(up))
+    right /= np.linalg.norm(right)
+    true_up = np.cross(right, -d)
+    radius = 0.5 * float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
     aspect = width / height
+    fill = 1.0 - 2.0 * MARGIN
+    x, y, z = pts @ right, pts @ true_up, pts @ d
     if view.ortho:
-        # Fit the board's footprint, whichever way the frame is longer.
-        span = max(h, w / aspect) * 1.06 / view.zoom
-        up = (0.0, 1.0, 0.0)
+        cx, cy = (x.max() + x.min()) / 2, (y.max() + y.min()) / 2
+        span = max(y.max() - y.min(), (x.max() - x.min()) / aspect) / fill / view.zoom
+        centre = cx * right + cy * true_up + ((z.max() + z.min()) / 2) * d
         dist = radius * 4 + 50
-        pos = tuple(c + dist * k for c, k in zip(centre, d))
-        return {"position": pos, "target": centre, "up": up, "ortho_height": span}
+        return {"position": tuple(centre + dist * d), "target": tuple(centre),
+                "up": up, "ortho_height": float(span)}
     fov = 30.0
     half = math.radians(fov / 2)
-    fit = radius / math.sin(half) if aspect >= 1 else radius / math.sin(math.atan(math.tan(half) * aspect))
-    # The sphere around the board over-fits; a board is flat.
-    dist = fit * 0.64 / view.zoom
-    pos = tuple(c + dist * k for c, k in zip(centre, d))
-    up = (0.0, 0.0, 1.0) if abs(view.elevation) < 89 else (0.0, 1.0, 0.0)
+    tan_v = math.tan(half)
+    tan_h = tan_v * aspect
+    # Nearer points look larger, so the middle of the picture is not the
+    # middle of the box. A point at (x, z) is inside the filled part of
+    # the frame when |x - cx| <= a (c - z), the camera at cx across and c
+    # along its axis: the nearest camera that holds them all on one axis
+    # is where the two outermost of those lines meet.
+    a, b = fill * tan_h, fill * tan_v
+    c = max(((x + a * z).max() - (x - a * z).min()) / (2 * a),
+            ((y + b * z).max() - (y - b * z).min()) / (2 * b))
+
+    def middle(v: np.ndarray, k: float) -> float:
+        """Where across the camera sees the points evenly either side."""
+        lo, hi = (v + k * z).max() - k * c, (v - k * z).min() + k * c
+        for _ in range(48):
+            mid = (lo + hi) / 2
+            n = (v - mid) / (c - z)
+            if n.max() + n.min() > 0:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    cx, cy = middle(x, a), middle(y, b)
+    dist = c - (z.max() + z.min()) / 2
+    centre = cx * right + cy * true_up + (c - dist) * d
+    dist /= view.zoom
+    pos = tuple(centre + dist * d)
+    centre = tuple(centre)
     # A real lens: the blur grows as the camera comes closer to the board,
     # as a macro shot's does.
     aperture = 0.0
@@ -233,6 +277,8 @@ def render(scene: BoardScene, view: View, width: int, height: int, quality: str,
         # over (half a turn about x, not a mirror) and laid on the surface.
         arrays, view = _turned_over(arrays, scene.thickness_mm), View(
             180.0 - view.azimuth, -view.elevation, view.zoom, view.ortho, view.depth_of_field)
+    # The board and its parts are framed, not the surface they lie on.
+    framed = arrays["positions"]
     if floor is not None and view.elevation > 0 and not (view.ortho and floor.name == "studio"):
         arrays = _floor(scene, materials, textures, arrays, floor)
     settings = {
@@ -243,7 +289,7 @@ def render(scene: BoardScene, view: View, width: int, height: int, quality: str,
     img, w, h = core.render(
         arrays["positions"].tobytes(), arrays["indices"].tobytes(),
         arrays["material_ids"].tobytes(), materials, textures,
-        camera(scene, view, width, height), settings,
+        camera(scene, view, width, height, framed), settings,
         normals=arrays["normals"].tobytes(), uvs=arrays["uvs"].tobytes())
     picture = Image.frombytes("RGBA", (w, h), img)
     if floor is not None:
@@ -262,7 +308,7 @@ def _flat(scene: BoardScene, view: View, width: int, height: int, background: st
     if side == 1:
         pic = pic[:, ::-1]
     img = Image.fromarray(np.ascontiguousarray(pic), "RGBA")
-    scale = min(width / tw, height / th) * view.zoom
+    scale = min(width / tw, height / th) * (1.0 - 2.0 * MARGIN) * view.zoom
     img = img.resize((max(1, int(tw * scale)), max(1, int(th * scale))), Image.LANCZOS)
     b = (background or "studio").lower()
     fill = (0, 0, 0, 0) if b == "transparent" else (

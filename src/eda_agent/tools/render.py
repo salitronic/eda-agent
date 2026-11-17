@@ -48,6 +48,9 @@ def _renders_dir() -> Path:
 
 #: What pcb_render_3d's picture is judged against, as a photo of the
 #: assembled board would be.
+#: How long a STEP export that reported no file is waited for, in seconds.
+STEP_WAIT_S = 30.0
+
 REALISM_CHECKS = [
     "every pad under a fitted part is covered in bright solder with a fillet up its "
     "terminal; only unfitted pads show gold or copper finish",
@@ -209,8 +212,8 @@ def register_render_tools(mcp):
     async def pcb_render_3d(
         view: str = "iso",
         output_path: str = "",
-        width: int = 1600,
-        height: int = 1000,
+        width: int = 2560,
+        height: int = 1600,
         quality: str = "normal",
         azimuth: Optional[float] = None,
         elevation: Optional[float] = None,
@@ -246,7 +249,8 @@ def register_render_tools(mcp):
             quality: draft (fast), normal or high (smooth shadows).
             azimuth, elevation: Degrees, overriding the view's camera:
                 azimuth 0 looks along +Y, elevation 90 straight down.
-            zoom: Above 1 frames closer.
+            zoom: 1 (default) shows everything drawn, in the middle of
+                the picture with an even margin; above 1 frames closer.
             mask_color: green, black, blue, red, white, purple, yellow,
                 matte_black or matte_green.
             finish: enig, hasl, osp or bare.
@@ -363,9 +367,23 @@ def register_render_tools(mcp):
 
         if not render3d.parts.available():
             return None, "parts not drawn: reading the STEP needs pip install eda-agent[models3d]"
-        front = await bridge.send_command_async(
-            "application.get_active_document", {"front": "true"})
-        if not str((front or {}).get("file_path") or "").lower().endswith(".pcbdoc"):
+        import asyncio
+
+        from ..layout.read_altium import board_stamp
+
+        def stamp_now():
+            return board_stamp(lambda cmd, params: bridge.send_command(cmd, params, timeout=60.0))
+
+        # The board is named to the exporter, which brings it to the front
+        # in the same command: another session can put its own document
+        # there between two of ours.
+        stamp = await asyncio.to_thread(stamp_now)
+        board_file = str((stamp or {}).get("file") or "")
+        if stamp is None:
+            front = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            board_file = str((front or {}).get("file_path") or "")
+        if not board_file.lower().endswith(".pcbdoc"):
             return None, "parts not drawn: the document in front is not a board"
         target = _renders_dir() / "parts" / "board.step"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -376,12 +394,31 @@ def register_render_tools(mcp):
                 return None, f"parts not drawn: the last export could not be replaced: {e}"
         try:
             api = await bridge.send_command_async(
-                "project.export_step_api", {"output_path": str(target)}, timeout=600.0) or {}
+                "project.export_step_api",
+                {"output_path": str(target), "board_path": board_file}, timeout=600.0) or {}
         except AltiumError as e:
             return None, f"parts not drawn: the STEP export failed: {e}"
-        if not api.get("generated") or not target.exists():
+        # The exporter can return before its file is on disk: it is waited
+        # for, until its size has stopped growing.
+        if not await _settled(target, 2.0 if api.get("generated") else STEP_WAIT_S):
             return None, f"parts not drawn: the STEP export wrote nothing ({api.get('reason') or 'no file'})"
         return target, ""
+
+    async def _settled(path: Path, wait_s: float) -> bool:
+        """Whether ``path`` is there with a size that held still, within ``wait_s``."""
+        import asyncio
+        import time
+
+        deadline = time.monotonic() + wait_s
+        last = -1
+        while True:
+            size = path.stat().st_size if path.exists() else -1
+            if size > 0 and size == last:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            last = size
+            await asyncio.sleep(0.5)
 
     def _prune_part_caches(step_path: Path) -> None:
         """Keep only the cache of the board just exported."""
