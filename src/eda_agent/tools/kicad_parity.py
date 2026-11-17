@@ -455,6 +455,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_body": "Altium 3D bodies; KiCad footprints link model files",
     "pcb_hole_symbols": "Altium drill symbols",
     "sch_get_harness": "Altium harness wiring diagrams; KiCad has no harness documents",
+    "sch_get_active_net": "reads Altium's compiled netlist by the selected object's handle",
     "sch_place_harness_connectors": "Altium harness wiring diagrams; KiCad has no harness documents",
     "sch_place_harness_wires": "Altium harness wiring diagrams; KiCad has no harness documents",
     "pcb_net_figures": "Altium net figures",
