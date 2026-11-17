@@ -1,4 +1,4 @@
-# Release verification: 2026.11.17.1
+# Release verification: 2026.11.17.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -255,6 +255,7 @@ works elsewhere cannot be an undeclared identifier:
 | 79, frame corner and part | `Corner` on a text frame, `SetState_CurrentPartID` before a DbLib part joins the sheet | yes, `SetSchProperty` | low; the corner ran live on a scratch sheet and read back, the DbLib part was not measured here |
 | 79, dimension texts | `TextSuffix` on a dimension, read back after the write | yes, `PCBSetExtra` | low, display only; ran live on a scratch board, read back |
 | 82, footprint label text | `UseTTFonts`, `MirrorFlag`, `ChangeNameAutoposition` on a placed part's designator and comment | yes, `PCBGeneric.pas` | low, display only; ran live on an imported board, heights read back at KiCad's 0.8 and 1 mm |
+| 88, text visibility and a batch move | `NameOn`, `CommentOn` through obj_modify on a placed part | yes, `PCB.pas` (pcb_set_text_visibility, copy placement) | low, display only; ran live, the designator then read hidden |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -429,7 +430,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.17.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.17.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4376,6 +4377,37 @@ refuses.
    `copper_layers_note` says the layer set is the template's own.
 3. Saving switched off on the dashboard, item 1 again: `SAVING_OFF`, no
    file in the project folder. Switch it back on.
+
+## 88. Reads that answered wrongly, a batch move as one edit, documents a session opened
+
+New Altium identifier: `eSymbol` (in Altium's own SCH example script and
+the schematic constants reference), read through `ISch_Symbol` only.
+
+Verified live on AD 26.11.1.5 (script 2026.11.17.2) on scratch copies of
+the 555 demo and of Altium's Bluetooth Sentinel example:
+
+1. `proj_get_nets limit=0`: all 35 pins, `limit_hit` false.
+2. `pcb_add_layer layer=BottomLayer`: ALREADY_IN_STACK, nothing saved.
+3. `obj_query eComponentObject Designator,NameOn,CommentOn` reads both;
+   `obj_modify NameOn=false` on C26, then its designator text reads
+   `IsHidden` true; `obj_modify IsHidden=true` on a text is `failed`.
+4. `obj_create ieee_symbol`, then `obj_query eIEEESymbol
+   Symbol,ScaleFactor,Orientation`: 26, 100, 0. `obj_modify Symbol=5` is
+   `failed` and `app_ping` answers.
+5. `pcb.batch_move_components` with all 73 parts of the Bluetooth board:
+   one edit, 2.7 s (37 ms a part with the round trip), and back in 2.2 s;
+   no script error.
+6. `app_set_active_document` on a board not open, then
+   `app_close_opened_documents`: the dry run lists that board and none of
+   the person's projects; with `dry_run=false` an unedited board closed,
+   a modified one was kept, and a sheet Altium's list read as clean but
+   the close found edited stayed open and listed.
+7. Matched Lengths (`pcb_create_design_rule rule_type=matched_lengths
+   value=25 match_mode=within_pair`): created, every setting read back.
+   `proj_project_setup single_pin_nets=true`: read back true. `obj_create
+   sch_arc Radius=200|StartAngle=0|EndAngle=270`: read back as written.
+
+Not measured: the DbLib key quoting on a MySQL DbLib (no such DbLib here).
 
 ## Still open, and not blocking
 

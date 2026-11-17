@@ -826,6 +826,76 @@ def register_application_tools(mcp):
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
+    @mcp.tool()
+    async def app_close_opened_documents(dry_run: bool = True,
+                                         keep: Optional[list[str]] = None) -> dict[str, Any]:
+        """Close the documents this session's commands opened, and no other.
+
+        Each reply names the documents its command loaded that were not
+        open before it, and the session keeps that list. This closes the
+        ones still open. A document open before (yours, or one another
+        session opened) is never on the list, nor is a project. One that
+        reads modified is kept and named: save it or close it yourself.
+
+        Args:
+            dry_run: Only say what would close (default True).
+            keep: Full paths to leave open although this session opened
+                them, such as the board still being worked on.
+
+        Returns:
+            ``would_close`` (dry run) or ``closed``; ``kept_modified``,
+            ``kept``, ``already_closed`` (closed since, dropped from the
+            list), ``failed`` (path and reply) and ``remaining`` (what
+            stays on the list).
+        """
+        import os
+
+        from ..bridge.altium_bridge import keep_opened_documents, read_opened_documents
+        from ..config import get_config
+
+        workspace = get_config().workspace_dir
+        docs = read_opened_documents(workspace)
+        out: dict[str, Any] = {"dry_run": dry_run, "would_close" if dry_run else "closed": [],
+                               "kept_modified": [], "kept": [], "already_closed": [],
+                               "failed": [], "remaining": []}
+        if not docs:
+            return out
+        listed = await get_bridge().send_command_async("application.get_open_documents", {})
+        state = {os.path.normcase(str(d.get("file_path") or "")): d
+                 for d in listed or [] if isinstance(d, dict)}
+        keep_set = {os.path.normcase(k) for k in keep or []}
+        for path in docs:
+            key = os.path.normcase(path)
+            doc = state.get(key)
+            if doc is None or not doc.get("loaded", True):
+                out["already_closed"].append(path)
+            elif key in keep_set:
+                out["kept"].append(path)
+                out["remaining"].append(path)
+            elif doc.get("modified"):
+                out["kept_modified"].append(path)
+                out["remaining"].append(path)
+            elif dry_run:
+                out["would_close"].append(path)
+                out["remaining"].append(path)
+            else:
+                try:
+                    reply = await get_bridge().send_command_async(
+                        "application.close_document", {"file_path": path}, timeout=120.0)
+                except Exception as e:  # reported, and the path stays on the list
+                    reply = {"closed": False, "error": str(e)}
+                if isinstance(reply, dict) and reply.get("closed"):
+                    out["closed"].append(path)
+                elif "unsaved changes" in str((reply or {}).get("error") or ""):
+                    # Modified after all: the list's flag misses some edits.
+                    out["kept_modified"].append(path)
+                    out["remaining"].append(path)
+                else:
+                    out["failed"].append({"path": path, "reply": reply})
+                    out["remaining"].append(path)
+        keep_opened_documents(workspace, out["remaining"])
+        return out
+
     async def _other_open_projects(besides: str) -> list[str]:
         """Projects open in Altium other than ``besides``; empty when the
         list cannot be read, since it only informs the reply."""

@@ -5163,15 +5163,11 @@ End;
 { fields: designator,x,y,rotation. Empty field = leave that property          }
 { unchanged.                                                                   }
 {                                                                              }
-{ Implementation note: the batch wraps EACH per-component edit in its own     }
-{ PCBServer.PreProcess / PostProcess pair, mirroring the singular             }
-{ PCB_MoveComponent semantics exactly. An earlier version wrapped the whole  }
-{ batch in one PreProcess block plus a final PCBM_BoardRegisteration         }
-{ broadcast; that variant crashed the script engine with "Could not convert  }
-{ variant of type (OleStr) into type (Double)" (likely an internal Altium    }
-{ event chain fires within the bulk-PostProcess sweep and chokes on a        }
-{ locale-marshalled value). The wall-time win of "one IPC round-trip"        }
-{ survives, the false win of "one PreProcess" did not.                       }
+{ The whole batch is one edit round (PreProcess / PostProcess once, one undo  }
+{ step); each part is modified inside it with its own BeginModify and        }
+{ EndModify, as a single move is. No board registration is broadcast after   }
+{ it: that broadcast after a bulk edit stopped the script engine ("Could not }
+{ convert variant of type (OleStr) into type (Double)").                     }
 {                                                                              }
 { Save runs once at the end of the whole batch.                               }
 {..............................................................................}
@@ -5215,6 +5211,9 @@ Begin
     Remaining := MovesStr;
     MovedNets := TStringList.Create;
 
+    { One edit round for every part: a round per part cost about 360 ms. }
+    PcbBeginEdit(0);
+    Try
     While Length(Remaining) > 0 Do
     Begin
         PipePos := Pos('|', Remaining);
@@ -5279,12 +5278,9 @@ Begin
         If HasY Then NewY := StrToFloatDef(YStr, 0);
         If HasRot Then NewRot := StrToFloatDef(RotStr, 0);
 
-        { Per-component PreProcess+PostProcess (same as singular). Each move   }
-        { is structurally a singular move, just inside one IPC turn.           }
-        PcbBeginEdit(0);
+        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+            PCBM_BeginModify, c_NoEventData);
         Try
-            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
-                PCBM_BeginModify, c_NoEventData);
 
             { MOVED, NOT ASSIGNED, and the pour is how you find out.
               A component owns its pads. Writing Comp.x moves the
@@ -5314,10 +5310,9 @@ Begin
                     Comp.MoveByXY(DeltaX, DeltaY);
             End;
 
+        Finally
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
-        Finally
-            PcbEndEdit(0);
         End;
 
         { The nets of its pads, for the ratsnest below. }
@@ -5339,6 +5334,9 @@ Begin
         End;
 
         Applied := Applied + 1;
+    End;
+    Finally
+        PcbEndEdit(0);
     End;
 
     { Measured: after a scripted move the connection lines still ran to

@@ -646,6 +646,9 @@ class CommandResponse:
     #: ``restored`` (put back in front), ``missing`` (closed) or
     #: ``not_restored``. Absent when it was already in front.
     session_document: Optional[dict] = None
+    #: Documents the command named that it loaded: they were not open before
+    #: it (see note_opened_documents).
+    opened_documents: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "CommandResponse":
@@ -658,6 +661,7 @@ class CommandResponse:
             next_step=data.get("next_step") or "",
             active_document_changed=data.get("active_document_changed"),
             session_document=data.get("session_document"),
+            opened_documents=[str(d) for d in data.get("opened_documents") or []],
         )
 
 
@@ -767,6 +771,52 @@ def _session_doc_path(workspace_dir) -> Path:
     return Path(workspace_dir) / SESSION_DOCS_DIR / f"{_SESSION_TAG}.json"
 
 
+#: Folder of each session's list of the documents its commands opened.
+OPENED_DOCS_DIR = "opened_documents"
+
+
+def _opened_docs_path(workspace_dir) -> Path:
+    return Path(workspace_dir) / OPENED_DOCS_DIR / f"{_SESSION_TAG}.json"
+
+
+def read_opened_documents(workspace_dir) -> list[str]:
+    """The documents this session's commands opened, oldest first."""
+    try:
+        data = json.loads(_opened_docs_path(workspace_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [str(d) for d in data] if isinstance(data, list) else []
+
+
+def keep_opened_documents(workspace_dir, docs: list[str]) -> None:
+    """Keep ``docs`` as this session's list. Never raises: losing it only
+    leaves documents open."""
+    path = _opened_docs_path(workspace_dir)
+    try:
+        if not docs:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(docs), encoding="utf-8")
+        replace_with_retry(tmp, path)
+    except OSError:
+        pass
+
+
+def note_opened_documents(workspace_dir, opened: list[str]) -> None:
+    """Add what a reply says its command opened to this session's list."""
+    if not opened:
+        return
+    docs = read_opened_documents(workspace_dir)
+    have = {os.path.normcase(d) for d in docs}
+    for d in opened:
+        if os.path.normcase(d) not in have:
+            docs.append(d)
+            have.add(os.path.normcase(d))
+    keep_opened_documents(workspace_dir, docs)
+
+
 def read_session_doc(workspace_dir) -> tuple[str, float]:
     """The session's kept document and the file's time ('' and 0.0 if none)."""
     path = _session_doc_path(workspace_dir)
@@ -801,6 +851,29 @@ def keep_session_doc(workspace_dir, doc: str) -> float:
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+#: Touched in the workspace whenever Altium answers any server's call.
+ANSWER_STAMP = "keepalive.stamp"
+
+
+def _stamp_answer(workspace_dir: Path) -> None:
+    """Record that Altium answered a call just now, for every server's
+    keep-alive (_answered_within)."""
+    try:
+        (Path(workspace_dir) / ANSWER_STAMP).touch()
+    except OSError:
+        pass
+
+
+def _answered_within(workspace_dir: Path, seconds: float) -> bool:
+    """Whether Altium answered some server's call in the last ``seconds``."""
+    try:
+        age = time.time() - (Path(workspace_dir) / ANSWER_STAMP).stat().st_mtime
+    except OSError:
+        return False
+    # The file system may stamp a file a little ahead of time.time().
+    return -5.0 <= age < seconds
 
 
 class AltiumBridge:
@@ -1107,6 +1180,11 @@ class AltiumBridge:
                 else ticks_per_ping
             if tick >= due:
                 tick = 0
+                if consecutive_failures == 0 and _answered_within(
+                        self.config.workspace_dir, self.KEEPALIVE_INTERVAL):
+                    # Altium answered a call of this server or another one
+                    # within the interval: that kept the loop awake already.
+                    continue
                 try:
                     self.send_command("application.ping", timeout=5.0)
                     if consecutive_failures >= slow_after:
@@ -1895,6 +1973,8 @@ class AltiumBridge:
 
         shown = self._reshow_hidden_frame(command, request.id)
         answered = getattr(_CALL, "answered_box", None)
+        _stamp_answer(workspace_dir)
+        note_opened_documents(workspace_dir, response.opened_documents)
 
         if response.success:
             note("Command %s succeeded", command)

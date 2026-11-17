@@ -2385,6 +2385,73 @@ Begin
     If Result = '' Then Result := Focus;
 End;
 
+{..............................................................................}
+{ The documents a command opened. Before the handler runs, the dispatcher    }
+{ notes which documents named in the command's parameters are loaded; the    }
+{ reply lists, as opened_documents, those loaded after it that were not      }
+{ before. A session can then close what it opened and nothing else: never a  }
+{ document the person had open, and never a project, which is not named here.}
+{..............................................................................}
+
+Function DocLoaded(Path : String) : Boolean;
+Begin
+    Result := False;
+    If Path = '' Then Exit;
+    Try
+        If Client.GetDocumentByPath(Path) <> Nil Then Result := True;
+    Except
+        Result := False;
+    End;
+End;
+
+{ Add VALUE to PATHS when it is a full file path: a folder and an extension. }
+Procedure AddDocPath(Paths : TStringList; Value : String);
+Begin
+    If LowerCase(Copy(Value, 1, 4)) = 'doc:' Then Value := Copy(Value, 5, Length(Value));
+    If Pos(Chr(92), Value) = 0 Then Exit;
+    If Pos('.', ExtractFileName(Value)) = 0 Then Exit;
+    If Paths.IndexOf(Value) < 0 Then Paths.Add(Value);
+End;
+
+Procedure CollectDocPaths(Params : String; Paths : TStringList);
+Begin
+    AddDocPath(Paths, ExtractJsonValue(Params, 'board_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'expect_file'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'file_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'library_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'sheet_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'document_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'outjob_path'));
+    AddDocPath(Paths, ExtractJsonValue(Params, 'scope'));
+End;
+
+{ '1' or '0' for each of PATHS, in order: loaded now. }
+Function LoadedNow(Paths : TStringList) : String;
+Var
+    K : Integer;
+Begin
+    Result := '';
+    For K := 0 To Paths.Count - 1 Do
+        If DocLoaded(Paths[K]) Then Result := Result + '1' Else Result := Result + '0';
+End;
+
+{ The opened_documents field: those of PATHS loaded now and not BEFORE; '' for none. }
+Function OpenedDocumentsField(Paths : TStringList; Before : String) : String;
+Var
+    K : Integer;
+    Items : String;
+Begin
+    Result := '';
+    Items := '';
+    For K := 0 To Paths.Count - 1 Do
+        If (Copy(Before, K + 1, 1) = '0') And DocLoaded(Paths[K]) Then
+        Begin
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '"' + EscapeJsonString(Paths[K]) + '"';
+        End;
+    If Items <> '' Then Result := '"opened_documents":[' + Items + ']';
+End;
+
 { The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
 Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
 Var
@@ -2482,6 +2549,8 @@ Var
     Actor, OwnTarget : String;
     Writes, OwnRefused : Boolean;
     DashDetail, DashErrPayload, DashCode : String;
+    NamedDocs : TStringList;
+    LoadedBefore, OpenedField : String;
 Begin
     Result := False;
     EnsureWorkspaceDir(0);
@@ -2581,6 +2650,10 @@ Begin
     Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
     OwnTarget := CommandTarget(Params, FocusBefore);
     ResetNextStep(0);
+    { Which documents the command names are loaded before it runs. }
+    NamedDocs := TStringList.Create;
+    CollectDocPaths(Params, NamedDocs);
+    LoadedBefore := LoadedNow(NamedDocs);
 
     ExceptionMsg := '';
     { Heartbeat: write progress_<id>.json so Python can distinguish "still      }
@@ -2648,6 +2721,10 @@ Begin
         If SessionNote <> '' Then
             ResponseContent := AppendEnvelopeField(ResponseContent, SessionNote);
 
+        OpenedField := OpenedDocumentsField(NamedDocs, LoadedBefore);
+        If OpenedField <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent, OpenedField);
+
         FocusAfter := CurrentFocusedDocPath(0);
         If FocusAfter <> FocusBefore Then
             ResponseContent := AppendEnvelopeField(ResponseContent,
@@ -2661,6 +2738,7 @@ Begin
         WriteResponseFile(RequestId, ResponseContent);
     Finally
         EndProgress(RequestId);
+        NamedDocs.Free;
     End;
 
     DurationMs := GetTickCount - StartMs;

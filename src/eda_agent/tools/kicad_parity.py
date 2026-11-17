@@ -339,6 +339,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "app_get_clipboard": "Altium clipboard contents",
     "app_create_document": "Altium creates documents in an open project; KiCad's API cannot",
     "app_close_document": _NO_API,
+    "app_close_opened_documents": _NO_API,
     "app_set_active_document": _NO_API,
     "app_update_from_libraries": "Altium's update-from-libraries dialog",
     "obj_refresh_document": "KiCad redraws after every API change",
