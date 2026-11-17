@@ -8994,6 +8994,249 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_GetActiveNet - the net of the object selected on a schematic: a net     }
+{ (issue #388).                                                               }
+{ label, a port, a power port or a wire. ONE iterator, filtered to those four }
+{ kinds, first level only, stops at the first selected object and keeps its  }
+{ Handle. The net is then asked of the COMPILED netlist of the sheet's       }
+{ project, where every wire carries its net (Altium's Properties panel shows }
+{ it the same way):                                                          }
+{   route=auto (default)    getnet, then lines when getnet finds nothing      }
+{   route=getnet            IDocument.DM_GetNet(Handle): one lookup; answers  }
+{                           wires and power ports but never a net label       }
+{   route=lines             the sheet's nets walked; a wire matched by         }
+{                           DM_Lines(j).DM_SchHandle, another object by       }
+{                           DM_AllNetItems(j).DM_SchHandle; answers all four  }
+{ MEASURED on AD 25.8.1 (a busy sheet of a large project, 2026-11-17):      }
+{ both routes 0-47 ms inside Altium, the same name wherever both answer.     }
+{ NOT USED: DM_GetNetNamesForObject returns, but reading Count on the        }
+{ IStrings it returns puts the script in break.                              }
+{ Nothing is written. Nothing is compiled unless compile=true (the bridge's  }
+{ SmartCompile: skipped while the project is unchanged since the last one).  }
+{ Params: path (optional; default the schematic in front), route, compile.   }
+{ Reply: net ("<none>" when nothing is selected, "" when the netlist has no  }
+{ net for it -- not compiled, or compiled before the object was drawn),      }
+{ kind, text (as drawn), x, y (mils), sheet, project, source, route (the    }
+{ route that answered; "" when none did), compiled (compile ran in this     }
+{ call), found, ms.                                                          }
+{..............................................................................}
+
+{ The schematic to read: the path given, else the one in front. }
+Function GanSchDoc(Path : String; Var Source : String) : ISch_Document;
+Begin
+    Result := Nil;
+    Source := '';
+    If Path <> '' Then
+    Begin
+        Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+        If Result <> Nil Then Source := 'path';
+        Exit;
+    End;
+    Try Result := SchServer.GetCurrentSchDocument; Except Result := Nil; End;
+    If Result <> Nil Then Source := 'focused';
+End;
+
+{ The sheet's logical document in the netlist, and its project. }
+Function GanDmDoc(FilePath : String; Var Project : IProject) : IDocument;
+Var
+    Workspace : IWorkspace;
+    Prj : IProject;
+    Doc : IDocument;
+    Full : String;
+    I, P : Integer;
+Begin
+    Result := Nil;
+    Project := Nil;
+    Workspace := GetWorkspace;
+    If (Workspace = Nil) Or (FilePath = '') Then Exit;
+    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Prj := Workspace.DM_Projects(P);
+        If Prj = Nil Then Continue;
+        For I := 0 To Prj.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Prj.DM_LogicalDocuments(I);
+            If Doc = Nil Then Continue;
+            Full := '';
+            Try Full := Doc.DM_FullPath; Except End;
+            If SameText(Full, FilePath) Then
+            Begin
+                Result := Doc;
+                Project := Prj;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ route=lines: the net holding the object, found by its handle. }
+Function GanNetByHandle(DmDoc : IDocument; Handle : String; IsWire : Boolean) : INet;
+Var
+    Net : INet;
+    Item : INetItem;
+    I, J, N : Integer;
+Begin
+    Result := Nil;
+    For I := 0 To DmDoc.DM_NetCount - 1 Do
+    Begin
+        Net := DmDoc.DM_Nets(I);
+        If Net = Nil Then Continue;
+        If IsWire Then N := Net.DM_LineCount Else N := Net.DM_AllNetItemCount;
+        For J := 0 To N - 1 Do
+        Begin
+            If IsWire Then Item := Net.DM_Lines(J) Else Item := Net.DM_AllNetItems(J);
+            If Item = Nil Then Continue;
+            If Item.DM_SchHandle = Handle Then
+            Begin
+                Result := Net;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+Function Gen_GetActiveNet(Params : String; RequestId : String) : String;
+Var
+    Doc : ISch_Document;
+    It : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Lbl : ISch_NetLabel;
+    Pwr : ISch_PowerObject;
+    Prt : ISch_Port;
+    Vtx : TLocation;
+    DmDoc : IDocument;
+    Project : IProject;
+    DmNet : INet;
+    Path, Source, Route, Used, Net, Kind, Text, Handle, PrjName : String;
+    X, Y : Double;
+    Started : Cardinal;
+    Found, IsWire, Compiled : Boolean;
+Begin
+    Started := GetTickCount;
+    Path := Trim(ExtractJsonValue(Params, 'path'));
+    Route := LowerCase(Trim(ExtractJsonValue(Params, 'route')));
+    If Route = '' Then Route := 'auto';
+    If (Route <> 'auto') And (Route <> 'getnet') And (Route <> 'lines') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ROUTE',
+            'route is auto, getnet or lines');
+        Exit;
+    End;
+    Doc := GanSchDoc(Path, Source);
+    If Doc = Nil Then
+    Begin
+        If Path <> '' Then
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC',
+                'No open schematic at ' + Path)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC',
+                'No schematic is open');
+        Exit;
+    End;
+
+    Found := False;
+    IsWire := False;
+    Compiled := False;
+    Net := '<none>'; Kind := ''; Text := ''; Handle := ''; Used := '';
+    PrjName := ''; X := 0; Y := 0;
+    It := Doc.SchIterator_Create;
+    Try
+        It.SetState_IterationDepth(eIterateFirstLevel);
+        It.AddFilter_ObjectSet(MkSet(eNetLabel, ePort, ePowerObject, eWire));
+        Obj := It.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.Selection Then
+            Begin
+                Found := True;
+                Try Handle := Obj.Handle; Except Handle := ''; End;
+                If Obj.ObjectId = eNetLabel Then
+                Begin
+                    Lbl := Obj;
+                    Kind := 'netlabel';
+                    Text := Lbl.Text;
+                    X := CoordToMilsF(Lbl.Location.X);
+                    Y := CoordToMilsF(Lbl.Location.Y);
+                End
+                Else If Obj.ObjectId = ePowerObject Then
+                Begin
+                    Pwr := Obj;
+                    Kind := 'powerobject';
+                    Text := Pwr.Text;
+                    X := CoordToMilsF(Pwr.Location.X);
+                    Y := CoordToMilsF(Pwr.Location.Y);
+                End
+                Else If Obj.ObjectId = ePort Then
+                Begin
+                    Prt := Obj;
+                    Kind := 'port';
+                    Text := Prt.Name;
+                    X := CoordToMilsF(Prt.Location.X);
+                    Y := CoordToMilsF(Prt.Location.Y);
+                End
+                Else
+                Begin
+                    Kind := 'wire';
+                    IsWire := True;
+                    Try
+                        Vtx := Obj.GetState_Vertex(1);
+                        X := CoordToMilsF(Vtx.X);
+                        Y := CoordToMilsF(Vtx.Y);
+                    Except End;
+                End;
+                Break;
+            End;
+            Obj := It.NextSchObject;
+        End;
+    Finally
+        Doc.SchIterator_Destroy(It);
+    End;
+
+    { The netlist is asked only now, after the walk above is closed. }
+    If Found Then
+    Begin
+        Net := '';
+        DmDoc := GanDmDoc(Doc.DocumentName, Project);
+        If Project <> Nil Then
+        Begin
+            Try PrjName := Project.DM_ProjectFileName; Except End;
+            If ExtractJsonValue(Params, 'compile') = 'true' Then
+            Begin
+                SmartCompile(Project);
+                Compiled := True;
+            End;
+        End;
+        If (DmDoc <> Nil) And (Handle <> '') Then
+        Begin
+            If (Route = 'auto') Or (Route = 'getnet') Then
+            Begin
+                DmNet := Nil;
+                Try DmNet := DmDoc.DM_GetNet(Handle); Except DmNet := Nil; End;
+                If DmNet <> Nil Then Net := DmNet.DM_NetName;
+                If Net <> '' Then Used := 'getnet';
+            End;
+            If (Net = '') And ((Route = 'auto') Or (Route = 'lines')) Then
+            Begin
+                DmNet := GanNetByHandle(DmDoc, Handle, IsWire);
+                If DmNet <> Nil Then Net := DmNet.DM_NetName;
+                If Net <> '' Then Used := 'lines';
+            End;
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('net', Net)
+        + ',' + JsonStr('kind', Kind) + ',' + JsonStr('text', Text)
+        + ',' + JsonFloat('x', X) + ',' + JsonFloat('y', Y)
+        + ',' + JsonStr('sheet', Doc.DocumentName)
+        + ',' + JsonStr('project', PrjName)
+        + ',' + JsonStr('source', Source)
+        + ',' + JsonStr('route', Used)
+        + ',"compiled":' + BoolToJsonStr(Compiled)
+        + ',"found":' + BoolToJsonStr(Found)
+        + ',"ms":' + IntToStr(GetTickCount - Started) + '}');
+End;
+
+{..............................................................................}
 { Gen_GetHarness - the harness of a wiring diagram: its components, pins,    }
 { splices, cables, twists, shields and no-connects by name, and each wire    }
 { with its points, colours, what its two ends meet and the splices, labels,  }
@@ -20546,6 +20789,7 @@ Begin
         'place_sheet_entry': Result := Gen_PlaceSheetEntry(Params, RequestId);
         'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
         'get_harness':       Result := Gen_GetHarness(Params, RequestId);
+        'get_active_net':    Result := Gen_GetActiveNet(Params, RequestId);
         'place_harness_connectors': Result := Gen_PlaceHarnessConnectors(Params, RequestId);
         'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);

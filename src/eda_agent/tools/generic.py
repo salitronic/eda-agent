@@ -3665,6 +3665,37 @@ def register_generic_tools(mcp):
         return await get_bridge().send_command_async("generic.get_harness", params)
 
     @mcp.tool()
+    async def sch_get_active_net(document_path: str = "", route: str = "auto",
+                                 compile: bool = False) -> dict[str, Any]:
+        """Read the compiled net of the net label, port, power port or wire selected on a sheet.
+
+        The first selected object of those four kinds is looked up in the
+        compiled netlist of the sheet's project, so a wire answers with
+        its net too. Nothing is written.
+
+        Args:
+            document_path: The open .SchDoc. Empty reads the sheet in front.
+            route: "auto" (default), "getnet" (one lookup by handle; no
+                net labels) or "lines" (walks the sheet's nets).
+            compile: Compile the project first (skipped while unchanged).
+
+        Returns:
+            ``net`` ("<none>" when nothing is selected, "" when the
+            netlist has none for it: compile first), ``kind``, ``text``,
+            ``x``, ``y`` (mils), ``sheet``, ``project``, ``route`` (the
+            one that answered), ``compiled``, ``found``, ``ms``.
+        """
+        route = route.strip().lower() or "auto"
+        if route not in ("auto", "getnet", "lines"):
+            return {"ok": False, "reason": "route is auto, getnet or lines"}
+        params = {"route": route}
+        if document_path.strip():
+            params["path"] = document_path.strip()
+        if compile:
+            params["compile"] = "true"
+        return await get_bridge().send_command_async("generic.get_active_net", params)
+
+    @mcp.tool()
     async def sch_get_blankets() -> dict[str, Any]:
         """List the blankets on the active schematic sheet.
 
