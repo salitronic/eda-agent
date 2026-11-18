@@ -2430,9 +2430,12 @@ def register_generic_tools(mcp):
         custom_zones_x: Optional[int] = None,
         custom_zones_y: Optional[int] = None,
         custom_margin_width: Optional[float] = None,
+        title_block_on: Optional[bool] = None,
+        border_on: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Read, or set, the active sheet's reference zones, margin, border
-        style and template graphics. Call with nothing to read.
+        style, template graphics, title block and border. Call with nothing
+        to read.
 
         On a standard sheet size the zones and margin follow the size, so
         zones_x, zones_y and margin_width do not take; the custom_* ones
@@ -2448,6 +2451,8 @@ def register_generic_tools(mcp):
             show_template_graphics: Show the template's graphics.
             custom_zones_x, custom_zones_y, custom_margin_width: The same
                 for a custom-size sheet.
+            title_block_on, border_on: Show Altium's standard title block
+                and the sheet border.
 
         Returns:
             ``changed``, ``options`` (read back after any write) and
@@ -2469,7 +2474,9 @@ def register_generic_tools(mcp):
                     return {"ok": False, "reason": f"{key} is mils from 0"}
                 params[key] = str(value)
         for key, value in (("reference_zones", reference_zones),
-                           ("show_template_graphics", show_template_graphics)):
+                           ("show_template_graphics", show_template_graphics),
+                           ("title_block_on", title_block_on),
+                           ("border_on", border_on)):
             if value is not None:
                 params[key] = "true" if value else "false"
         reply = await get_bridge().send_command_async("generic.sheet_options", params)

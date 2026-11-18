@@ -9615,10 +9615,11 @@ Function SheetOptionsJson(SchDoc : ISch_Document) : String;
 Var
     ZX, ZY, CZX, CZY, Border : Integer;
     Margin, CMargin : Double;
-    RefZones, Graphics : Boolean;
+    RefZones, Graphics, TitleBlock, SheetBorder : Boolean;
 Begin
     ZX := -1; ZY := -1; CZX := -1; CZY := -1; Border := -1;
     Margin := -1; CMargin := -1; RefZones := False; Graphics := False;
+    TitleBlock := False; SheetBorder := False;
     Try ZX := SchDoc.GetState_SheetZonesX; Except End;
     Try ZY := SchDoc.GetState_SheetZonesY; Except End;
     Try CZX := SchDoc.GetState_CustomXZones; Except End;
@@ -9628,6 +9629,8 @@ Begin
     Try CMargin := CoordToMilsF(SchDoc.GetState_CustomMarginWidth); Except End;
     Try RefZones := SchDoc.GetState_ReferenceZonesOn; Except End;
     Try Graphics := SchDoc.GetState_ShowTemplateGraphics; Except End;
+    Try TitleBlock := SchDoc.TitleBlockOn; Except End;
+    Try SheetBorder := SchDoc.BorderOn; Except End;
     Result := JsonObj(
         JsonInt('zones_x', ZX) + ',' + JsonInt('zones_y', ZY) + ','
         + JsonInt('custom_zones_x', CZX) + ',' + JsonInt('custom_zones_y', CZY) + ','
@@ -9635,22 +9638,25 @@ Begin
         + JsonFloat('custom_margin_width_mils', CMargin) + ','
         + JsonInt('border_style', Border) + ','
         + JsonBool('reference_zones', RefZones) + ','
-        + JsonBool('show_template_graphics', Graphics));
+        + JsonBool('show_template_graphics', Graphics) + ','
+        + JsonBool('title_block_on', TitleBlock) + ','
+        + JsonBool('border_on', SheetBorder));
 End;
 
 {..............................................................................}
 { Gen_SheetOptions - read, and optionally change, the active sheet's zones,   }
-{ margin, border style and template graphics: the SetState_ / GetState_ pairs }
-{ on ISch_Document. Empty parameters are left alone;                          }
-{ the answer is read back after the writes.                                    }
+{ margin, border style, template graphics, title block and border: the       }
+{ SetState_ / GetState_ pairs on ISch_Document. Empty parameters are left     }
+{ alone; the answer is read back after the writes.                             }
 { Params: zones_x, zones_y, custom_zones_x, custom_zones_y, margin_width,     }
 { custom_margin_width (mils), border_style, reference_zones,                   }
-{ show_template_graphics ('true' / 'false').                                   }
+{ show_template_graphics, title_block_on, border_on ('true' / 'false').        }
 {..............................................................................}
 Function Gen_SheetOptions(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     ZX, ZY, CZX, CZY, Margin, CMargin, Border, RefZones, Graphics : String;
+    TitleBlock, SheetBorder : String;
     Wrote : Boolean;
 Begin
     ZX := ExtractJsonValue(Params, 'zones_x');
@@ -9662,6 +9668,8 @@ Begin
     Border := ExtractJsonValue(Params, 'border_style');
     RefZones := LowerCase(ExtractJsonValue(Params, 'reference_zones'));
     Graphics := LowerCase(ExtractJsonValue(Params, 'show_template_graphics'));
+    TitleBlock := LowerCase(ExtractJsonValue(Params, 'title_block_on'));
+    SheetBorder := LowerCase(ExtractJsonValue(Params, 'border_on'));
     SchDoc := SchServer.GetCurrentSchDocument;
     If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
     Begin
@@ -9679,7 +9687,8 @@ Begin
         Exit;
     End;
     Wrote := (ZX <> '') Or (ZY <> '') Or (CZX <> '') Or (CZY <> '') Or (Margin <> '')
-        Or (CMargin <> '') Or (Border <> '') Or (RefZones <> '') Or (Graphics <> '');
+        Or (CMargin <> '') Or (Border <> '') Or (RefZones <> '') Or (Graphics <> '')
+        Or (TitleBlock <> '') Or (SheetBorder <> '');
     If Wrote Then
     Begin
         SchBeginEdit(SchDoc, '');
@@ -9693,6 +9702,8 @@ Begin
             If Border <> '' Then SchDoc.SetState_DocumentBorderStyle(StrToIntDef(Border, 0));
             If RefZones <> '' Then SchDoc.SetState_ReferenceZonesOn(RefZones = 'true');
             If Graphics <> '' Then SchDoc.SetState_ShowTemplateGraphics(Graphics = 'true');
+            If TitleBlock <> '' Then SchDoc.SetState_TitleBlockOn(TitleBlock = 'true');
+            If SheetBorder <> '' Then SchDoc.SetState_BorderOn(SheetBorder = 'true');
         Finally
             SchEndEdit(SchDoc, 'Edit');
         End;
