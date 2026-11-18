@@ -72,17 +72,26 @@ def _unit(dx, dy):
     return (dx / n, dy / n) if n > 1e-12 else (0.0, 0.0)
 
 
-def end_frame(pads, toward):
-    """The direction a row of pads leaves in: across the row, toward the
-    point ``toward``, to the nearest of the eight directions. None when the
-    pads do not lie in a row across it."""
+def end_frame(pads, toward, body=None):
+    """The direction a row of pads leaves in: across the row, to the nearest
+    of the eight directions. Away from ``body`` (the centre of the part the
+    row is on) when the row is to one side of it: an MCU's left-hand pins
+    are left westward whichever way the other end lies, and a lane leaving
+    them eastward would cross the part and come out with its sides
+    swapped. Otherwise toward the point ``toward``. None when the pads do
+    not lie in a row across it."""
     xy = np.array([(p.x, p.y) for p in pads])
     m = xy.mean(axis=0)
     if len(pads) >= 2:
         u, s, vt = np.linalg.svd(xy - m)
         row = (float(vt[0][0]), float(vt[0][1]))
         f = _rot90(row)
-        if _dot(f, (toward[0] - m[0], toward[1] - m[1])) < 0:
+        away = None if body is None else (m[0] - body[0], m[1] - body[1])
+        size = max((max(c.w, c.h) for p in pads for c in p.copper[:1]), default=0.0)
+        if away is not None and abs(_dot(f, away)) > max(size / 2, 2.0):
+            if _dot(f, away) < 0:
+                f = (-f[0], -f[1])
+        elif _dot(f, (toward[0] - m[0], toward[1] - m[1])) < 0:
             f = (-f[0], -f[1])
     else:
         f = (toward[0] - m[0], toward[1] - m[1])
@@ -92,6 +101,38 @@ def end_frame(pads, toward):
     if spread > max(size / 2, 2.0):
         return None, (float(m[0]), float(m[1]))
     return f, (float(m[0]), float(m[1]))
+
+
+def _row_half(pads, f) -> float:
+    """Half the width of a row of pads across ``f``, the pads included."""
+    if f is None:
+        return 0.0
+    m = (sum(p.x for p in pads) / len(pads), sum(p.y for p in pads) / len(pads))
+    n = _rot90(f)
+    size = max((max(c.w, c.h) for p in pads for c in p.copper[:1]), default=0.0)
+    return max(abs(_dot((p.x - m[0], p.y - m[1]), n)) for p in pads) + size / 2
+
+
+def _segments_cross(a, b, c, d) -> bool:
+    """Whether segment a-b crosses segment c-d (touching is not crossing)."""
+    def o(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    return o(a, b, c) * o(a, b, d) < 0 and o(c, d, a) * o(c, d, b) < 0
+
+
+def _body(board, pads):
+    """The centre of the outline of the part a row of pads is on (its
+    courtyard, else its body or copper extent as read), or None when the
+    row is on no one part or the part has no outline."""
+    comps = {p.comp for p in pads}
+    if len(comps) != 1 or not next(iter(comps)):
+        return None
+    comp = next((c for c in board.components if c.ref == next(iter(comps))), None)
+    if comp is None or len(comp.courtyard) < 3:
+        return None
+    xs = [x for x, _ in comp.courtyard]
+    ys = [y for _, y in comp.courtyard]
+    return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
 
 
 def _miter(n1, n2):
@@ -350,8 +391,8 @@ def plan_group(ctx, ends, width: float, pitch: float, li: int, soft=frozenset())
     pb = [b.pads[e[2]] for e in ends]
     ma = (sum(p.x for p in pa) / n, sum(p.y for p in pa) / n)
     mb = (sum(p.x for p in pb) / n, sum(p.y for p in pb) / n)
-    fa, ma = end_frame(pa, mb)
-    fb, mb = end_frame(pb, ma)
+    fa, ma = end_frame(pa, mb, _body(b, pa))
+    fb, mb = end_frame(pb, ma, _body(b, pb))
     if fa is None or fb is None:
         return "the pins at an end are not in a row"
     na = _rot90(fa)                         # left of travel, leaving A
@@ -389,8 +430,15 @@ def plan_group(ctx, ends, width: float, pitch: float, li: int, soft=frozenset())
     cb = start(mb, fb, pb, lat_b)
     pt = lambda c: (float(spec.x(c[0])), float(spec.y(c[1])))    # noqa: E731
     pa_, pb_ = pt(ca), pt(cb)
-    if _dot((pb_[0] - pa_[0], pb_[1] - pa_[1]), fa) <= 0 or \
-            _dot((pa_[0] - pb_[0], pa_[1] - pb_[1]), fb) <= 0:
+    # The leads out of the two ends must not meet or pass each other. Two
+    # ends that face each other pass when either start is beyond the other;
+    # ends that do not face each other (a pair into the far side of a part
+    # goes round it) pass only where their leads cross.
+    facing = _dot(fa, fb) < -0.5
+    if (math.hypot(pb_[0] - pa_[0], pb_[1] - pa_[1]) < 2 * half_w
+            or _segments_cross(ma, pa_, mb, pb_)
+            or (facing and (_dot((pb_[0] - pa_[0], pb_[1] - pa_[1]), fa) <= 0
+                            or _dot((pa_[0] - pb_[0], pa_[1] - pb_[1]), fb) <= 0))):
         return "the two ends are too close for the lanes to fan in"
     reach = cmax + width + pitch
     min_run = 2.0 * TAN_HALF * max(abs(o) for o in offs.values()) + 0.5
@@ -398,12 +446,17 @@ def plan_group(ctx, ends, width: float, pitch: float, li: int, soft=frozenset())
     path = None
     for half in (max(30.0, 0.15 * span), max(90.0, 0.5 * span), max(250.0, 1.5 * span)):
         half += half_w
-        path, room = _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m)
+        path, room = _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m,
+                             mids=(ma, mb), rows=(_row_half(pa, fa), _row_half(pb, fb)))
         if path is not None:
             break
     if path is None:
         return "no room for the lanes on this layer"
     ok = lambda c: np.isfinite(room.cost(np.array([c[0]]), np.array([c[1]]))[0])   # noqa: E731
+    # Pulled straight, the route keeps out of the way back along a lead
+    # (_search); a corner cut at a lead's tip may use it.
+    fenced = getattr(room, "fenced", set())
+    ok_ahead = lambda c: c not in fenced and ok(c)                                 # noqa: E731
     step = lambda f: (int(round(f[1])), int(round(f[0])))                          # noqa: E731
     # The straight leads at either end stay as they are; the route between
     # them is pulled straight.
@@ -411,7 +464,8 @@ def plan_group(ctx, ends, width: float, pitch: float, li: int, soft=frozenset())
     if len(set(path)) != len(path):
         # The leads from the two ends ran into each other.
         return "the two ends are too close for the lanes to fan in"
-    middle = straighten(path[na_ - 1:len(path) - nb_ + 1], ok, step(fa), step((-fb[0], -fb[1])))
+    middle = straighten(path[na_ - 1:len(path) - nb_ + 1], ok_ahead, step(fa),
+                        step((-fb[0], -fb[1])))
     cells = chamfer(path[:na_ - 1] + middle + path[len(path) - nb_ + 1:], ok, min_run, r.pitch)
     if cells is None:
         return "a corner has no room for the lanes to turn together"
@@ -419,7 +473,8 @@ def plan_group(ctx, ends, width: float, pitch: float, li: int, soft=frozenset())
     return _offset_lanes(ctx, cpts, fa, fb, pa, pb, offs, width, pitch, nets, li, row_gap)
 
 
-def _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m=0):
+def _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m=0,
+            mids=None, rows=None):
     r = ctx.r
     spec = r.grid.spec
     (x0, y0), (x1, y1) = pa_, pb_
@@ -468,6 +523,31 @@ def _search(ctx, li, pa_, pb_, ca, cb, fa, fb, half, nids, soft, need, reach, m=
     dst = ahead(ext_b[-1], fb)
     if not src or not dst:
         return None, room
+    # Beside each lead, back toward its pins, is no way to its tip: a path
+    # that came along it would turn back on itself into the lead. Closed
+    # to the search, the way in is from ahead of the tip, as a person
+    # leaves the pins and then turns.
+    behind = np.zeros(cost.shape[1], dtype=bool)
+    for ext, f, mid, row in ((ext_a, fa, (mids or (None, None))[0], (rows or (0.0, 0.0))[0]),
+                             (ext_b, fb, (mids or (None, None))[1], (rows or (0.0, 0.0))[1])):
+        # As wide as the row of pins and the group's own half width.
+        wide = (need + row) / r.pitch + 1.0
+        ty, tx = ext[-1]
+        # Back past the pins: from the tip to the middle of their row.
+        depth = len(ext) + wide + 1.0
+        if mid is not None:
+            depth = max(depth, math.hypot(float(spec.x(tx)) - mid[0],
+                                          float(spec.y(ty)) - mid[1]) / r.pitch + wide)
+        dx, dy = gx - tx, gy - ty
+        along = dx * f[0] + dy * f[1]
+        lat = np.abs(-dx * f[1] + dy * f[0])
+        behind |= (along < 0) & (along > -depth) & (lat <= wide)
+    ends = {(y, x) for y, x in src + dst}
+    if not any(behind[win.rank[y - j0, x - i0]] for y, x in ends if win.contains(y, x)):
+        cost = cost.copy()
+        cost[0, behind] = np.inf
+        # Straightened afterwards, the path keeps out of them too.
+        room.fenced = set(zip(gy[behind].tolist(), gx[behind].tolist()))
     sources = np.array([win.node(0, y, x) for y, x in src], dtype=np.int64)
     targets = np.array([win.node(0, y, x) for y, x in dst], dtype=np.int64)
     h = r._potential(win, targets)

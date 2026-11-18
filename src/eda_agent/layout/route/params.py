@@ -30,6 +30,12 @@ from .grid import EDGE, KEEPOUT, NETLESS, NONE
 
 OBSTACLE_KINDS = ("pad", "track", "via", "region")
 
+#: A pad on no net that a clearance rule names (Name = 'U5-12') is an
+#: owner of its own, under this prefix and its name, so the rule is judged
+#: with that name. Sharing the one netless owner, the pad would be judged
+#: nameless and keep the rule's far-side gap from pins on its own side.
+PAD_OWNER = "\x00pad:"
+
 #: Row offset: owner id -> row index. Ids run from KEEPOUT (-2) upwards;
 #: NONE (-9) is folded onto its own slot.
 _OFFSET = 3
@@ -75,6 +81,10 @@ class RouteRules:
     def facts(self, net: str, kind: str, polygon: bool = False, layer: str = "",
               comp: str = "", smd: bool = False) -> ObjectFacts:
         rs = self.rules
+        if net.startswith(PAD_OWNER):
+            name = net[len(PAD_OWNER):]
+            return ObjectFacts(kind, "", frozenset(), layer, comp or name.rsplit("-", 1)[0],
+                               polygon, smd, "", name)
         return ObjectFacts(kind, net, rs.net_classes.get(net, frozenset()), layer,
                            comp, polygon, smd, rs.diff_pair_of.get(net, ""))
 

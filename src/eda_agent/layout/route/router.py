@@ -28,13 +28,14 @@ from typing import Callable
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
+from ... import job_control
 from .. import geom
 from ..drc import pad_barrels
 from ..model import LayoutBoard, Pad, Region, Track, Via
 from ..rules import RuleSet
 from .grid import (EDGE, KEEPOUT, NETLESS, RouteGrid, _seg_dist, fill_polygon, inner_depth,
                    shape_distance)
-from .params import RouteRules, ViaStyle
+from .params import PAD_OWNER, RouteRules, ViaStyle
 from . import pour as pour_mod
 from .fanout import FanoutPlan, find_bgas, find_exposed_pads, plan_fanout
 from .pour import find_pours
@@ -194,6 +195,17 @@ class Router:
         self.greed = greed
         nets = board.nets()
         net_id = {n: i + 1 for i, n in enumerate(nets)}
+        # Netless pads a clearance rule names: each an owner of its own.
+        named = self.rules.named_pads("clearance")
+        self.pad_owner: dict[int, int] = {}
+        self.pad_owner_net: dict[int, str] = {}
+        for p in board.pads:
+            key = f"{p.comp}-{p.name}"
+            if not p.net and p.comp and key.lower() in named:
+                owned = PAD_OWNER + key
+                net_id.setdefault(owned, len(net_id) + 1)
+                self.pad_owner[id(p)] = net_id[owned]
+                self.pad_owner_net[id(p)] = owned
         self.rr = RouteRules(board, self.rules, net_id)
         # The AI's routing brief (brief.py): obeyed, never bent.
         from .brief import Brief
@@ -245,7 +257,8 @@ class Router:
                              f"these carry some: {sorted(excluded & padded)}")
         routing = [l for l in board.signal_layers() if l not in on_planes and l not in excluded]
         self.grid = RouteGrid(board, self.pitch, reach, layers=routing, grow=self.object_grow,
-                              field_of=self.field_of, n_fields=self.n_fields).build()
+                              field_of=self.field_of, n_fields=self.n_fields,
+                              pad_owner=(self.pad_owner, self.pad_owner_net)).build()
         if self.brief:
             from .brief import area_walls, masks
             self.brief_masks = masks(self, self.brief)
@@ -1500,7 +1513,7 @@ class Router:
         # track or as a pour, share distance fields (see RouteGrid).
         cols: dict[tuple, int] = {}
         self._field: dict[int, int] = {}
-        for o in [NETLESS] + [net_id[n] for n in nets]:
+        for o in [NETLESS] + [net_id[n] for n in nets] + sorted(set(self.pad_owner.values())):
             key = tuple(round(rr.pair_clearance(r, o, poly), 4) for r in reps for poly in (False, True))
             self._field[o] = cols.setdefault(key, len(cols))
         self.n_fields = max(1, len(cols))
@@ -1736,6 +1749,7 @@ class Router:
                 job.via_at[(y, x)] = chosen.get((y, x), self._style_at(job, y, x))
 
     def route_net(self, job: NetJob, pres: float, hard: bool = False) -> None:
+        job_control.checkpoint()
         if job.groups is not None:
             pour_mod.stitch(self, job, pres, hard)
             return
@@ -2112,6 +2126,13 @@ class Router:
         pres = 0.5
         mine: list[int] = []
         for it in range(self.max_iterations):
+            # Past the job's time limit the negotiation stops where it is
+            # and settles: what it has made is kept, the rest reported.
+            if it and job_control.over_time():
+                rep.stalled = True
+                self.log(f"stopped at the time limit after {it} rounds")
+                self._settle()
+                break
             for job in todo:
                 self.route_net(job, pres)
             conflicted = []
@@ -3514,7 +3535,7 @@ def route_adaptive(board: LayoutBoard, log: Callable[[str], None] | None = None,
         log(f"planes {[p.layer for p in r.pour_planes]}: {r.report.failed} failed")
         if best is None or score < best[0]:
             best = (score, r)
-        if score == 0:
+        if score == 0 or job_control.over_time():
             break
         layer = releasable(r, allowed)
         if layer is None:
@@ -3547,7 +3568,8 @@ def _fallback(board: LayoutBoard, best: Router, log, kwargs) -> Router:
     opts = best.options
     loose = replace(opts, plane_fanout=False, class_order=False, axis_entry=False,
                     pad_vias="ic" if opts.pad_vias == "bga" else opts.pad_vias, fallback=False)
-    if not opts.fallback or not best.report.failed or loose == replace(opts, fallback=False):
+    if (not opts.fallback or not best.report.failed or loose == replace(opts, fallback=False)
+            or job_control.over_time()):
         return best
     kw = dict(kwargs)
     kw["stages"] = loose

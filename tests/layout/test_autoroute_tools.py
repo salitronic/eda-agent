@@ -199,7 +199,7 @@ def _autoroute(monkeypatch, tmp_path, board):
     sent = {}
 
     class Store:
-        def submit(self, kind, fn, params):
+        def submit(self, kind, fn, params, time_limit_s=0.0):
             sent.update(params)
             return "job-1"
 

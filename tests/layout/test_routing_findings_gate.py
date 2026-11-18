@@ -157,8 +157,13 @@ def test_a_round_reaches_pads_along_their_axes_and_the_review_has_nothing_to_ask
               Pad("U1", "1", 300, 250, net="X", copper=list(smd)),
               Pad("U1", "2", 300, 300, net="Y", copper=list(smd)),
               Pad("C2", "1", 450, 120, net="X", copper=list(smd))]
-    loose = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True}})
+    loose = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True},
+                       "gloss": False})
     assert review.pad_entries(loose["tracks"], b.pads_by_net()), "the case still shows it"
+    # Gloss lays a run that leaves a pad askew again, along the pad's axis.
+    glossed = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True}})
+    assert review.pad_entries(glossed["tracks"], b.pads_by_net()) == {}
+    assert glossed["summary"]["gloss"]["relaid_clean"] >= 1
     res = route_job({"board": b, "nets": ["X", "Y"],
                      "stages": {"join_existing": True, "axis_entry": True}})
     assert res["summary"]["completion"] == 1.0

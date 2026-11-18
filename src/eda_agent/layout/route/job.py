@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ... import job_control
 from ..bench import copy_board
 from ..drc import usual_via_mask, verdict
 from ..model import LayoutBoard
@@ -43,10 +44,18 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     from ...design import live
     live.publish_safe(board, f"Routing {len(nets) if nets else 'all'} nets.", "route")
     t0 = time.perf_counter()
+    shown = live.progress_logger("route")
+
+    def log(text: str) -> None:
+        # Every line reaches design_job_status; the live view gets one
+        # every few seconds. A cancelled job leaves here too.
+        job_control.note(text)
+        shown(text)
+
     r = route_adaptive(board, nets=frozenset(nets) if nets else None,
                        planes=bool(params.get("planes", True)),
                        stages=params.get("stages"),
-                       log=live.progress_logger("route"), brief=brief,
+                       log=log, brief=brief,
                        release=params.get("release"))
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
@@ -123,6 +132,10 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "old_pours": old_pours,
             "iterations": rep.iterations,
             "seconds": round(time.perf_counter() - t0, 1),
+            # The negotiation stopped at the job's time limit: what it had
+            # made is here, the rest is in unrouted.
+            "stopped_at_time_limit": bool((job_control.current() or
+                                           job_control.Control()).timed_out),
             "sharp_bends": stages["sharp_bends"],
             "unreached_pads": len(stages["unreached"]),
             "vias_in_pads": len(stages["via_in_pad"]),
@@ -180,7 +193,8 @@ def _review(board: LayoutBoard, out: LayoutBoard, brief, res: dict, params: dict
     nets = list(params.get("nets") or [])
     metrics = review.net_metrics(res["tracks"], res["vias"], board.pads_by_net())
     advice = {}
-    if res["unrouted"] and params.get("advise", True):
+    # Advice routes again; a job past its time limit gives none.
+    if res["unrouted"] and params.get("advise", True) and not job_control.over_time():
         advice = review.advise(board, out, res["unrouted"], brief, stages["unreached"],
                                stages=params.get("stages"), round_nets=nets,
                                seconds=float(params.get("advise_seconds", 90.0)),

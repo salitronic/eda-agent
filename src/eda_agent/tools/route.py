@@ -100,6 +100,9 @@ def _fmt(v: Any) -> str:
 #: How many of the loops the board shows a brief read lists.
 LOOPS_LISTED = 12
 
+#: A routing job stops here and keeps what it has made (job_control).
+DEFAULT_TIME_LIMIT_S = 1800.0
+
 
 def _loops_found(board, brief) -> list[dict[str, Any]]:
     """The current loops the board's parts and nets show (design/loops.py),
@@ -173,6 +176,20 @@ def _undecided(found: list[dict[str, str]], level: str) -> dict[str, Any]:
 
 
 #: What a reply holding back undecided nets says to do.
+def _with_partners(board, nets) -> tuple[list, list]:
+    """``nets`` with the other net of every differential pair one of them
+    is in, and the nets added: half a pair is routed as a pair or not at
+    all."""
+    from ..layout.route.diffpair import find_pairs
+
+    partner = {}
+    for _name, pos, neg, _src in find_pairs(board):
+        partner[pos], partner[neg] = neg, pos
+    asked = list(nets)
+    added = sorted({partner[n] for n in asked if n in partner} - set(asked))
+    return asked + added, added
+
+
 DECIDE_FIRST = ("decide these nets first in pcb_route_brief: an entry with their layers and "
                 "the reason (one entry can decide a group of plain nets), with the route you "
                 "want in mind; then, in a later call, confirm what you verified on the board "
@@ -198,6 +215,7 @@ def register_route_tools(mcp):
         neck_pads: bool = True,
         join_existing: bool = False,
         exclude_layers: Optional[list[str]] = None,
+        time_limit_s: float = DEFAULT_TIME_LIMIT_S,
     ) -> dict[str, Any]:
         """Route many nets in one run; to route a board use pcb_route_round.
 
@@ -214,8 +232,8 @@ def register_route_tools(mcp):
         no via goes in a passive's pad. Lays only what pcb_route_brief
         decides: a net with no entry giving layers and reason is left out
         (decision_needed), a critical one without a source too
-        (brief_needed). Routing discipline on the Config tab (the user's)
-        can make that advisory or off.
+        (brief_needed). The user's Routing discipline (Config tab) can
+        relax that.
 
         Args:
             expect_file: Full path of the board; refused if another board
@@ -244,6 +262,7 @@ def register_route_tools(mcp):
                 a net it joins whole is left alone.
             exclude_layers: Copper layers no route may use (not one a
                 net's surface pad is on).
+            time_limit_s: Stop then, keeping what is made; 0: none.
 
         Returns:
             {"job_id", "board", "read": {pads, components, nets, layers}}
@@ -314,7 +333,8 @@ def register_route_tools(mcp):
              "release": _release(brief, level),
              # Reviewed like a round: the findings wait on an answer before
              # pcb_autoroute_apply writes. Advice on unrouted nets is a round's.
-             "review": True, "advise": False})
+             "review": True, "advise": False},
+            time_limit_s=time_limit_s)
         return {
             "job_id": job_id,
             "board": board.name,
@@ -564,6 +584,7 @@ def register_route_tools(mcp):
         nets: Optional[list[str]] = None,
         advise: bool = True,
         use_planes: bool = True,
+        time_limit_s: float = DEFAULT_TIME_LIMIT_S,
     ) -> dict[str, Any]:
         """Route the next round of nets under the brief, then stop for review.
 
@@ -592,11 +613,15 @@ def register_route_tools(mcp):
 
         Args:
             expect_file: full path of the focused board.
-            nets: route these nets as the round (default: the next round).
+            nets: route these nets as the round (default: the next round);
+                the other net of a pair named comes too.
             advise: try options for nets left unrouted (default True).
             use_planes: inner layers a pour covers are planes (default True);
                 one goes to routing only if a brief entry names its layer
                 (summary.plane_declined says what it would close).
+            time_limit_s: stop at this many seconds and keep what is made
+                (summary.stopped_at_time_limit); 0: no limit. Cancel with
+                design_job_cancel.
 
         Returns:
             ``job_id``, ``round`` {kind, nets}, ``rounds_left``, or
@@ -623,10 +648,12 @@ def register_route_tools(mcp):
                     "brief_errors": chk["errors"], "fix": "pcb_route_brief"}
         open_ = await asyncio.to_thread(review.open_nets, board)
         plan = review.rounds(board, brief, chk["critical"], open_)
+        partners: list = []
         if nets:
             unknown = sorted(set(nets) - set(board.nets()))
             if unknown:
                 return {"error": f"no such nets on the board: {unknown[:10]}"}
+            nets, partners = _with_partners(board, nets)
             todo = sorted(set(nets) & open_)
             kind = "asked"
         elif plan:
@@ -657,11 +684,13 @@ def register_route_tools(mcp):
             "layout_route", route_job,
             {"board": board, "nets": todo, "planes": use_planes, "stages": stages,
              "gloss": True, "brief": brief, "release": _release(brief, level),
-             "review": True, "advise": bool(advise)})
+             "review": True, "advise": bool(advise)},
+            time_limit_s=time_limit_s)
         left = [{"kind": r["kind"], "nets": len(r["nets"])} for r in plan
                 if not set(r["nets"]) <= set(todo)]
         return {
             "job_id": job_id, "board": board.name, "round": {"kind": kind, "nets": todo},
+            **({"pair_partners_added": partners} if partners else {}),
             "rounds_left": left, **unbriefed, **undecided, **said,
             "next_step": "call design_job_status(job_id, wait_seconds=90) until done (keep "
                          "calling, do not end your turn), then design_job_result: look at "

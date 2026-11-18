@@ -20,7 +20,13 @@ the shortest octilinear path between its ends that
   ties allowed, and the board edge and keep-outs.
 
 A run is changed only when the new one is shorter, or as short with
-fewer bends.
+fewer bends. A run that breaks the house rules (a piece off the 45 degree
+grid, a piece shorter than its width, an acute corner, a pad left off its
+axis or off its centre, an acute angle where it meets its net's copper) is
+changed, once the runs are laid in their fewest segments, for any clean
+path no more than a little longer (``DIRTY_STRETCH``, ``DIRTY_EXTRA``):
+shortest is no reason to keep it. What stays is named in the report
+(``faults_kept``).
 
 Every run is then laid in the fewest segments (``simplify``): tracks in
 line become one, and a stretch of short jogs or off-angle pieces is
@@ -35,6 +41,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from ... import job_control
 from .. import geom
 from ..drc import BIG_POLY, Item, conductive_items, net_ties, _tied
 from ..model import LayoutBoard, Pad, Track
@@ -52,11 +59,53 @@ GAIN = 0.5
 TURN_SLACK = 0.5
 #: The most points of a run one replacement may span.
 SPAN = 8
+#: A run that breaks the house rules gives way to a clean one up to this
+#: much longer: a factor and a few mils more.
+DIRTY_STRETCH = 1.3
+DIRTY_EXTRA = 20.0
+#: Runs kept with their faults named in the report; the rest are counted.
+FAULTS_LISTED = 30
 
 
 #: Why a run was kept, by the furthest check a shorter path got past.
 KEPT_BECAUSE = ("already_shortest", "pad_entry", "end_angle", "clearance",
                 "would_lose_a_join", "would_cross_a_pad")
+#: Why a run that breaks the house rules was kept: no clean path from its
+#: start to its end is near as short. The rest are KEPT_BECAUSE's.
+NO_CLEAN_PATH = "no_clean_path_near_as_short"
+
+
+def house_faults(pts, a_pad, b_pad, layer: str, width: float,
+                 angle_a: float, angle_b: float) -> list[str]:
+    """What in a run breaks the house rules: ``off_grid`` (a piece off the
+    45 degree grid), ``short_piece`` (shorter than the track is wide, in a
+    run of more than one), ``acute_corner`` (a turn of more than 90
+    degrees), ``pad_entry`` (a pad left off one of its axes or off its
+    centre, or a turn on it), ``acute_join`` (under 90 degrees to the
+    copper an end meets)."""
+    out = []
+    segs = list(zip(pts, pts[1:]))
+    if any(not _octilinear(a, b) for a, b in segs):
+        out.append("off_grid")
+    if len(segs) > 1 and any(math.hypot(b[0] - a[0], b[1] - a[1]) < width - SNAP
+                             for a, b in segs):
+        out.append("short_piece")
+    for a, b, c in zip(pts, pts[1:], pts[2:]):
+        u, v = _dir(a, b), _dir(b, c)
+        if u and v and _turn(u, v) > 90.0 + TURN_SLACK:
+            out.append("acute_corner")
+            break
+    for pad, end, nxt in ((a_pad, pts[0], pts[1]), (b_pad, pts[-1], pts[-2])):
+        if pad is None:
+            continue
+        centred = math.hypot(end[0] - pad.x, end[1] - pad.y) <= SNAP
+        if not centred or not _leaves_pad(pad, layer, end, nxt, width):
+            out.append("pad_entry")
+            break
+    if ((a_pad is None and angle_a < 90.0 - TURN_SLACK)
+            or (b_pad is None and angle_b < 90.0 - TURN_SLACK)):
+        out.append("acute_join")
+    return out
 
 
 @dataclass
@@ -70,6 +119,11 @@ class GlossReport:
     nets: list[str] = field(default_factory=list)
     kept: dict = field(default_factory=dict)
     blocked_by: dict = field(default_factory=dict)
+    #: Runs that break the house rules and stay as they are: net, layer,
+    #: the faults, why, and where the run starts.
+    faults_kept: list = field(default_factory=list)
+    #: Runs laid again for their faults, not their length.
+    relaid_clean: int = 0
     #: Runs laid again in fewer segments, and their track counts.
     simplified: int = 0
     segments_before: int = 0
@@ -88,7 +142,10 @@ class GlossReport:
                 "length_before": round(self.length_before, 3),
                 "length_after": round(self.length_after, 3),
                 "bends_before": self.bends_before, "bends_after": self.bends_after,
-                "nets": sorted(set(self.nets))}
+                "nets": sorted(set(self.nets)),
+                "relaid_clean": self.relaid_clean,
+                "faults_kept": len(self.faults_kept),
+                "faults_kept_listed": self.faults_kept[:FAULTS_LISTED]}
 
 
 def _key(x: float, y: float) -> tuple[int, int]:
@@ -135,13 +192,23 @@ def _sign(v: float) -> float:
 def _forms(p, q):
     """Octilinear paths from p to q: straight, a straight and a 45 in
     either order, one split round the other, and the two right-angle
-    paths a pad axis may need. Every step moves toward q on both axes, so
+    paths a pad axis may need (on the diagonal, also a stub along each
+    axis either side of the 45). Every step moves toward q on both axes, so
     no joint turns more than 90 degrees."""
     dx, dy = q[0] - p[0], q[1] - p[1]
     ax, ay = abs(dx), abs(dy)
     sx, sy = _sign(dx), _sign(dy)
-    if ax < SNAP or ay < SNAP or abs(ax - ay) < SNAP:
+    if ax < SNAP or ay < SNAP:
         return [[p, q]]
+    if abs(ax - ay) < SNAP:
+        # On the diagonal: straight, or leaving along an axis (for a pad)
+        # by a right angle, or by a stub, the 45 and a stub on the other axis.
+        out = [[p, q], [p, (q[0], p[1]), q], [p, (p[0], q[1]), q]]
+        for f in (0.25, 0.5):
+            st = ax * f
+            out.append([p, (p[0] + sx * st, p[1]), (q[0], q[1] - sy * st), q])
+            out.append([p, (p[0], p[1] + sy * st), (q[0] - sx * st, q[1]), q])
+        return out
     a = min(ax, ay)
     diag = (sx * a, sy * a)
     rest = (dx - diag[0], dy - diag[1])
@@ -454,7 +521,10 @@ class _Gloss:
 
     # -- one run --------------------------------------------------------------
 
-    def relay(self, net: str, layer: str, pts, seq: list[Track]) -> bool:
+    def relay(self, net: str, layer: str, pts, seq: list[Track], clean: bool = False) -> bool:
+        """Lay the run again: shorter, or as short with fewer bends; with
+        ``clean``, a run that breaks the house rules as any clean path near
+        as short (and one that breaks none is left)."""
         width = seq[0].width
         if any(abs(t.width - width) > SNAP for t in seq):
             return False
@@ -473,6 +543,10 @@ class _Gloss:
         old_bends = _bends(pts)
         old_a = self._end_angles(net, layer, pts[0], pts[1], mine)
         old_b = self._end_angles(net, layer, pts[-1], pts[-2], mine)
+        faults = house_faults(pts, a_pad, b_pad, layer, width, old_a, old_b) if clean else []
+        if clean and not faults:
+            return False
+        reach = old_len * DIRTY_STRETCH + DIRTY_EXTRA
         best = None
         # The furthest check any path got past: what kept the run as it is,
         # and, kept for clearance, the last thing a path ran into.
@@ -484,7 +558,15 @@ class _Gloss:
                 continue
             new_len = _length(form)
             new_bends = _bends(form)
-            if not (new_len < old_len - GAIN or (new_len <= old_len + SNAP and new_bends < old_bends)):
+            if faults:
+                # Clean is the gain: any path near as short, with no piece
+                # shorter than the track is wide.
+                if new_len > reach or (len(form) > 2 and any(
+                        math.hypot(b[0] - a[0], b[1] - a[1]) < width - SNAP
+                        for a, b in zip(form, form[1:]))):
+                    continue
+            elif not (new_len < old_len - GAIN
+                      or (new_len <= old_len + SNAP and new_bends < old_bends)):
                 continue
             furthest = max(furthest, 0)
             if a_pad and not _leaves_pad(a_pad, layer, form[0], form[1], width):
@@ -494,13 +576,16 @@ class _Gloss:
             furthest = max(furthest, 1)
             # The copper at each end: no sharper than the run met it, and
             # nowhere under 90 degrees where the run was not either.
+            # A run replaced for its faults meets its copper at 90 or more.
+            floor_a = 90.0 if faults else min(old_a, 90.0)
+            floor_b = 90.0 if faults else min(old_b, 90.0)
             if not a_pad:
                 na = self._end_angles(net, layer, form[0], form[1], mine)
-                if na < min(old_a, 90.0) - TURN_SLACK:
+                if na < floor_a - TURN_SLACK:
                     continue
             if not b_pad:
                 nb = self._end_angles(net, layer, form[-1], form[-2], mine)
-                if nb < min(old_b, 90.0) - TURN_SLACK:
+                if nb < floor_b - TURN_SLACK:
                     continue
             furthest = max(furthest, 2)
             shapes = [geom.capsule(a[0], a[1], b[0], b[1], width) for a, b in zip(form, form[1:])]
@@ -516,10 +601,17 @@ class _Gloss:
             score = (new_len, new_bends)
             if best is None or score < best[0]:
                 best = (score, form)
-        self.report.runs += 1
+        if not clean:
+            self.report.runs += 1
         if best is None:
-            why = KEPT_BECAUSE[furthest + 1]
-            self.report.kept[why] = self.report.kept.get(why, 0) + 1
+            why = NO_CLEAN_PATH if faults and furthest < 0 else KEPT_BECAUSE[furthest + 1]
+            if not clean:
+                self.report.kept[why] = self.report.kept.get(why, 0) + 1
+            if faults:
+                # Named, so a tidy that leaves them says which and why.
+                self.report.faults_kept.append(
+                    {"net": net, "layer": layer, "faults": faults, "kept_because": why,
+                     "at": [round(pts[0][0], 1), round(pts[0][1], 1)]})
             if why == "clearance" and self.blocker:
                 self.report.blocked_by[self.blocker] = \
                     self.report.blocked_by.get(self.blocker, 0) + 1
@@ -537,6 +629,8 @@ class _Gloss:
             if self.only is not None:
                 self.only.add(id(t))
         self.report.relaid += 1
+        if clean:
+            self.report.relaid_clean += 1
         self.report.length_before += old_len
         self.report.length_after += _length(form)
         self.report.bends_before += old_bends
@@ -673,6 +767,7 @@ class _Gloss:
             for net in names:
                 if wanted is not None and net not in wanted:
                     continue
+                job_control.checkpoint()
                 for layer in lays:
                     # Runs share no track, so laying one again leaves the
                     # others' tracks in place.
@@ -694,6 +789,17 @@ class _Gloss:
                     if self.only is not None and any(id(t) not in self.only for t in seq):
                         continue
                     self.simplify(net, layer, pts, seq)
+        # Last, what still breaks the house rules gives way to a clean
+        # path near as short.
+        for net in names:
+            if wanted is not None and net not in wanted:
+                continue
+            job_control.checkpoint()
+            for layer in lays:
+                for pts, seq in self._runs(self._free(net, layer)):
+                    if self.only is not None and any(id(t) not in self.only for t in seq):
+                        continue
+                    self.relay(net, layer, pts, seq, clean=True)
         from ..staircase import find as find_staircases
         left = find_staircases(
             t for t in self.board.tracks if not t.comp and not t.keepout

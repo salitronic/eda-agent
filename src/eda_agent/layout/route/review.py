@@ -1149,7 +1149,12 @@ def advise(board: LayoutBoard, routed: LayoutBoard, unrouted: Iterable[str], bri
                 return None
             tried += 1
             try:
-                ok, got = _trial(b() if callable(b) else b, nets, br, stages, release)
+                # A trial routes the board again: it gets what is left of
+                # the budget, not as long as it takes.
+                from ... import job_control
+                ok, got = job_control.within(max(t_end - time.monotonic(), 1.0), _trial,
+                                             b() if callable(b) else b, nets, br, stages,
+                                             release)
             except Exception as exc:  # noqa: BLE001 - a failed trial is an answer
                 ok, got = False, {"error": str(exc)[:120]}
             res = (f"routes it: {got['length']} mil, {got['vias']} vias on "

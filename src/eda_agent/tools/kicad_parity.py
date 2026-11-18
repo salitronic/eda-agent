@@ -509,6 +509,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "design_job_start": "Altium background jobs",
     "design_job_status": "Altium background jobs",
     "design_job_result": "Altium background jobs",
+    "design_job_cancel": "Altium background jobs",
     "design_read_rules_export": "reads Altium's rules export",
     "design_snapshot_inventory": "inventories Altium documents",
     "design_plan_from_sheet": "reads an Altium sheet into a plan",

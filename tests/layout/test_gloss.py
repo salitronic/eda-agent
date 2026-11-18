@@ -270,3 +270,61 @@ def test_a_fenced_net_is_laid_again_only_inside_its_region_and_out_of_its_keep_o
     # Another net's fence does not hold this one.
     b = detour()
     assert gloss(b, fences={"M": ([ell], [])}).relaid == 1
+
+
+# -- runs that break the house rules -----------------------------------------
+
+def _octilinear_all(b, net):
+    from eda_agent.layout.route.gloss import _octilinear
+    return all(_octilinear((t.x1, t.y1), (t.x2, t.y2)) for t in _tracks(b, net))
+
+
+def test_a_shortest_run_off_the_45_degree_grid_is_laid_again_on_it():
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 100, 60, "N")]
+    _path(b, "N", [(0, 0), (100, 60)])
+    r = gloss(b)
+    assert r.relaid_clean == 1 and _octilinear_all(b, "N")
+    assert _length(b, "N") <= math.hypot(100, 60) * 1.3 + 20
+    assert run_drc(b).missing_connections == 0
+
+
+def _as_round(b):
+    return [{"net_name": t.net, "layer": t.layer, "width": t.width, "x1": t.x1, "y1": t.y1,
+             "x2": t.x2, "y2": t.y2} for t in b.tracks]
+
+
+def test_a_diagonal_out_of_a_pads_centre_leaves_along_the_pads_axis():
+    from eda_agent.layout.route import review
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 100, 100, "N")]
+    _path(b, "N", [(0, 0), (100, 100)])
+    assert review.pad_entries(_as_round(b), b.pads_by_net())
+    r = gloss(b)
+    assert r.relaid_clean == 1
+    assert review.pad_entries(_as_round(b), b.pads_by_net()) == {}
+    assert run_drc(b).missing_connections == 0
+
+
+def test_the_faults_a_run_can_have_are_named():
+    from eda_agent.layout.route.gloss import house_faults
+    pad = _pad("A", 0, 0, "N")
+    assert house_faults([(0, 0), (100, 60)], None, None, "TopLayer", 10, 180, 180) == ["off_grid"]
+    assert house_faults([(0, 0), (100, 0), (105, 0), (205, 100)], None, None, "TopLayer",
+                        10, 180, 180) == ["short_piece"]
+    assert house_faults([(0, 0), (100, 0), (50, 50)], None, None, "TopLayer",
+                        10, 180, 180) == ["acute_corner"]
+    assert house_faults([(0, 0), (100, 100)], pad, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
+    assert house_faults([(3, 0), (100, 0)], pad, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
+    assert house_faults([(0, 0), (100, 0)], None, None, "TopLayer", 10, 45, 180) == ["acute_join"]
+    assert house_faults([(0, 0), (100, 0), (150, 50)], pad, None, "TopLayer", 10, 180, 180) == []
+
+
+def test_a_clean_run_is_left_by_the_last_pass():
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 200, 0, "N")]
+    _path(b, "N", [(0, 0), (200, 0)])
+    before = _as_round(b)
+    r = gloss(b)
+    assert r.relaid == 0 and r.relaid_clean == 0 and not r.faults_kept
+    assert _as_round(b) == before

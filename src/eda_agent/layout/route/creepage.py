@@ -63,9 +63,12 @@ def slots(board: LayoutBoard) -> list[list[tuple[float, float]]]:
 def _shapes(board: LayoutBoard, nets: set[str], layer: str, rest: bool = False):
     """(shape, the part it belongs to or "") of the copper on ``layer`` of
     ``nets``, or with ``rest`` of every net not in them (unconnected copper
-    too)."""
+    too, but not the unused pins of a part that has a pin in ``nets``: an
+    isolator's pin with no net is floating, not the far side)."""
     def mine(net: str) -> bool:
         return (net not in nets) if rest else (net in nets)
+
+    ours = {p.comp for p in board.pads if p.comp and p.net in nets} if rest else set()
 
     out = []
     for t in board.tracks:
@@ -78,7 +81,7 @@ def _shapes(board: LayoutBoard, nets: set[str], layer: str, rest: bool = False):
         if mine(v.net) and layer in board.layers_between(v.low_layer, v.high_layer):
             out.append((geom.circle(v.x, v.y, v.layer_diameters.get(layer, v.diameter)), v.comp))
     for p in board.pads:
-        if mine(p.net):
+        if mine(p.net) and not (not p.net and p.comp in ours):
             s = p.shape_on(layer)
             if s is not None:
                 out.append((s, p.comp))

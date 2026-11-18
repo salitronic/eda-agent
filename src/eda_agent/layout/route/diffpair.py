@@ -193,6 +193,10 @@ def route_pairs(ctx) -> None:
             entry["reason"] = "its pins do not pair up at two ends"
             continue
         plan, why = None, "the four pads share no routing layer"
+        # The reason given is the one of a choice of ends with the right
+        # polarity when any got that far: on a connector that carries each
+        # line twice, the other choices only show that they cross.
+        reasons: list[str] = []
         for (pa, na), (pb, nb) in options:
             ends = [(pos, pa, pb), (neg, na, nb)]
             for li in _layers(r, [b.pads[i] for i in (pa, pb, na, nb)]):
@@ -202,6 +206,16 @@ def route_pairs(ctx) -> None:
                 got = plan_group(ctx, ends, width, width + gap, li)
                 if isinstance(got, str):
                     why = "polarity swap needed" if "cross" in got else got
+                    if "too close" in got:
+                        apart = math.dist(((b.pads[pa].x + b.pads[na].x) / 2,
+                                           (b.pads[pa].y + b.pads[na].y) / 2),
+                                          ((b.pads[pb].x + b.pads[nb].x) / 2,
+                                           (b.pads[pb].y + b.pads[nb].y) / 2))
+                        why = (f"{got} ({apart:.0f} mil apart, {b.pads[pa].comp}."
+                               f"{b.pads[pa].name}/{b.pads[na].name} to {b.pads[pb].comp}."
+                               f"{b.pads[pb].name}/{b.pads[nb].name}); the router lays the two "
+                               f"nets on their own")
+                    reasons.append(why)
                     continue
                 if not _brief_allows_lanes(r, (pos, neg), got):
                     why = "the coupled lanes leave the brief's region or enter one of its areas"
@@ -211,7 +225,8 @@ def route_pairs(ctx) -> None:
             if plan is not None:
                 break
         if plan is None:
-            entry["reason"] = why
+            right = [w for w in reasons if w != "polarity swap needed"]
+            entry["reason"] = right[0] if right else why
             continue
         bumps = even_skew(ctx, plan, r.options.pair_skew)
         lp = lane_length(plan.lines[plan.nets.index(pos)])

@@ -159,8 +159,12 @@ class RouteGrid:
     """Distance fields per routing layer, over a uniform grid."""
 
     def __init__(self, board: LayoutBoard, pitch: float, reach: float,
-                 layers: list[str] | None = None, grow=None, field_of=None, n_fields: int = 1):
+                 layers: list[str] | None = None, grow=None, field_of=None, n_fields: int = 1,
+                 pad_owner=None):
         self.board = board
+        # Netless pads a clearance rule names, by id(pad): their owner and
+        # the name it goes by (RouteRules PAD_OWNER).
+        self.pad_owner, self.pad_owner_net = pad_owner or ({}, {})
         # grow(kind, net, comp, layer, smd, polygon): how far a fixed
         # object's shape is grown, for a clearance rule its net alone
         # does not answer (see RouteRules.grow).
@@ -195,6 +199,8 @@ class RouteGrid:
         self.edge_shapes: list[geom.Shape] = []
         nets = board.nets()
         self.net_id = {n: i + 1 for i, n in enumerate(nets)}
+        for pid, owned in self.pad_owner_net.items():
+            self.net_id[owned] = self.pad_owner[pid]
         self.net_name = {i: n for n, i in self.net_id.items()}
 
     # -- building --------------------------------------------------------
@@ -280,11 +286,12 @@ class RouteGrid:
         b = self.board
         L = len(self.layers)
         for p in b.pads:
-            o = self.owner(p.net)
+            o = self.pad_owner.get(id(p)) or self.owner(p.net)
+            net = self.pad_owner_net.get(id(p), p.net)
             for c in p.copper:
                 li = self.layer_index.get(c.layer)
                 if li is not None:
-                    s = self._grown(p.shape_on(c.layer), "pad", p.net, p.comp, c.layer, p.is_smd)
+                    s = self._grown(p.shape_on(c.layer), "pad", net, p.comp, c.layer, p.is_smd)
                     self.add_shape(s, o, li)
             if p.hole > 0 and not p.plated:
                 # An unplated hole is foreign to every net on every layer.

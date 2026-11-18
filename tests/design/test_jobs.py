@@ -71,7 +71,10 @@ def test_ids_are_monotonic_and_list_is_newest_first():
     store.wait(b, timeout=5)
     ids = [j["id"] for j in store.list()]
     assert ids == sorted(ids, reverse=True)
-    assert a == "job-0001" and b == "job-0002"
+    assert a.startswith("job-0001-") and b.startswith("job-0002-")
+    # One token per store: two servers writing to the same workspace
+    # never give two jobs one id.
+    assert a.split("-")[2] == b.split("-")[2] != JobStore().submit("test", lambda: 3).split("-")[2]
 
 
 def test_unknown_job_id():

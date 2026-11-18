@@ -594,6 +594,9 @@ def register_design_tools(mcp) -> None:
         it is done rather than ending your turn: a session that stopped to
         "check when it finishes" was never woken again.
 
+        A running job shows ``elapsed_s`` and ``progress``, the engine's
+        latest line (a router's: the round, nets routed, conflicts).
+
         Args:
             job_id: the job; blank lists every job.
             wait_seconds: hold the call until the job finishes or this
@@ -610,6 +613,24 @@ def register_design_tools(mcp) -> None:
         if wait and store.get(job_id) is not None:
             await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
+        return rec if rec else {"error": f"no such job: {job_id}"}
+
+    @mcp.tool()
+    async def design_job_cancel(job_id: str) -> dict[str, Any]:
+        """Cancel a background job.
+
+        One still waiting never starts. A running one stops at the
+        engine's next step (a net routed, a progress line), usually within
+        seconds: design_job_status shows ``cancel_requested`` until then,
+        and ``cancelled`` after. Nothing a cancelled job made is kept.
+        To keep what a long route has made, give it a time limit instead
+        (pcb_route_round time_limit_s).
+
+        Args:
+            job_id: the job.
+        """
+        from ..design.jobs import get_job_store
+        rec = get_job_store().cancel(job_id)
         return rec if rec else {"error": f"no such job: {job_id}"}
 
     @mcp.tool()

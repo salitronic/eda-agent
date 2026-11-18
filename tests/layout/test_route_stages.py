@@ -262,7 +262,7 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
     sent = {}
 
     class _Store:
-        def submit(self, kind, fn, params):
+        def submit(self, kind, fn, params, time_limit_s=0.0):
             sent.update(kind=kind, params=params)
             return "job-x"
 

@@ -86,7 +86,7 @@ def descriptor_values(descriptor: str) -> dict[str, float]:
 # Scope expressions
 # ---------------------------------------------------------------------------
 
-_TOKEN = re.compile(r"\s*(?:(\()|(\))|('(?:[^']|'')*')|(\w+)|(,))")
+_TOKEN = re.compile(r"\s*(?:(\()|(\))|('(?:[^']|'')*')|(\w+)|(,)|(<>|=))")
 
 
 class _Unknown(Exception):
@@ -105,6 +105,19 @@ class ObjectFacts:
     in_polygon: bool = False
     smd: bool = False
     diff_pair: str = ""
+    #: A pad's name as a query gives it: designator-pin (U9-2).
+    name: str = ""
+
+
+#: Properties a comparison (``Name = 'U9-2'``) may name.
+_PROPERTIES = frozenset({"name", "net", "layer", "component"})
+
+
+def _like(value: str, pattern: str) -> bool:
+    """Altium's Like: * any run of characters, ? one; case ignored."""
+    rx = "".join(".*" if ch == "*" else "." if ch == "?" else re.escape(ch)
+                 for ch in pattern)
+    return re.fullmatch(rx, value, re.IGNORECASE) is not None
 
 
 def _tokens(expr: str) -> list[tuple[str, str]]:
@@ -127,6 +140,8 @@ def _tokens(expr: str) -> list[tuple[str, str]]:
             out.append(("word", m.group(4)))
         elif m.group(5):
             out.append((",", ","))
+        elif m.group(6):
+            out.append(("op", m.group(6)))
     return out
 
 
@@ -180,6 +195,13 @@ class _Parser:
             return node
         if kind != "word":
             raise _Unknown(f"unexpected token {val!r} in scope")
+        op = self.peek()
+        if op[0] == "op" or (op[0] == "word" and op[1].lower() == "like"):
+            self.take()
+            k, v = self.take()
+            if k not in ("str", "word"):
+                raise _Unknown(f"comparison {val} {op[1]} has no value")
+            return ("cmp", val.lower(), op[1].lower(), v)
         args = []
         if self.peek()[0] == "(":
             self.take()
@@ -202,6 +224,13 @@ def _eval(node, f: ObjectFacts) -> bool:
         return _eval(node[1], f) and _eval(node[2], f)
     if op == "not":
         return not _eval(node[1], f)
+    if op == "cmp":
+        have = {"name": f.name, "net": f.net, "layer": f.layer,
+                "component": f.comp}[node[1]]
+        if node[2] == "like":
+            return _like(have, node[3])
+        same = have.lower() == node[3].lower()
+        return same if node[2] == "=" else not same
     name, args = node[1], node[2]
     a0 = args[0] if args else ""
     if name == "all":
@@ -212,6 +241,8 @@ def _eval(node, f: ObjectFacts) -> bool:
         return a0 in f.net_classes
     if name == "incomponent":
         return f.comp == a0
+    if name == "inpad":
+        return f.kind == "pad" and f.name.lower() == a0.lower()
     if name == "onlayer":
         return f.layer == a0 or f.layer.replace(" ", "") == a0.replace(" ", "")
     if name in ("indifferentialpair",):
@@ -242,7 +273,7 @@ def _eval(node, f: ObjectFacts) -> bool:
 _PREDICATES = frozenset({
     "all", "innet", "innetclass", "incomponent", "onlayer",
     "indifferentialpair", "ispad", "isvia", "istrack", "isarc", "isregion",
-    "isfill", "inpolygon", "ispolygon", "issmtpad", "isthpad",
+    "isfill", "inpolygon", "ispolygon", "issmtpad", "isthpad", "inpad",
 })
 
 
@@ -252,6 +283,9 @@ def _check_known(node) -> None:
         _check_known(node[2])
     elif node[0] == "not":
         _check_known(node[1])
+    elif node[0] == "cmp":
+        if node[1] not in _PROPERTIES:
+            raise _Unknown(f"scope property {node[1]} is not evaluated here")
     elif node[1] not in _PREDICATES:
         raise _Unknown(f"scope predicate {node[1]} is not evaluated here")
 
@@ -304,6 +338,32 @@ class RuleSet:
         out.rules.sort(key=lambda rr: rr.rule.priority)
         return out
 
+    def named_pads(self, kind: str) -> set[str]:
+        """Pad names (designator-pin, lower case) the scopes of ``kind``'s
+        rules name: by ``Name = '...'`` or ``InPad('...')``."""
+        out: set[str] = set()
+
+        def walk(node):
+            if not node:
+                return
+            if node[0] == "cmp":
+                if node[1] == "name" and node[2] == "=":
+                    out.add(node[3].lower())
+                return
+            if node[0] == "call":
+                if node[1] == "inpad" and node[2]:
+                    out.add(str(node[2][0]).lower())
+                return
+            for n in node[1:]:
+                if isinstance(n, tuple):
+                    walk(n)
+
+        for rr in self.of_type(kind):
+            if not rr.unknown:
+                walk(rr.scope1)
+                walk(rr.scope2)
+        return out
+
     def of_type(self, kind: str) -> list[ResolvedRule]:
         return [r for r in self.rules if r.type == kind]
 
@@ -319,14 +379,17 @@ class RuleSet:
         comp = item.comp
         smd = False
         in_poly = False
+        name = ""
         if item.kind == "pad":
-            smd = board.pads[item.idx].is_smd
+            pad = board.pads[item.idx]
+            smd = pad.is_smd
+            name = f"{pad.comp}-{pad.name}" if pad.comp else str(pad.name)
         elif item.kind == "region":
             in_poly = board.regions[item.idx].kind == "pour"
         return ObjectFacts(item.kind, item.net,
                            self.net_classes.get(item.net, frozenset()),
                            item.layer, comp, in_poly, smd,
-                           self.diff_pair_of.get(item.net, ""))
+                           self.diff_pair_of.get(item.net, ""), name)
 
     def _matches(self, node, facts: ObjectFacts) -> Optional[bool]:
         key = (id(node), facts)
