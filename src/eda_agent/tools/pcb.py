@@ -746,6 +746,10 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
 #: Issue #381.
 MATCH_MODES = ("group", "within_pair")
 
+#: The relief angles a Polygon Connect rule takes, in degrees. Altium keeps
+#: them as two enum values (45 is 0, 90 is 1). Issue #399.
+RELIEF_ANGLES = (45, 90)
+
 
 def create_rule_params(name: str, rule_type: str = "clearance", value: float = 10,
                        max_value: Optional[float] = None,
@@ -11502,7 +11506,7 @@ def register_pcb_tools(mcp):
                 (kind 6) rule: "relief", "direct" or "none". Confirmed from
                 the rule's own descriptor (``connect_style_confirmed``).
             relief_width_mils / relief_width_mm, air_gap_mils / air_gap_mm,
-                entries (2 or 4), relief_angle (45 or 90, polygon only),
+                entries (2 or 4), relief_angle (45 or 90 degrees, polygon only),
                 relief_expansion_mils (plane only): the relief's settings.
             min_hole_size_mils / max_hole_size_mils: HoleSize
                 constraint limits.
@@ -11610,6 +11614,12 @@ def register_pcb_tools(mcp):
                 return {"ok": False, "reason": f"{key} is 0 or more"}
         if "matched_tolerance_mils" in params and float(params["matched_tolerance_mils"]) <= 0:
             return {"ok": False, "reason": "matched_tolerance_mils is more than 0"}
+        # Altium stores the relief angle as one of two values; any other
+        # number written there corrupts the rule (#399).
+        if relief_angle is not None:
+            if isinstance(relief_angle, bool) or relief_angle not in RELIEF_ANGLES:
+                return {"ok": False, "reason": "relief_angle is 45 or 90 (degrees)"}
+            params["relief_angle"] = str(int(relief_angle))
         if matched_mode is not None:
             if matched_mode not in MATCH_MODES:
                 return {"ok": False, "reason": "matched_mode is "
@@ -11641,8 +11651,16 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "give at least one rule property to change",
                     "properties_updated": 0}
 
-        return await _rule_edit("pcb_set_rule_properties", params,
-                                "pcb.set_rule_properties", params)
+        result = await _rule_edit("pcb_set_rule_properties", params,
+                                  "pcb.set_rule_properties", params)
+        if (relief_angle is not None and isinstance(result, dict)
+                and result.get("relief_angle_confirmed") is False):
+            result["ok"] = False
+            result["reason"] = (
+                f"relief_angle {int(relief_angle)} was written but the rule does not "
+                "read it back (its descriptor is in connect_descriptor; a rule that "
+                "is not Relief Connect does not show its angle)")
+        return result
 
     @mcp.tool()
     async def pcb_place_embedded_board(

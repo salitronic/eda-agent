@@ -1516,6 +1516,21 @@ Begin
             + Missed + '"';
 End;
 
+{ A Polygon Connect relief angle in degrees as the TPolygonReliefAngle value }
+{ SetState_PolygonReliefAngle takes: 45 is ePolygonReliefAngle_45 (0), 90 is }
+{ ePolygonReliefAngle_90 (1). Anything else is -1 and is refused. The setter }
+{ does not take degrees: 45 stored as a value left the rule reading "Relief  }
+{ Angle=Polygon" and 90 left it with an empty descriptor (#399).            }
+Function PolygonReliefAngleNo(Degrees : String) : Integer;
+Var
+    T : String;
+Begin
+    Result := -1;
+    T := Trim(Degrees);
+    If T = '45' Then Result := 0
+    Else If T = '90' Then Result := 1;
+End;
+
 {..............................................................................}
 { PCB_SetRuleProperties - Update metadata + constraint values of a rule.        }
 {                                                                               }
@@ -1576,7 +1591,7 @@ Var
     MinWMM, MaxWMM, FavWMM, CStyle, CWidth, CWidthMM, CGap, CGapMM, CEntries, CAngle, CExp : String;
     ConnReport, ConnProblem, Desc : String;
     WCoord : TCoord;
-    StyleNo, ConnAsked : Integer;
+    StyleNo, ConnAsked, AngleNo : Integer;
     RuleSliverIter : IPCB_MinimumSolderMaskSliverRule;
     RuleSilkMaskIter : IPCB_SilkToSolderMaskClearanceRule;
     RuleSilkSilkIter : IPCB_SilkToSilkClearanceRule;
@@ -2240,7 +2255,9 @@ Begin
     { ALTIUM_RULE_SETTERS), so nothing is read through them. What took is  }
     { read back from the rule's Descriptor, the text Altium itself shows:  }
     { "Polygon Connect Rule(Direct Connect)..." Style numbers: 0 relief,     }
-    { 1 direct, 2 none.                                                     }
+    { 1 direct, 2 none. The relief angle goes in as its enum value, never   }
+    { as degrees (PolygonReliefAngleNo), and is read back as "Relief       }
+    { Angle=45 Angle" from the descriptor.                                  }
     ConnReport := '';
     ConnAsked := 0;
     If (CStyle <> '') Or (CWidth <> '') Or (CWidthMM <> '') Or (CGap <> '')
@@ -2262,6 +2279,10 @@ Begin
             ConnProblem := 'relief_angle is a polygon connect setting';
         If (CExp <> '') And (Kind <> 6) Then
             ConnProblem := 'relief_expansion_mils is a plane connect setting';
+        AngleNo := -1;
+        If CAngle <> '' Then AngleNo := PolygonReliefAngleNo(CAngle);
+        If (ConnProblem = '') And (CAngle <> '') And (AngleNo < 0) Then
+            ConnProblem := 'relief_angle must be 45 or 90 (degrees)';
         If ConnProblem = '' Then
         Begin
             Iter := Board.BoardIterator_Create;
@@ -2284,7 +2305,7 @@ Begin
                             If CGapMM <> '' Then Begin Inc(ConnAsked); RulePolyConn.SetState_ReliefAirGap(MMToCoord(StrToFloatDef(CGapMM, 0))); End
                             Else If CGap <> '' Then Begin Inc(ConnAsked); RulePolyConn.SetState_ReliefAirGap(MilsToCoordF(StrToFloatDef(CGap, 0))); End;
                             If CEntries <> '' Then Begin Inc(ConnAsked); RulePolyConn.SetState_ReliefEntries(StrToIntDef(CEntries, 4)); End;
-                            If CAngle <> '' Then Begin Inc(ConnAsked); RulePolyConn.SetState_PolygonReliefAngle(StrToIntDef(CAngle, 90)); End;
+                            If AngleNo >= 0 Then Begin Inc(ConnAsked); RulePolyConn.SetState_PolygonReliefAngle(AngleNo); End;
                         End;
                         If Not Found Then RulePolyConn := Iter.NextPCBObject;
                     End;
@@ -2325,6 +2346,14 @@ Begin
                     ConnReport := ConnReport + ',"connect_style_confirmed":true'
                 Else
                     ConnReport := ConnReport + ',"connect_style_confirmed":false';
+            End;
+            If AngleNo >= 0 Then
+            Begin
+                If Pos('RELIEFANGLE=' + Trim(CAngle) + 'ANGLE',
+                       UpperCase(StringReplace(Desc, ' ', '', -1))) > 0 Then
+                    ConnReport := ConnReport + ',"relief_angle_confirmed":true'
+                Else
+                    ConnReport := ConnReport + ',"relief_angle_confirmed":false';
             End;
         End
         Else
