@@ -10,7 +10,7 @@ returned without a word, the reply said success and the view never moved.
 It now fits the view to the same square of +-radius mils round x,y as the
 board branch, through Sch:Zoom with Action=ZoomArea and the two corners as
 Location1.x / .y and Location2.x / .y in internal units, the names
-AdvSch.dll reads, beside its "Choose first corner..." prompt.
+schematic server reads, beside its "Choose first corner..." prompt.
 """
 
 from __future__ import annotations

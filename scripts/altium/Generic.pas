@@ -7303,8 +7303,9 @@ End;
 { stopped the polling loop; X and Y were never its parameters.              }
 { SCH / SCHLIB: Sch:Zoom with Action=ZoomArea and the corners as            }
 { Location1.x / .y and Location2.x / .y in internal units (1 mil = 10000),  }
-{ the parameter names AdvSch.dll reads (AD 25, 25B, 26), beside its         }
-{ "Choose first corner..." prompt. The branch ran Sch:ZoomToLocation,       }
+{ the parameter names the schematic server reads (AD 25, 25B, 26),          }
+{ beside its "Choose first corner..." prompt. The branch ran                }
+{ Sch:ZoomToLocation,                                                       }
 { which the schematic server does not have: RunProcess returned without     }
 { a word and the view never moved. Sch:Jump with Location.x / .y does       }
 { not move it either (measured on AD 25.8.1).                               }
