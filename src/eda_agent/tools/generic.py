@@ -1271,6 +1271,9 @@ def register_generic_tools(mcp):
         x: Optional[float] = None,
         y: Optional[float] = None,
         radius: Optional[float] = None,
+        name: str = "",
+        scale: Optional[float] = None,
+        index: Optional[int] = None,
     ) -> dict[str, Any]:
         """Control the viewport zoom level of the focused document.
 
@@ -1283,12 +1286,20 @@ def register_generic_tools(mcp):
                 sheet with its frame), "board" (the board outline with
                 a margin, not parts parked beside it; a schematic fits
                 as "fit"),
-                "selection" (zoom to selected objects) or "point" (zoom
-                to x, y)
+                "selection" (zoom to selected objects), "point" (zoom
+                to x, y) or "object" (centre a named object on a
+                schematic sheet, see name)
             x, y: the point for "point", in mils (a footprint's frame in
                 a PCB library)
             radius: half the width of the view round the point on a board
                 or footprint, mils (default 200)
+            name: for "object": a part's designator, a net label, port,
+                power port or off-sheet connector name, or a harness
+                connector's type; case is ignored. The reply lists every
+                match with its box (what Altium outlines when selected)
+            scale: for "object": how much of the window the object's box
+                fills, percent (default 50)
+            index: for "object": which match to show, from 1 (default 1)
 
         Returns:
             Dictionary confirming the zoom action
@@ -1302,6 +1313,16 @@ def register_generic_tools(mcp):
             if radius is not None:
                 params["radius"] = str(float(radius))
             return await bridge.send_command_async("generic.zoom_to_xy", params)
+        if action == "object":
+            if not name.strip():
+                return {"success": False,
+                        "error": 'action "object" needs a name'}
+            params = {"name": name.strip()}
+            if scale is not None:
+                params["scale"] = str(float(scale))
+            if index is not None:
+                params["index"] = str(int(index))
+            return await bridge.send_command_async("generic.zoom_to_object", params)
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )
