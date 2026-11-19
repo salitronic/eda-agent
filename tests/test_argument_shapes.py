@@ -52,13 +52,18 @@ def test_assignments_and_names_in_any_shape():
     assert _names(["X", " Y"]) == "X,Y"
 
 
-def test_use_tt_fonts_is_written_as_the_text_kind_it_reads_from():
-    assert _assignments("UseTTFonts=true|FontName=Consolas", "eTextObject") \
-        == "TextKind=1|FontName=Consolas"
-    assert _assignments({"Height": 49, "UseTTFonts": False}, "eTextObject") \
-        == "Height=49|TextKind=0"
-    # Only board text has it as a kind.
-    assert _assignments("UseTTFonts=true", "eTrackObject") == "UseTTFonts=true"
+def test_use_tt_fonts_goes_to_altium_as_written(monkeypatch):
+    # The script writes it from each text's own kind (issue #396), which
+    # no rewrite here can see, whatever the type is called.
+    assert _assignments({"Height": 49, "UseTTFonts": False}) == "Height=49|UseTTFonts=false"
+    tools, bridge = _tools(monkeypatch, generic, generic.register_generic_tools)
+    for spelling in ("eTextObject", "text", "TextObject"):
+        asyncio.run(tools["obj_modify"](object_type=spelling, filter="Layer=TopOverlay",
+                                        set="UseTTFonts=true|FontName=Consolas"))
+        assert bridge.sent[-1][1]["set"] == "UseTTFonts=true|FontName=Consolas"
+    asyncio.run(tools["obj_modify"](items=[{"object_type": "text", "filter": "Layer=TopOverlay",
+                                            "set": {"UseTTFonts": False}}]))
+    assert "UseTTFonts=false" in str(bridge.sent[-1][1])
 
 
 def test_obj_modify_sends_a_dict_and_each_items_set_as_text(monkeypatch):
