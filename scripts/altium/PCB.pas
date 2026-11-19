@@ -10307,7 +10307,8 @@ End;
 {..............................................................................}
 { PCB_PlaceText - Place text string on the PCB                                }
 { Params: text, x, y (mils), layer, height (mils), rotation (deg),          }
-{         stroke (mils, optional; Altium's default when empty)              }
+{         stroke (mils, optional; Altium's default when empty),             }
+{         mirror (true / false; empty = mirrored on a bottom-side layer)    }
 {..............................................................................}
 
 { A text justification by name -> Altium's TTextAutoposition ordinal, the    }
@@ -10401,6 +10402,17 @@ Begin
     Else Result := -2;
 End;
 
+{ Whether a placed text is mirrored (issue #417): as asked (Flag 1 / 0),     }
+{ else (Flag -1) when it is on a bottom-side layer (bottom copper, overlay,  }
+{ solder mask or paste), as Altium's own Place String does. A bottom-side    }
+{ text that is not mirrored reads backwards on the board, and the audit      }
+{ reports it (bottom_overlay_text_is_not_mirrored).                          }
+Function TextMirrorWanted(Flag : Integer; Layer : TLayer) : Boolean;
+Begin
+    If Flag = -1 Then Result := PcbCheckIsBottomSide(Layer)
+    Else Result := Flag = 1;
+End;
+
 Function PCB_PlaceText(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -10411,7 +10423,7 @@ Var
     TX, TY : Double;
     TRot, THeight, TStroke : Double;
     FrameW, FrameH, Margin, FX, FY, Ang : Double;
-    Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF : Integer;
+    Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF, MirrorF : Integer;
     Box : TCoordRect;
     TargetLayer : TLayer;
 Begin
@@ -10464,6 +10476,7 @@ Begin
     BoldF := TextFlag(ExtractJsonValue(Params, 'bold'));
     ItalicF := TextFlag(ExtractJsonValue(Params, 'italic'));
     InvF := TextFlag(ExtractJsonValue(Params, 'inverted'));
+    MirrorF := TextFlag(ExtractJsonValue(Params, 'mirror'));
     JustStr := ExtractJsonValue(Params, 'justification');
     FrameWStr := ExtractJsonValue(Params, 'frame_width');
     FrameHStr := ExtractJsonValue(Params, 'frame_height');
@@ -10487,13 +10500,13 @@ Begin
     Margin := StrToFloatDef(MarginStr, 0);
 
     If (Kind = -2) Or (StrokeFontNo < 0) Or (Just < 0) Or (BoldF = -2) Or
-       (ItalicF = -2) Or (InvF = -2) Then
+       (ItalicF = -2) Or (InvF = -2) Or (MirrorF = -2) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
             'kind is stroke or truetype; stroke_font default, sans_serif or serif; '
             + 'justification top_left, top_center, top_right, center_left, center, '
-            + 'center_right, bottom_left, bottom_center or bottom_right; bold, italic '
-            + 'and inverted true or false');
+            + 'center_right, bottom_left, bottom_center or bottom_right; bold, italic, '
+            + 'inverted and mirror true or false');
         Exit;
     End;
     If ((FrameWStr <> '') And (Not IsFloatStr(FrameWStr))) Or
@@ -10622,6 +10635,13 @@ Begin
             TextObj.Rotation := TRot;
             TextObj.EndModify;
         End;
+
+        { Mirrored last and in place: Altium flips a text about its anchor,  }
+        { so the text is moved back by the shift of its bounding box and   }
+        { lands where it would sit unmirrored. x / y mean the same with or  }
+        { without the mirror (issue #417).                                  }
+        If TextMirrorWanted(MirrorF, TargetLayer) Then
+            SetTextMirrorInPlace(TextObj, True);
     Finally
         PcbEndEdit(0);
     End;
@@ -10635,6 +10655,7 @@ Begin
         + ',"font_name":"' + EscapeJsonString(TextObj.FontName) + '"'
         + ',"bold":' + BoolToJsonStr(TextObj.Bold)
         + ',"italic":' + BoolToJsonStr(TextObj.Italic)
+        + ',"mirror":' + BoolToJsonStr(TextObj.MirrorFlag)
         + ',"multiline":' + BoolToJsonStr(TextObj.Multiline)
         + ',"justification":' + IntToStr(TextObj.MultilineTextAutoPosition)
         + ',"frame_width":' + FloatToJsonStr(CoordToMilsF(TextObj.MultilineTextWidth))
