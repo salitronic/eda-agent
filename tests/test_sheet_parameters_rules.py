@@ -334,13 +334,22 @@ def test_an_older_list_gets_its_index_and_rule_fields(monkeypatch):
     assert out["parameters"][1]["rule_fields"] == {"RULEKIND": "Width", "NAME": "W"}
 
 
-def test_add_sends_the_parameter_hidden_by_default(monkeypatch):
+def test_add_always_sends_the_parameter_hidden(monkeypatch):
+    # Altium reads every sheet-level parameter back hidden after a reload,
+    # so the tool offers no visible one and always writes it hidden.
     _, sent = _call(monkeypatch, action="add", name="Checked", value="VH")
     assert sent == [("generic.sheet_parameters", {
         "action": "add", "name": "Checked", "value": "VH",
         "set_value": "true", "hidden": "true"})]
-    _, sent = _call(monkeypatch, action="add", name="Note", value="", hidden=False)
-    assert sent[0][1]["value"] == "" and sent[0][1]["hidden"] == "false"
+    _, sent = _call(monkeypatch, action="add", name="Note", value="")
+    assert sent[0][1]["value"] == "" and sent[0][1]["hidden"] == "true"
+
+
+def test_the_tool_takes_no_hidden_argument(monkeypatch):
+    with pytest.raises(TypeError):
+        _call(monkeypatch, action="add", name="Note", value="x", hidden=False)
+    _, sent = _call(monkeypatch, action="set", name="Title", value="x")
+    assert "hidden" not in sent[0][1]
 
 
 def test_a_rule_is_sent_as_a_record_named_rule(monkeypatch):
@@ -366,8 +375,6 @@ def test_set_and_remove_pick_by_index_or_name(monkeypatch):
     _, sent = _call(monkeypatch, action="set", name="Title", value="")
     assert sent[0][1] == {"action": "set", "name": "Title", "value": "",
                           "set_value": "true"}
-    _, sent = _call(monkeypatch, action="set", index=0, hidden=False)
-    assert sent[0][1] == {"action": "set", "index": "0", "hidden": "false"}
     _, sent = _call(monkeypatch, action="remove", index=3, name="Rule")
     assert sent[0][1] == {"action": "remove", "index": "3", "name": "Rule"}
 
@@ -398,7 +405,6 @@ def test_a_write_reply_carries_the_rule_fields(monkeypatch):
     {"action": "set", "name": "Title", "value": "x", "index": True},
     {"action": "remove"},
     {"action": "remove", "name": "Title", "value": "x"},
-    {"action": "remove", "name": "Title", "hidden": True},
 ])
 def test_a_bad_call_sends_nothing(monkeypatch, kwargs):
     out, sent = _call(monkeypatch, **kwargs)

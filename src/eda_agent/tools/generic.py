@@ -3027,7 +3027,6 @@ def register_generic_tools(mcp):
         # from an empty one without offering "string or null".
         value: str = None,  # type: ignore[assignment]
         rule: Optional[dict[str, Any]] = None,
-        hidden: Optional[bool] = None,
     ) -> dict[str, Any]:
         """List, add, set or remove a schematic sheet's own parameters (the
         title block fields and the sheet's design rules), never a part's.
@@ -3038,18 +3037,19 @@ def register_generic_tools(mcp):
             name: The parameter. list: only those of that name.
             index: Its index as listed (set, remove). With name too, the
                 two must agree; a name that repeats needs the index.
-            value: The value to write (add, set).
+            value: The value to write (add, set). add makes a second
+                parameter of a name already used (a note says so).
             rule: Instead of value, a sheet rule as its fields, e.g.
                 {"RULEKIND": "Clearance", "NAME": "HV", "GAP": "20mil",
                 "NETSCOPE": "DifferentNets", ...}; it is a parameter
                 named Rule. The first rule goes into the sheet's empty
                 system Rule (value *), later ones are new parameters.
-            hidden: Hide it (add: default true). add makes a second
-                parameter of a name already used (a note says so).
 
         list gives each parameter's index, name, value, hidden,
         read_only_state (0 none, 1 name, 2 value, 3 both), system, rule,
-        removable, and a rule's rule_fields. A system parameter (Title,
+        removable, and a rule's rule_fields. add writes it hidden: a
+        sheet's own parameter is never drawn, and Altium reads every one
+        back hidden after a reload. A system parameter (Title,
         Author, Rule ...) takes a value but is not removed: Altium makes it
         again, with the value *, on the next load. A value Altium holds
         read-only is refused. Each write is read back: applied is false
@@ -3092,7 +3092,7 @@ def register_generic_tools(mcp):
             value = value.replace(FILE_FIELD_SEPARATOR, RULE_FIELD_SEPARATOR)
 
         if act == "list":
-            if value is not None or hidden is not None or index is not None:
+            if value is not None or index is not None:
                 return refuse("list takes file_path and name only")
             query = {"file_path": file_path} if file_path else {}
             reply = await get_bridge().send_command_async(
@@ -3117,13 +3117,11 @@ def register_generic_tools(mcp):
             if pname.lower() == "rule" and not rule_fields(value):
                 return refuse("a parameter named Rule holds a rule record; "
                               "give rule={\"RULEKIND\": ..., ...}")
-            if hidden is None:
-                hidden = True
         elif not pname and index is None:
             return refuse(f"{act} needs the parameter's index or name")
-        elif act == "set" and value is None and hidden is None:
-            return refuse("set needs a value, a rule or hidden")
-        elif act == "remove" and (value is not None or hidden is not None):
+        elif act == "set" and value is None:
+            return refuse("set needs a value or a rule")
+        elif act == "remove" and value is not None:
             return refuse("remove takes the index or name only")
 
         ask: dict[str, str] = {"action": act}
@@ -3136,8 +3134,10 @@ def register_generic_tools(mcp):
         if value is not None:
             ask["value"] = value
             ask["set_value"] = "true"
-        if hidden is not None:
-            ask["hidden"] = "true" if hidden else "false"
+        if act == "add":
+            # Altium hides a sheet's own parameters on load (seen on AD 25.8):
+            # write it hidden now so the sheet reads the same before a reload.
+            ask["hidden"] = "true"
         reply = await get_bridge().send_command_async(
             "generic.sheet_parameters", ask)
         if isinstance(reply, dict):
