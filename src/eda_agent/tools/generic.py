@@ -230,10 +230,11 @@ def _names(value: Any) -> Any:
     return value
 
 
-def _assignments(value: Any, object_type: str = "") -> Any:
+def _assignments(value: Any) -> Any:
     """Property assignments as the wire takes them: ``Name=Value`` pairs
-    joined by ``|``. A dict or a list of pairs is accepted too. On board
-    text UseTTFonts is written as the TextKind it reads back from."""
+    joined by ``|``. A dict or a list of pairs is accepted too. Names go
+    to Altium as written: UseTTFonts on board text is written by the
+    script, which reads each text's kind (issue #396)."""
     def text(v: Any) -> str:
         return ("true" if v else "false") if isinstance(v, bool) else str(v)
 
@@ -241,11 +242,6 @@ def _assignments(value: Any, object_type: str = "") -> Any:
         value = "|".join(f"{k}={text(v)}" for k, v in value.items())
     elif isinstance(value, (list, tuple)):
         value = "|".join(str(v) for v in value)
-    if isinstance(value, str) and object_type == "eTextObject":
-        def kind(m: "re.Match[str]") -> str:
-            on = m.group(2).strip().lower() in ("true", "1", "yes")
-            return f"{m.group(1)}TextKind={1 if on else 0}"
-        value = re.sub(r"(^|\|)\s*UseTTFonts\s*=\s*([^|]*)", kind, value)
     return value
 
 
@@ -949,7 +945,7 @@ def register_generic_tools(mcp):
             obj_modify(object_type="eRegionObject",
                        filter="Layer=TopLayer|Net=GND", set="Net=")
         """
-        set = _assignments(set, object_type)
+        set = _assignments(set)
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
                                         ("object_type", object_type),
@@ -959,7 +955,7 @@ def register_generic_tools(mcp):
                 return ops
             for op in ops:
                 if "set" in op:
-                    op["set"] = _assignments(op["set"], str(op.get("object_type") or ""))
+                    op["set"] = _assignments(op["set"])
             return await obj_batch_modify(ops)
         if not object_type or not set:
             return {"ok": False, "reason":

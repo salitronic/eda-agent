@@ -1772,6 +1772,31 @@ Begin
     If Owner <> Nil Then Owner.EndModify;
 End;
 
+{ UseTTFonts, the TrueType switch Altium keeps beside TextKind (issue     }
+{ #396). True makes the text TrueType. False makes a TrueType text stroke }
+{ and leaves a barcode a barcode, which is not TrueType either: the      }
+{ caller asked for no TrueType, not for stroke. The two are written in   }
+{ step, as the TextKind writer does. False when Value is not a boolean.  }
+Function SetTextUseTTFonts(Txt : IPCB_Text; Value : String) : Boolean;
+Begin
+    Result := False;
+    If LowerCase(Value) = 'true' Then
+    Begin
+        Txt.TextKind := 1;
+        Txt.UseTTFonts := True;
+    End
+    Else If LowerCase(Value) = 'false' Then
+    Begin
+        If Txt.TextKind = 1 Then
+        Begin
+            Txt.TextKind := 0;
+            Txt.UseTTFonts := False;
+        End;
+    End
+    Else Exit;
+    Result := True;
+End;
+
 { A via's diameter and hole, written together inside the via's modify    }
 { messages, in the order that never leaves the hole as large as the pad   }
 { on the way: the hole first when it fits inside the current pad, else    }
@@ -2099,6 +2124,16 @@ Begin
             Begin
                 Txt := Obj;
                 SetTextMirrorInPlace(Txt, LowerCase(Value) = 'true');
+            End;
+        End
+        Else If PropName = 'UseTTFonts' Then
+        Begin
+            If Oid <> eTextObject Then
+                Matched := False
+            Else
+            Begin
+                Txt := Obj;
+                If Not SetTextUseTTFonts(Txt, Value) Then Refused := True;
             End;
         End
         { A polygon's Name, as the Polygon Pour dialog shows it (issue     }
