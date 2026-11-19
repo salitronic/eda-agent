@@ -9,13 +9,22 @@ or from an arc's Angle1 counter-clockwise). ``pcb.pad_relief`` reads that
 outline; this module turns the names a person or a board processor uses --
 a side ``N`` / ``E`` / ``S`` / ``W`` with an optional offset, a corner
 ``NE`` / ``SE`` / ``SW`` / ``NW``, or an angle in degrees -- into
-``segment:fraction`` and the board point the spoke will land on.
+``segment:fraction`` and the board point the spoke will land on. An exact
+point can also be given as ``segment:fraction`` itself, for the vertices
+of a custom pad that no direction from the pad centre reaches.
 
 It has no opinions: every name is resolved from the outline read in the
 same call, never from a table (the edge order differs by shape: a rounded
 rectangle runs clockwise from W, a plain rectangle counter-clockwise, round
 and oblong ends are arcs), and a name the outline cannot carry is refused
 with the reason, never moved somewhere near.
+
+Altium runs a custom spoke straight out of the outline at its point:
+square to a straight side, along the bisector of a convex corner, and
+along the radius of an arc (so on a rounded corner every angle of the
+arc's quarter turn can be had). A spoke on a CONCAVE corner is not poured
+as asked (measured on AD 25.8.1: it stands straight up), so it is
+refused.
 """
 from __future__ import annotations
 
@@ -30,6 +39,14 @@ FRAMES = ("pad", "board")
 
 _EPS = 1e-6
 _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
+_SEGMENT = re.compile(r"^(\d+)\s*:\s*(\d+(\.\d*)?|\.\d+)$")
+#: A segment shorter than this (mils) has no length: Altium's rounding
+#: leaves 0.0001 mil steps between two vertices that should be one.
+_TINY = 0.001
+#: A point this close to a vertex (mils) is that vertex.
+_AT_VERTEX = 0.01
+#: A turn smaller than this (sine of the angle) is no corner: a tangent join.
+_SMOOTH = math.sin(math.radians(1.0))
 
 
 class SpokeError(ValueError):
@@ -193,6 +210,73 @@ def _degrees(segs, name, d, cx, cy):
     return best[1], best[2]
 
 
+def _ccw(seg: dict[str, Any]) -> bool:
+    """Whether the outline walks this arc counter-clockwise (from Angle1)."""
+    a1, a2 = math.radians(seg["a1"]), math.radians(seg["a2"])
+    p1 = (seg["cx"] + seg["r"] * math.cos(a1), seg["cy"] + seg["r"] * math.sin(a1))
+    p2 = (seg["cx"] + seg["r"] * math.cos(a2), seg["cy"] + seg["r"] * math.sin(a2))
+    return (math.hypot(seg["x"] - p1[0], seg["y"] - p1[1])
+            <= math.hypot(seg["x"] - p2[0], seg["y"] - p2[1]))
+
+
+def _ends(seg: dict[str, Any]):
+    """The segment as walked: start point, end point, start and end tangent."""
+    if seg["kind"] == "line":
+        dx, dy = seg["x2"] - seg["x"], seg["y2"] - seg["y"]
+        length = math.hypot(dx, dy)
+        if length <= _TINY:
+            return None
+        t = (dx / length, dy / length)
+        return (seg["x"], seg["y"]), (seg["x2"], seg["y2"]), t, t
+    ccw = _ccw(seg)
+    first, last = (seg["a1"], seg["a1"] + _span(seg)) if ccw else (seg["a2"], seg["a1"])
+    pts, tans = [], []
+    for a in (first, last):
+        r = math.radians(a)
+        pts.append((seg["cx"] + seg["r"] * math.cos(r), seg["cy"] + seg["r"] * math.sin(r)))
+        tx, ty = -math.sin(r), math.cos(r)
+        tans.append((tx, ty) if ccw else (-tx, -ty))
+    return pts[0], pts[1], tans[0], tans[1]
+
+
+def concave_corners(segs: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """The outline's concave corners (where it turns away from the pad)."""
+    walked = [e for e in (_ends(s) for s in segs) if e is not None]
+    if len(walked) < 3:
+        return []
+    # Which way round the outline goes: the sign of its area, arcs included.
+    area = 0.0
+    for start, end, _, _ in walked:
+        area += start[0] * end[1] - end[0] * start[1]
+    for s in segs:
+        if s["kind"] != "line":
+            # The arc's bulge past its chord, with the walk's sign.
+            span = math.radians(_span(s))
+            bulge = s["r"] ** 2 * (span - math.sin(span)) / 2
+            area += 2 * bulge if _ccw(s) else -2 * bulge
+    turn = 1.0 if area >= 0 else -1.0
+    out = []
+    for k, (start, _, t_out, _) in enumerate(walked):
+        t_in = walked[k - 1][3]
+        cross = t_in[0] * t_out[1] - t_in[1] * t_out[0]
+        if cross * turn < -_SMOOTH:
+            out.append(start)
+    return out
+
+
+def _segment(segs, token, index, frac):
+    """An exact ``segment:fraction`` point, checked against the outline."""
+    if index >= len(segs):
+        raise SpokeError(f"{token}: the outline has segments 0 .. {len(segs) - 1}")
+    if frac > 1 + _EPS:
+        raise SpokeError(f"{token}: the fraction runs from 0 to 1")
+    seg = segs[index]
+    if _ends(seg) is None:
+        raise SpokeError(f"{token}: segment {index} has no length; "
+                         f"use the one before or after it")
+    return seg, min(frac, 1.0)
+
+
 def parse(token: str) -> tuple[str, float]:
     """``"N:+0.3"`` -> ``("N", 0.3)``; ``"NE"`` -> ``("NE", 0)``; ``"30"`` -> ``("30", 0)``."""
     text = str(token).strip().upper()
@@ -208,7 +292,7 @@ def parse(token: str) -> tuple[str, float]:
     if name in SIDES or name in CORNERS or _NUMBER.match(name):
         return name, 0.0
     raise SpokeError(f"{token}: a spoke is N / E / S / W (with :offset), "
-                     "NE / SE / SW / NW, or an angle in degrees")
+                     "NE / SE / SW / NW, an angle in degrees, or segment:fraction")
 
 
 def resolve(pad: dict[str, Any], spokes: list[str], frame: str = "pad",
@@ -224,7 +308,7 @@ def resolve(pad: dict[str, Any], spokes: list[str], frame: str = "pad",
         raise SpokeError(f"frame is {' or '.join(FRAMES)}")
     segs = segments(pad.get("outline") or [])
     if not segs:
-        raise SpokeError("the pad has no relief outline (thru-hole pads are not covered)")
+        raise SpokeError("the pad has no relief outline")
     cx, cy = float(pad["x"]), float(pad["y"])
     rot = float(pad.get("pad_rotation") or 0.0) if frame == "pad" else 0.0
     w = float(width if width is not None else pad.get("width") or 0.0)
@@ -233,16 +317,27 @@ def resolve(pad: dict[str, Any], spokes: list[str], frame: str = "pad",
         # A spoke as wide as the pad has no edge to leave from: a blob.
         raise SpokeError(f"a spoke {w:g} mil wide is not narrower than the pad "
                          f"({min(sizes):g} mil): give a smaller width")
+    concave = concave_corners(segs)
     out = []
     for token in spokes:
-        name, offset = parse(token)
-        if name in SIDES:
-            seg, frac = _side(segs, name, offset, SIDES[name] + rot, rot, cx, cy, w)
-        elif name in CORNERS:
-            seg, frac = _corner(segs, name, CORNERS[name] + rot, cx, cy)
+        exact = _SEGMENT.match(str(token).strip())
+        if exact:
+            seg, frac = _segment(segs, token, int(exact.group(1)), float(exact.group(2)))
         else:
-            seg, frac = _degrees(segs, name, float(name) + rot, cx, cy)
+            name, offset = parse(token)
+            if name in SIDES:
+                seg, frac = _side(segs, name, offset, SIDES[name] + rot, rot, cx, cy, w)
+            elif name in CORNERS:
+                seg, frac = _corner(segs, name, CORNERS[name] + rot, cx, cy)
+            else:
+                seg, frac = _degrees(segs, name, float(name) + rot, cx, cy)
         x, y = point_on(seg, frac)
+        for vx, vy in concave:
+            if math.hypot(x - vx, y - vy) <= _AT_VERTEX:
+                raise SpokeError(
+                    f"{token}: ({x:g}, {y:g}) is a concave corner of the outline; "
+                    "Altium does not pour a spoke there as asked (it stands straight "
+                    "up): put it on one of the sides beside the corner")
         out.append({"spoke": str(token).strip(), "segment": seg["index"],
                     "fraction": round(frac, 6), "x": round(x, 4), "y": round(y, 4)})
     return out

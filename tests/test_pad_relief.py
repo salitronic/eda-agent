@@ -397,6 +397,91 @@ def test_a_footprint_write_marks_the_library_and_names_the_footprint():
     assert "Body := Body + ',' + JsonStr('footprint', Footprint.Name);" in body
 
 
+# --- exact points and concave corners -----------------------------------------
+
+def _custom_l():
+    # A custom pad as Altium outlines it: an L with a chamfer, three rounded
+    # corners, one concave corner, and two segments of (almost) no length --
+    # Altium's rounding leaves 0.0001 mil steps between vertices that are one.
+    return {"x": 10, "y": 30, "pad_rotation": 0, "width": 6,
+            "size_x": 220, "size_y": 140, "outline": [
+                _line(-100, 40),
+                _arc(-100, 0, -60, 0, 40, 180, 270),
+                _line(-60, -40),
+                _line(80, -40),
+                _line(120, 0),
+                _line(120.0001, 0),
+                _arc(120.0001, 60, 80, 60, 40, 0, 90),
+                _line(80, 100),
+                _arc(20, 100, 20, 60, 40, 90, 180),
+                _line(-20, 60),
+                _line(-20, 40),
+                _line(-20, 40)]}
+
+
+def _xy(pad, token):
+    p = pad_relief.resolve(pad, [token])[0]
+    return p["segment"], p["fraction"], p["x"], p["y"]
+
+
+def test_segment_fraction_is_the_exact_point():
+    pad = _custom_l()
+    assert _xy(pad, "3:0") == (3, 0.0, 80, -40)          # the chamfer's start
+    assert _xy(pad, "5:0")[2:] == (120.0001, 0)          # the chamfer's end
+    _, _, x, y = _xy(pad, "6:0.5")                        # an arc's middle
+    assert (x, y) == (round(80 + 40 * math.cos(math.radians(45)), 4),
+                      round(60 + 40 * math.sin(math.radians(45)), 4))
+    _, frac, x, y = _xy(pad, "1:0.2")                     # 198 degrees round its centre
+    assert frac == 0.2
+    assert math.degrees(math.atan2(y - 0, x + 60)) % 360 == pytest.approx(198, abs=1e-3)
+
+
+def test_a_concave_corner_is_refused_however_it_is_reached():
+    pad = _custom_l()
+    for token in ("11:0", "9:1", "10:0.5"):
+        with pytest.raises(pad_relief.SpokeError, match="concave|no length"):
+            pad_relief.resolve(pad, [token])
+    with pytest.raises(pad_relief.SpokeError, match="concave"):
+        pad_relief.resolve(pad, ["9:1"])
+    # Beside the corner, on its sides, is fine.
+    assert _xy(pad, "9:0.5")[2:] == (-20, 50)
+    assert _xy(pad, "11:0.25")[2:] == (-40, 40)
+
+
+def test_a_rounding_step_is_no_corner_and_no_segment():
+    segs = pad_relief.segments(_custom_l()["outline"])
+    assert pad_relief.concave_corners(segs) == [(-20.0, 40.0)]
+    with pytest.raises(pad_relief.SpokeError, match="no length"):
+        pad_relief.resolve(_custom_l(), ["4:0.5"])
+
+
+def test_convex_outlines_have_no_concave_corner_either_way_round():
+    # The rectangle runs counter-clockwise, the rounded square clockwise.
+    for pad in (_rect(), _rounded_square(), _round(), _octagon(), _oblong()):
+        assert pad_relief.concave_corners(pad_relief.segments(pad["outline"])) == []
+
+
+def test_the_concave_corner_is_found_whichever_way_the_outline_runs():
+    v = [(0, 0), (60, 0), (60, 20), (20, 20), (20, 60), (0, 60)]
+    for order in (v, v[::-1]):
+        segs = pad_relief.segments([_line(x, y) for x, y in order])
+        assert pad_relief.concave_corners(segs) == [(20.0, 20.0)]
+
+
+def test_the_arcs_decide_which_way_round_when_the_corners_alone_say_the_other():
+    # A half disc with a V notch cut into its flat side: the corner points
+    # alone wind the other way; the arc's bulge sets it right.
+    outline = [_arc(-50, 0, 0, 0, 50, 180, 360), _line(50, 0), _line(0, -40)]
+    segs = pad_relief.segments(outline)
+    assert pad_relief.concave_corners(segs) == [(0.0, -40.0)]
+
+
+def test_an_exact_point_outside_the_outline_is_refused():
+    for token, why in (("12:0", "segments 0 .. 11"), ("3:1.5", "0 to 1")):
+        with pytest.raises(pad_relief.SpokeError, match=re.escape(why)):
+            pad_relief.resolve(_custom_l(), [token])
+
+
 # --- the tools -------------------------------------------------------------
 
 class _Mcp:
@@ -487,3 +572,14 @@ def test_the_footprint_is_passed(monkeypatch):
                     footprint="MH1", spokes=["0"], frame="board")
     assert [s[1]["action"] for s in sent] == ["read", "spokes"]
     assert all(s[1]["footprint_name"] == "MH1" for s in sent)
+
+
+def test_exact_points_are_written_as_given_and_a_concave_one_writes_nothing(monkeypatch):
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_custom_l(),
+                        pad="P1", spokes="0:0, 6:0.5, 1:0.2")
+    assert [s[1]["action"] for s in sent] == ["read", "spokes"]
+    assert sent[1][1]["points"] == "0:0.000000;6:0.500000;1:0.200000"
+    reply, sent = _tool(monkeypatch, "pcb_pad_relief_spokes", read=_custom_l(),
+                        pad="P1", spokes=["0:0", "11:0"])
+    assert reply["ok"] is False and "concave" in reply["reason"]
+    assert [s[1]["action"] for s in sent] == ["read"]

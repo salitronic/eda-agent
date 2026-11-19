@@ -2622,7 +2622,7 @@ def register_pcb_tools(mcp):
         (the current footprint, or ``footprint``), which carries the relief
         onto every board the footprint is placed on.
         With no value given it reads; with any value it writes the pad
-        (SMD pads only) and reads it back. The pour shows a pad's own
+        (thru-hole pads per layer, as vias) and reads it back. The pour shows a pad's own
         relief only where the polygon connect rule lets the pad decide;
         repour afterwards (pcb_repour_polygons).
 
@@ -2709,9 +2709,13 @@ def register_pcb_tools(mcp):
                 "S", "W", optionally with an offset from -1 to +1 along it
                 ("N:+0.5"; + is east on N / S and north on E / W; 1 puts
                 the spoke's edge at the end of the straight part); a
-                corner "NE", "SE", "SW", "NW"; or an angle in degrees
+                corner "NE", "SE", "SW", "NW"; an angle in degrees
                 ("30"; 0 = east, counter-clockwise), the way for round
-                pads and oblong ends.
+                pads and oblong ends; or "segment:fraction" ("3:0" = the
+                start vertex of outline segment 3), the exact point, for
+                a custom pad's corners. A spoke leaves square to the
+                outline at its point; one on a concave corner is refused.
+                tool_guide "custom relief spokes" says where each lands.
             designator: The part, e.g. "C12"; empty for a free pad.
             pad: The pad name; a free pad by name or by x / y.
             x: A free pad's centre in mils from the board origin (with y).
