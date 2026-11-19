@@ -1505,6 +1505,28 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "obj_modify on ePadObject: JumperID (0 none), SwapID_Pad, SwapID_Part.",
     },
     {
+        "task": "Place custom relief spokes on a pad or via, aimed where they should go",
+        "keywords": ("spoke", "spokes", "custom", "relief", "thermal", "pad", "via",
+                     "corner", "angle", "concave", "vertex"),
+        "when": (("spoke",), ("spokes",), ("custom", "relief"), ("relief", "corner")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_pad_relief_spokes", "pcb_pad_relief", "pcb_repour_polygons"],
+        "avoid": [],
+        "note": (
+            "A custom spoke is only a point on the pad's relief outline; Altium "
+            "runs it straight out of the outline there: square to a straight "
+            "side, along the bisector of a convex corner, along the radius of "
+            "an arc (any angle of a rounded corner's quarter turn). There is "
+            "no angle to set: to aim a spoke, pick the outline point that "
+            "faces that way. On a concave corner it is not poured as asked, "
+            "so the tool refuses it. Name points by side, corner, angle from "
+            "the pad centre, or segment:fraction from pcb_pad_relief's "
+            "outline (exact vertices of a custom pad). The pour shows them "
+            "only where the polygon connect rule lets the pad decide."
+        ),
+    },
+    {
         "task": "Reorder a project's documents or add library search paths",
         "keywords": ("order", "reorder", "document", "sheet", "search",
                      "path", "port", "entry", "names", "identifier",
