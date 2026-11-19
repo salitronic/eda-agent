@@ -139,3 +139,31 @@ def test_no_registration_is_a_warning(monkeypatch):
     if sys.platform != "win32":
         pytest.skip("the check skips off Windows")
     assert health._check_script_registration().status == health.Status.WARN
+
+
+def test_scripts_altium_loads_from_the_source_folder_are_left_in_place(
+        monkeypatch, tmp_path):
+    from eda_agent import config as config_module
+    src = tmp_path / "clone" / "scripts" / "altium"
+    src.mkdir(parents=True)
+    unit = src / "Main.pas"
+    unit.write_bytes(b"Unit Main;\r\nEnd.\r\n")
+    (src / "Altium_API.PrjScr").write_text("")
+    workspace = tmp_path / "server_ws"
+    monkeypatch.setattr(
+        config_module, "config",
+        config_module.config.model_copy(update={"workspace_dir": workspace}))
+    written = []
+    monkeypatch.setattr(config_module, "write_workspace_pointer",
+                        lambda p: written.append(Path(p)))
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: src)
+
+    def no_copy(*a, **k):
+        raise AssertionError("copied a file onto itself")
+
+    monkeypatch.setattr(cli.shutil, "copy2", no_copy)
+    # The same folder spelled another way still counts as the same.
+    same = tmp_path / "clone" / "scripts" / ".." / "scripts" / "altium"
+    assert cli._install_scripts_into(same, force=True) == 0
+    assert unit.read_bytes() == b"Unit Main;\r\nEnd.\r\n", "not stamped"
+    assert written == [workspace]

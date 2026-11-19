@@ -486,7 +486,7 @@ def rule_steps(board: dict[str, Any], nets: dict[str, str],
             mw = _k(float(min_w)) if min_w else tw
             steps.append({"tool": "pcb_create_design_rule", "args": {
                 "name": f"Width_{alt}", "rule_type": "width", "value": min(mw, tw),
-                "max_value": max(tw * 10, 80.0), "favored_value": int(round(tw)),
+                "max_value": max(tw * 10, 80.0), "favored_value": round(tw, 4),
                 "scope": f"InNetClass('{alt}')"}})
     return steps
 

@@ -367,3 +367,41 @@ def test_the_backend_flag_offers_every_backend_that_exists():
     # And the name really does resolve to every backend, so the check
     # above cannot be satisfied by a BACKENDS that has gone stale.
     assert "easyeda" in BACKENDS and "kicad" in BACKENDS
+
+
+def test_a_board_outside_the_compiled_project_lists_its_own_parts(monkeypatch):
+    from eda_agent.core.backends import AltiumBackend
+
+    class _Bridge:
+        def __init__(self):
+            self.sent = []
+
+        async def send_command_async(self, command, params=None, **kw):
+            self.sent.append(command)
+            if command == "project.get_bom":
+                return {"components": [], "project_path": r"C:\p\P.PrjPcb"}
+            if command == "pcb.get_components":
+                return {"components": [{"designator": "U1", "comment": "MCU",
+                                        "footprint": "QFN48", "layer": "Top"}]}
+            return {}
+
+    bridge = _Bridge()
+    monkeypatch.setattr("eda_agent.bridge.get_bridge", lambda: bridge)
+    snap = asyncio.run(AltiumBackend().snapshot())
+    assert [p.refdes for p in snap.parts] == ["U1"]
+    assert "board in front" in snap.raw_stats["parts_from"]
+    assert bridge.sent == ["project.get_bom", "pcb.get_components"]
+
+
+def test_parts_from_the_project_bom_say_which_project(monkeypatch):
+    from eda_agent.core.backends import AltiumBackend
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, **kw):
+            assert command == "project.get_bom", "the board is not read"
+            return {"components": [{"designator": "R1", "pins": []}],
+                    "project_path": r"C:\p\P.PrjPcb"}
+
+    monkeypatch.setattr("eda_agent.bridge.get_bridge", lambda: _Bridge())
+    snap = asyncio.run(AltiumBackend().snapshot())
+    assert snap.raw_stats["parts_from"] == r"the BOM of C:\p\P.PrjPcb"

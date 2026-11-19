@@ -6197,8 +6197,41 @@ End;
 { Params: profile, layer (required); enabled, width_locked, gap_locked,       }
 { use_solder_mask ('true'/'false'); width_mils, min_width_mils,               }
 { max_width_mils, gap_mils, min_gap_mils, max_gap_mils,                       }
-{ clearance_to_plane_mils, mask_between_mils, mask_on_top_mils. Read back.    }
+{ clearance_to_plane_mils, mask_between_mils, mask_on_top_mils;              }
+{ top_reference, bottom_reference (layer names; 'none' clears one). Read back. }
 {..............................................................................}
+{ A reference layer of T by its name, '' when it has none or it cannot be     }
+{ read. The layer goes in and comes out as its ID, as CreateTraceImpedance    }
+{ takes it.                                                                  }
+Function ImpRefName(T : IPCB_TraceImpedance; Top : Boolean) : String;
+Var
+    Id : Integer;
+Begin
+    Result := '';
+    Id := 0;
+    Try
+        If Top Then Id := T.GetState_RefTopLayer Else Id := T.GetState_RefBottomLayer;
+    Except Id := 0; End;
+    If Id > 0 Then Try Result := LayerDisplayName(Id); Except Result := ''; End;
+End;
+
+{ Set a reference layer of T from Name, and say whether it reads back. }
+Function ImpSetRef(Board : IPCB_Board; T : IPCB_TraceImpedance; Top : Boolean; Name : String) : Boolean;
+Var
+    Id : TLayer;
+Begin
+    Result := False;
+    If LowerCase(Name) = 'none' Then Id := eNoLayer Else Id := ResolveLayerId(Board, Name);
+    If (Id = eNoLayer) And (LowerCase(Name) <> 'none') Then Exit;
+    Try
+        If Top Then T.SetState_RefTopLayer(Id) Else T.SetState_RefBottomLayer(Id);
+    Except Exit; End;
+    If LowerCase(Name) = 'none' Then
+        Result := ImpRefName(T, Top) = ''
+    Else
+        Result := SameText(ImpRefName(T, Top), LayerDisplayName(Id));
+End;
+
 Function ImpTraceJson(T : IPCB_TraceImpedance) : String;
 Begin
     Result := JsonBool('enabled', T.IsEnabled) + ','
@@ -6214,7 +6247,9 @@ Begin
         + JsonBool('use_solder_mask', T.UseSolderMask) + ','
         + JsonRaw('mask_between_mils', FloatToJsonStr(CoordToMilsF(T.SolderMaskThicknessBetweenTraces))) + ','
         + JsonRaw('mask_on_top_mils', FloatToJsonStr(CoordToMilsF(T.SolderMaskThicknessOnTopOfTraces))) + ','
-        + JsonRaw('calculated_ohms', FloatToJsonStr(T.CalculatedImpedance));
+        + JsonRaw('calculated_ohms', FloatToJsonStr(T.CalculatedImpedance)) + ','
+        + JsonStr('top_reference', ImpRefName(T, True)) + ','
+        + JsonStr('bottom_reference', ImpRefName(T, False));
 End;
 
 { Set one mils field and note it in Missed when it does not read back. }
@@ -6313,6 +6348,10 @@ Begin
         If V <> '' Then Begin T.SolderMaskThicknessBetweenTraces := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.SolderMaskThicknessBetweenTraces, V) Then Missed := Missed + '"mask_between_mils",'; End;
         V := ExtractJsonValue(Params, 'mask_on_top_mils');
         If V <> '' Then Begin T.SolderMaskThicknessOnTopOfTraces := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.SolderMaskThicknessOnTopOfTraces, V) Then Missed := Missed + '"mask_on_top_mils",'; End;
+        V := ExtractJsonValue(Params, 'top_reference');
+        If V <> '' Then Begin If Not ImpSetRef(Board, T, True, V) Then Missed := Missed + '"top_reference",'; End;
+        V := ExtractJsonValue(Params, 'bottom_reference');
+        If V <> '' Then Begin If Not ImpSetRef(Board, T, False, V) Then Missed := Missed + '"bottom_reference",'; End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
@@ -6578,7 +6617,8 @@ Var
     LayerName, AboveName, BelowName, Order : String;
     TargetLayer, RefLayer : TLayer;
     RefObj, NewObj, Walk : IPCB_LayerObject_V7;
-    Refreshed, InParts : Integer;
+    Refreshed, InParts, Copper, FirstCopper : Integer;
+    CopperNote : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -6652,6 +6692,29 @@ Begin
             If AboveName <> '' Then LayerStack.InsertInStackAbove(RefObj, NewObj)
             Else LayerStack.InsertInStackBelow(RefObj, NewObj);
         End;
+        { Altium can leave the inserted layer with no copper thickness, and  }
+        { the saved stack then carries a copper layer 0 thick. It takes the  }
+        { first layer's thickness, and the reply says so.                    }
+        CopperNote := '';
+        Copper := 0;
+        NewObj := Nil;
+        Try NewObj := LayerStack.LayerObject_V7[TargetLayer]; Except NewObj := Nil; End;
+        If NewObj <> Nil Then
+        Begin
+            Copper := -1;
+            Try Copper := NewObj.CopperThickness; Except Copper := -1; End;
+            FirstCopper := 0;
+            Try FirstCopper := LayerStack.FirstLayer.CopperThickness; Except FirstCopper := 0; End;
+            If (Copper = 0) And (FirstCopper > 0) Then
+            Begin
+                Try NewObj.CopperThickness := FirstCopper; Except { read back below } End;
+                Try Copper := NewObj.CopperThickness; Except End;
+                If Copper = FirstCopper Then
+                    CopperNote := 'Altium gave the new layer no copper thickness; it has the '
+                        + 'first layer''s, ' + FloatToJsonStr(CoordToMilsF(FirstCopper))
+                        + ' mil. Set it with pcb_modify_layer.';
+            End;
+        End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
         { The vias already on the board do not see the new layer yet. }
@@ -6674,6 +6737,8 @@ Begin
         + ',"stack_order":[' + Order + ']'
         + ',"vias_refreshed":' + IntToStr(Refreshed)
         + ',"vias_in_components":' + IntToStr(InParts)
+        + ',"copper_thickness_mils":' + FloatToJsonStr(CoordToMilsF(Copper))
+        + ',"copper_note":"' + EscapeJsonString(CopperNote) + '"'
         + ',"file_path":"' + EscapeJsonString(Board.FileName) + '"'
         + ',"note":"Vias loaded with the board count on the new layer now. '
         + 'A via placed since the board was opened does not until the board is '
@@ -30643,10 +30708,12 @@ End;
 
 {..............................................................................}
 { PCB_LocalGrid - a cartesian or polar grid for one area of the board.        }
-{ Params: action add_cartesian|add_polar|delete_all|at; x, y (origin, mils), }
-{ name, step_x, step_y, rotation (cartesian); angular_step, radial_step,     }
-{ min_radius, max_radius, start_angle, end_angle (polar).                   }
-{ 'at' reads the grid that applies at x, y.                                  }
+{ Params: action add_cartesian|add_polar|delete_all|delete|list|at; x, y     }
+{ (origin, mils), name, step_x, step_y, rotation, width, height (cartesian;  }
+{ width and height are one quadrant's size in mils); angular_step,          }
+{ radial_step, min_radius, max_radius, start_angle, end_angle (polar).      }
+{ 'at' reads the grid that applies at x, y; 'list' reads every grid;        }
+{ 'delete' removes the grids named name.                                    }
 {..............................................................................}
 { The members every placement grid has, as JSON members (no braces). }
 Function SdkGridCommonJson(G : IPCB_PlacementGrid) : String;
@@ -30668,15 +30735,20 @@ End;
 Function SdkCartesianJson(G : IPCB_CartesianGrid) : String;
 Var
     StepX, StepY, Rot : Double;
+    QX, QY : Integer;
 Begin
-    StepX := 0; StepY := 0; Rot := 0;
+    StepX := 0; StepY := 0; Rot := 0; QX := 0; QY := 0;
     Try StepX := G.GetProperty_GridStepX; Except End;
     Try StepY := G.GetProperty_GridStepY; Except End;
     Try Rot := G.GetProperty_Rotation; Except End;
+    Try QX := G.GetProperty_QuadrantSizeX; Except End;
+    Try QY := G.GetProperty_QuadrantSizeY; Except End;
     Result := JsonObj(SdkGridCommonJson(G) + ','
         + JsonStr('kind', 'cartesian') + ','
         + JsonFloat('step_x_mils', StepX / 10000) + ','
         + JsonFloat('step_y_mils', StepY / 10000) + ','
+        + JsonFloat('width_mils', CoordToMilsF(QX)) + ','
+        + JsonFloat('height_mils', CoordToMilsF(QY)) + ','
         + JsonFloat('rotation', Rot));
 End;
 
@@ -30701,6 +30773,26 @@ Begin
         + JsonFloat('end_angle', A2));
 End;
 
+{ One grid of the board as JSON: cartesian when it has a step, else polar. }
+Function SdkAnyGridJson(G : IPCB_PlacementGrid) : String;
+Var
+    CG : IPCB_CartesianGrid;
+    PG : IPCB_PolarGrid;
+    StepX : Double;
+    IsCartesian : Boolean;
+Begin
+    CG := G;
+    IsCartesian := False;
+    Try StepX := CG.GetProperty_GridStepX; IsCartesian := True; Except IsCartesian := False; End;
+    If IsCartesian Then
+        Result := SdkCartesianJson(CG)
+    Else
+    Begin
+        PG := G;
+        Result := SdkPolarJson(PG);
+    End;
+End;
+
 Function PCB_LocalGrid(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -30708,14 +30800,15 @@ Var
     G : IPCB_PlacementGrid;
     CG : IPCB_CartesianGrid;
     PG : IPCB_PolarGrid;
-    Action, Name, Problem, Body, V : String;
-    X, Y : Integer;
+    It : IPCB_PlacementGridIterator;
+    Action, Name, Problem, Body, V, GridName : String;
+    X, Y, Count, Deleted : Integer;
 Begin
     Action := LowerCase(ExtractJsonValue(Params, 'action'));
-    If Pos('|' + Action + '|', '|add_cartesian|add_polar|delete_all|at|') = 0 Then
+    If Pos('|' + Action + '|', '|add_cartesian|add_polar|delete_all|delete|list|at|') = 0 Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
-            'action is add_cartesian, add_polar, delete_all or at');
+            'action is add_cartesian, add_polar, delete_all, delete, list or at');
         Exit;
     End;
     X := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'x'), 0));
@@ -30741,6 +30834,81 @@ Begin
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('action', Action) + ','
             + JsonBool('done', Problem = '') + ',' + JsonStr('problem', Problem)));
+        Exit;
+    End;
+    If (Action = 'list') Or (Action = 'delete') Then
+    Begin
+        If (Action = 'delete') And (Name = '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'delete needs the name of the grid');
+            Exit;
+        End;
+        It := Nil;
+        Try It := Mgr.CreatePlacementGridIterator; Except It := Nil; End;
+        If It = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED', 'The grid manager gives scripts no list of its grids');
+            Exit;
+        End;
+        Body := '';
+        Count := 0;
+        G := It.First;
+        While G <> Nil Do
+        Begin
+            GridName := '';
+            Try GridName := G.GetProperty_NameW; Except End;
+            If Action = 'list' Then
+            Begin
+                If Body <> '' Then Body := Body + ',';
+                Body := Body + SdkAnyGridJson(G);
+            End
+            Else If SameText(GridName, Name) Then
+                { Counted here and deleted after the walk, so the walk is }
+                { not changed under it.                                   }
+                Inc(Count);
+            G := It.Next;
+        End;
+        If Action = 'list' Then
+        Begin
+            Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('action', Action) + ','
+                + JsonRaw('grids', '[' + Body + ']')));
+            Exit;
+        End;
+        Problem := '';
+        Deleted := 0;
+        While Deleted < Count Do
+        Begin
+            G := Nil;
+            It := Nil;
+            Try It := Mgr.CreatePlacementGridIterator; Except It := Nil; End;
+            If It <> Nil Then
+            Begin
+                G := It.First;
+                While G <> Nil Do
+                Begin
+                    GridName := '';
+                    Try GridName := G.GetProperty_NameW; Except End;
+                    If SameText(GridName, Name) Then Break;
+                    G := It.Next;
+                End;
+            End;
+            If G = Nil Then Break;
+            Try
+                If Not Mgr.DeleteGrid(G) Then Problem := 'the grid manager kept a grid';
+            Except
+                Problem := 'the grid manager raised an error';
+            End;
+            If Problem <> '' Then Break;
+            Inc(Deleted);
+        End;
+        If Deleted > 0 Then
+        Begin
+            MarkDocDirtyByPath(Board.FileName);
+            Try Board.GraphicallyInvalidate; Except End;
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('action', Action) + ','
+            + JsonInt('deleted', Deleted) + ',' + JsonBool('done', (Count > 0) And (Problem = '')) + ','
+            + JsonStr('problem', Problem)));
         Exit;
     End;
     If Action = 'at' Then
@@ -30832,6 +31000,16 @@ Begin
         If V <> '' Then
         Begin
             Try CG.SetProperty_Rotation(StrToFloatDef(V, 0)); Except Problem := Problem + 'rotation '; End;
+        End;
+        V := ExtractJsonValue(Params, 'width');
+        If V <> '' Then
+        Begin
+            Try CG.SetProperty_QuadrantSizeX(MilsToCoordF(StrToFloatDef(V, 0))); Except Problem := Problem + 'width '; End;
+        End;
+        V := ExtractJsonValue(Params, 'height');
+        If V <> '' Then
+        Begin
+            Try CG.SetProperty_QuadrantSizeY(MilsToCoordF(StrToFloatDef(V, 0))); Except Problem := Problem + 'height '; End;
         End;
         Body := SdkCartesianJson(CG);
     End;

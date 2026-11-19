@@ -8995,7 +8995,6 @@ End;
 
 {..............................................................................}
 { Gen_GetActiveNet - the net of the object selected on a schematic: a net     }
-{ (issue #388).                                                               }
 { label, a port, a power port or a wire. ONE iterator, filtered to those four }
 { kinds, first level only, stops at the first selected object and keeps its  }
 { Handle. The net is then asked of the COMPILED netlist of the sheet's       }
@@ -9007,8 +9006,8 @@ End;
 {   route=lines             the sheet's nets walked; a wire matched by         }
 {                           DM_Lines(j).DM_SchHandle, another object by       }
 {                           DM_AllNetItems(j).DM_SchHandle; answers all four  }
-{ MEASURED on AD 25.8.1 (a busy sheet of a large project, 2026-11-17):      }
-{ both routes 0-47 ms inside Altium, the same name wherever both answer.     }
+{ Both routes take under 50 ms on a busy sheet and give the same name       }
+{ wherever both answer.                                                       }
 { NOT USED: DM_GetNetNamesForObject returns, but reading Count on the        }
 { IStrings it returns puts the script in break.                              }
 { Nothing is written. Nothing is compiled unless compile=true (the bridge's  }

@@ -1162,6 +1162,119 @@ def _scan_duplicate_definitions(targets: list) -> list:
     return findings
 
 
+#: A routine's header: its name and the text between its brackets.
+_HEADER_ARGS = re.compile(
+    r"\b(?:Function|Procedure)\s+([A-Za-z_]\w*)\s*(\(([^()]*)\))?", re.IGNORECASE)
+
+
+def _param_range(params: str) -> tuple:
+    """How many arguments a parameter list takes: (fewest, most). A
+    parameter with a default may be left out."""
+    if not params.strip():
+        return (0, 0)
+    least = most = 0
+    for group in params.split(";"):
+        if ":" not in group:
+            continue
+        names, _, rest = group.partition(":")
+        names = re.sub(r"^\s*(?:Var|Const|Out)\s+", "", names, flags=re.IGNORECASE)
+        count = len([n for n in names.split(",") if n.strip()])
+        most += count
+        if "=" not in rest:
+            least += count
+    return (least, most)
+
+
+def _call_args(text: str, start: int) -> Optional[int]:
+    """The number of arguments of the call whose '(' is at ``start``, or
+    None when its closing bracket is not found."""
+    depth, count, saw = 0, 0, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch in "([":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch in ")]":
+            depth -= 1
+            if depth == 0:
+                return count + 1 if saw else 0
+        elif ch == "," and depth == 1:
+            count += 1
+            continue
+        if depth >= 1 and not ch.isspace():
+            saw = True
+    return None
+
+
+def _scan_call_arity(targets: list) -> list:
+    """A call to one of the scripts' own routines with the wrong number of
+    arguments.
+
+    Altium refuses the whole script at load ("Comma expected", "Not enough
+    actual parameters") and the loop never starts; nothing says which
+    call. A routine whose signature changed in one file while a caller in
+    another kept the old count is how it happens. Checked over the
+    concatenation Altium compiles; a name defined twice is left to the
+    duplicate check.
+    """
+    texts = []
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            texts.append((os.path.basename(path), _blank_comments_and_strings(handle.read())))
+
+    arity: dict = {}
+    twice: set = set()
+    headers: set = set()
+    for rel, text in texts:
+        for m in _HEADER_ARGS.finditer(text):
+            key = m.group(1).lower()
+            headers.add((rel, m.start(1)))
+            if key in arity:
+                twice.add(key)
+            arity[key] = _param_range(m.group(3) or "")
+    for key in twice | _DELPHI_BUILTINS:
+        arity.pop(key, None)
+    if not arity:
+        return []
+
+    call_re = re.compile(
+        r"(?<![.\w])(" + "|".join(re.escape(n) for n in arity) + r")\b(\s*\()?",
+        re.IGNORECASE)
+    findings = []
+    for rel, text in texts:
+        for m in call_re.finditer(text):
+            if (rel, m.start(1)) in headers:
+                continue
+            key = m.group(1).lower()
+            least, most = arity[key]
+            if m.group(2):
+                got = _call_args(text, m.end(2) - 1)
+                if got is None:
+                    continue
+            else:
+                # A bare name: a call with no arguments, or the routine's
+                # result being assigned inside it.
+                after = text[m.end(1):m.end(1) + 3]
+                if after.lstrip().startswith(":="):
+                    continue
+                got = 0
+            if least <= got <= most:
+                continue
+            line = text.count("\n", 0, m.start(1)) + 1
+            want = str(most) if least == most else f"{least} to {most}"
+            findings.append(Finding(
+                file=rel, line=line, col=1,
+                rule="call-arity",
+                severity="error",
+                snippet=f"{m.group(1)} called with {got} argument(s); it takes {want}",
+                memory="delphiscript_unit_fails_silently.md",
+            ))
+    return findings
+
+
 def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int:
     """Lint every Pascal file. Returns the count of error-level findings."""
     targets = list(files) if files else [
@@ -1182,7 +1295,8 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
 
     for f in (_scan_call_order_across_files(targets)
               + _scan_duplicate_definitions(targets)
-              + _scan_undeclared_read(targets)):
+              + _scan_undeclared_read(targets)
+              + _scan_call_arity(targets)):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 

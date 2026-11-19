@@ -102,6 +102,13 @@ def model_files(export: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _file_name(name: str) -> str:
+    """A model's file name, lower case: the export names a model embedded
+    from a file by that file's full path in one place and by its file name
+    in another."""
+    return re.split(r"[\\/]", str(name or ""))[-1].strip().lower()
+
+
 def _safe_name(name: str, index: int) -> str:
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(name).name).strip(" .")
     return stem or f"model_{index}.step"
@@ -113,13 +120,14 @@ async def extract_models(bridge, library_path: str, out_dir: str | Path, *,
                          per_footprint_directory: bool = False) -> dict[str, Any]:
     """Write the original files of the embedded models the footprints use.
 
-    ``names`` limits it to those model file names (case-insensitive). An
+    ``names`` limits it to those model file names (case-insensitive; a
+    full path counts by its file name). An
     existing file is kept unless ``overwrite``; ``per_footprint_directory``
     puts each footprint's models in a folder of its own, so two footprints'
     models of the same name do not meet.
     """
     out = Path(out_dir)
-    wanted = {n.lower() for n in names} if names else None
+    wanted = {_file_name(n) for n in names} if names else None
     written: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
     found: set[str] = set()
@@ -130,14 +138,15 @@ async def extract_models(bridge, library_path: str, out_dir: str | Path, *,
         except ExportFailed as exc:
             refused.append({"footprint": footprint, "reason": str(exc)})
             continue
-        bodies = {b["model_file"].lower(): b for b in body_models(export)}
+        bodies = {_file_name(b["model_file"]): b for b in body_models(export)}
         for i, model in enumerate(model_files(export)):
             name = model["name"]
-            if wanted is not None and name.lower() not in wanted:
+            file_name = _file_name(name)
+            if wanted is not None and file_name not in wanted:
                 continue
-            found.add(name.lower())
+            found.add(file_name)
             info = {"name": name, "footprint": footprint, "checksum": model["checksum"],
-                    "rotation_deg": (bodies.get(name.lower()) or {}).get("rotation_deg")}
+                    "rotation_deg": (bodies.get(file_name) or {}).get("rotation_deg")}
             data = model["data"]
             if not data:
                 refused.append({**info, "reason": "the export's copy of the file "

@@ -487,6 +487,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_preview_template": "Altium sheet templates engine",
     # Altium-only library features
     "lib_set_current_component": "Altium editor focus",
+    "lib_set_current_footprint": "Altium editor focus",
     "lib_reload_library": "Altium library reload",
     "lib_clear_source_library": "Altium source-library links",
     "lib_set_symbol_aliases": "KiCad derived symbols replace aliases",

@@ -207,3 +207,22 @@ def test_a_fenced_net_is_laid_again_clean_and_stays_inside():
 
 def _T(t):
     return Track(t["layer"], t["x1"], t["y1"], t["x2"], t["y2"], t["width"], net=t["net_name"])
+
+
+def test_a_layer_given_by_its_own_name_on_the_board_is_that_layer():
+    b = _board()
+    b.layers[1].label = "L2-BOT"
+    brief = B.board_layers(b, B.Brief.from_list(
+        [{"nets": ["A"], "layers": ["l2-bot"], "width": 12, "source": "test"}]))
+    assert brief.entries[0].layers == ("BottomLayer",)
+    assert B.check(b, brief)["errors"] == []
+
+
+def test_a_layer_that_is_not_there_is_refused_once_not_as_a_gap_in_the_stack():
+    b = _board()
+    got = B.check(b, B.Brief.from_list(
+        [{"nets": ["A"], "layers": ["L3-SIG"], "impedance": 50, "width": 10,
+          "source": "test"}]))
+    text = " ".join(got["errors"])
+    assert "no copper layer ['L3-SIG']" in text
+    assert "dielectric next to ['L3-SIG']" not in text

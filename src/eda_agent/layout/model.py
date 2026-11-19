@@ -121,6 +121,8 @@ class Layer:
     order: int = 0                # 0 = top, increasing downwards
     plane_net: str = ""
     copper_mils: float = 1.4
+    #: The layer's own name on the board (L3-SIG), when it has one.
+    label: str = ""
 
 
 @dataclass
@@ -251,6 +253,16 @@ class LayoutBoard:
 
     def copper_layers(self) -> list[str]:
         return [l.name for l in sorted(self.layers, key=lambda l: l.order)]
+
+    def layer_id(self, name: str) -> str:
+        """The layer ``name`` means, by its id (MidLayer2) or by its own
+        name on the board (L3-SIG), case ignored; ``name`` itself when
+        no layer has it."""
+        key = str(name or "").strip().lower()
+        for l in self.layers:
+            if key in (l.name.lower(), l.label.strip().lower()):
+                return l.name
+        return name
 
     def signal_layers(self) -> list[str]:
         return [l.name for l in sorted(self.layers, key=lambda l: l.order)

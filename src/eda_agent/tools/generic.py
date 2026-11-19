@@ -16,7 +16,7 @@ from ..bridge import get_bridge
 from ..safety import refuse_altium_autorouter, refuse_process, untrusted_text_note
 from ..sch_members import member_refusals
 from .library import _mils
-from ..units import format_length
+from ..units import MM_PER_MIL, format_length
 from .pin_hints import pin_location_hint
 from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
@@ -221,6 +221,85 @@ _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 # Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
 _FILTER_COND = re.compile(r"([^=!<>~]*)(!=|!~|<=|>=|=|<|>|~)(.*)", re.S)
+
+
+def _names(value: Any) -> Any:
+    """A list of property names as the wire takes it: comma-separated."""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v).strip() for v in value)
+    return value
+
+
+def _assignments(value: Any, object_type: str = "") -> Any:
+    """Property assignments as the wire takes them: ``Name=Value`` pairs
+    joined by ``|``. A dict or a list of pairs is accepted too. On board
+    text UseTTFonts is written as the TextKind it reads back from."""
+    def text(v: Any) -> str:
+        return ("true" if v else "false") if isinstance(v, bool) else str(v)
+
+    if isinstance(value, dict):
+        value = "|".join(f"{k}={text(v)}" for k, v in value.items())
+    elif isinstance(value, (list, tuple)):
+        value = "|".join(str(v) for v in value)
+    if isinstance(value, str) and object_type == "eTextObject":
+        def kind(m: "re.Match[str]") -> str:
+            on = m.group(2).strip().lower() in ("true", "1", "yes")
+            return f"{m.group(1)}TextKind={1 if on else 0}"
+        value = re.sub(r"(^|\|)\s*UseTTFonts\s*=\s*([^|]*)", kind, value)
+    return value
+
+
+def _literal_wildcard_note(filt: str) -> str:
+    """A note for a filter whose ``=`` value holds * or ?: that matches
+    the text as written. A pattern is written with ``~``."""
+    for cond in str(filt or "").split("|"):
+        m = re.match(r"\s*([A-Za-z0-9_.]+)\s*=\s*(.*)$", cond)
+        if m and re.search(r"[*?]", m.group(2)):
+            return (f"{m.group(1)}={m.group(2)} matches that text exactly; "
+                    f"for a pattern write {m.group(1)}~{m.group(2)}")
+    return ""
+
+
+#: The board object types (Utils.pas ObjectTypeFromStringPCB), by the
+#: word they share with their short spelling.
+_BOARD_TYPES = frozenset({"track", "pad", "via", "component", "arc", "fill", "text",
+                          "poly", "polygon", "region", "rule", "dimension",
+                          "splitplane", "connection", "componentbody"})
+
+
+def _mm_properties(properties: str, object_type: str) -> tuple[str, dict[str, tuple[str, bool]]]:
+    """A board property asked for with _mm (X_mm, Width_mm) is the mil
+    property read in millimetres. Returns the names to ask Altium for and,
+    for each _mm name, its property and whether that was asked for too."""
+    if re.sub(r"[^a-z]", "", str(object_type).lower()).removeprefix("e")             .removesuffix("object") not in _BOARD_TYPES:
+        return properties, {}
+    names = [n.strip() for n in str(properties).split(",") if n.strip()]
+    plain = {n.lower() for n in names if not n.lower().endswith("_mm")}
+    wanted: list[str] = []
+    in_mm: dict[str, tuple[str, bool]] = {}
+    for n in names:
+        if n.lower().endswith("_mm") and len(n) > 3:
+            stem = n[:-3]
+            in_mm[n] = (stem, stem.lower() in plain)
+            n = stem
+        if n.lower() not in {w.lower() for w in wanted}:
+            wanted.append(n)
+    return ",".join(wanted), in_mm
+
+
+def _mm_values(result: dict, in_mm: dict[str, tuple[str, bool]]) -> None:
+    """Each object's _mm properties from its mil values, to 10 nm."""
+    for obj in result.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        for name, (stem, keep) in in_mm.items():
+            value = obj.get(stem)
+            try:
+                obj[name] = round(float(value) * MM_PER_MIL, 5)
+            except (TypeError, ValueError):
+                obj[name] = value
+            if not keep:
+                obj.pop(stem, None)
 
 
 def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
@@ -531,7 +610,7 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def obj_query(
         object_type: str,
-        properties: str,
+        properties: str | list[str],
         scope: str = "active_doc",
         filter: str = "",
         limit: int = 0,
@@ -623,6 +702,8 @@ def register_generic_tools(mcp):
             "objects", "count"; "not_on_this_type": properties the type
             lacks.
         """
+        properties = _names(properties)
+        properties, in_mm = _mm_properties(properties, object_type)
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
@@ -665,11 +746,16 @@ def register_generic_tools(mcp):
         untrusted = untrusted_text_note(properties)
         if untrusted and isinstance(result, dict):
             result["_untrusted_content"] = untrusted
+        literal = _literal_wildcard_note(filter)
+        if literal and isinstance(result, dict) and not result.get("count"):
+            result["note"] = literal
         # A member the type does not carry reads blank; say why, from the
         # same table the script's gate is generated from.
         refused = member_refusals(object_type, properties.split(","))
         if refused and isinstance(result, dict):
             result["not_on_this_type"] = refused
+        if in_mm and isinstance(result, dict):
+            _mm_values(result, in_mm)
         return result
 
     @mcp.tool()
@@ -747,7 +833,7 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def obj_modify(
         object_type: str = "",
-        set: str = "",
+        set: str | dict[str, Any] | list[str] = "",
         scope: str = "active_doc",
         filter: str = "",
         items: Optional[list[dict[str, Any]]] = None,
@@ -863,6 +949,7 @@ def register_generic_tools(mcp):
             obj_modify(object_type="eRegionObject",
                        filter="Layer=TopLayer|Net=GND", set="Net=")
         """
+        set = _assignments(set, object_type)
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
                                         ("object_type", object_type),
@@ -870,6 +957,9 @@ def register_generic_tools(mcp):
             ops = _merge_items(items, shared)
             if isinstance(ops, dict):
                 return ops
+            for op in ops:
+                if "set" in op:
+                    op["set"] = _assignments(op["set"], str(op.get("object_type") or ""))
             return await obj_batch_modify(ops)
         if not object_type or not set:
             return {"ok": False, "reason":

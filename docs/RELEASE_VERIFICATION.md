@@ -1,4 +1,4 @@
-# Release verification: 2026.11.17.2
+# Release verification: 2026.11.19.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -256,6 +256,7 @@ works elsewhere cannot be an undeclared identifier:
 | 79, dimension texts | `TextSuffix` on a dimension, read back after the write | yes, `PCBSetExtra` | low, display only; ran live on a scratch board, read back |
 | 82, footprint label text | `UseTTFonts`, `MirrorFlag`, `ChangeNameAutoposition` on a placed part's designator and comment | yes, `PCBGeneric.pas` | low, display only; ran live on an imported board, heights read back at KiCad's 0.8 and 1 mm |
 | 88, text visibility and a batch move | `NameOn`, `CommentOn` through obj_modify on a placed part | yes, `PCB.pas` (pcb_set_text_visibility, copy placement) | low, display only; ran live, the designator then read hidden |
+| 89, grids, references, layer copper, title block | `SetProperty_QuadrantSizeX`, `SetState_RefTopLayer`, `CopperThickness`, `SetState_TitleBlockOn` on a grid, an impedance line, a new layer and a sheet | partly, `PCB_ModifyLayer` writes the copper thickness | low; grid size and references change no copper, ran live on scratch copies and read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -430,7 +431,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.17.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.19.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4383,7 +4384,7 @@ refuses.
 New Altium identifier: `eSymbol` (in Altium's own SCH example script and
 the schematic constants reference), read through `ISch_Symbol` only.
 
-Verified live on AD 26.11.1.5 (script 2026.11.17.2) on scratch copies of
+Verified live on AD 26.11.1.5 on scratch copies of
 the 555 demo and of Altium's Bluetooth Sentinel example:
 
 1. `proj_get_nets limit=0`: all 35 pins, `limit_hit` false.
@@ -4408,6 +4409,39 @@ the 555 demo and of Altium's Bluetooth Sentinel example:
    sch_arc Radius=200|StartAngle=0|EndAngle=270`: read back as written.
 
 Not measured: the DbLib key quoting on a MySQL DbLib (no such DbLib here).
+
+## 89. Grids with their extent, reference layers, a library's current footprint, sheet title block
+
+No new Altium identifier outside the SDK's own interfaces:
+`IPCB_CartesianGrid.SetProperty_QuadrantSizeX/Y`,
+`IPCB_GridManager.CreatePlacementGridIterator` and `DeleteGrid`,
+`IPCB_TraceImpedance.SetState_RefTopLayer/RefBottomLayer`, and
+`ISch_Document.SetState_TitleBlockOn/BorderOn`.
+
+Verified live on AD 26.11.1.5 (script 2026.11.19.1) on scratch copies of
+the RoundLED demo:
+
+1. `pcb_local_grid add_cartesian` with `width=900 height=600`: read back
+   900 and 600 mil; with none given Altium's own 300 mil. `list` names
+   both and the board grid; `delete` by name removes only that one. With
+   `length_units=mm` a 1.25 mm step is 1.25 mm.
+2. `pcb_impedance_profile_layer bottom_reference=BottomLayer` on a new
+   profile: read back, and `pcb_get_impedance_profiles` (the Layer Stack
+   Manager's model) gives Bottom Layer; `none` clears it.
+3. `pcb_add_layer MidLayer1 reopen=false`: `copper_thickness_mils` 1.4
+   (Altium gave it a thickness, so none was set); removed again.
+4. `lib_set_current_footprint LED_WS2812B-2020`: `was` the previous one,
+   and `lib_get_footprints` reads the new one current.
+5. `sch_set_sheet_options title_block_on=false border_on=false`, then
+   both true: each read back as set.
+6. `sch_get_active_net`: a selected net label answers SWDIO by the
+   `lines` route, a selected wire +3V3 by `getnet` in 16 ms.
+7. A removal from the middle of a project's documents
+   (`project.remove_document` then `finish_removal`): the loaded file
+   listed exactly the members, and the file was rewritten.
+
+Not reproduced: a reply naming a same-named sheet of another open
+project (two copies of one project open, a sheet added to each).
 
 ## Still open, and not blocking
 

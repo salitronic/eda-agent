@@ -18,9 +18,12 @@ file as a hidden project and the bridge reads the documents off that
 (``file_documents``, full paths of the documents whose files exist; None
 when Altium could not load the copy). Measured on AD 26.11.1.5: after the
 last of A, C, D was removed and saved, the loaded copy held A, C, D; after
-the rewrite it held A, C, and a reopen listed A and C. A copy of a member
-that stays (the shifted section Altium leaves when a document is removed
-from the middle) loads as that one member, so it asks for no rewrite.
+the rewrite it held A, C, and a reopen listed A and C.
+
+Every removal leaves one section too many: the removed document when it
+was the last, else a second copy of the last member. That copy loads as
+the one member, so the loaded file cannot show it, and the file is
+rewritten after every removal that was saved.
 Altium does every write and every read; nothing here opens the file.
 """
 from __future__ import annotations
@@ -114,7 +117,7 @@ async def finish_removal(bridge, reply: Any) -> Any:
         return reply
     members = [m for m in reply.pop("members") if m and os.path.exists(m)]
     listed = reply.pop("file_documents", None)
-    if not isinstance(listed, list) or not leftovers(listed, members):
+    if not isinstance(listed, list) or reply.get("project_saved") is False:
         return reply
     from .saving import saving_off
     if saving_off():
@@ -144,6 +147,6 @@ async def finish_removal(bridge, reply: Any) -> Any:
     reply["success"] = not still and clean
     if reply["success"]:
         reply.pop("project_file_entry", None)
-        reply["reason"] = ("Altium's save left the removed entries in the project "
-                           "file; Altium wrote it again without them.")
+        reply["reason"] = ("Altium's save leaves a section past the last document in "
+                           "the project file; Altium wrote it again without it.")
     return reply

@@ -18262,6 +18262,50 @@ Begin
     Result := PCBServer.GetCurrentPCBLibrary;
 End;
 
+{..............................................................................}
+{ Lib_SetCurrentFootprint - make a named footprint the PCB library's current  }
+{ one, as Lib_SetCurrentComponent does for a symbol. The footprint the next  }
+{ authoring call writes into, and the one the editor shows. Nothing is       }
+{ written to the library. Params: name, library_path (optional; default the  }
+{ library in front).                                                         }
+{..............................................................................}
+Function Lib_SetCurrentFootprint(Params : String; RequestId : String) : String;
+Var
+    LibPath, Name, Problem, Was : String;
+    PcbLib : IPCB_Library;
+    Cur, Target : IPCB_LibComponent;
+Begin
+    Name := ExtractJsonValue(Params, 'name');
+    If Name = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_NAME', 'name is required');
+        Exit;
+    End;
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    PcbLib := FocusPcbLibAt(LibPath);
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'No PCB library is in front, and none could be focused at "' + LibPath + '"');
+        Exit;
+    End;
+    Was := '';
+    Try
+        Cur := PcbLib.CurrentComponent;
+        If Cur <> Nil Then Was := Cur.Name;
+    Except End;
+    Target := PcbLibTarget(PcbLib, Name, Problem);
+    If Target = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', Problem);
+        Exit;
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('success', True) + ','
+        + JsonStr('name', Target.Name) + ',' + JsonStr('was', Was) + ','
+        + JsonStr('library', LibPath)));
+End;
+
 { A primitive's place and size as text: two primitives with the same key    }
 { are the same object drawn twice on the same layer.                         }
 Function PcbCheckPrimKey(Prim : IPCB_Primitive) : String;
@@ -22674,6 +22718,7 @@ Begin
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
+        'set_current_footprint': Result := Lib_SetCurrentFootprint(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);

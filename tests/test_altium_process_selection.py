@@ -17,6 +17,9 @@ looks exactly like a correct one.
 """
 from __future__ import annotations
 
+#: These tests fake the process list themselves (conftest).
+FAKES_THE_PROCESS_LIST = True
+
 import re
 from pathlib import Path
 

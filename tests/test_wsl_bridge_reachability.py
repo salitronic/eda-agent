@@ -24,6 +24,9 @@ decision functions directly rather than requiring a WSL host.
 
 from __future__ import annotations
 
+#: These tests fake the process list themselves (conftest).
+FAKES_THE_PROCESS_LIST = True
+
 import codecs
 import subprocess
 import sys

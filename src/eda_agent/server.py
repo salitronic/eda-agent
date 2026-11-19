@@ -412,6 +412,39 @@ def _tool_params(server, name: str) -> Optional[set]:
         return None
 
 
+def _takes_any(server, name: str) -> bool:
+    """Whether ``name`` takes keyword arguments of any name."""
+    import inspect
+    fn = _tool_fn(server, name)
+    try:
+        return fn is None or any(p.kind is p.VAR_KEYWORD
+                                 for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return True
+
+
+def _unknown_names(args: dict, params: set) -> list[str]:
+    """Arguments the tool takes in no spelling. The server's own check
+    drops them without a word, so a misspelt name, or a list given under
+    the wrong key, ran as if it had not been given."""
+    from . import lengths
+    bad = []
+    for key in args:
+        if key in params or not isinstance(key, str):
+            continue
+        m = lengths._SUFFIX.match(key)
+        if m and any(f"{m.group('stem')}_{s}" in params or m.group("stem") in params
+                     for s in ("mils", "mil", "mm")):
+            continue
+        bad.append(key)
+    return bad
+
+
+def _takes_line(params: set) -> str:
+    names = sorted(p for p in params if p != "items")
+    return ", ".join(names[:40]) + (", ..." if len(names) > 40 else "")
+
+
 def _whole_params(server, name: str) -> set:
     """The arguments ``name`` takes as whole numbers (``int``, optional or
     not), which a converted length reaches rounded."""
@@ -446,6 +479,10 @@ def _lengths_in(server, name: str, arguments: dict):
         bad = lengths.unknown_unit_names(args, params)
         if bad:
             raise ValueError(f"{tool} takes no {', '.join(bad)}")
+        bad = [] if _takes_any(server, tool) else _unknown_names(args, params)
+        if bad:
+            raise ValueError(f"{tool} takes no argument {', '.join(bad)}; "
+                             f"it takes {_takes_line(params)}")
         # A list given as a file is read here, so its lengths are
         # converted like the same list given inline.
         key = lengths.FILE_LISTS.get(tool)

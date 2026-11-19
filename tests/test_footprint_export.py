@@ -148,3 +148,21 @@ def test_altium_writes_the_export_and_the_current_footprint_comes_back():
     assert "'out_path is the library itself'" in body
     text = _PAS.read_text(encoding="utf-8")
     assert "'footprint_export':     Result := Lib_FootprintExport(Params, RequestId);" in text
+
+
+def test_a_model_embedded_from_a_file_path_is_found_by_its_file_name(tmp_path):
+    # The export names the model by the path it was embedded from, the
+    # body by its file name.
+    bridge = _Bridge(tmp_path / "ws", {"SOT": _export(
+        (r"D:\models\vendor\SOT.STEP", _STEP), bodies=[_BODY])})
+    (tmp_path / "ws").mkdir()
+    got = asyncio.run(fe.extract_models(bridge, "L.PcbLib", tmp_path / "out",
+                                        footprints=["SOT"], names=["sot.step"]))
+    assert got["ok"] is True and got["not_found"] == []
+    assert Path(got["written"][0]["path"]).name == "SOT.STEP"
+    assert got["written"][0]["rotation_deg"] == [10.0, 20.0, 30.0]
+    # Asked by the full path, it is still the same file.
+    got = asyncio.run(fe.extract_models(bridge, "L.PcbLib", tmp_path / "out2",
+                                        footprints=["SOT"],
+                                        names=["D:/elsewhere/SOT.step"]))
+    assert got["ok"] is True

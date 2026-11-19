@@ -235,6 +235,13 @@ async def _call_validated(fn: Callable, args: dict) -> Any:
         result = fn(**args)
         return await result if inspect.isawaitable(result) else result
     from pydantic import ValidationError
+    params = inspect.signature(fn).parameters
+    if not any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        unknown = sorted(k for k in args if k not in params)
+        if unknown:
+            # The model drops them without a word.
+            return {"ok": False, "reason": f"takes no argument {', '.join(unknown)}",
+                    "takes": sorted(p for p in params if p != "items")}
     try:
         model = meta.arg_model.model_validate(args)
     except ValidationError as e:

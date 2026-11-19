@@ -102,7 +102,8 @@ def _layers(board_reply: dict) -> list[Layer]:
         out.append(Layer(name=l["id"], kind=l.get("kind", "signal"),
                          order=int(l.get("order", i)),
                          plane_net=l.get("plane_net", ""),
-                         copper_mils=_m(l.get("copper", 0))))
+                         copper_mils=_m(l.get("copper", 0)),
+                         label=str(l.get("name") or "")))
     return out
 
 

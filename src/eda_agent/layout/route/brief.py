@@ -772,6 +772,22 @@ def critical_nets(board: LayoutBoard, widths: Optional[dict[str, float]] = None)
 
 # --- checking a brief against the board ------------------------------------------
 
+def board_layers(board: LayoutBoard, brief: Brief) -> Brief:
+    """The brief with every layer named as the router names it: a layer
+    given by its own name on the board (L3-SIG) becomes its id
+    (MidLayer2). A name no layer has is left for ``check`` to refuse."""
+    from dataclasses import replace
+
+    def ids(layers):
+        return None if layers is None else tuple(board.layer_id(x) for x in layers)
+
+    brief.entries = [replace(e, layers=ids(e.layers)) if e.layers else e
+                     for e in brief.entries]
+    brief.areas = [replace(a, layers=ids(a.layers)) if a.layers else a
+                   for a in brief.areas]
+    return brief
+
+
 def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None,
           rules=None) -> dict[str, Any]:
     """Whether the brief can be routed as written, and what it still lacks.
@@ -1301,7 +1317,10 @@ def _impedance_errors(board: LayoutBoard, e: NetRules, tag: str) -> list[str]:
     if e.impedance and e.diff_impedance:
         return [f"{tag}: give impedance or diff_impedance, not both"]
     geo = zi.geometry(board)
-    layers = list(e.layers or board.signal_layers())
+    # A name that is no copper layer is refused on its own; it is not a
+    # gap in the stack.
+    copper = set(board.copper_layers())
+    layers = [l for l in (e.layers or board.signal_layers()) if l in copper]
     missing = [l for l in layers if l not in geo]
     if missing:
         return [f"{tag}: the board's stack gives no dielectric next to {missing}; set it in "

@@ -160,10 +160,28 @@ class AltiumBackend:
                              "net": net})
                 if not net:
                     unconnected += 1
+        project = str((bom or {}).get("project_path", "") or "")
+        parts_from = f"the BOM of {project}" if project else "the project BOM"
+        if not parts:
+            # A board outside the compiled project (a placement study) has
+            # parts the project's BOM does not list: read them off the board.
+            try:
+                board = await bridge.send_command_async("pcb.get_components", {})
+            except AltiumError:
+                board = None
+            for comp in (board or {}).get("components", []) or []:
+                parts.append({"refdes": str(comp.get("designator", "")),
+                              "value": comp.get("comment", ""),
+                              "footprint": comp.get("footprint", ""),
+                              "layer": comp.get("layer")})
+            if parts:
+                parts_from = ("the board in front (the project BOM lists no parts; "
+                              "nets are not read from a board)")
         return DesignSnapshot.build(
             "altium", parts, pins,
-            board_name=str((bom or {}).get("project_path", "") or ""),
+            board_name=project,
             unconnected_pad_count=unconnected,
+            raw_stats={"parts_from": parts_from},
         )
 
     async def run_drc(self) -> dict[str, Any]:

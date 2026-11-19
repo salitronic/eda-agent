@@ -895,7 +895,8 @@ def register_project_tools(mcp):
 
         Args:
             component: Filter by component designator. Empty = all.
-            net_name: Filter by net name. Empty = all.
+            net_name: Filter by net name; * and ? match any run and
+                one character (SD*), case ignored. Empty = all.
             project_path: Optional project path. If None, uses active.
             limit: Max pin records (default 500); 0 lists every pin.
             force_recompile: Save dirty docs and recompile from scratch
@@ -912,7 +913,12 @@ def register_project_tools(mcp):
         params: dict[str, Any] = {"limit": str(limit)}
         if component:
             params["component"] = component
-        if net_name:
+        pattern = net_name if any(c in net_name for c in "*?") else ""
+        if pattern:
+            # Matched here, on every pin Altium lists; only the matches
+            # come back.
+            params["limit"] = "0"
+        elif net_name:
             params["net_name"] = net_name
         if project_path:
             params["project_path"] = project_path
@@ -923,6 +929,15 @@ def register_project_tools(mcp):
             # asked for fresh data got the cached compile instead.
             params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_nets", params)
+        if pattern and isinstance(result, dict) and isinstance(result.get("pins"), list):
+            from fnmatch import fnmatchcase
+            want = pattern.upper()
+            pins = [p for p in result["pins"] if isinstance(p, dict)
+                    and fnmatchcase(str(p.get("net") or p.get("net_name") or "").upper(), want)]
+            hit = bool(limit) and len(pins) > limit
+            result.update(pins=pins[:limit] if limit else pins,
+                          count=min(len(pins), limit) if limit else len(pins),
+                          limit=limit, limit_hit=hit, net_pattern=pattern)
         hint = BulkHintTracker.record_and_hint("proj_get_nets")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint

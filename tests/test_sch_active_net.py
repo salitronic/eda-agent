@@ -3,8 +3,7 @@
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """The compiled net of the object selected on a sheet.
 
-Altium's Properties panel shows a selected wire's net, but no tool did:
-a wire carries no net name of its own, and the generic schematic query
+A wire carries no net name of its own, so the generic schematic query
 has none to give. sch_get_active_net finds the first selected net label,
 port, power port or wire with one filtered walk and asks the compiled
 netlist for the net holding it, by the object's handle. What the tool

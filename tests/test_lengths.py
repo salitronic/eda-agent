@@ -414,3 +414,27 @@ def test_a_via_in_a_list_keeps_the_size_it_was_given(unit):
     assert plain["hole_size"] == pytest.approx(10 * k)
     # The names the tool reads, in the unit they say.
     assert named == {"x": 0, "y": 0, "size_mm": 0.5, "hole_size_mm": 0.25}
+
+
+def test_an_argument_the_tool_takes_in_no_spelling_is_refused(workspace):
+    server, seen = _server()
+    with pytest.raises(Exception, match="takes no argument zzz_show_args"):
+        asyncio.run(server.call_tool("easyeda_put_track",
+                                     {"x1": 1, "y1": 1, "zzz_show_args": True}))
+    assert "track" not in seen
+    # Its names in the other unit are still its own.
+    _call(server, "easyeda_put_track", {"x1": 1, "y1": 1, "clearance_mm": 0.254})
+
+
+def test_an_item_naming_an_argument_the_tool_does_not_take_fails_alone():
+    from eda_agent.tools.folds import _call_validated
+
+    async def brief(expect_file: str, add: typing.Optional[list] = None) -> dict:
+        return {"saved": bool(add)}
+
+    got = asyncio.run(_call_validated(brief, {"expect_file": "b", "nets": ["A"],
+                                              "layers": ["L3"]}))
+    assert got["ok"] is False and "layers, nets" in got["reason"]
+    assert got["takes"] == ["add", "expect_file"]
+    assert asyncio.run(_call_validated(brief, {"expect_file": "b", "add": [1]})) \
+        == {"saved": True}

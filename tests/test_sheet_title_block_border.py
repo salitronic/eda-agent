@@ -3,14 +3,10 @@
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """A sheet's title block and border can be switched through sheet options.
 
-get_document_info and sch_sheet_template read TitleBlockOn and BorderOn,
-but nothing wrote them, so a script could not switch Altium's standard
-title block or the sheet border off (or back on) without the Document
-Options dialog. ISch_Document has the setters, SetState_TitleBlockOn and
-SetState_BorderOn, beside SetState_ShowTemplateGraphics, which
-sch_set_sheet_options already writes. Both are written in the same edit
-and read back with the other options, so one that did not take is in
-not_applied.
+sch_set_sheet_options writes TitleBlockOn and BorderOn with
+ISch_Document's SetState_TitleBlockOn and SetState_BorderOn, in the same
+edit as the other options, and reads both back with them, so one that
+did not take is in not_applied.
 """
 from __future__ import annotations
 

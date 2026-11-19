@@ -225,6 +225,45 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+# NO TEST STARTS ALTIUM OR ACTS ON A RUNNING ONE. A wait that runs out
+# leads the bridge to its crash check, which finds an Altium by its
+# process, presses OK on its dialogs and restarts its script loop
+# (relaunch --restart, X2.EXE -REditScript:Stop). On a machine with
+# Altium open that is the live session. So every test sees no Altium
+# process, and a launch of X2.EXE or of a relaunch is refused. A module
+# that fakes the process list itself sets FAKES_THE_PROCESS_LIST = True;
+# opted-in integration runs are left alone.
+_ALTIUM_LAUNCH = re.compile(r"x2\.exe|eda_agent\.server\W+relaunch|-REditScript|"
+                            r"-RScriptingSystem", re.IGNORECASE)
+
+
+class LaunchRefused(RuntimeError):
+    """A test tried to start Altium or its script loop."""
+
+
+@pytest.fixture(autouse=True)
+def _no_live_altium(request, monkeypatch):
+    if os.environ.get("EDA_AGENT_INTEGRATION") == "1":
+        yield
+        return
+    import subprocess
+    real_popen = subprocess.Popen
+
+    class _GuardedPopen(real_popen):
+        def __init__(self, args, *a, **k):
+            text = args if isinstance(args, str) else " ".join(map(str, args))
+            if _ALTIUM_LAUNCH.search(text):
+                raise LaunchRefused(f"a test may not run {text!r}")
+            super().__init__(args, *a, **k)
+
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+    if not getattr(request.module, "FAKES_THE_PROCESS_LIST", False):
+        from eda_agent.bridge import process_manager as pm
+        monkeypatch.setattr(pm.AltiumProcessManager, "_candidates", lambda self: [])
+        monkeypatch.setattr(pm.AltiumProcessManager, "_scan_running", lambda self: False)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _fresh_bulk_hint_counts():
     """Start each test with no calls counted toward the repeat nudge.

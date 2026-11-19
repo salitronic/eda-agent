@@ -627,6 +627,16 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     return status
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    """True when two paths name the same folder, spelled however."""
+    try:
+        if a.exists() and b.exists():
+            return os.path.samefile(a, b)
+        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
+    except OSError:
+        return False
+
+
 def _install_scripts_into(dst: Path, force: bool) -> int:
     src = get_bundled_scripts_path()
 
@@ -640,6 +650,19 @@ def _install_scripts_into(dst: Path, force: bool) -> int:
     # prompt without remembering --force on every call.
     if os.environ.get("EDA_AGENT_ASSUME_YES", "").strip().lower() in ("1", "true", "yes"):
         force = True
+
+    # Altium may load the script project straight from the source folder
+    # (a clone registered under Global Projects). Then the files are
+    # already where Altium reads them: copying each onto itself fails on
+    # Windows, and stamping them would leave the clone with changes.
+    if _same_dir(src, dst):
+        from .config import get_config, write_workspace_pointer
+        workspace_dir = Path(get_config().workspace_dir)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        write_workspace_pointer(workspace_dir)
+        print(f"Altium loads the scripts straight from {dst}; nothing to copy.")
+        print(f"Workspace:     {workspace_dir}")
+        return 0
 
     if dst.exists() and any(dst.iterdir()) and not force:
         if not sys.stdin.isatty():

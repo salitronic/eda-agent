@@ -2634,6 +2634,31 @@ def register_library_tools(mcp):
         )
 
     @mcp.tool()
+    async def lib_set_current_footprint(
+        footprint_name: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Make a named footprint the current one in a PCB library.
+
+        The PcbLib twin of ``lib_set_current_component``: the footprint the
+        editor shows, and the one ``obj_modify`` with scope "active_doc"
+        and the authoring tools given no footprint name act on. Nothing is
+        written to the library.
+
+        Args:
+            footprint_name: The footprint, as ``lib_get_footprints`` names it.
+            library_path: The .PcbLib; empty takes the one in front.
+
+        Returns:
+            ``success``, ``name``, ``was`` (the footprint current before)
+            and ``library``.
+        """
+        params = {"name": footprint_name}
+        if library_path.strip():
+            params["library_path"] = library_path.strip()
+        return await get_bridge().send_command_async("library.set_current_footprint", params)
+
+    @mcp.tool()
     async def lib_add_pins(
         pins: list[dict[str, Any]],
         pins_on_part: Optional[int] = None,

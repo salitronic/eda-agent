@@ -64,8 +64,11 @@ def register_eda_tools(mcp) -> None:
         if snap is None:
             return {"ok": False, "reason": reason}
         result = review_snapshot(snap)
-        return {"ok": True, "source": snap.source, "board": snap.board_name,
-                "stats": result["stats"], "net_classes": result["net_classes"]}
+        out = {"ok": True, "source": snap.source, "board": snap.board_name,
+               "stats": result["stats"], "net_classes": result["net_classes"]}
+        if (snap.raw_stats or {}).get("parts_from"):
+            out["parts_from"] = snap.raw_stats["parts_from"]
+        return out
 
     @mcp.tool()
     async def list_components(backend: Optional[str] = None) -> dict[str, Any]:
@@ -77,8 +80,11 @@ def register_eda_tools(mcp) -> None:
         comps = [{"reference": p.refdes, "value": p.value,
                   "footprint": p.footprint, "kind": p.kind,
                   "dnp": p.dnp} for p in snap.parts]
-        return {"ok": True, "source": snap.source, "count": len(comps),
-                "components": comps}
+        out = {"ok": True, "source": snap.source, "count": len(comps),
+               "components": comps}
+        if (snap.raw_stats or {}).get("parts_from"):
+            out["parts_from"] = snap.raw_stats["parts_from"]
+        return out
 
     @mcp.tool()
     async def run_drc(backend: Optional[str] = None) -> dict[str, Any]:

@@ -3575,8 +3575,10 @@ def _fallback(board: LayoutBoard, best: Router, log, kwargs) -> Router:
     kw["stages"] = loose
     r = Router(board, released=best.released, log=log, **kw)
     r.report = r.run(stall_abort=False, warm=best)
-    log(f"without the constraining stages: {r.report.failed} failed "
-        f"(with them {best.report.failed})")
+    log(f"routed again without the dog-bones first, the class order and the axis-only "
+        f"pad entries: {r.report.failed} net(s) still fail, against {best.report.failed} "
+        f"with them" + ("; the first result is kept" if r.report.failed >= best.report.failed
+                        else ""))
     if r.report.failed < best.report.failed:
         gained = best.report.failed - r.report.failed
         r.stage_report.fallback = (f"routed again without the dog-bones laid first, the class "

@@ -1482,18 +1482,20 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_create_net_class(
         name: str,
-        nets: str,
+        nets: str | list[str],
     ) -> dict[str, Any]:
         """Create a net class (or add nets to an existing one) on the active PCB.
 
         Args:
             name: Name for the net class (e.g., "PowerNets", "HighSpeed")
-            nets: Comma-separated list of net names to add
+            nets: Net names to add, as a list or comma-separated
                   (e.g., "VCC,GND,3V3")
 
         Returns:
             Dictionary with class_name, class_created (bool), nets_added count
         """
+        if isinstance(nets, (list, tuple)):
+            nets = ",".join(str(n).strip() for n in nets)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.create_net_class",
@@ -1551,8 +1553,9 @@ def register_pcb_tools(mcp):
         """
         encoded = _encode_bindings_param(bindings)
         if not encoded:
-            return {"error": "No valid bindings (need designator + pin "
-                    "+ net)", "bound": 0}
+            keys = sorted({k for b in bindings or [] if isinstance(b, dict) for k in b})
+            return {"error": "No valid bindings: each needs designator, pin and net"
+                    + (f" (given {', '.join(keys)})" if keys else ""), "bound": 0}
         bridge = get_bridge()
         return await bridge.send_command_async(
             "pcb.bind_pad_nets", {"bindings": encoded}
@@ -3345,6 +3348,8 @@ def register_pcb_tools(mcp):
         use_solder_mask: Optional[bool] = None,
         mask_between_mils: Optional[float] = None,
         mask_on_top_mils: Optional[float] = None,
+        top_reference: str = "",
+        bottom_reference: str = "",
     ) -> dict[str, Any]:
         """Read, or set, one impedance profile's settings on one layer:
         whether it applies there, the trace width (locked, or worked out by
@@ -3355,6 +3360,9 @@ def register_pcb_tools(mcp):
         Args:
             profile: The profile's name.
             layer: The copper layer's name.
+            top_reference, bottom_reference: The layers the solver takes
+                as the trace's return above and below it ("none" clears
+                one), as on a stack whose ground is a poured signal layer.
 
         A layer the profile does not hold yet is added to it
         (``layer_added``); it starts disabled with no width until Altium's
@@ -3367,6 +3375,10 @@ def register_pcb_tools(mcp):
         if not profile.strip() or not layer.strip():
             return {"ok": False, "reason": "profile and layer are required"}
         params: dict[str, Any] = {"profile": profile.strip(), "layer": layer.strip()}
+        for key, value in (("top_reference", top_reference),
+                           ("bottom_reference", bottom_reference)):
+            if value.strip():
+                params[key] = value.strip()
         for key, value in (("enabled", enabled), ("width_locked", width_locked),
                            ("gap_locked", gap_locked), ("use_solder_mask", use_solder_mask)):
             if value is not None:
@@ -7816,8 +7828,10 @@ def register_pcb_tools(mcp):
                              min_radius: Optional[float] = None,
                              max_radius: Optional[float] = None,
                              start_angle: Optional[float] = None,
-                             end_angle: Optional[float] = None) -> dict[str, Any]:
-        """Add a cartesian or polar grid for one area, or read the grid at a point.
+                             end_angle: Optional[float] = None,
+                             width: Optional[float] = None,
+                             height: Optional[float] = None) -> dict[str, Any]:
+        """Add a cartesian or polar grid for one area, list or delete grids, or read the grid at a point.
 
         A polar grid places parts on circles and spokes about a centre, as
         on a round board; a cartesian grid can be rotated. A local grid
@@ -7825,17 +7839,24 @@ def register_pcb_tools(mcp):
 
         Args:
             action: ``add_cartesian``, ``add_polar``, ``at`` (the grid that
-                applies at x, y) or ``delete_all`` (every user grid).
-            x, y: The grid origin (the centre of a polar grid), absolute mils.
+                applies at x, y), ``list`` (every grid), ``delete`` (the
+                grids named ``name``) or ``delete_all`` (every user grid).
+            x, y: The grid origin (the centre of a polar grid), absolute.
             name: The grid's name.
-            step_x, step_y, rotation: Cartesian steps in mils and its angle.
+            step_x, step_y, rotation: Cartesian steps and its angle.
+            width, height: How far a cartesian grid reaches from its
+                origin in each direction (one quadrant's size).
             angular_step, radial_step, min_radius, max_radius,
             start_angle, end_angle: Polar degrees and mils.
         """
-        if action not in ("add_cartesian", "add_polar", "at", "delete_all"):
-            return {"ok": False, "reason": "action is add_cartesian, add_polar, at or delete_all"}
+        actions = ("add_cartesian", "add_polar", "at", "list", "delete", "delete_all")
+        if action not in actions:
+            return {"ok": False, "reason": f"action is {', '.join(actions)}"}
+        if action == "delete" and not name.strip():
+            return {"ok": False, "reason": "delete needs the grid's name; list names them"}
         params = {"action": action, "x": str(x), "y": str(y), "name": name}
         for key, value in (("step_x", step_x), ("step_y", step_y), ("rotation", rotation),
+                           ("width", width), ("height", height),
                            ("angular_step", angular_step), ("radial_step", radial_step),
                            ("min_radius", min_radius), ("max_radius", max_radius),
                            ("start_angle", start_angle), ("end_angle", end_angle)):
@@ -9412,7 +9433,7 @@ def register_pcb_tools(mcp):
         rule_type: str = "clearance",
         value: float = 10,
         max_value: Optional[float] = None,
-        favored_value: Optional[int] = None,
+        favored_value: Optional[float] = None,
         max_uncoupled_length: Optional[int] = None,
         scope: str = "",
         net_scope: str = "different_nets",

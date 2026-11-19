@@ -543,6 +543,7 @@ def register_route_tools(mcp):
             return {"error": f"an entry is malformed: {exc}"}
         b2 = brief_mod.Brief((e for e in entries if e.nets), kept, kept_loops, kept_bars,
                              kept_asm, kept_or, kept_pdn, kept_th)
+        b2 = brief_mod.board_layers(board, b2)
         chk = brief_mod.check(board, b2)
         chk["errors"] = chk["errors"] + confirm_errors
         res: dict[str, Any] = {"brief": b2.as_list(), "areas": b2.areas_list(),
@@ -568,6 +569,8 @@ def register_route_tools(mcp):
             res["to_confirm"] = todo
         if not changed:
             res["loops_found"] = await asyncio.to_thread(_loops_found, board, b2)
+            res["note"] = ("no changes given (add, replace, drop, remove, areas, confirm "
+                           "...): this is the brief as saved")
         if chk["errors"]:
             res["saved"] = False
             res["note"] = "nothing was saved: the brief stays as it was"

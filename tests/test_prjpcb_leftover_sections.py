@@ -7,8 +7,10 @@ Altium rewrites [Document1]..[DocumentN] for a project's new document
 count and leaves the sections past N, because its writer merges into the
 file already at the path. project.rewrite_file saves the project as a
 copy, checks it, deletes the original and saves the project back onto no
-file. These hold the flow to: nothing runs when the file is already
-right, the original is deleted only after the copy lists the expected
+file. These hold the flow to: every saved removal is rewritten (the
+section left is a second copy of a member when the removed document was
+not the last, which loads as that one member), nothing runs when the
+removal was not saved, the original is deleted only after the copy lists the expected
 count, the copy is deleted only once the original is right again, and the
 result comes from Altium, never from the file.
 """
@@ -61,14 +63,25 @@ def test_the_file_lists_more_than_the_project():
                                 [r"C:\p\a.schdoc", r"C:\p\C.SchDoc"])
 
 
-def test_a_clean_file_runs_nothing(tmp_path):
+def test_a_copy_of_a_member_left_past_the_end_is_rewritten_too(tmp_path):
+    # Loaded, the file lists exactly the members: the second copy of the
+    # last one does not show, but it is in the file.
     members = _members(tmp_path, "A.SchDoc")
-    bridge = _Bridge()
+    bridge = _Bridge(after=[str(tmp_path / "A.SchDoc")])
     out = asyncio.run(prjpcb.finish_removal(
         bridge, _reply(tmp_path, members, ["A.SchDoc"], in_file=False)))
-    assert bridge.calls == []
+    assert [c[0] for c in bridge.calls] == ["project.rewrite_file"]
     assert out["success"] is True
     assert "members" not in out and "file_documents" not in out
+
+
+def test_a_removal_that_was_not_saved_runs_nothing(tmp_path):
+    members = _members(tmp_path, "A.SchDoc")
+    bridge = _Bridge()
+    reply = {**_reply(tmp_path, members, ["A.SchDoc"], in_file=False),
+             "project_saved": False}
+    asyncio.run(prjpcb.finish_removal(bridge, reply))
+    assert bridge.calls == []
 
 
 def test_leftovers_are_rewritten_by_altium(tmp_path):
