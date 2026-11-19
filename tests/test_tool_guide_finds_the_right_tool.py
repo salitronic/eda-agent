@@ -177,6 +177,9 @@ QUESTIONS = [
     ("move the tracks of a net to the bottom layer",
      {"pcb_move_tracks_to_layer"}),
     ("read a pour's copper", {"pcb_get_pour_copper"}),
+    ("change the background colour of a schematic sheet",
+     {"sch_set_sheet_options"}),
+    ("set the document font of a schematic sheet", {"sch_set_sheet_options"}),
 ]
 
 #: The second held-out set, written 2026-09-23 BEFORE put, reflect and

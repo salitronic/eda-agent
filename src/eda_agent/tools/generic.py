@@ -2539,15 +2539,20 @@ def register_generic_tools(mcp):
         custom_margin_width: Optional[float] = None,
         title_block_on: Optional[bool] = None,
         border_on: Optional[bool] = None,
+        zone_origin: Optional[str] = None,
+        document_font_id: Optional[int] = None,
+        sheet_color: Optional[str] = None,
+        border_color: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Read, or set, the active sheet's reference zones, margin, border
-        style, template graphics, title block and border. Call with nothing
-        to read.
+        """Read, or set, the active sheet's reference zones and where they
+        are counted from, margin, border style, template graphics, title
+        block, border, sheet and border colours and document font. Call
+        with nothing to read.
 
         On a standard sheet size the zones and margin follow the size, so
         zones_x, zones_y and margin_width do not take; the custom_* ones
         apply to a custom-size sheet. Every value is read back; one that
-        did not take is in ``not_applied``.
+        did not take is in ``not_applied``. Nothing is saved.
 
         Args:
             zones_x, zones_y: Reference zones across and down (from 1).
@@ -2560,10 +2565,21 @@ def register_generic_tools(mcp):
                 for a custom-size sheet.
             title_block_on, border_on: Show Altium's standard title block
                 and the sheet border.
+            zone_origin: Where the zones are counted from: "upper_left"
+                (Altium's default) or "bottom_right" (zone 1 and zone A in
+                the bottom right corner).
+            document_font_id: The sheet's document font, a font id from
+                obj_get_font_id in this session; one that names no font is
+                refused.
+            sheet_color, border_color: The sheet's background colour and
+                the colour of its border and zone frame, "#RRGGBB".
 
         Returns:
-            ``changed``, ``options`` (read back after any write) and
-            ``not_applied``.
+            ``changed``, ``options`` (read back after any write; colours
+            as "#RRGGBB" with Altium's BGR integer beside them as
+            ``sheet_color_bgr`` and ``border_color_bgr``; the font as
+            ``document_font_id`` and ``document_font``, its name, size and
+            style) and ``not_applied``.
         """
         params: dict[str, Any] = {}
         for key, value in (("zones_x", zones_x), ("zones_y", zones_y),
@@ -2586,9 +2602,30 @@ def register_generic_tools(mcp):
                            ("border_on", border_on)):
             if value is not None:
                 params[key] = "true" if value else "false"
+        if zone_origin is not None and zone_origin.strip():
+            zone = zone_origin.strip().lower().replace(" ", "_").replace("-", "_")
+            if zone not in ("upper_left", "bottom_right"):
+                return {"ok": False, "reason": (
+                    f"zone_origin is upper_left or bottom_right, not {zone_origin!r}")}
+            params["zone_origin"] = zone
+        if document_font_id is not None:
+            if not 1 <= document_font_id <= 99_999_999:
+                return {"ok": False, "reason": (
+                    "document_font_id is a font id from 1; obj_get_font_id gives one")}
+            params["document_font_id"] = str(int(document_font_id))
+        for key, value in (("sheet_color", sheet_color), ("border_color", border_color)):
+            if value is not None and value.strip():
+                bgr = _hex_to_bgr(value)
+                if bgr is None:
+                    return {"ok": False, "reason": f"{key} {value!r} is not #RRGGBB"}
+                params[key] = str(bgr)
         reply = await get_bridge().send_command_async("generic.sheet_options", params)
-        if isinstance(reply, dict) and params:
-            got = reply.get("options") or {}
+        if not isinstance(reply, dict):
+            return reply
+        got = reply.get("options")
+        if not isinstance(got, dict):
+            got = {}
+        if params:
             keys = {"margin_width": "margin_width_mils",
                     "custom_margin_width": "custom_margin_width_mils"}
             missed = []
@@ -2596,6 +2633,8 @@ def register_generic_tools(mcp):
                 have = got.get(keys.get(key, key))
                 if isinstance(have, bool):
                     ok = have == (sent == "true")
+                elif key == "zone_origin":
+                    ok = have == sent
                 else:
                     try:
                         ok = abs(float(have) - float(sent)) < 0.01
@@ -2604,6 +2643,10 @@ def register_generic_tools(mcp):
                 if not ok:
                     missed.append(key)
             reply["not_applied"] = missed
+        for key in ("sheet_color", "border_color"):
+            if key in got:
+                got[key + "_bgr"] = got[key]
+                got[key] = _bgr_to_hex(got[key])
         return reply
 
     @mcp.tool()

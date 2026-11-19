@@ -37,7 +37,7 @@ def test_both_flags_are_taken_from_the_request():
     body = _handler()
     assert "TitleBlock := LowerCase(ExtractJsonValue(Params, 'title_block_on'));" in body
     assert "SheetBorder := LowerCase(ExtractJsonValue(Params, 'border_on'));" in body
-    assert "Or (TitleBlock <> '') Or (SheetBorder <> '');" in body
+    assert "Or (TitleBlock <> '') Or (SheetBorder <> '')" in body
 
 
 def test_both_flags_are_written_inside_the_edit():

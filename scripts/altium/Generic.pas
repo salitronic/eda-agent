@@ -10074,17 +10074,83 @@ Begin
 End;
 
 {..............................................................................}
-{ SheetOptionsJson - the active sheet's zone, margin and border settings.      }
+{ Where a sheet counts its reference zones from, ReferenceZoneStyle on        }
+{ ISch_Document: 0 from the upper left (the default), 1 from the bottom       }
+{ right (zone 1 and zone A sit in the bottom right corner). Any other word    }
+{ is -1. A style of -1 (not read) has an empty name, any other style its      }
+{ number.                                                                     }
+{..............................................................................}
+Function SheetZoneStyleOf(Origin : String) : Integer;
+Begin
+    Result := -1;
+    If Origin = 'upper_left' Then Result := 0
+    Else If Origin = 'bottom_right' Then Result := 1;
+End;
+
+Function SheetZoneOriginName(Style : Integer) : String;
+Begin
+    If Style = 0 Then Result := 'upper_left'
+    Else If Style = 1 Then Result := 'bottom_right'
+    Else If Style < 0 Then Result := ''
+    Else Result := IntToStr(Style);
+End;
+
+{ A whole number in digits only, at most eight of them, from MinV to MaxV.    }
+{ The text is checked before StrToIntDef, which raises on a number too large  }
+{ for 32 bits instead of answering its default.                               }
+Function SheetWholeInRange(S : String; MinV, MaxV : Integer) : Boolean;
+Var
+    I, N : Integer;
+Begin
+    Result := False;
+    If (S = '') Or (Length(S) > 8) Then Exit;
+    For I := 1 To Length(S) Do
+        If (S[I] < '0') Or (S[I] > '9') Then Exit;
+    N := StrToIntDef(S, -1);
+    Result := (N >= MinV) And (N <= MaxV);
+End;
+
+{ The font a font id names, described as get_font_spec describes it: name,    }
+{ size, rotation and style. null when the id names no font (no name back).    }
+Function SheetFontJson(FontId : Integer) : String;
+Var
+    FontMgr : ISch_FontManager;
+    Size, Rotation : Integer;
+    Underline, Italic, Bold, StrikeOut : Boolean;
+    FontName : String;
+Begin
+    Result := 'null';
+    If FontId < 1 Then Exit;
+    Size := 0; Rotation := 0; Underline := False; Italic := False;
+    Bold := False; StrikeOut := False; FontName := '';
+    Try
+        FontMgr := SchServer.FontManager;
+        FontMgr.GetFontSpec(FontId, Size, Rotation, Underline, Italic, Bold, StrikeOut, FontName);
+    Except
+        FontName := '';
+    End;
+    If FontName = '' Then Exit;
+    Result := JsonObj(JsonStr('font_name', FontName) + ','
+        + JsonInt('size', Size) + ',' + JsonInt('rotation', Rotation) + ','
+        + JsonBool('bold', Bold) + ',' + JsonBool('italic', Italic) + ','
+        + JsonBool('underline', Underline) + ',' + JsonBool('strikeout', StrikeOut));
+End;
+
+{..............................................................................}
+{ SheetOptionsJson - the active sheet's zone, margin and border settings,     }
+{ where the zones are counted from, the document font and the sheet and       }
+{ border colours (Altium's BGR integers).                                     }
 {..............................................................................}
 Function SheetOptionsJson(SchDoc : ISch_Document) : String;
 Var
-    ZX, ZY, CZX, CZY, Border : Integer;
+    ZX, ZY, CZX, CZY, Border, ZoneStyle, DocFont, SheetColour, BorderColour : Integer;
     Margin, CMargin : Double;
     RefZones, Graphics, TitleBlock, SheetBorder : Boolean;
 Begin
     ZX := -1; ZY := -1; CZX := -1; CZY := -1; Border := -1;
     Margin := -1; CMargin := -1; RefZones := False; Graphics := False;
     TitleBlock := False; SheetBorder := False;
+    ZoneStyle := -1; DocFont := -1; SheetColour := -1; BorderColour := -1;
     Try ZX := SchDoc.GetState_SheetZonesX; Except End;
     Try ZY := SchDoc.GetState_SheetZonesY; Except End;
     Try CZX := SchDoc.GetState_CustomXZones; Except End;
@@ -10096,6 +10162,10 @@ Begin
     Try Graphics := SchDoc.GetState_ShowTemplateGraphics; Except End;
     Try TitleBlock := SchDoc.TitleBlockOn; Except End;
     Try SheetBorder := SchDoc.BorderOn; Except End;
+    Try ZoneStyle := SchDoc.GetState_ReferenceZoneStyle; Except End;
+    Try DocFont := SchDoc.GetState_SystemFont; Except End;
+    Try SheetColour := SchDoc.AreaColor; Except End;
+    Try BorderColour := SchDoc.Color; Except End;
     Result := JsonObj(
         JsonInt('zones_x', ZX) + ',' + JsonInt('zones_y', ZY) + ','
         + JsonInt('custom_zones_x', CZX) + ',' + JsonInt('custom_zones_y', CZY) + ','
@@ -10105,7 +10175,12 @@ Begin
         + JsonBool('reference_zones', RefZones) + ','
         + JsonBool('show_template_graphics', Graphics) + ','
         + JsonBool('title_block_on', TitleBlock) + ','
-        + JsonBool('border_on', SheetBorder));
+        + JsonBool('border_on', SheetBorder) + ','
+        + JsonStr('zone_origin', SheetZoneOriginName(ZoneStyle)) + ','
+        + JsonInt('document_font_id', DocFont) + ','
+        + JsonRaw('document_font', SheetFontJson(DocFont)) + ','
+        + JsonInt('sheet_color', SheetColour) + ','
+        + JsonInt('border_color', BorderColour));
 End;
 
 {..............................................................................}
@@ -10115,13 +10190,19 @@ End;
 { alone; the answer is read back after the writes.                             }
 { Params: zones_x, zones_y, custom_zones_x, custom_zones_y, margin_width,     }
 { custom_margin_width (mils), border_style, reference_zones,                   }
-{ show_template_graphics, title_block_on, border_on ('true' / 'false').        }
+{ show_template_graphics, title_block_on, border_on ('true' / 'false'),       }
+{ zone_origin ('upper_left' / 'bottom_right', ReferenceZoneStyle),            }
+{ document_font_id (a font id, SystemFont), sheet_color (AreaColor) and       }
+{ border_color (Color), both BGR integers from 0 to 16777215.                 }
+{ MEASURED (AD 25.8.1): all four write between SchBeginEdit and SchEndEdit,   }
+{ read back, draw, and are kept over save and reopen. A font id that names   }
+{ no font is refused before anything is written.                             }
 {..............................................................................}
 Function Gen_SheetOptions(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     ZX, ZY, CZX, CZY, Margin, CMargin, Border, RefZones, Graphics : String;
-    TitleBlock, SheetBorder : String;
+    TitleBlock, SheetBorder, ZoneOrigin, DocFont, SheetColour, BorderColour : String;
     Wrote : Boolean;
 Begin
     ZX := ExtractJsonValue(Params, 'zones_x');
@@ -10135,10 +10216,40 @@ Begin
     Graphics := LowerCase(ExtractJsonValue(Params, 'show_template_graphics'));
     TitleBlock := LowerCase(ExtractJsonValue(Params, 'title_block_on'));
     SheetBorder := LowerCase(ExtractJsonValue(Params, 'border_on'));
+    ZoneOrigin := LowerCase(Trim(ExtractJsonValue(Params, 'zone_origin')));
+    DocFont := Trim(ExtractJsonValue(Params, 'document_font_id'));
+    SheetColour := Trim(ExtractJsonValue(Params, 'sheet_color'));
+    BorderColour := Trim(ExtractJsonValue(Params, 'border_color'));
     SchDoc := SchServer.GetCurrentSchDocument;
     If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
+        Exit;
+    End;
+    If (ZoneOrigin <> '') And (SheetZoneStyleOf(ZoneOrigin) < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'zone_origin is upper_left or bottom_right, not ' + ZoneOrigin + '; nothing was changed');
+        Exit;
+    End;
+    If ((SheetColour <> '') And (Not SheetWholeInRange(SheetColour, 0, 16777215)))
+        Or ((BorderColour <> '') And (Not SheetWholeInRange(BorderColour, 0, 16777215))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'sheet_color and border_color are BGR integers from 0 to 16777215; nothing was changed');
+        Exit;
+    End;
+    If (DocFont <> '') And (Not SheetWholeInRange(DocFont, 1, 99999999)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'document_font_id is a font id from 1 (get_font_id makes one); nothing was changed');
+        Exit;
+    End;
+    If (DocFont <> '') And (SheetFontJson(StrToIntDef(DocFont, 0)) = 'null') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'font id ' + DocFont + ' names no font in this session; get one with get_font_id. '
+            + 'Nothing was changed');
         Exit;
     End;
     If ((ZX <> '') And (StrToIntDef(ZX, -1) < 1)) Or ((ZY <> '') And (StrToIntDef(ZY, -1) < 1))
@@ -10153,7 +10264,8 @@ Begin
     End;
     Wrote := (ZX <> '') Or (ZY <> '') Or (CZX <> '') Or (CZY <> '') Or (Margin <> '')
         Or (CMargin <> '') Or (Border <> '') Or (RefZones <> '') Or (Graphics <> '')
-        Or (TitleBlock <> '') Or (SheetBorder <> '');
+        Or (TitleBlock <> '') Or (SheetBorder <> '') Or (ZoneOrigin <> '')
+        Or (DocFont <> '') Or (SheetColour <> '') Or (BorderColour <> '');
     If Wrote Then
     Begin
         SchBeginEdit(SchDoc, '');
@@ -10169,6 +10281,10 @@ Begin
             If Graphics <> '' Then SchDoc.SetState_ShowTemplateGraphics(Graphics = 'true');
             If TitleBlock <> '' Then SchDoc.SetState_TitleBlockOn(TitleBlock = 'true');
             If SheetBorder <> '' Then SchDoc.SetState_BorderOn(SheetBorder = 'true');
+            If ZoneOrigin <> '' Then SchDoc.SetState_ReferenceZoneStyle(SheetZoneStyleOf(ZoneOrigin));
+            If DocFont <> '' Then SchDoc.SetState_SystemFont(StrToIntDef(DocFont, 1));
+            If SheetColour <> '' Then SchDoc.AreaColor := StrToIntDef(SheetColour, 0);
+            If BorderColour <> '' Then SchDoc.Color := StrToIntDef(BorderColour, 0);
         Finally
             SchEndEdit(SchDoc, 'Edit');
         End;
