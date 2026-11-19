@@ -770,13 +770,14 @@ def _render_drills(geometry: dict[str, Any], opt: PcbRenderOptions) -> str:
                 f'width="{side}" height="{side}"/>'
             )
         elif htype == "slot":
-            # Slot is rounded-end rectangle: length = hole_size,
-            # width = hole_width, rotated by hole_rotation about (x,y).
-            length = h
-            width = float(p.get("hole_width", h) or h)
-            if width <= 0:
-                width = h
-            rot = float(p.get("hole_rotation", 0) or 0)
+            # A slot is a rectangle with round ends. Altium's HoleSize is
+            # its width (the drill) and HoleWidth its overall length; it
+            # runs along the pad's X, turned by the pad rotation and then by
+            # its own hole rotation, which is relative to the pad (#416).
+            width = h
+            length = max(float(p.get("hole_width", 0) or 0), h)
+            rot = (float(p.get("rotation", 0) or 0)
+                   + float(p.get("hole_rotation", 0) or 0))
             rx = width / 2.0
             transform = f' transform="rotate({rot} {x} {y})"' if rot else ""
             out.append(
