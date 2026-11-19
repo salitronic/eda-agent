@@ -43,13 +43,15 @@ def test_the_board_branch_does_not_jump_to_a_location_marker():
 def test_the_board_branch_zooms_on_a_rectangle_round_the_point():
     branch = _board_branch()
     assert "GraphicalView_ZoomOnRect(Cx - Rad, Cy - Rad, Cx + Rad, Cy + Rad)" in branch
-    assert "Cx := MilsToCoordF(StrToFloatDef(XStr, 0))" in branch
-    assert "Cy := MilsToCoordF(StrToFloatDef(YStr, 0))" in branch
+    # The point and the radius are worked out once, before the branches: the
+    # schematic branch fits the same square.
+    body = _body()
+    assert "Cx := MilsToCoordF(StrToFloatDef(XStr, 0))" in body
+    assert "Cy := MilsToCoordF(StrToFloatDef(YStr, 0))" in body
 
 
 def test_the_radius_is_optional_and_never_zero():
     body = _body()
     assert "RadStr := ExtractJsonValue(Params, 'radius')" in body
-    branch = _board_branch()
-    assert "StrToFloatDef(RadStr, 200)" in branch
-    assert "If Rad <= 0 Then Rad := MilsToCoordF(200)" in branch
+    assert "StrToFloatDef(RadStr, 200)" in body
+    assert "If Rad <= 0 Then Rad := MilsToCoordF(200)" in body

@@ -1287,8 +1287,8 @@ def register_generic_tools(mcp):
                 to x, y)
             x, y: the point for "point", in mils (a footprint's frame in
                 a PCB library)
-            radius: half the width of the view round the point on a board
-                or footprint, mils (default 200)
+            radius: half the width of the square the view is fitted to
+                round the point, mils (default 200)
 
         Returns:
             Dictionary confirming the zoom action

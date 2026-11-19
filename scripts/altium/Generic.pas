@@ -7296,11 +7296,18 @@ End;
 
 {..............................................................................}
 { Zoom to specific X,Y coordinates (in mils for SCH, mils for PCB)          }
-{ PCB: the view is fitted to a square of +-radius mils (default 200) round   }
-{ x,y through GraphicalView_ZoomOnRect (Altium's ConvertPicture.PAS does    }
+{ The view is fitted to a square of +-radius mils (default 200) round x,y.  }
+{ PCB: through GraphicalView_ZoomOnRect (Altium's ConvertPicture.PAS does   }
 { the same). PCB:Jump JumpToLocation10 jumped to location MARKER 10 and,    }
 { with none set, raised a modal "Location Marker 10 has not been set" that  }
 { stopped the polling loop; X and Y were never its parameters.              }
+{ SCH / SCHLIB: Sch:Zoom with Action=ZoomArea and the corners as            }
+{ Location1.x / .y and Location2.x / .y in internal units (1 mil = 10000),  }
+{ the parameter names AdvSch.dll reads (AD 25, 25B, 26), beside its         }
+{ "Choose first corner..." prompt. The branch ran Sch:ZoomToLocation,       }
+{ which the schematic server does not have: RunProcess returned without     }
+{ a word and the view never moved. Sch:Jump with Location.x / .y does       }
+{ not move it either (measured on AD 25.8.1).                               }
 {..............................................................................}
 
 Function Gen_ZoomToXY(Params : String; RequestId : String) : String;
@@ -7352,12 +7359,13 @@ Begin
         If Board = Nil Then SchDoc := SchServer.GetCurrentSchDocument;
     End;
 
+    Cx := MilsToCoordF(StrToFloatDef(XStr, 0));
+    Cy := MilsToCoordF(StrToFloatDef(YStr, 0));
+    Rad := MilsToCoordF(StrToFloatDef(RadStr, 200));
+    If Rad <= 0 Then Rad := MilsToCoordF(200);
+
     If Board <> Nil Then
     Begin
-        Cx := MilsToCoordF(StrToFloatDef(XStr, 0));
-        Cy := MilsToCoordF(StrToFloatDef(YStr, 0));
-        Rad := MilsToCoordF(StrToFloatDef(RadStr, 200));
-        If Rad <= 0 Then Rad := MilsToCoordF(200);
         Board.GraphicalView_ZoomOnRect(Cx - Rad, Cy - Rad, Cx + Rad, Cy + Rad);
 
         Result := BuildSuccessResponse(RequestId,
@@ -7366,9 +7374,12 @@ Begin
     Else If SchDoc <> Nil Then
     Begin
         ResetParameters;
-        AddStringParameter('X', XStr);
-        AddStringParameter('Y', YStr);
-        RunProcess('Sch:ZoomToLocation');
+        AddStringParameter('Action', 'ZoomArea');
+        AddStringParameter('Location1.x', IntToStr(Cx - Rad));
+        AddStringParameter('Location1.y', IntToStr(Cy - Rad));
+        AddStringParameter('Location2.x', IntToStr(Cx + Rad));
+        AddStringParameter('Location2.y', IntToStr(Cy + Rad));
+        RunProcess('Sch:Zoom');
 
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"x":' + XStr + ',"y":' + YStr + ',"context":"schematic"}');
