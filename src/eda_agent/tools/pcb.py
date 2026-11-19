@@ -11658,8 +11658,7 @@ def register_pcb_tools(mcp):
             result["ok"] = False
             result["reason"] = (
                 f"relief_angle {int(relief_angle)} was written but the rule does not "
-                "read it back (its descriptor is in connect_descriptor; a rule that "
-                "is not Relief Connect does not show its angle)")
+                "read it back; its descriptor is in connect_descriptor")
         return result
 
     @mcp.tool()
