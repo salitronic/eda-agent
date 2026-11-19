@@ -9300,6 +9300,7 @@ def register_pcb_tools(mcp):
         frame_height: float = 0,
         inverted: bool | None = None,
         margin: float | None = None,
+        mirror: bool | None = None,
     ) -> dict[str, Any]:
         """Place a text string on the active PCB.
 
@@ -9336,12 +9337,17 @@ def register_pcb_tools(mcp):
                 labels). On a justified text the filled box is the frame,
                 so frame_width / frame_height make the label larger.
             margin: Inverted margin in mils, the minimum fill round the text.
+            mirror: None mirrors a text on a bottom layer (BottomOverlay,
+                BottomLayer, BottomSolder, BottomPaste), as Altium's Place
+                String does, so it reads right from below. True / False
+                force it (True for a bottom mechanical layer). The text
+                keeps the box it has unmirrored, so x / y mean the same.
 
         Returns:
             Dictionary with placed text properties as read back from the
             placed text: height, stroke, kind, font_id, font_name, bold,
-            italic, multiline, justification, frame, inverted, margin,
-            location (the frame's corner) and bounds.
+            italic, mirror, multiline, justification, frame, inverted,
+            margin, location (the frame's corner) and bounds.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -9360,7 +9366,7 @@ def register_pcb_tools(mcp):
             if value:
                 params[name] = value
         for name, flag in (("bold", bold), ("italic", italic),
-                           ("inverted", inverted)):
+                           ("inverted", inverted), ("mirror", mirror)):
             if flag is not None:
                 params[name] = "true" if flag else "false"
         for name, mils in (("frame_width", frame_width),
