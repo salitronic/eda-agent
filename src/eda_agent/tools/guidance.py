@@ -1058,6 +1058,22 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "sch_set_sheet_options with no arguments reads the settings.",
     },
     {
+        "task": "Read or change a schematic sheet's own title block fields and sheet rules",
+        "keywords": ("title", "block", "titleblock", "revision", "author"),
+        "when": (("sheet", "parameter"), ("title", "block"), ("sheet", "rule"),
+                 ("document", "parameter")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["sch_sheet_parameters", "proj_set_document_parameter"],
+        "avoid": [],
+        "note": (
+            "sch_sheet_parameters action=list gives each parameter's index; "
+            "a name that repeats is set or removed by index. A sheet rule is "
+            "a parameter named Rule: add it with rule={\"RULEKIND\": ...}. "
+            "System parameters (Title, Author ...) take a value but are not "
+            "removed. Save the sheet afterwards."),
+    },
+    {
         "task": "Give a library symbol aliases (other part names)",
         "keywords": ("alias", "aliases", "symbol", "name", "variant", "part"),
         "when": (("alias",), ("aliases",)),

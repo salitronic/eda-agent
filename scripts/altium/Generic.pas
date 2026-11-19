@@ -12215,8 +12215,186 @@ Begin
 End;
 
 {..............................................................................}
+{ SHEET PARAMETERS. A sheet keeps its own parameters (the title block fields  }
+{ and the sheet-level design rules) as the first-level parameters of the      }
+{ document; a part keeps its parameters inside the part, so the first-level   }
+{ walk never reaches one. Measured on AD 25.8.1: every sheet carries 27       }
+{ system parameters (CurrentTime ... SheetNumber, SheetTotal, Rule), hidden,  }
+{ with ReadOnlyState 1. ReadOnlyState: 0 none, 1 the name is read-only, 2     }
+{ the value is read-only, 3 both. A sheet rule is a parameter named Rule      }
+{ whose value is the rule record: KEY=VALUE fields joined by a bar.           }
+{..............................................................................}
+
+{ True when the read-only state locks the name. }
+Function SheetParamNameLocked(State : Integer) : Boolean;
+Begin
+    Result := (State = 1) Or (State = 3);
+End;
+
+{ True when the read-only state locks the value. }
+Function SheetParamValueLocked(State : Integer) : Boolean;
+Begin
+    Result := (State = 2) Or (State = 3);
+End;
+
+{ A system parameter with a locked name is made again by Altium on the next  }
+{ load, with the value *, so removing one only loses its value. A user       }
+{ parameter, and a Rule parameter a user added (it reads as a system         }
+{ parameter too, with state 0), may be removed.                              }
+Function SheetParamRemovable(IsSystem : Boolean; State : Integer) : Boolean;
+Begin
+    Result := Not (IsSystem And (State <> 0));
+End;
+
+{ The empty Rule of the sheet: the system Rule parameter still holding *.    }
+{ Altium writes the first rule given to a sheet into it.                     }
+Function SheetRuleSlotFree(Name : String; Value : String; State : Integer) : Boolean;
+Begin
+    Result := SameText(Trim(Name), 'Rule') And (State <> 0) And (Trim(Value) = '*');
+End;
+
+{ A rule record: KEY=VALUE fields, one of them RULEKIND. }
+Function SheetParamIsRuleText(Value : String) : Boolean;
+Begin
+    Result := Pos('RULEKIND=', UpperCase(Value)) > 0;
+End;
+
+{ Why Value cannot be written into a parameter named Name, or empty. A      }
+{ parameter named Rule holds a rule record, or * for the empty system Rule;  }
+{ anything else Altium replaces with an empty rule (PcbType=ProtelPcb).      }
+Function SheetRuleValueProblem(Name : String; Value : String) : String;
+Begin
+    Result := '';
+    If Not SameText(Trim(Name), 'Rule') Then Exit;
+    If Trim(Value) = '*' Then Exit;
+    If SheetParamIsRuleText(Value) Then Exit;
+    Result := 'a parameter named Rule holds a rule record (KEY=VALUE fields '
+        + 'joined by |, one of them RULEKIND), or * for the empty system Rule';
+End;
+
+{ The index asked for, or -1 when it is not a whole number from 0. Checked  }
+{ by its characters first: StrToIntDef raises on a number past 32 bits.     }
+Function SheetParamIndexOf(IndexStr : String) : Integer;
+Var
+    S : String;
+Begin
+    Result := -1;
+    S := Trim(IndexStr);
+    If Not IsIntStr(S) Then Exit;
+    If Length(S) > 8 Then Exit;
+    Result := StrToIntDef(S, -1);
+    If Result < 0 Then Result := -1;
+End;
+
+{ Why no single sheet parameter is meant, or empty. Want is the index asked  }
+{ for (-1 when none or not a number), Count the parameters of the sheet,     }
+{ NameAt the name of the one at Want, Hits and HitList how many are named    }
+{ Name and their indices. Code takes the error code.                         }
+Function SheetParamPickProblem(IndexStr : String; Want : Integer; Name : String;
+    NameAt : String; Count : Integer; Hits : Integer; HitList : String;
+    Var Code : String) : String;
+Begin
+    Result := '';
+    Code := '';
+    If (Trim(IndexStr) = '') And (Name = '') Then
+    Begin
+        Code := 'MISSING_PARAM';
+        Result := 'give the parameter by index (as listed) or by name';
+        Exit;
+    End;
+    If Trim(IndexStr) <> '' Then
+    Begin
+        If (Want < 0) Or (Want >= Count) Then
+        Begin
+            Code := 'BAD_INDEX';
+            Result := 'index ' + Trim(IndexStr) + ' names no parameter: the sheet has '
+                + IntToStr(Count) + ', index 0 to ' + IntToStr(Count - 1);
+            Exit;
+        End;
+        If (Name <> '') And (Not SameText(NameAt, Name)) Then
+        Begin
+            Code := 'PARAMETER_CHANGED';
+            Result := 'the parameter at index ' + IntToStr(Want) + ' is "' + NameAt
+                + '", not "' + Name + '"; list the parameters again';
+        End;
+        Exit;
+    End;
+    If Hits = 0 Then
+    Begin
+        Code := 'NOT_FOUND';
+        Result := 'no parameter of this sheet is named "' + Name + '"';
+        Exit;
+    End;
+    If Hits > 1 Then
+    Begin
+        Code := 'AMBIGUOUS_NAME';
+        Result := IntToStr(Hits) + ' parameters of this sheet are named "' + Name
+            + '" (index ' + HitList + '); give the index of one';
+    End;
+End;
+
+{ One sheet parameter as JSON, with its index in the first-level walk. }
+Function SheetParamJson(P : ISch_Parameter; Idx : Integer) : String;
+Var
+    PName, PValue, Extra : String;
+    State : Integer;
+    HiddenFlag, SysFlag, RuleFlag : Boolean;
+Begin
+    PName := '';
+    PValue := '';
+    State := 0;
+    HiddenFlag := False;
+    SysFlag := False;
+    RuleFlag := False;
+    Try PName := P.Name; Except End;
+    Try PValue := P.Text; Except End;
+    Try HiddenFlag := P.IsHidden; Except End;
+    Try State := P.ReadOnlyState; Except End;
+    Try SysFlag := P.IsSystemParameter; Except End;
+    Try RuleFlag := P.IsRule; Except End;
+    Extra := '';
+    If SheetRuleSlotFree(PName, PValue, State) Then
+        Extra := ',' + JsonBool('empty_rule_slot', True);
+    Result := JsonObj(JsonInt('index', Idx) + ','
+        + JsonStr('name', PName) + ','
+        + JsonStr('value', PValue) + ','
+        + JsonBool('hidden', HiddenFlag) + ','
+        + JsonInt('read_only_state', State) + ','
+        + JsonBool('name_read_only', SheetParamNameLocked(State)) + ','
+        + JsonBool('value_read_only', SheetParamValueLocked(State)) + ','
+        + JsonBool('system', SysFlag) + ','
+        + JsonBool('rule', RuleFlag) + ','
+        + JsonBool('removable', SheetParamRemovable(SysFlag, State))
+        + Extra);
+End;
+
+{ How many parameters the sheet itself holds. }
+Function SheetParamCount(SchDoc : ISch_Document) : Integer;
+Var
+    It : ISch_Iterator;
+    P : ISch_Parameter;
+Begin
+    Result := 0;
+    It := SchDoc.SchIterator_Create;
+    It.SetState_IterationDepth(eIterateFirstLevel);
+    It.AddFilter_ObjectSet(MkSet(eParameter));
+    Try
+        P := It.FirstSchObject;
+        While P <> Nil Do
+        Begin
+            Result := Result + 1;
+            P := It.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(It);
+    End;
+End;
+
+{..............................................................................}
 { Get title block / sheet parameters from a schematic sheet                   }
 { Params: file_path (optional, defaults to active document)                   }
+{ Each with its index in the walk, hidden, the read-only state and whether  }
+{ it is a system parameter or a rule (SheetParamJson).                       }
 {..............................................................................}
 
 Function Gen_GetSheetParameters(Params : String; RequestId : String) : String;
@@ -12259,8 +12437,7 @@ Begin
         Begin
             If Not First Then JsonItems := JsonItems + ',';
             First := False;
-            JsonItems := JsonItems + '{"name":"' + EscapeJsonString(Param.Name) +
-                '","value":"' + EscapeJsonString(Param.Text) + '"}';
+            JsonItems := JsonItems + SheetParamJson(Param, ParamCount);
             Inc(ParamCount);
             Param := Iterator.NextSchObject;
         End;
@@ -12271,6 +12448,435 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"count":' + IntToStr(ParamCount) +
         ',"parameters":[' + JsonItems + ']}');
+End;
+
+{..............................................................................}
+{ Add, change or remove ONE parameter of a sheet itself, never of a part.     }
+{ Params: action (add, set, remove), file_path (else the sheet in front),     }
+{ index (from get_sheet_parameters) and / or name, value with set_value true, }
+{ hidden true / false (add: default true).                                    }
+{ add: a parameter named Rule goes into the empty system Rule (value *) when  }
+{ the sheet still has it, as the Properties panel does; any other is made as  }
+{ a new parameter (SchObjectFactory, RegisterSchObjectInContainer), the way   }
+{ project.set_document_parameter adds one. Add_Parameter is not used: on AD   }
+{ 25.8.1 it made the parameter but returned False with the parameter          }
+{ unassigned, and for the name Rule replaced the value with an empty rule.    }
+{ set: the value and / or the hidden flag, inside SchBeginModify and          }
+{ SchEndModify; a value Altium holds read-only is refused.                    }
+{ remove: SchDoc.RemoveSchObject; a system parameter with a locked name is    }
+{ refused, since Altium makes it again on the next load and only its value   }
+{ would be lost. Remove_Parameter is not used: on a system parameter it      }
+{ raised a modal box on AD 25.8.1.                                           }
+{ Every write is read back, and marks the sheet; nothing is saved.           }
+{..............................................................................}
+
+Function Gen_SheetParameters(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    It : ISch_Iterator;
+    P, Target, Slot, Made, Exact, LastNamed : ISch_Parameter;
+    What, FilePath, DocPath, IndexStr, Name, Value, HiddenStr : String;
+    Problem, Code, NameAt, HitList, Route, Got, Note, Data, PName, PText : String;
+    OldName, OldValue, Before : String;
+    Want, Count, After, Hits, TargetIndex, SlotIndex, State, ByName : Integer;
+    ExactIndex, LastIndex : Integer;
+    SetValue, Hidden, Applied, Found, RuleName, Kept, GotHidden : Boolean;
+    SysFlag, RuleFlag : Boolean;
+Begin
+    What := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If (What <> 'add') And (What <> 'set') And (What <> 'remove') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
+            'action is add, set or remove; get_sheet_parameters lists them');
+        Exit;
+    End;
+    { The named sheet, else the one in front. }
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath <> '' Then
+    Begin
+        SchDoc := SchDocByPathLoading(FilePath);
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_FOUND',
+                'No schematic sheet at ' + FilePath + '. Nothing was changed.');
+            Exit;
+        End;
+    End
+    Else
+        SchDoc := SchServer.GetCurrentSchDocument;
+    If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic sheet is active (a library has no sheet parameters). Nothing was changed.');
+        Exit;
+    End;
+    DocPath := FilePath;
+    If DocPath = '' Then DocPath := SchDoc.DocumentName;
+
+    IndexStr := Trim(ExtractJsonValue(Params, 'index'));
+    Name := Trim(ExtractJsonValue(Params, 'name'));
+    Value := ExtractJsonValue(Params, 'value');
+    SetValue := LowerCase(ExtractJsonValue(Params, 'set_value')) = 'true';
+    HiddenStr := LowerCase(Trim(ExtractJsonValue(Params, 'hidden')));
+    If (HiddenStr <> '') And (HiddenStr <> 'true') And (HiddenStr <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'hidden is true or false. Nothing was changed.');
+        Exit;
+    End;
+    Note := '';
+    Data := '';
+
+    If What = 'add' Then
+    Begin
+        If Name = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'add needs a name. Nothing was changed.');
+            Exit;
+        End;
+        RuleName := SameText(Name, 'Rule');
+        If RuleName And (Not SheetParamIsRuleText(Value)) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+                SheetRuleValueProblem(Name, '') + '. Nothing was changed.');
+            Exit;
+        End;
+        Hidden := HiddenStr <> 'false';
+
+        { The empty system Rule, when a rule is added and the sheet has it, }
+        { and the parameters already of that name.                          }
+        Slot := Nil;
+        SlotIndex := -1;
+        Count := 0;
+        Hits := 0;
+        HitList := '';
+        It := SchDoc.SchIterator_Create;
+        It.SetState_IterationDepth(eIterateFirstLevel);
+        It.AddFilter_ObjectSet(MkSet(eParameter));
+        Try
+            P := It.FirstSchObject;
+            While P <> Nil Do
+            Begin
+                PName := '';
+                Try PName := P.Name; Except End;
+                If SameText(PName, Name) Then
+                Begin
+                    Hits := Hits + 1;
+                    If HitList <> '' Then HitList := HitList + ', ';
+                    HitList := HitList + IntToStr(Count);
+                End;
+                If RuleName And (Slot = Nil) Then
+                Begin
+                    PText := '';
+                    State := 0;
+                    Try PText := P.Text; Except End;
+                    Try State := P.ReadOnlyState; Except End;
+                    If SheetRuleSlotFree(PName, PText, State) Then
+                    Begin
+                        Slot := P;
+                        SlotIndex := Count;
+                    End;
+                End;
+                Count := Count + 1;
+                P := It.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(It);
+        End;
+
+        Made := Nil;
+        Route := 'new';
+        SchBeginEdit(SchDoc, '');
+        Try
+            If Slot <> Nil Then
+            Begin
+                Route := 'rule_slot';
+                SchBeginModify(Slot);
+                Slot.Text := Value;
+                Try Slot.IsHidden := Hidden; Except NoteWriteFailed('sheet Rule IsHidden'); End;
+                SchEndModify(Slot);
+            End
+            Else
+            Begin
+                Made := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+                If Made <> Nil Then
+                Begin
+                    Made.Name := Name;
+                    Made.Text := Value;
+                    Try Made.IsHidden := Hidden; Except NoteWriteFailed('sheet parameter IsHidden'); End;
+                    SchDoc.RegisterSchObjectInContainer(Made);
+                    SchRegisterObject(SchDoc, Made);
+                End;
+            End;
+        Finally
+            SchEndEdit(SchDoc, 'Edit');
+        End;
+        If (Slot = Nil) And (Made = Nil) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                'Altium did not create the parameter. Nothing was changed.');
+            Exit;
+        End;
+
+        { Read back: the parameter written, found again in the sheet. }
+        Target := Nil;
+        TargetIndex := -1;
+        If Slot <> Nil Then
+        Begin
+            Target := Slot;
+            TargetIndex := SlotIndex;
+        End
+        Else
+        Begin
+            Got := '';
+            Try Got := Made.Text; Except End;
+            Exact := Nil;
+            LastNamed := Nil;
+            ExactIndex := -1;
+            LastIndex := -1;
+            After := 0;
+            It := SchDoc.SchIterator_Create;
+            It.SetState_IterationDepth(eIterateFirstLevel);
+            It.AddFilter_ObjectSet(MkSet(eParameter));
+            Try
+                P := It.FirstSchObject;
+                While P <> Nil Do
+                Begin
+                    PName := '';
+                    PText := '';
+                    Try PName := P.Name; Except End;
+                    Try PText := P.Text; Except End;
+                    If SameText(PName, Name) Then
+                    Begin
+                        LastNamed := P;
+                        LastIndex := After;
+                        If PText = Got Then
+                        Begin
+                            Exact := P;
+                            ExactIndex := After;
+                        End;
+                    End;
+                    After := After + 1;
+                    P := It.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(It);
+            End;
+            If Exact <> Nil Then
+            Begin
+                Target := Exact;
+                TargetIndex := ExactIndex;
+            End
+            Else If After = Count + 1 Then
+            Begin
+                Target := LastNamed;
+                TargetIndex := LastIndex;
+            End;
+        End;
+        After := SheetParamCount(SchDoc);
+
+        Found := Target <> Nil;
+        Got := '';
+        GotHidden := False;
+        RuleFlag := False;
+        If Found Then
+        Begin
+            Try Got := Target.Text; Except End;
+            Try GotHidden := Target.IsHidden; Except End;
+            Try RuleFlag := Target.IsRule; Except End;
+        End;
+        Kept := Found And (Got = Value);
+        If RuleName Then
+            Applied := Found And RuleFlag And SheetParamIsRuleText(Got)
+        Else
+            Applied := Kept And (GotHidden = Hidden);
+        If Not Found Then
+            Note := 'the new parameter was not found on the sheet afterwards'
+        Else If RuleName And (Not Applied) Then
+            Note := 'Altium did not keep the rule: it reads back as "' + Got + '"'
+        Else If Not Applied Then
+            Note := 'the value or the hidden flag did not read back as written'
+        Else If (Route = 'new') And (Hits > 0) And (Not RuleName) Then
+            Note := 'the sheet already had a parameter named "' + Name + '" (index '
+                + HitList + '); set and remove now need the index';
+
+        Data := JsonStr('action', 'add') + ','
+            + JsonStr('route', Route) + ','
+            + JsonBool('found', Found) + ','
+            + JsonBool('applied', Applied) + ','
+            + JsonBool('value_kept', Kept) + ','
+            + JsonInt('count', After);
+        If Found Then
+            Data := Data + ',' + JsonRaw('parameter', SheetParamJson(Target, TargetIndex));
+    End
+    Else
+    Begin
+        { set and remove: the one parameter meant, by index and / or name. }
+        Want := -1;
+        If IndexStr <> '' Then Want := SheetParamIndexOf(IndexStr);
+        Count := 0;
+        Hits := 0;
+        HitList := '';
+        NameAt := '';
+        Target := Nil;
+        ByName := -1;
+        It := SchDoc.SchIterator_Create;
+        It.SetState_IterationDepth(eIterateFirstLevel);
+        It.AddFilter_ObjectSet(MkSet(eParameter));
+        Try
+            P := It.FirstSchObject;
+            While P <> Nil Do
+            Begin
+                PName := '';
+                Try PName := P.Name; Except End;
+                If (IndexStr <> '') And (Count = Want) Then
+                Begin
+                    Target := P;
+                    NameAt := PName;
+                End;
+                If (Name <> '') And SameText(PName, Name) Then
+                Begin
+                    Hits := Hits + 1;
+                    If HitList <> '' Then HitList := HitList + ', ';
+                    HitList := HitList + IntToStr(Count);
+                    If IndexStr = '' Then
+                    Begin
+                        Target := P;
+                        ByName := Count;
+                    End;
+                End;
+                Count := Count + 1;
+                P := It.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(It);
+        End;
+        Problem := SheetParamPickProblem(IndexStr, Want, Name, NameAt, Count, Hits, HitList, Code);
+        If (Problem = '') And (Target = Nil) Then
+        Begin
+            Code := 'NOT_FOUND';
+            Problem := 'the parameter was not found on the sheet';
+        End;
+        If Problem <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, Code, Problem + '. Nothing was changed.');
+            Exit;
+        End;
+        If IndexStr <> '' Then TargetIndex := Want Else TargetIndex := ByName;
+
+        OldName := '';
+        OldValue := '';
+        State := 0;
+        SysFlag := False;
+        Try OldName := Target.Name; Except End;
+        Try OldValue := Target.Text; Except End;
+        Try State := Target.ReadOnlyState; Except End;
+        Try SysFlag := Target.IsSystemParameter; Except End;
+
+        If What = 'set' Then
+        Begin
+            If (Not SetValue) And (HiddenStr = '') Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                    'set needs a value, hidden or both. Nothing was changed.');
+                Exit;
+            End;
+            If SetValue And SheetParamValueLocked(State) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'VALUE_READ_ONLY',
+                    'the value of "' + OldName + '" is read-only in Altium (read-only state '
+                    + IntToStr(State) + '). Nothing was changed.');
+                Exit;
+            End;
+            If SetValue Then
+            Begin
+                Problem := SheetRuleValueProblem(OldName, Value);
+                If Problem <> '' Then
+                Begin
+                    Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+                        Problem + '. Nothing was changed.');
+                    Exit;
+                End;
+            End;
+            SchBeginEdit(SchDoc, '');
+            Try
+                SchBeginModify(Target);
+                If SetValue Then Target.Text := Value;
+                If HiddenStr <> '' Then
+                Begin
+                    Try Target.IsHidden := (HiddenStr = 'true'); Except NoteWriteFailed('sheet parameter IsHidden'); End;
+                End;
+                SchEndModify(Target);
+            Finally
+                SchEndEdit(SchDoc, 'Edit');
+            End;
+
+            Got := '';
+            GotHidden := False;
+            RuleFlag := False;
+            Try Got := Target.Text; Except End;
+            Try GotHidden := Target.IsHidden; Except End;
+            Try RuleFlag := Target.IsRule; Except End;
+            Kept := (Not SetValue) Or (Got = Value);
+            If SetValue And SameText(OldName, 'Rule') And (Trim(Value) <> '*') Then
+                Applied := RuleFlag And SheetParamIsRuleText(Got)
+            Else
+                Applied := Kept;
+            If HiddenStr <> '' Then Applied := Applied And (GotHidden = (HiddenStr = 'true'));
+            If SetValue And SameText(OldName, 'Rule') And (Not Applied) Then
+                Note := 'Altium did not keep the rule: it reads back as "' + Got + '"'
+            Else If Not Applied Then
+                Note := 'the value or the hidden flag did not read back as written';
+            Data := JsonStr('action', 'set') + ','
+                + JsonBool('applied', Applied) + ','
+                + JsonBool('value_kept', Kept) + ','
+                + JsonStr('previous_value', OldValue) + ','
+                + JsonInt('count', Count) + ','
+                + JsonRaw('parameter', SheetParamJson(Target, TargetIndex));
+        End
+        Else
+        Begin
+            If Not SheetParamRemovable(SysFlag, State) Then
+            Begin
+                If SameText(OldName, 'Rule') Then
+                    Problem := 'the Rule of the sheet itself is a system parameter that Altium '
+                        + 'makes again on the next load; set its value back to * to clear the rule'
+                Else
+                    Problem := '"' + OldName + '" is a system parameter: Altium makes it again '
+                        + 'on the next load, with the value *, so removing it only loses its '
+                        + 'value; set its value instead';
+                Result := BuildErrorResponse(RequestId, 'PROTECTED', Problem + '. Nothing was changed.');
+                Exit;
+            End;
+            Before := SheetParamJson(Target, TargetIndex);
+            SchBeginEdit(SchDoc, '');
+            Try
+                SchDoc.RemoveSchObject(Target);
+            Finally
+                SchEndEdit(SchDoc, 'Edit');
+            End;
+            After := SheetParamCount(SchDoc);
+            Applied := After < Count;
+            If Not Applied Then
+                Note := 'the parameter is still on the sheet after it was removed';
+            Data := JsonStr('action', 'remove') + ','
+                + JsonBool('removed', Applied) + ','
+                + JsonBool('applied', Applied) + ','
+                + JsonInt('count', After) + ','
+                + JsonRaw('parameter', Before);
+        End;
+    End;
+
+    { THE SHEET IS ONLY MARKED, NOT WRITTEN, as for set_document_parameter: a  }
+    { save (app_save_all, proj_save) writes it.                                 }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(DocPath);
+    Try SchDoc.GraphicallyInvalidate; Except End;
+    If Note <> '' Then Data := Data + ',' + JsonStr('note', Note);
+    Result := BuildSuccessResponse(RequestId, JsonObj(Data + ','
+        + JsonStr('file_path', DocPath) + ','
+        + JsonBool('saved', False) + ','
+        + JsonBool('pending_save', True)));
 End;
 
 {..............................................................................}
@@ -20815,6 +21421,7 @@ Begin
         'place_port':       Result := Gen_PlacePort(Params, RequestId);
         'place_power_port': Result := Gen_PlacePowerPort(Params, RequestId);
         'get_sheet_parameters': Result := Gen_GetSheetParameters(Params, RequestId);
+        'sheet_parameters': Result := Gen_SheetParameters(Params, RequestId);
         'copy_objects':     Result := Gen_CopyObjects(Params, RequestId);
         'get_object_count': Result := Gen_GetObjectCount(Params, RequestId);
         'place_no_erc':     Result := Gen_PlaceNoERC(Params, RequestId);

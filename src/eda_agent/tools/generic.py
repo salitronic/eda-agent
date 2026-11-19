@@ -545,6 +545,63 @@ RULE_FIELD_SEPARATOR = "|"
 FILE_FIELD_SEPARATOR = "\u00a6"
 
 
+def rule_text(rule: Any, label: str) -> tuple[str, str]:
+    """A Rule parameter's value from its fields, e.g. {"RULEKIND":
+    "Clearance", "GAP": "10mil"}: names upper-cased, ``KEY=VALUE`` joined
+    by '|'. Returns (value, error); on an error the value is empty."""
+    if not isinstance(rule, dict) or not rule:
+        return "", f"{label} must be a non-empty object"
+    keys = [str(k).strip().upper() for k in rule]
+    if "RULEKIND" not in keys:
+        return "", (f"{label} needs RULEKIND, e.g. "
+                    "Length, MatchedLengths, Clearance or SupplyNets")
+    if len(set(keys)) != len(keys):
+        return "", f"{label} names a field twice"
+    parts = []
+    for key, (_, val) in zip(keys, rule.items()):
+        val = str(val)
+        if not key or any(c in key for c in "=|" + FILE_FIELD_SEPARATOR) \
+                or any(c in val for c in "|" + FILE_FIELD_SEPARATOR):
+            return "", (f"{label} {key!r}: a field name "
+                        "must be non-empty without '=', and neither may "
+                        "hold '|' or U+00A6, which separate the fields")
+        parts.append(f"{key}={val}")
+    return RULE_FIELD_SEPARATOR.join(parts), ""
+
+
+def rule_fields(value: Any) -> dict[str, str]:
+    """The fields of a rule record (``KEY=VALUE`` joined by '|', or by
+    U+00A6 as a saved file holds them); empty when it is not one."""
+    text = str(value or "").replace(FILE_FIELD_SEPARATOR, RULE_FIELD_SEPARATOR)
+    fields: dict[str, str] = {}
+    for part in text.split(RULE_FIELD_SEPARATOR):
+        key, eq, val = part.partition("=")
+        if eq and key.strip():
+            fields[key.strip().upper()] = val
+    return fields if "RULEKIND" in fields else {}
+
+
+def _rule_row(row: Any) -> None:
+    """A sheet rule parameter gets its parsed ``rule_fields``."""
+    if not isinstance(row, dict):
+        return
+    fields = rule_fields(row.get("value"))
+    if fields and (row.get("rule") or str(row.get("name", "")).lower() == "rule"):
+        row["rule_fields"] = fields
+
+
+def _add_rule_fields(reply: Any) -> None:
+    """Each sheet rule in a parameter list gets its ``rule_fields``, and
+    each parameter its ``index`` when an older script sent none."""
+    rows = reply.get("parameters") if isinstance(reply, dict) else None
+    if not isinstance(rows, list):
+        return
+    for i, row in enumerate(rows):
+        if isinstance(row, dict):
+            row.setdefault("index", i)
+            _rule_row(row)
+
+
 def directive_parameter_fields(
     parameter_list: list[dict[str, Any]] | None,
     name: str | None,
@@ -576,24 +633,9 @@ def directive_parameter_fields(
         if rule is not None:
             if "value" in item:
                 return {}, f"parameter_list[{i}]: give value or rule, not both"
-            if not isinstance(rule, dict) or not rule:
-                return {}, f"parameter_list[{i}].rule must be a non-empty object"
-            keys = [str(k).strip().upper() for k in rule]
-            if "RULEKIND" not in keys:
-                return {}, (f"parameter_list[{i}].rule needs RULEKIND, e.g. "
-                            "Length, MatchedLengths, Clearance or SupplyNets")
-            if len(set(keys)) != len(keys):
-                return {}, f"parameter_list[{i}].rule names a field twice"
-            parts = []
-            for key, (_, val) in zip(keys, rule.items()):
-                val = str(val)
-                if not key or any(c in key for c in "=|" + FILE_FIELD_SEPARATOR) \
-                        or any(c in val for c in "|" + FILE_FIELD_SEPARATOR):
-                    return {}, (f"parameter_list[{i}].rule {key!r}: a field name "
-                                "must be non-empty without '=', and neither may "
-                                "hold '|' or U+00A6, which separate the fields")
-                parts.append(f"{key}={val}")
-            value = RULE_FIELD_SEPARATOR.join(parts)
+            value, error = rule_text(rule, f"parameter_list[{i}].rule")
+            if error:
+                return {}, error
         else:
             value = str(item.get("value", ""))
         fields[f"param_name_{i}"] = pname
@@ -2953,6 +2995,8 @@ def register_generic_tools(mcp):
         """Get title block parameters (title, revision, date, etc.) from a schematic sheet.
 
         Reads all parameters from the sheet without modifying anything.
+        sch_sheet_parameters lists the same and adds, sets and removes
+        them, sheet rules included.
 
         Args:
             file_path: Full path to a specific .SchDoc file. If empty, reads
@@ -2960,7 +3004,8 @@ def register_generic_tools(mcp):
 
         Returns:
             Dictionary with "count" and "parameters" array, each having
-            "name" and "value"
+            "name" and "value" (and, as sch_sheet_parameters lists them,
+            "index", "hidden", "system", "rule" ...)
         """
         bridge = get_bridge()
         params = {}
@@ -2969,7 +3014,135 @@ def register_generic_tools(mcp):
         result = await bridge.send_command_async(
             "generic.get_sheet_parameters", params
         )
+        _add_rule_fields(result)
         return result
+
+    @mcp.tool()
+    async def sch_sheet_parameters(
+        action: str = "list",
+        file_path: str = "",
+        name: str = "",
+        index: Optional[int] = None,
+        # str, not Optional[str]: the None default tells a missing value
+        # from an empty one without offering "string or null".
+        value: str = None,  # type: ignore[assignment]
+        rule: Optional[dict[str, Any]] = None,
+        hidden: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """List, add, set or remove a schematic sheet's own parameters (the
+        title block fields and the sheet's design rules), never a part's.
+
+        Args:
+            action: "list", "add", "set" or "remove".
+            file_path: The .SchDoc; empty = the sheet in front.
+            name: The parameter. list: only those of that name.
+            index: Its index as listed (set, remove). With name too, the
+                two must agree; a name that repeats needs the index.
+            value: The value to write (add, set).
+            rule: Instead of value, a sheet rule as its fields, e.g.
+                {"RULEKIND": "Clearance", "NAME": "HV", "GAP": "20mil",
+                "NETSCOPE": "DifferentNets", ...}; it is a parameter
+                named Rule. The first rule goes into the sheet's empty
+                system Rule (value *), later ones are new parameters.
+            hidden: Hide it (add: default true). add makes a second
+                parameter of a name already used (a note says so).
+
+        list gives each parameter's index, name, value, hidden,
+        read_only_state (0 none, 1 name, 2 value, 3 both), system, rule,
+        removable, and a rule's rule_fields. A system parameter (Title,
+        Author, Rule ...) takes a value but is not removed: Altium makes it
+        again, with the value *, on the next load. A value Altium holds
+        read-only is refused. Each write is read back: applied is false
+        when Altium did not keep it (a rule it did not take reads back as
+        PcbType=ProtelPcb), and marks the sheet without saving it.
+
+        Returns:
+            list: count, parameters. add / set / remove: action, applied,
+            parameter (read back; remove: as it was), saved false,
+            pending_save true.
+        """
+        def refuse(message: str) -> dict[str, Any]:
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"{message}. Nothing was changed."}}
+
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "add", "set", "remove"):
+            return refuse("action is list, add, set or remove")
+        pname = name.strip() if isinstance(name, str) else ""
+        if index is not None and (isinstance(index, bool)
+                                  or not isinstance(index, int) or index < 0):
+            return refuse("index is a whole number from 0, as listed")
+        if value is not None and not isinstance(value, str):
+            return refuse("value is text")
+        if rule is not None:
+            if value is not None:
+                return refuse("give value or rule, not both")
+            if pname and pname.lower() != "rule":
+                return refuse("a sheet rule is a parameter named Rule; "
+                              f"name it Rule, not {pname!r}")
+            value, error = rule_text(rule, "rule")
+            if error:
+                return refuse(error)
+            pname = pname or "Rule"
+        elif value is not None and FILE_FIELD_SEPARATOR in value \
+                and rule_fields(value):
+            # A rule record copied out of a saved file: in memory Altium
+            # joins the fields with '|'.
+            value = value.replace(FILE_FIELD_SEPARATOR, RULE_FIELD_SEPARATOR)
+
+        if act == "list":
+            if value is not None or hidden is not None or index is not None:
+                return refuse("list takes file_path and name only")
+            query = {"file_path": file_path} if file_path else {}
+            reply = await get_bridge().send_command_async(
+                "generic.get_sheet_parameters", query)
+            _add_rule_fields(reply)
+            if pname and isinstance(reply, dict) \
+                    and isinstance(reply.get("parameters"), list):
+                rows = [p for p in reply["parameters"] if isinstance(p, dict)
+                        and str(p.get("name", "")).lower() == pname.lower()]
+                reply["sheet_count"] = reply.get("count")
+                reply["parameters"], reply["count"] = rows, len(rows)
+            return reply
+
+        if act == "add":
+            if not pname:
+                return refuse("add needs a name (or a rule)")
+            if index is not None:
+                return refuse("add takes no index: a new parameter goes "
+                              "after the others")
+            if value is None:
+                return refuse("add needs a value (or a rule)")
+            if pname.lower() == "rule" and not rule_fields(value):
+                return refuse("a parameter named Rule holds a rule record; "
+                              "give rule={\"RULEKIND\": ..., ...}")
+            if hidden is None:
+                hidden = True
+        elif not pname and index is None:
+            return refuse(f"{act} needs the parameter's index or name")
+        elif act == "set" and value is None and hidden is None:
+            return refuse("set needs a value, a rule or hidden")
+        elif act == "remove" and (value is not None or hidden is not None):
+            return refuse("remove takes the index or name only")
+
+        ask: dict[str, str] = {"action": act}
+        if file_path:
+            ask["file_path"] = file_path
+        if pname:
+            ask["name"] = pname
+        if index is not None:
+            ask["index"] = str(index)
+        if value is not None:
+            ask["value"] = value
+            ask["set_value"] = "true"
+        if hidden is not None:
+            ask["hidden"] = "true" if hidden else "false"
+        reply = await get_bridge().send_command_async(
+            "generic.sheet_parameters", ask)
+        if isinstance(reply, dict):
+            _rule_row(reply.get("parameter"))
+        return reply
 
     @mcp.tool()
     async def obj_copy(
