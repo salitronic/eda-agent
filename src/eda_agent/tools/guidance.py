@@ -1047,15 +1047,19 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "(Altium's numbers); TextFormat, TextPrefix, TextSuffix."),
     },
     {
-        "task": "Set a schematic sheet's reference zones, margin or border",
+        "task": ("Set a schematic sheet's reference zones and where they are "
+                 "counted from, margin, border, colours or document font"),
         "keywords": ("zones", "zone", "margin", "border", "sheet",
-                     "template", "graphics"),
-        "when": (("sheet", "zone"), ("sheet", "margin"), ("sheet", "border")),
+                     "template", "graphics", "origin"),
+        "when": (("sheet", "zone"), ("sheet", "margin"), ("sheet", "border"),
+                 ("sheet", "colour"), ("sheet", "color"), ("sheet", "font"),
+                 ("document", "font"), ("zone", "origin")),
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_set_sheet_options", "sch_set_sheet_size"],
         "avoid": [],
-        "note": "sch_set_sheet_options with no arguments reads the settings.",
+        "note": ("sch_set_sheet_options with no arguments reads the settings. "
+                 "The document font takes a font id from obj_get_font_id."),
     },
     {
         "task": "Give a library symbol aliases (other part names)",
