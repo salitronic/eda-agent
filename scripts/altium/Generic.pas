@@ -7390,6 +7390,217 @@ Begin
 End;
 
 {..............................................................................}
+{ Zoom to a named object on the schematic sheet in front: a part by its      }
+{ designator; a net label, power port or off-sheet connector by its text; a  }
+{ port by its name; a harness connector by its type label. Names compare     }
+{ without case, as Gen_HighlightNet's do. The view is fitted round the       }
+{ object's BoundingRectangle, the box Altium draws when it is selected       }
+{ (measured on AD 25.8.1 for all six kinds), so that box fills scale % of    }
+{ the window along the side that limits it, centred. The zoom is Sch:Zoom    }
+{ Action=ZoomArea with the corners in internal units. Every match is         }
+{ listed; index picks the one the view goes to.                              }
+{..............................................................................}
+
+Function SchZoomObjectName(Obj : ISch_GraphicalObject) : String;
+Var
+    Harness : ISch_HarnessConnector;
+    TypeLabel : ISch_GraphicalObject;
+Begin
+    Result := '';
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId = eSchComponent Then
+        Result := GetSchComponentSubText(Obj, 'Designator')
+    { A port names itself with Name; asking it for Text stops the script. }
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        Try Result := Obj.Name; Except Result := ''; End;
+    End
+    { The name shown on a harness connector is its type label, a child   }
+    { object of its own (MoveHarnessConnector reaches it the same way).   }
+    Else If Obj.ObjectId = eHarnessConnector Then
+    Begin
+        Harness := Obj;
+        TypeLabel := Nil;
+        Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
+        If TypeLabel <> Nil Then
+        Begin
+            Try Result := TypeLabel.Text; Except Result := ''; End;
+        End;
+    End
+    Else If SchObjectHasText(Obj) Then
+    Begin
+        Try Result := Obj.Text; Except Result := ''; End;
+    End;
+End;
+
+Function SchZoomKindName(Id : Integer) : String;
+Begin
+    If Id = eSchComponent Then Result := 'part'
+    Else If Id = eNetLabel Then Result := 'net_label'
+    Else If Id = ePort Then Result := 'port'
+    Else If Id = ePowerObject Then Result := 'power_port'
+    Else If Id = eCrossSheetConnector Then Result := 'off_sheet_connector'
+    Else If Id = eHarnessConnector Then Result := 'harness_connector'
+    Else Result := 'object';
+End;
+
+Function Gen_ZoomToObject(Params : String; RequestId : String) : String;
+Var
+    NameStr, NameUpper, ScaleStr, IndexStr, FocusedKind, ObjName : String;
+    Matches, Entry, Picked : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    SchDoc : ISch_Document;
+    SchIter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Scale : Double;
+    Want, Count, Listed : Integer;
+    X1, Y1, X2, Y2, BX1, BY1, BX2, BY2, Cx, Cy, Hw, Hh : TCoord;
+Begin
+    NameStr := Trim(ExtractJsonValue(Params, 'name'));
+    If NameStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'name is required: a designator, '
+            + 'net label, port, power port, off-sheet connector or harness name');
+        Exit;
+    End;
+
+    ScaleStr := Trim(ExtractJsonValue(Params, 'scale'));
+    If ScaleStr = '' Then Scale := 50
+    Else Scale := StrToFloatDef(ScaleStr, -1);
+    If (Scale <= 0) Or (Scale > 100) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS', 'scale is the share of the window '
+            + 'the object fills, in percent: above 0 and up to 100, not "' + ScaleStr + '"');
+        Exit;
+    End;
+
+    { StrToIntDef raises past 32 bits in Altium: check the text first. }
+    IndexStr := Trim(ExtractJsonValue(Params, 'index'));
+    If IndexStr = '' Then Want := 1
+    Else If (Length(IndexStr) > 6) Or (Not IsIntStr(IndexStr)) Then Want := 0
+    Else Want := StrToIntDef(IndexStr, 0);
+    If Want < 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'index counts the matches from 1, not "' + IndexStr + '"');
+        Exit;
+    End;
+
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    End;
+    If FocusedKind <> 'SCH' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'zoom to a name works on a '
+            + 'schematic sheet; the document in front is "' + FocusedKind + '"');
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic sheet');
+        Exit;
+    End;
+
+    NameUpper := UpperCase(NameStr);
+    Count := 0;
+    Listed := 0;
+    Matches := '';
+    Picked := '';
+    SchIter := SchDoc.SchIterator_Create;
+    If SchIter <> Nil Then
+    Begin
+        Try
+            SchIter.AddFilter_ObjectSet(MkSet(eSchComponent, eNetLabel, ePort,
+                ePowerObject, eCrossSheetConnector, eHarnessConnector));
+            Obj := SchIter.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                ObjName := SchZoomObjectName(Obj);
+                If (ObjName <> '') And (UpperCase(ObjName) = NameUpper) Then
+                Begin
+                    X1 := Obj.BoundingRectangle.X1;
+                    Y1 := Obj.BoundingRectangle.Y1;
+                    X2 := Obj.BoundingRectangle.X2;
+                    Y2 := Obj.BoundingRectangle.Y2;
+                    Count := Count + 1;
+                    Entry := '{"kind":"' + SchZoomKindName(Obj.ObjectId) + '",'
+                        + '"name":"' + EscapeJsonString(ObjName) + '",'
+                        + '"box":[' + FloatToJsonStr(CoordToMilsF(X1)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Y1)) + ','
+                        + FloatToJsonStr(CoordToMilsF(X2)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Y2)) + ']}';
+                    If Listed < 200 Then
+                    Begin
+                        If Matches <> '' Then Matches := Matches + ',';
+                        Matches := Matches + Entry;
+                        Listed := Listed + 1;
+                    End;
+                    If Count = Want Then
+                    Begin
+                        BX1 := X1;
+                        BY1 := Y1;
+                        BX2 := X2;
+                        BY2 := Y2;
+                        Picked := Entry;
+                    End;
+                End;
+                Obj := SchIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(SchIter);
+        End;
+    End;
+
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no part, net label, port, '
+            + 'power port, off-sheet connector or harness connector on this sheet is named "'
+            + NameStr + '"');
+        Exit;
+    End;
+    If Want > Count Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS', 'index ' + IntToStr(Want)
+            + ', but ' + IntToStr(Count) + ' object(s) on this sheet are named "' + NameStr + '"');
+        Exit;
+    End;
+
+    { The window shows at least the square fitted round the box, so the box  }
+    { fills scale % of it along the limiting side. A box with no width or    }
+    { height (a bare line) is given one mil so the zoom stays finite.        }
+    Cx := (BX1 + BX2) Div 2;
+    Cy := (BY1 + BY2) Div 2;
+    Hw := Round(Abs(BX2 - BX1) * 50 / Scale);
+    Hh := Round(Abs(BY2 - BY1) * 50 / Scale);
+    If Hw < MilsToCoordF(1) Then Hw := MilsToCoordF(1);
+    If Hh < MilsToCoordF(1) Then Hh := MilsToCoordF(1);
+    ResetParameters;
+    AddStringParameter('Action', 'ZoomArea');
+    AddStringParameter('Location1.x', IntToStr(Cx - Hw));
+    AddStringParameter('Location1.y', IntToStr(Cy - Hh));
+    AddStringParameter('Location2.x', IntToStr(Cx + Hw));
+    AddStringParameter('Location2.y', IntToStr(Cy + Hh));
+    RunProcess('Sch:Zoom');
+
+    Result := BuildSuccessResponse(RequestId, '{"success":true,"context":"schematic",'
+        + '"name":"' + EscapeJsonString(NameStr) + '",'
+        + '"scale":' + FloatToJsonStr(Scale) + ','
+        + '"index":' + IntToStr(Want) + ','
+        + '"count":' + IntToStr(Count) + ','
+        + '"zoomed_to":' + Picked + ','
+        + '"matches":[' + Matches + '],'
+        + '"listed":' + IntToStr(Listed) + '}');
+End;
+
+{..............................................................................}
 { Switch between 2D and 3D view for a board or a footprint library          }
 {..............................................................................}
 
@@ -20790,6 +21001,7 @@ Begin
         'add_sheet':        Result := Gen_AddSheet(Params, RequestId);
         'delete_sheet':     Result := Gen_DeleteSheet(Params, RequestId);
         'zoom_to_xy':       Result := Gen_ZoomToXY(Params, RequestId);
+        'zoom_to_object':   Result := Gen_ZoomToObject(Params, RequestId);
         'switch_view':      Result := Gen_SwitchView(Params, RequestId);
         'measure_distance': Result := Gen_MeasureDistance(Params, RequestId);
         'get_erc_violations': Result := Gen_GetErcViolations(Params, RequestId);
