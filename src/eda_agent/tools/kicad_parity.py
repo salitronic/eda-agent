@@ -230,6 +230,7 @@ COVERED: dict[str, str] = {
     "sch_set_sheet_options": "kicad_sch_set_page",
     "sch_sheet_template": "kicad_sch_set_page",
     "sch_get_sheet_parameters": "kicad_sch_get_items",
+    "sch_sheet_parameters": "kicad_set_title_block",
     "sch_render_svg": "kicad_export_schematic_svg",
     # libraries
     "lib_get_installed_libraries": "kicad_lib_list_libraries",

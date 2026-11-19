@@ -180,6 +180,11 @@ QUESTIONS = [
     ("change the background colour of a schematic sheet",
      {"sch_set_sheet_options"}),
     ("set the document font of a schematic sheet", {"sch_set_sheet_options"}),
+    # Sheet parameters and sheet-level rules.
+    ("add a design rule to a schematic sheet", {"sch_sheet_parameters"}),
+    ("remove a sheet parameter", {"sch_sheet_parameters"}),
+    ("fill in the title block author", {"sch_sheet_parameters",
+                                        "proj_set_document_parameter"}),
 ]
 
 #: The second held-out set, written 2026-09-23 BEFORE put, reflect and

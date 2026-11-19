@@ -4406,7 +4406,9 @@ def register_project_tools(mcp):
 
         Useful for per-sheet title block data (e.g., "SheetTitle", "Revision").
         If the parameter already exists it is updated; otherwise a new hidden
-        parameter object is created on the sheet.
+        parameter object is created on the sheet. Of two with one name the
+        first is updated; sch_sheet_parameters picks one by index, adds
+        sheet rules and removes parameters.
 
         The sheet must be loaded (`proj_load_sheets`), else NOT_LOADED.
         The sheet is marked modified, not written: `app_save_all` or
