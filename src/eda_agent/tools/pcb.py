@@ -7842,12 +7842,16 @@ def register_pcb_tools(mcp):
                 applies at x, y), ``list`` (every grid), ``delete`` (the
                 grids named ``name``) or ``delete_all`` (every user grid).
             x, y: The grid origin (the centre of a polar grid), absolute.
-            name: The grid's name.
+            name: The grid's name. A new grid is stored with its kind at
+                the end, _cart or _pol; list and delete take the name with
+                or without it. A grid without the tag (made in Altium) is
+                listed with kind unknown and without steps or extent.
             step_x, step_y, rotation: Cartesian steps and its angle.
             width, height: How far a cartesian grid reaches from its
                 origin in each direction (one quadrant's size).
             angular_step, radial_step, min_radius, max_radius,
-            start_angle, end_angle: Polar degrees and mils.
+            start_angle, end_angle: Polar angles in degrees, the step and
+                radii as lengths.
         """
         actions = ("add_cartesian", "add_polar", "at", "list", "delete", "delete_all")
         if action not in actions:

@@ -30714,9 +30714,52 @@ End;
 { radial_step, min_radius, max_radius, start_angle, end_angle (polar).      }
 { 'at' reads the grid that applies at x, y; 'list' reads every grid;        }
 { 'delete' removes the grids named name.                                    }
+{                                                                            }
+{ A grid made here carries its kind at the end of its name, _cart or _pol    }
+{ (issue 419). A script cannot ask a grid its kind: no member says it, and   }
+{ reading a member the grid lacks (GridStepX of a polar grid, AngularStep of }
+{ a cartesian one) raises an Undeclared identifier error inside Try and      }
+{ stops the script. So list reads the own members of a grid only when it is }
+{ tagged or the default board grid (cartesian); any other grid, one made in }
+{ the grid manager of Altium, is listed with the members both kinds have.   }
 {..............................................................................}
-{ The members every placement grid has, as JSON members (no braces). }
-Function SdkGridCommonJson(G : IPCB_PlacementGrid) : String;
+{ The kind the name of a grid says: cartesian, polar, or nothing. The     }
+{ default board grid is always cartesian.                                 }
+Function GridKindOfName(Name : String; IsDefault : Boolean) : String;
+Begin
+    Result := '';
+    If IsDefault Then
+        Result := 'cartesian'
+    Else If (Length(Name) > 5) And (Copy(Name, Length(Name) - 4, 5) = '_cart') Then
+        Result := 'cartesian'
+    Else If (Length(Name) > 4) And (Copy(Name, Length(Name) - 3, 4) = '_pol') Then
+        Result := 'polar';
+End;
+
+{ The name without its kind tag, as it was given. }
+Function GridShownName(Name : String) : String;
+Begin
+    Result := Name;
+    If (Length(Name) > 5) And (Copy(Name, Length(Name) - 4, 5) = '_cart') Then
+        Result := Copy(Name, 1, Length(Name) - 5)
+    Else If (Length(Name) > 4) And (Copy(Name, Length(Name) - 3, 4) = '_pol') Then
+        Result := Copy(Name, 1, Length(Name) - 4);
+End;
+
+{ The name a new grid of Kind gets: as given, its tag added once. }
+Function GridTaggedName(Name, Kind : String) : String;
+Begin
+    If GridKindOfName(Name, False) = Kind Then
+        Result := Name
+    Else If Kind = 'polar' Then
+        Result := Name + '_pol'
+    Else
+        Result := Name + '_cart';
+End;
+
+{ The members every placement grid has, as JSON members (no braces): the }
+{ name as given, the name stored (with its kind tag) and the kind.       }
+Function SdkGridCommonJson(G : IPCB_PlacementGrid; Kind : String) : String;
 Var
     Name : String;
     Pri, Misses : Integer;
@@ -30726,7 +30769,9 @@ Begin
     Try Name := G.GetProperty_NameW; Except Inc(Misses); End;
     Try Pri := G.GetProperty_Priority; Except Inc(Misses); End;
     Try IsDefault := G.GetProperty_IsDefault; Except Inc(Misses); End;
-    Result := JsonStr('name', Name) + ','
+    Result := JsonStr('name', GridShownName(Name)) + ','
+        + JsonStr('stored_name', Name) + ','
+        + JsonStr('kind', Kind) + ','
         + JsonInt('priority', Pri) + ','
         + JsonBool('is_default', IsDefault) + ','
         + JsonInt('read_errors', Misses);
@@ -30743,8 +30788,7 @@ Begin
     Try Rot := G.GetProperty_Rotation; Except End;
     Try QX := G.GetProperty_QuadrantSizeX; Except End;
     Try QY := G.GetProperty_QuadrantSizeY; Except End;
-    Result := JsonObj(SdkGridCommonJson(G) + ','
-        + JsonStr('kind', 'cartesian') + ','
+    Result := JsonObj(SdkGridCommonJson(G, 'cartesian') + ','
         + JsonFloat('step_x_mils', StepX / 10000) + ','
         + JsonFloat('step_y_mils', StepY / 10000) + ','
         + JsonFloat('width_mils', CoordToMilsF(QX)) + ','
@@ -30763,8 +30807,7 @@ Begin
     Try RMax := G.GetProperty_MaxRadius; Except End;
     Try A1 := G.GetProperty_StartAngle; Except End;
     Try A2 := G.GetProperty_EndAngle; Except End;
-    Result := JsonObj(SdkGridCommonJson(G) + ','
-        + JsonStr('kind', 'polar') + ','
+    Result := JsonObj(SdkGridCommonJson(G, 'polar') + ','
         + JsonFloat('angular_step', AStep) + ','
         + JsonFloat('radial_step_mils', RStep / 10000) + ','
         + JsonFloat('min_radius_mils', RMin / 10000) + ','
@@ -30773,24 +30816,40 @@ Begin
         + JsonFloat('end_angle', A2));
 End;
 
-{ One grid of the board as JSON: cartesian when it has a step, else polar. }
+{ The kind of one grid of the board, from its name: cartesian, polar or }
+{ unknown. Never by reading a member of one kind: see the note above.    }
+Function GridKindOf(G : IPCB_PlacementGrid) : String;
+Var
+    Name : String;
+    IsDefault : Boolean;
+Begin
+    Name := ''; IsDefault := False;
+    Try Name := G.GetProperty_NameW; Except End;
+    Try IsDefault := G.GetProperty_IsDefault; Except End;
+    Result := GridKindOfName(Name, IsDefault);
+    If Result = '' Then Result := 'unknown';
+End;
+
+{ One grid of the board as JSON: its own members only when its kind is known. }
 Function SdkAnyGridJson(G : IPCB_PlacementGrid) : String;
 Var
     CG : IPCB_CartesianGrid;
     PG : IPCB_PolarGrid;
-    StepX : Double;
-    IsCartesian : Boolean;
+    Kind : String;
 Begin
-    CG := G;
-    IsCartesian := False;
-    Try StepX := CG.GetProperty_GridStepX; IsCartesian := True; Except IsCartesian := False; End;
-    If IsCartesian Then
-        Result := SdkCartesianJson(CG)
-    Else
+    Kind := GridKindOf(G);
+    If Kind = 'cartesian' Then
+    Begin
+        CG := G;
+        Result := SdkCartesianJson(CG);
+    End
+    Else If Kind = 'polar' Then
     Begin
         PG := G;
         Result := SdkPolarJson(PG);
-    End;
+    End
+    Else
+        Result := JsonObj(SdkGridCommonJson(G, Kind));
 End;
 
 Function PCB_LocalGrid(Params : String; RequestId : String) : String;
@@ -30862,7 +30921,7 @@ Begin
                 If Body <> '' Then Body := Body + ',';
                 Body := Body + SdkAnyGridJson(G);
             End
-            Else If SameText(GridName, Name) Then
+            Else If SameText(GridName, Name) Or SameText(GridShownName(GridName), Name) Then
                 { Counted here and deleted after the walk, so the walk is }
                 { not changed under it.                                   }
                 Inc(Count);
@@ -30888,7 +30947,7 @@ Begin
                 Begin
                     GridName := '';
                     Try GridName := G.GetProperty_NameW; Except End;
-                    If SameText(GridName, Name) Then Break;
+                    If SameText(GridName, Name) Or SameText(GridShownName(GridName), Name) Then Break;
                     G := It.Next;
                 End;
             End;
@@ -30921,7 +30980,14 @@ Begin
             Exit;
         End;
         Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('found', True) + ','
-            + JsonRaw('grid', JsonObj(SdkGridCommonJson(G)))));
+            + JsonRaw('grid', JsonObj(SdkGridCommonJson(G, GridKindOf(G))))));
+        Exit;
+    End;
+    If ((Action = 'add_polar') And (GridKindOfName(Name, False) = 'cartesian'))
+        Or ((Action = 'add_cartesian') And (GridKindOfName(Name, False) = 'polar')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'the name ends in the tag of the other kind (_cart for a cartesian grid, _pol for a polar one)');
         Exit;
     End;
     If Action = 'add_polar' Then
@@ -30935,10 +31001,13 @@ Begin
             Exit;
         End;
         Try PG.SetProperty_Origin(Point(X, Y)); Except Problem := Problem + 'origin '; End;
-        If Name <> '' Then
+        GridName := Name;
+        If GridName = '' Then
         Begin
-            Try PG.SetProperty_NameW(Name); Except Problem := Problem + 'name '; End;
+            Try GridName := PG.GetProperty_NameW; Except End;
         End;
+        If GridName = '' Then GridName := 'Grid';
+        Try PG.SetProperty_NameW(GridTaggedName(GridName, 'polar')); Except Problem := Problem + 'name '; End;
         V := ExtractJsonValue(Params, 'angular_step');
         If V <> '' Then
         Begin
@@ -30982,10 +31051,13 @@ Begin
             Exit;
         End;
         Try CG.SetProperty_Origin(Point(X, Y)); Except Problem := Problem + 'origin '; End;
-        If Name <> '' Then
+        GridName := Name;
+        If GridName = '' Then
         Begin
-            Try CG.SetProperty_NameW(Name); Except Problem := Problem + 'name '; End;
+            Try GridName := CG.GetProperty_NameW; Except End;
         End;
+        If GridName = '' Then GridName := 'Grid';
+        Try CG.SetProperty_NameW(GridTaggedName(GridName, 'cartesian')); Except Problem := Problem + 'name '; End;
         V := ExtractJsonValue(Params, 'step_x');
         If V <> '' Then
         Begin
