@@ -7382,11 +7382,11 @@ End;
 { designator; a net label, power port or off-sheet connector by its text; a  }
 { port by its name; a harness connector by its type label. Names compare     }
 { without case, as Gen_HighlightNet's do. The view is fitted round the       }
-{ object's BoundingRectangle, the box Altium draws when it is selected      }
+{ object's BoundingRectangle, the box Altium draws when it is selected       }
 { (measured on AD 25.8.1 for all six kinds), so that box fills scale % of    }
 { the window along the side that limits it, centred. The zoom is Sch:Zoom    }
-{ Action=ZoomArea with the corners in internal units, the names AdvSch.dll   }
-{ reads. Every match is listed; index picks the one the view goes to.        }
+{ Action=ZoomArea with the corners in internal units. Every match is         }
+{ listed; index picks the one the view goes to.                              }
 {..............................................................................}
 
 Function SchZoomObjectName(Obj : ISch_GraphicalObject) : String;

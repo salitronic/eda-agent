@@ -1317,12 +1317,12 @@ def register_generic_tools(mcp):
             if not name.strip():
                 return {"success": False,
                         "error": 'action "object" needs a name'}
-            params = {"name": name.strip()}
+            request = {"name": name.strip()}
             if scale is not None:
-                params["scale"] = str(float(scale))
+                request["scale"] = str(float(scale))
             if index is not None:
-                params["index"] = str(int(index))
-            return await bridge.send_command_async("generic.zoom_to_object", params)
+                request["index"] = str(int(index))
+            return await bridge.send_command_async("generic.zoom_to_object", request)
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )
