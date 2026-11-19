@@ -56,6 +56,9 @@ class Pad:
 
     ``kind`` is ``smd``, ``tht`` (plated hole) or ``npth``. ``hole`` is the
     drill diameter; a slot sets ``hole_length`` (along X before rotation).
+    ``hole_rotation`` turns the slot inside the pad (degrees CCW), as
+    Altium's HoleRotation does, so the slot runs at ``rotation +
+    hole_rotation``.
     ``paste_apertures``, when present, replace the pad's own paste with
     those windows (exposed pads); their centres are absolute.
     """
@@ -71,6 +74,7 @@ class Pad:
     kind: str = "smd"
     hole: float = 0.0
     hole_length: float = 0.0
+    hole_rotation: float = 0.0
     plated: bool = True
     paste: bool = True
     paste_expansion: float = 0.0

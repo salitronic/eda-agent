@@ -78,6 +78,7 @@ def _pad(p: dict) -> Pad:
         rotation=float(p.get("rotation") or 0.0),
         kind="tht" if hole > 0 else "smd", hole=hole,
         hole_length=float(p.get("hole_w_mm") or 0.0),
+        hole_rotation=float(p.get("hole_rotation") or 0.0),
         plated=bool(p.get("plated", True)),
         paste=bool(p.get("paste_top_enabled", hole <= 0)),
         paste_expansion=float(p.get("paste_expansion_mm") or 0.0),
@@ -222,13 +223,23 @@ def silk_over_copper(model: FootprintModel, clearance: float = 0.0) -> list[dict
     return hits
 
 
+def _is_slot(p: Pad) -> bool:
+    return p.kind != "smd" and p.hole_length > p.hole > 0
+
+
+def _slot_angle(p: Pad) -> float:
+    """The direction a slot runs in the footprint, 0 to 180 degrees."""
+    return (p.rotation + p.hole_rotation) % 180.0
+
+
 def compare_live(a: FootprintModel, b: FootprintModel, *,
                  tol: float = 0.001) -> dict[str, Any]:
     """Pad by pad and role by role, what differs between two footprints.
 
     Pads are matched by number. A position, size, shape, rotation, hole or
     paste difference over ``tol`` mm (or any discrete difference) is
-    listed; a pad only one side has is ``only_in_a`` / ``only_in_b``.
+    listed, and so is ``slot_angle`` when two slots run different ways; a
+    pad only one side has is ``only_in_a`` / ``only_in_b``.
     """
     pa = {p.number: p for p in a.pads}
     pb = {p.number: p for p in b.pads}
@@ -243,6 +254,13 @@ def compare_live(a: FootprintModel, b: FootprintModel, *,
                 diff[field] = [round(va, 4), round(vb, 4)]
         if abs(((x.rotation - y.rotation) + 180) % 360 - 180) > 0.01:
             diff["rotation"] = [x.rotation, y.rotation]
+        # A slot runs at the pad rotation plus its own hole rotation, and
+        # reads the same turned half a turn. Two slots of one size and one
+        # pad rotation differ only here when one runs across its pad (#416).
+        if _is_slot(x) and _is_slot(y):
+            sa, sb = _slot_angle(x), _slot_angle(y)
+            if abs(((sa - sb) + 90) % 180 - 90) > 0.01:
+                diff["slot_angle"] = [round(sa, 4), round(sb, 4)]
         for field in ("shape", "kind", "plated", "paste"):
             if getattr(x, field) != getattr(y, field):
                 diff[field] = [getattr(x, field), getattr(y, field)]
