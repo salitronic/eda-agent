@@ -9962,11 +9962,15 @@ End;
 
 {..............................................................................}
 { Gen_SheetTemplate - the sheet template (.SchDot) of the active sheet: read  }
-{ it, set it, update it from its file, or remove it, with no dialog.          }
+{ it, set it, update it from its file or from the server, or remove it, with  }
+{ no dialog.                                                                  }
 {                                                                              }
 { Params: action = get (default) / set / update / remove; template_file (set: }
 { the .SchDot to apply; update: optional, else the sheet's own file); vault   }
-{ ('true': also read the vault link the sheet carries).                       }
+{ ('true': also read the vault link the sheet carries); vault_guid and        }
+{ revision_guid (set / update from the server, in place of template_file);    }
+{ parameter_action (server set: none / add_new, the default / override_all /  }
+{ auto, Altium TTemplateUpdateAction 0 / 1 / 2 / 3).                          }
 {                                                                              }
 { SET and UPDATE run Altium's own Sch:ChangeCurrentTemplate with              }
 { TemplateSource=Local, FileName and Silent=True. MEASURED (AD 25.8.1): that  }
@@ -9980,6 +9984,18 @@ End;
 { object (eTemplate, the container of the border / title block graphics, as   }
 { ExtractTemplate.pas finds it) leaves the sheet and the file name is         }
 { cleared. Sheet size and the standard title block flag stay as they are.     }
+{                                                                              }
+{ A SERVER template goes through SchServer, which is handed the server        }
+{ document: SetDocumentManagedTemplate(Doc, Vault, Revision, Action, True)    }
+{ downloads the .SchDot into the vault cache, applies it and writes the five  }
+{ link fields (vault, item, revision GUIDs and names); UpdateDocumentTemplate }
+{ (Doc, Vault, Revision) moves a linked sheet to that revision and keeps the  }
+{ link. MEASURED (AD 25.8.1, on the sheet in front): both apply with no       }
+{ dialog and are kept over save and reopen. An update with no file and no     }
+{ GUIDs on a linked sheet updates from the vault and revision the sheet       }
+{ carries: the process route re-applies the cached file as a local template   }
+{ and drops the link. The workspace template manager is never asked: its      }
+{ server template and template list calls stopped the script on AD 25.8.1.    }
 {..............................................................................}
 
 Function SheetTemplateObject(SchDoc : ISch_Document) : ISch_GraphicalObject;
@@ -10098,9 +10114,70 @@ Begin
     Try Result := SchDoc.GetState_TemplateFileName; Except End;
 End;
 
-{ The vault link a sheet set from the server carries. Read only when asked: }
-{ these names are in the script engine's table but not yet proven on        }
-{ ISch_Document, and an unknown one stops the script.                        }
+{ A GUID compared the way Altium writes it: upper case, no braces round it. }
+Function SheetTemplateGuidKey(S : String) : String;
+Begin
+    Result := UpperCase(Trim(S));
+    If (Length(Result) >= 2) And (Copy(Result, 1, 1) = Chr(123))
+        And (Copy(Result, Length(Result), 1) = Chr(125)) Then
+        Result := Copy(Result, 2, Length(Result) - 2);
+End;
+
+{ A vault or revision GUID given by the caller: 8-4-4-4-12 hex digits, as   }
+{ Altium writes it. Case and braces are forgiven; any other text reads as    }
+{ empty, which the caller refuses, so nothing else reaches the server call.  }
+Function SheetTemplateGuid(S : String) : String;
+Var
+    T, C : String;
+    I : Integer;
+Begin
+    Result := '';
+    T := SheetTemplateGuidKey(S);
+    If Length(T) <> 36 Then Exit;
+    For I := 1 To 36 Do
+    Begin
+        C := Copy(T, I, 1);
+        If (I = 9) Or (I = 14) Or (I = 19) Or (I = 24) Then
+        Begin
+            If C <> '-' Then Exit;
+        End
+        Else If Pos(C, '0123456789ABCDEF') = 0 Then Exit;
+    End;
+    Result := T;
+End;
+
+{ What a server template does to the sheet parameters, as Altium            }
+{ TTemplateUpdateAction: 0 do nothing, 1 only add new parameters (the        }
+{ default), 2 override all parameters, 3 auto. -1 for any other name.        }
+Function SheetTemplateUpdateAction(Name : String) : Integer;
+Var
+    W : String;
+Begin
+    W := LowerCase(Trim(Name));
+    If (W = '') Or (W = 'add_new') Then Result := 1
+    Else If W = 'none' Then Result := 0
+    Else If W = 'override_all' Then Result := 2
+    Else If W = 'auto' Then Result := 3
+    Else Result := -1;
+End;
+
+{ The vault and revision GUIDs of the server template a sheet is linked to, }
+{ '' when it has none. Read on ISch_Document (AD 25.8.1).                    }
+Function SheetTemplateLinkVault(SchDoc : ISch_Document) : String;
+Begin
+    Result := '';
+    Try Result := SchDoc.TemplateVaultGUID; Except End;
+End;
+
+Function SheetTemplateLinkRevision(SchDoc : ISch_Document) : String;
+Begin
+    Result := '';
+    Try Result := SchDoc.TemplateRevisionGUID; Except End;
+End;
+
+{ The vault link a sheet set from the server carries: read when asked, and }
+{ after a set or update from the server. The five names were read on        }
+{ ISch_Document on AD 25.8.1; an older Altium without them stops the script. }
 Function SheetTemplateVaultJson(SchDoc : ISch_Document) : String;
 Var
     VaultGuid, ItemGuid, RevGuid, VaultHrid, RevHrid : String;
@@ -10149,11 +10226,12 @@ Function Gen_SheetTemplate(Params : String; RequestId : String) : String;
 Var
     SchDoc, Front : ISch_Document;
     What, TplFile, Before, After, Data, SheetPath : String;
-    Vault, Ok, Shown : Boolean;
+    RawVault, RawRev, VaultGuid, RevGuid, ActName : String;
+    Vault, Ok, Shown, Server : Boolean;
     PrevView : IServerDocumentView;
     SheetDoc : IServerDocument;
     Tpl : ISch_GraphicalObject;
-    Guard, Removed, Count, Children : Integer;
+    Guard, Removed, Count, Children, UpdAction : Integer;
     LastAddr, ThisAddr : Integer;
 Begin
     What := LowerCase(ExtractJsonValue(Params, 'action'));
@@ -10165,6 +10243,53 @@ Begin
         Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
             'action is get, set, update or remove');
         Exit;
+    End;
+    { A server template: both GUIDs, for set and update, never with a file. }
+    RawVault := ExtractJsonValue(Params, 'vault_guid');
+    RawRev := ExtractJsonValue(Params, 'revision_guid');
+    Server := (RawVault <> '') Or (RawRev <> '');
+    VaultGuid := '';
+    RevGuid := '';
+    If Server Then
+    Begin
+        If (What <> 'set') And (What <> 'update') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_ARGUMENT',
+                'vault_guid and revision_guid are for set and update');
+            Exit;
+        End;
+        If TplFile <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_ARGUMENT',
+                'Give template_file or vault_guid and revision_guid, not both');
+            Exit;
+        End;
+        VaultGuid := SheetTemplateGuid(RawVault);
+        RevGuid := SheetTemplateGuid(RawRev);
+        If (VaultGuid = '') Or (RevGuid = '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_GUID',
+                'vault_guid and revision_guid are both needed, each as 8-4-4-4-12 hex digits');
+            Exit;
+        End;
+    End;
+    UpdAction := 1;
+    ActName := ExtractJsonValue(Params, 'parameter_action');
+    If ActName <> '' Then
+    Begin
+        If Not (Server And (What = 'set')) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_ARGUMENT',
+                'parameter_action is for a set from the server');
+            Exit;
+        End;
+        UpdAction := SheetTemplateUpdateAction(ActName);
+        If UpdAction < 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_ARGUMENT',
+                'parameter_action is none, add_new, override_all or auto');
+            Exit;
+        End;
     End;
     { The named sheet, else the one in front. }
     SheetPath := ExtractJsonValue(Params, 'file_path');
@@ -10188,33 +10313,48 @@ Begin
     Before := SheetTemplateFile(SchDoc);
     Shown := False;
     PrevView := Nil;
+    SheetDoc := Nil;
     Ok := True;
     Removed := 0;
 
     If (What = 'set') Or (What = 'update') Then
     Begin
-        If (What = 'update') And (TplFile = '') Then TplFile := Before;
-        If TplFile = '' Then
+        { An update with no file and no GUIDs keeps a server link: it uses }
+        { the vault and revision the sheet carries. The values come from   }
+        { Altium, so they are handed back as read.                         }
+        If (What = 'update') And (Not Server) And (TplFile = '') Then
         Begin
-            Result := BuildErrorResponse(RequestId, 'NO_TEMPLATE',
-                'The sheet has no template to update; give template_file');
-            Exit;
+            VaultGuid := Trim(SheetTemplateLinkVault(SchDoc));
+            RevGuid := Trim(SheetTemplateLinkRevision(SchDoc));
+            Server := (VaultGuid <> '') And (RevGuid <> '');
         End;
-        If LowerCase(ExtractFileExt(TplFile)) <> '.schdot' Then
+        If Not Server Then
         Begin
-            Result := BuildErrorResponse(RequestId, 'NOT_A_TEMPLATE',
-                'template_file must be a .SchDot: ' + TplFile);
-            Exit;
-        End;
-        If Not FileExists(TplFile) Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND',
-                'No such file: ' + TplFile);
-            Exit;
+            If (What = 'update') And (TplFile = '') Then TplFile := Before;
+            If TplFile = '' Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NO_TEMPLATE',
+                    'The sheet has no template to update; give template_file');
+                Exit;
+            End;
+            If LowerCase(ExtractFileExt(TplFile)) <> '.schdot' Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_A_TEMPLATE',
+                    'template_file must be a .SchDot: ' + TplFile);
+                Exit;
+            End;
+            If Not FileExists(TplFile) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND',
+                    'No such file: ' + TplFile);
+                Exit;
+            End;
         End;
         { Sch:ChangeCurrentTemplate acts on the sheet in front: a named    }
         { sheet behind another is brought forward for it, and the view the }
-        { user had is put back afterwards.                                 }
+        { user had is put back afterwards. The server calls are handed the }
+        { document, but were measured only on the sheet in front, so they  }
+        { get the same treatment.                                          }
         Front := SchServer.GetCurrentSchDocument;
         If (Front = Nil) Or (UpperCase(Front.DocumentName) <> UpperCase(SchDoc.DocumentName)) Then
         Begin
@@ -10237,20 +10377,49 @@ Begin
                 Exit;
             End;
         End;
-        ResetParameters;
-        AddStringParameter('TemplateSource', 'Local');
-        AddStringParameter('FileName', TplFile);
-        AddStringParameter('Silent', 'True');
-        RunProcess('Sch:ChangeCurrentTemplate');
+        If Server Then
+        Begin
+            SheetDoc := Nil;
+            Try SheetDoc := Client.GetDocumentByPath(SchDoc.DocumentName); Except SheetDoc := Nil; End;
+            If SheetDoc <> Nil Then
+            Begin
+                If What = 'set' Then
+                    SchServer.SetDocumentManagedTemplate(SheetDoc, VaultGuid, RevGuid, UpdAction, True)
+                Else
+                    SchServer.UpdateDocumentTemplate(SheetDoc, VaultGuid, RevGuid);
+            End;
+        End
+        Else
+        Begin
+            ResetParameters;
+            AddStringParameter('TemplateSource', 'Local');
+            AddStringParameter('FileName', TplFile);
+            AddStringParameter('Silent', 'True');
+            RunProcess('Sch:ChangeCurrentTemplate');
+        End;
         If Shown And (PrevView <> Nil) Then
         Begin
             Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
         End;
+        If Server And (SheetDoc = Nil) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SERVER_DOCUMENT',
+                'Altium has no open document for ' + SchDoc.DocumentName + '; save the sheet first');
+            Exit;
+        End;
+        If Server Then SchDoc.UpdateDocumentProperties;
         SchDoc.GraphicallyInvalidate;
         If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
         After := SheetTemplateFile(SchDoc);
         Count := SheetTemplateCount(SchDoc, Children);
-        Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
+        { A server template is judged by the link the sheet reads back:    }
+        { the vault and revision asked, with a template file.              }
+        If Server Then
+            Ok := (After <> '')
+                And (SheetTemplateGuidKey(SheetTemplateLinkVault(SchDoc)) = SheetTemplateGuidKey(VaultGuid))
+                And (SheetTemplateGuidKey(SheetTemplateLinkRevision(SchDoc)) = SheetTemplateGuidKey(RevGuid))
+        Else
+            Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
     End
     Else If What = 'remove' Then
     Begin
@@ -10289,7 +10458,16 @@ Begin
         + ',' + JsonBool('applied', Ok)
         + ',' + JsonStr('template_before', Before);
     If What = 'remove' Then Data := Data + ',' + JsonInt('removed', Removed);
-    Data := Data + ',' + SheetTemplateJson(SchDoc, Vault);
+    If (What = 'set') Or (What = 'update') Then
+    Begin
+        If Server Then
+            Data := Data + ',' + JsonStr('template_source', 'server')
+                + ',' + JsonRaw('asked', JsonObj(JsonStr('vault_guid', VaultGuid)
+                + ',' + JsonStr('revision_guid', RevGuid)))
+        Else
+            Data := Data + ',' + JsonStr('template_source', 'local');
+    End;
+    Data := Data + ',' + SheetTemplateJson(SchDoc, Vault Or Server);
     If LowerCase(ExtractJsonValue(Params, 'boxes')) = 'true' Then
         Data := Data + ',' + JsonRaw('template_boxes', SheetTemplateBoxes(SchDoc));
     Result := BuildSuccessResponse(RequestId, JsonObj(Data));

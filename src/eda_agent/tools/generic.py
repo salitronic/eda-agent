@@ -604,6 +604,23 @@ def directive_parameter_fields(
     return fields, ""
 
 
+#: What a server template does to the sheet's parameters, in the order of
+#: Altium's TTemplateUpdateAction (0 to 3).
+TEMPLATE_PARAMETER_ACTIONS = ("none", "add_new", "override_all", "auto")
+
+_TEMPLATE_GUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}")
+
+
+def template_guid(value: Any) -> Optional[str]:
+    """A vault or revision GUID as Altium writes it (8-4-4-4-12 hex digits,
+    upper case, no braces), or None when ``value`` is not one. Case and
+    braces round it are forgiven; nothing else reaches the server call."""
+    text = str(value or "").strip().upper()
+    if len(text) >= 2 and text[0] == "{" and text[-1] == "}":
+        text = text[1:-1]
+    return text if _TEMPLATE_GUID.fullmatch(text) else None
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -2595,6 +2612,9 @@ def register_generic_tools(mcp):
         template_file: str = "",
         vault: bool = False,
         file_path: str = "",
+        vault_guid: str = "",
+        revision_guid: str = "",
+        parameter_action: str = "",
     ) -> dict[str, Any]:
         """Read, set, update or remove the sheet template (.SchDot) of a
         schematic sheet, with no dialog.
@@ -2606,39 +2626,86 @@ def register_generic_tools(mcp):
         ask for a scope in a dialog; these do not, and act on one sheet.
         Every action is read back.
 
+        A template on the Altium server is set by its vault and revision
+        GUIDs instead of a file: Altium downloads it and the sheet keeps
+        the link. Read the GUIDs off a sheet already linked (get with
+        vault=True) or from the server; the workspace template lists are
+        not reachable here. "update" keeps a link: with revision_guid it
+        moves the sheet to that revision, without arguments it applies
+        the revision the sheet is linked to again (it does not look for
+        a newer one).
+
         Args:
             action: "get" (default), "set", "update" or "remove".
-            template_file: The .SchDot for "set". For "update" it is
-                optional: without it the sheet's own template file is
-                read again (it must still exist on this machine).
+            template_file: A local .SchDot for "set". For "update" it is
+                optional: without it a sheet linked to the server updates
+                from the server, any other reads its own template file
+                again (it must still exist on this machine). A local file
+                replaces a server link.
             vault: Also read the vault link (vault, item and revision
-                GUIDs and names) a sheet set from the server carries.
+                GUIDs and names); always read after a server set or update.
             file_path: The sheet (.SchDoc). Empty uses the sheet in front.
                 Set and update bring a named sheet forward for Altium's
                 template command and then restore the view you had.
+            vault_guid, revision_guid: A server template for "set" or
+                "update", in place of template_file; both together.
+            parameter_action: What a server "set" does to the sheet's
+                parameters: "add_new" (default, adds the template's
+                parameters the sheet lacks), "none", "override_all" (the
+                template's values replace the sheet's) or "auto".
 
         Returns:
-            ``applied`` (the sheet reads back as asked), ``template_file``,
-            ``template_before``, ``template_objects`` (1 with a template,
-            0 without), ``template_graphics`` (the objects the template
-            draws), ``sheet_style``, ``title_block_on``, ``border_on``;
-            ``removed`` for "remove"; ``vault`` when asked.
+            ``applied`` (the sheet reads back as asked: the file, or the
+            vault and revision asked with a template file),
+            ``template_source`` ("local" or "server", for set and
+            update), ``asked`` (the GUIDs a server call used),
+            ``template_file``, ``template_before``, ``template_objects``,
+            ``template_graphics``, ``sheet_style``, ``title_block_on``,
+            ``border_on``; ``removed`` for "remove"; ``vault``.
         """
         action = (action or "get").strip().lower()
         if action not in ("get", "set", "update", "remove"):
             return {"ok": False,
                     "reason": "action is get, set, update or remove"}
         params: dict[str, Any] = {"action": action}
+        server = bool(vault_guid or revision_guid)
         if template_file:
             if action not in ("set", "update"):
                 return {"ok": False,
                         "reason": "template_file is for set and update"}
+            if server:
+                return {"ok": False,
+                        "reason": "give template_file or vault_guid and "
+                                  "revision_guid, not both"}
             if not template_file.lower().endswith(".schdot"):
                 return {"ok": False,
                         "reason": "template_file must be a .SchDot file"}
             params["template_file"] = template_file
-        elif action == "set":
-            return {"ok": False, "reason": "set needs template_file"}
+        elif action == "set" and not server:
+            return {"ok": False, "reason": "set needs template_file, or "
+                                           "vault_guid and revision_guid"}
+        if server:
+            if action not in ("set", "update"):
+                return {"ok": False, "reason": "vault_guid and revision_guid "
+                                               "are for set and update"}
+            vguid, rguid = template_guid(vault_guid), template_guid(revision_guid)
+            if not vguid or not rguid:
+                return {"ok": False,
+                        "reason": "vault_guid and revision_guid are both "
+                                  "needed, each as 8-4-4-4-12 hex digits; "
+                                  "get with vault=True reads them off a "
+                                  "linked sheet"}
+            params["vault_guid"] = vguid
+            params["revision_guid"] = rguid
+        if parameter_action:
+            word = str(parameter_action).strip().lower()
+            if not (server and action == "set"):
+                return {"ok": False, "reason": "parameter_action is for a "
+                                               "set from the server"}
+            if word not in TEMPLATE_PARAMETER_ACTIONS:
+                return {"ok": False, "reason": "parameter_action is none, "
+                                               "add_new, override_all or auto"}
+            params["parameter_action"] = word
         if vault:
             params["vault"] = "true"
         if file_path:
@@ -2647,8 +2714,13 @@ def register_generic_tools(mcp):
             "generic.sheet_template", params)
         if isinstance(reply, dict) and reply.get("applied") is False:
             reply["ok"] = False
-            reply["reason"] = ("the sheet does not read back as asked: "
-                               "see template_file and template_objects")
+            if reply.get("template_source") == "server":
+                reply["reason"] = ("the sheet does not read back the vault "
+                                   "and revision asked with a template "
+                                   "file: see asked, vault and template_file")
+            else:
+                reply["reason"] = ("the sheet does not read back as asked: "
+                                   "see template_file and template_objects")
         return reply
 
     @mcp.tool()
