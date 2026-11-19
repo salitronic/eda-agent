@@ -4904,14 +4904,130 @@ Begin
     End;
 End;
 
+{ A SHEET SYSTEM PARAMETER IS NOT REMOVED.                                   }
+{                                                                             }
+{ Every sheet carries a fixed set of system parameters (Title, Author,       }
+{ Engineer, DocumentNumber, Revision, SheetNumber ...). MEASURED on AD       }
+{ 25.8.1: all of them read IsSystemParameter True and ReadOnlyState 1, and   }
+{ SchDoc.RemoveSchObject removes one all the same: a delete by Name=Engineer }
+{ answered matched 1 and the parameter was gone from the saved file. Altium  }
+{ refuses to remove one itself (Remove_Parameter raises a modal), and it     }
+{ recreates a missing one on the next load with the value *, so the delete  }
+{ only lost the value. A sheet design rule (a parameter named Rule) also    }
+{ reads IsSystemParameter True, but a rule the user added reads             }
+{ ReadOnlyState 0 and stays deletable; the system Rule placeholder reads 1. }
+{ A system parameter whose ReadOnlyState cannot be read is kept.            }
+Function SheetParamIsFixed(Param : ISch_GraphicalObject) : Boolean;
+Var
+    Par : ISch_Parameter;
+    IsSystem : Boolean;
+    RoState : Integer;
+Begin
+    Result := False;
+    If Param = Nil Then Exit;
+    Par := Param;
+    IsSystem := False;
+    Try IsSystem := Par.IsSystemParameter; Except IsSystem := False; End;
+    If Not IsSystem Then Exit;
+    RoState := 1;
+    Try RoState := Par.ReadOnlyState; Except RoState := 1; End;
+    Result := (RoState <> 0);
+End;
+
+{ Remove every parameter of the sheet itself that matches the filter,       }
+{ except the system parameters Altium keeps (SheetParamIsFixed), which are   }
+{ named in the reply instead (NoteDeleteKept).                               }
+{                                                                             }
+{ Each pass walks the sheet parameters from scratch, counts the matches it   }
+{ may remove and takes the first of them; a kept one is never picked, so the }
+{ walk steps past it. A remove is counted only when the next pass finds one  }
+{ removable match fewer: it used to be counted before anyone looked, and an  }
+{ object the remove left in place was found and counted again up to the     }
+{ guard. A remove that took nothing stops the loop and names the parameter.  }
+Procedure RemoveMatchingSheetParams(SchDoc : ISch_Document; ReducedFilter : String;
+    Var TotalMatched : Integer);
+Var
+    ParamIter : ISch_Iterator;
+    Param, FoundParam : ISch_GraphicalObject;
+    Par : ISch_Parameter;
+    Guard, Removable, LastRemovable : Integer;
+    ParamName, LastName : String;
+    Removed : Boolean;
+Begin
+    Guard := 10000;
+    LastRemovable := -1;
+    LastName := '';
+    While True Do
+    Begin
+        FoundParam := Nil;
+        Removable := 0;
+        ParamIter := SchDoc.SchIterator_Create;
+        Try
+            ParamIter.SetState_IterationDepth(eIterateFirstLevel);
+            ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
+            Param := ParamIter.FirstSchObject;
+            While Param <> Nil Do
+            Begin
+                If MatchesFilter(Param, ReducedFilter) Then
+                Begin
+                    If SheetParamIsFixed(Param) Then
+                    Begin
+                        Par := Param;
+                        ParamName := '';
+                        Try ParamName := Par.Name; Except ParamName := ''; End;
+                        NoteDeleteKept(ParamName);
+                    End
+                    Else
+                    Begin
+                        Inc(Removable);
+                        If FoundParam = Nil Then FoundParam := Param;
+                    End;
+                End;
+                Param := ParamIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(ParamIter);
+        End;
+        { The last remove took when one removable match fewer is left. }
+        If LastRemovable >= 0 Then
+        Begin
+            If Removable < LastRemovable Then
+                Inc(TotalMatched)
+            Else
+            Begin
+                NoteDeleteFault('the parameter "' + LastName
+                    + '" stayed on the sheet after it was removed');
+                Break;
+            End;
+        End;
+        { The pass above checked the last remove, so stopping here counts it. }
+        If (FoundParam = Nil) Or (Guard <= 0) Then Break;
+        Par := FoundParam;
+        LastName := '';
+        Try LastName := Par.Name; Except LastName := ''; End;
+        LastRemovable := Removable;
+        Removed := True;
+        Try
+            SchDoc.RemoveSchObject(FoundParam);
+        Except
+            Removed := False;
+        End;
+        If Not Removed Then
+        Begin
+            NoteDeleteFault('removing the parameter "' + LastName
+                + '" raised an error');
+            Break;
+        End;
+        Dec(Guard);
+    End;
+End;
+
 Procedure DeleteParametersAnyOwner(SchDoc : ISch_Document; FilterStr : String;
     Var TotalMatched : Integer);
 Var
     OwnerDesig, ReducedFilter, CompDesig : String;
-    CompIter, ParamIter : ISch_Iterator;
+    CompIter : ISch_Iterator;
     Comp : ISch_Component;
-    Param, FoundParam : ISch_GraphicalObject;
-    Guard : Integer;
     IsLib : Boolean;
 Begin
     ReducedFilter := FilterStr;
@@ -4977,34 +5093,7 @@ Begin
     { Sheet-level (document-owned) parameters. Skipped when an owner           }
     { designator was given - that means "this component only".                }
     If OwnerDesig = '' Then
-    Begin
-        Guard := 10000;
-        While Guard > 0 Do
-        Begin
-            FoundParam := Nil;
-            ParamIter := SchDoc.SchIterator_Create;
-            Try
-                ParamIter.SetState_IterationDepth(eIterateFirstLevel);
-                ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
-                Param := ParamIter.FirstSchObject;
-                While Param <> Nil Do
-                Begin
-                    If MatchesFilter(Param, ReducedFilter) Then
-                    Begin
-                        FoundParam := Param;
-                        Break;
-                    End;
-                    Param := ParamIter.NextSchObject;
-                End;
-            Finally
-                SchDoc.SchIterator_Destroy(ParamIter);
-            End;
-            If FoundParam = Nil Then Break;
-            SchDoc.RemoveSchObject(FoundParam);
-            Inc(TotalMatched);
-            Dec(Guard);
-        End;
-    End;
+        RemoveMatchingSheetParams(SchDoc, ReducedFilter, TotalMatched);
 End;
 
 {..............................................................................}
@@ -17578,7 +17667,7 @@ Var
     Operations, Remaining : String;
     OpCount, OpsRun, OpsPartial, OpMatched, TotalMatched : Integer;
     Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
-    OpResult, Note, ResultsJson : String;
+    OpResult, Note, ResultsJson, Kept : String;
     ObjTypeInt : Integer;
     IsPcb : Boolean;
 Begin
@@ -17652,10 +17741,19 @@ Begin
               read matched on a failure too, or the reply says nothing was
               deleted and the caller repeats it. }
             OpMatched := StrToIntDef(JsonValueAnywhere(OpResult, 'matched'), 0);
+            { Sheet system parameters the filter met and the delete left in }
+            { place: named, so the operation does not read as a plain      }
+            { failure or as nothing matched.                                }
+            Kept := DeleteKeptText(0);
             If Pos('"partial":true', OpResult) > 0 Then
             Begin
                 Note := 'partial: ' + JsonValueAnywhere(OpResult, 'delete_error');
+                If Kept <> '' Then Note := Note + '; kept system parameters: ' + Kept;
                 Inc(OpsPartial);
+            End
+            Else If Kept <> '' Then
+            Begin
+                Note := 'kept system parameters: ' + Kept;
             End
             Else If Pos('"success":false', OpResult) > 0 Then
             Begin

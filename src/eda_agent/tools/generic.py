@@ -1167,6 +1167,11 @@ def register_generic_tools(mcp):
             says why, and ``matched`` still counts the objects already
             removed. Query before repeating a delete that failed or timed
             out: the first part of it may already have happened.
+            A sheet's system parameters (Title, Author, Revision ...) are
+            never removed (Altium recreates one with the value * on the
+            next load): a filter that meets one leaves it, names it in
+            ``kept_system_parameters`` and answers ``success`` false.
+            Change or clear one with obj_modify (set Text).
         """
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
@@ -5040,7 +5045,9 @@ def register_generic_tools(mcp):
             (per operation ``deleted`` and a ``note`` when it deleted
             nothing). An operation that stopped part way has a note
             starting ``partial:`` and its ``deleted`` counts what it
-            removed; ``operations_partial`` counts them. Query before
+            removed; ``operations_partial`` counts them. One whose filter
+            met sheet system parameters (never removed) names them in a
+            note ``kept system parameters: ...``. Query before
             repeating a batch that failed or timed out.
         """
         op_strs: list[str] = []

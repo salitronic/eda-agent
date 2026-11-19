@@ -2449,6 +2449,9 @@ End;
 Var
     _PropertyDiagStr : String;
     _DeleteFaultStr : String;
+    { Names of the parameters a delete matched and left in place because   }
+    { Altium keeps them (a sheet system parameter), joined with a pipe.     }
+    _DeleteKeptStr : String;
     { Schematic property writes that landed since the reset, so a modify }
     { whose every write was refused does not answer modified:true.       }
     _SchWritesLanded : Integer;
@@ -2465,6 +2468,7 @@ Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
+    _DeleteKeptStr := '';
     _SchWritesLanded := 0;
 End;
 
@@ -2484,6 +2488,58 @@ End;
 Procedure NoteDeleteFault(Msg : String);
 Begin
     If _DeleteFaultStr = '' Then _DeleteFaultStr := Msg;
+End;
+
+{ A parameter the delete matched and did NOT remove, because Altium keeps   }
+{ it. Recorded once per name, so a project-wide delete that meets Title on  }
+{ every sheet names it once.                                                }
+Procedure NoteDeleteKept(ParamName : String);
+Var
+    Entry : String;
+Begin
+    { A name that could not be read is still a parameter kept: say so. }
+    Entry := ParamName;
+    If Entry = '' Then Entry := '(unnamed)';
+    If Pos('|' + Entry + '|', '|' + _DeleteKeptStr + '|') > 0 Then Exit;
+    If _DeleteKeptStr = '' Then
+        _DeleteKeptStr := Entry
+    Else
+        _DeleteKeptStr := _DeleteKeptStr + '|' + Entry;
+End;
+
+{ The kept names, joined with a comma and a space, or empty. }
+Function DeleteKeptText(Dummy : Integer) : String;
+Begin
+    Result := StringReplace(_DeleteKeptStr, '|', ', ', -1);
+End;
+
+{ The kept names as a JSON array of strings. }
+Function DeleteKeptJson(Dummy : Integer) : String;
+Var
+    Remaining, Entry : String;
+    P, Count : Integer;
+Begin
+    Result := '[';
+    Count := 0;
+    Remaining := _DeleteKeptStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Entry := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Entry := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        If Count > 0 Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Entry) + '"';
+        Inc(Count);
+    End;
+    Result := Result + ']';
 End;
 
 Procedure NotePropertyDiag(Kind : String; PropName : String);
@@ -2576,15 +2632,32 @@ End;
 { matched counts what the FILTER selected. It says nothing about whether a  }
 { property write landed, so reporting it alone made a mis-spelled or        }
 { unsupported name indistinguishable from success.                          }
+{                                                                           }
+{ A delete whose filter met parameters Altium keeps names them in          }
+{ kept_system_parameters, beside a fault if there was one, and is not a    }
+{ success: the caller asked for something that did not happen.            }
 Function ModifyOutcomeJson(Dummy : Integer): String;
 Begin
     Result := ',"properties":' + RenderPropertyDiagJson(0);
+    If _DeleteKeptStr <> '' Then
+        Result := Result + ',"kept_system_parameters":' + DeleteKeptJson(0);
     If _DeleteFaultStr <> '' Then
     Begin
         Result := Result + ',"success":false,"partial":true,"delete_error":"'
             + EscapeJsonString(_DeleteFaultStr) + '","reason":"the delete '
             + 'stopped part way. matched counts the objects already removed; '
             + 'query again before repeating it."';
+        Exit;
+    End;
+    If _DeleteKeptStr <> '' Then
+    Begin
+        Result := Result + ',"success":false,"reason":"the filter matched '
+            + 'sheet system parameters, which are not removed: Altium keeps '
+            + 'them and recreates a missing one on the next load with the '
+            + 'value *, so a removal would only lose its value. '
+            + 'kept_system_parameters names them; matched counts only the '
+            + 'parameters removed. To change or clear one, set its Text with '
+            + 'obj_modify."';
         Exit;
     End;
     If _PropertyDiagStr <> '' Then
