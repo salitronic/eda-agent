@@ -118,7 +118,8 @@ def test_a_repair_that_finds_a_clean_route_keeps_it(keep):
 
 @pytest.mark.parametrize("quick", [True, False])
 def test_an_attempt_that_stalls_with_a_plane_to_give_back_skips_its_clean_up(quick, monkeypatch):
-    r = Router(_two_nets(), stages={"quick_release": quick})
+    # Stalling and repair belong to the negotiated routing.
+    r = Router(_two_nets(), stages={"quick_release": quick, "negotiate": True})
     calls = []
 
     def stalled(self, todo, rep, t0, stall_abort=False, settle=True):

@@ -235,9 +235,10 @@ def _blocked_corridor_board():
 def test_a_plan_that_leaves_a_connection_unmade_gives_way_to_one_that_makes_it():
     from eda_agent.layout.route import route_adaptive
 
-    planned = route_adaptive(_blocked_corridor_board(), stages={"fallback": False, "plane_fanout": True})
+    planned = route_adaptive(_blocked_corridor_board(),
+                             stages={"fallback": False, "plane_fanout": True, "negotiate": True})
     assert run_drc(planned.apply()).unrouted == {"S": 1}, "the dog-bone sits in S's corridor"
-    r = route_adaptive(_blocked_corridor_board(), stages={"plane_fanout": True})
+    r = route_adaptive(_blocked_corridor_board(), stages={"plane_fanout": True, "negotiate": True})
     drc = run_drc(r.apply())
     assert drc.completion == 1.0 and not drc.violations
     assert "1 more connection made" in r.stage_report.fallback

@@ -160,6 +160,157 @@ def build_graph(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
     return csr_matrix((data, indices, indptr), shape=(win.size, win.size), copy=False)
 
 
+def _turn_class(a: int, b: int) -> int:
+    """How far move ``b`` turns from move ``a``, in steps of 45 degrees:
+    0 (straight on) to 4 (straight back)."""
+    ax, ay, _ = MOVES[a]
+    bx, by, _ = MOVES[b]
+    c = (ax * bx + ay * by) / (math.hypot(ax, ay) * math.hypot(bx, by))
+    return 0 if c > 0.9 else 1 if c > 0.5 else 2 if c > -0.5 else 3 if c > -0.9 else 4
+
+
+#: TURN_CLASS[a, b]: _turn_class(a, b) for every pair of moves.
+TURN_CLASS = np.array([[_turn_class(a, b) for b in range(8)] for a in range(8)])
+#: The heading of a layer node entered from a source or a via: no step yet.
+FRESH = 8
+#: ARRIVE[k]: the moves (a bit each) that reach the end of a stub leaving
+#: its pad by move k: heading back in along it, or 45 degrees off that.
+ARRIVE = [sum(1 << m for m in range(8)
+              if TURN_CLASS[next(j for j in range(8) if MOVES[j][:2] == (-MOVES[k][0],
+                                                                       -MOVES[k][1])), m] <= 1)
+          for k in range(8)]
+#: The most search states a search with turns may hold (about 17 bytes
+#: each in the compiled search); a larger region is searched without them.
+TURN_STATES = 6_000_000
+
+
+class Turns:
+    """What turning costs the search, and whether a diagonal step may pass
+    a barred cell.
+
+    ``turn``: five step costs, in cells, on top of the step's own, by how
+    far the step turns from the one before it: 0, 45, 90, 135 and 180
+    degrees; inf bars that turn. A step out of a source or a via turns from
+    nothing. ``no_squeeze``: a diagonal step is barred where either cell
+    beside it on its layer is barred, so a track never cuts through the
+    corner between two walls.
+    """
+
+    def __init__(self, turn=(0.0, 0.6, 3.0, math.inf, math.inf), no_squeeze: bool = True):
+        self.turn = tuple(float(t) for t in turn)
+        if len(self.turn) != 5:
+            raise ValueError(f"turn takes 5 costs, not {len(self.turn)}")
+        self.no_squeeze = bool(no_squeeze)
+
+    def weights(self, pitch: float) -> np.ndarray:
+        """(9, 8): what move k costs on top after heading h, FRESH last."""
+        w = np.zeros((9, 8))
+        t = np.array(self.turn)
+        w[:8] = t[TURN_CLASS] * pitch
+        return w
+
+
+def build_graph_turning(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
+                        move_factor: np.ndarray, pitch: float, turns: Turns,
+                        potential: np.ndarray | None = None) -> csr_matrix:
+    """build_graph for a search that knows which way each step went.
+
+    A layer node has nine states, one for each move it was entered by and
+    one (FRESH) for none; a via node has one. Layer node n with heading h
+    is state 9 n + h; via node n_layer + i is state 9 n_layer + i. A move
+    costs what it costs in build_graph, plus its turn from the heading,
+    added in the same order the compiled search adds it.
+    """
+    L, M = win.L, win.M
+    cy1, cx1 = win.cy + 1, win.cx + 1
+    cc = np.minimum(cell_cost, BLOCKED)
+    vc = np.minimum(via_cost, BLOCKED)
+    nL = L * M
+    size = 9 * nL + M
+    tw = turns.weights(pitch)
+    rank = np.full((win.h + 2, win.w + 2), -1, dtype=np.int64)
+    rank[1:-1, 1:-1] = win.rank
+    layer_base = (np.arange(L, dtype=np.int64) * M)[:, None]
+    selfid = np.arange(M, dtype=np.int64)
+    blocked_cell = cc >= BLOCKED
+    rows, cols, data = [], [], []
+    for k, (dx, dy, length) in enumerate(MOVES):
+        r = rank[cy1 + dy, cx1 + dx]
+        out = r < 0
+        nb = np.where(out, selfid, r)
+        step = cc[:, nb] * ((length * pitch) * move_factor[:, k][:, None])
+        bar = np.broadcast_to(out[None, :], (L, M)).copy()
+        if dx and dy and turns.no_squeeze:
+            for side in (rank[cy1, cx1 + dx], rank[cy1 + dy, cx1]):
+                inside = side >= 0
+                hit = np.zeros((L, M), dtype=bool)
+                hit[:, inside] = blocked_cell[:, side[inside]]
+                bar |= hit
+        src_node = layer_base + selfid[None, :]           # (L, M)
+        dst_node = layer_base + nb[None, :]
+        for h in range(9):
+            t = tw[h, k]
+            if not t < BLOCKED:
+                continue
+            wk = step + t
+            if potential is not None:
+                wk = wk + (potential[nb] - potential)[None, :]
+                np.maximum(wk, 0.0, out=wk)
+            keep = ~bar & (wk < BLOCKED)
+            rows.append((src_node * 9 + h)[keep])
+            cols.append((dst_node * 9 + k)[keep])
+            data.append(wk[keep])
+    # Layer state to its via, and the via to each layer FRESH.
+    hv = vc[None, :] / 2.0 + blocked_cell * BLOCKED      # (L, M)
+    ok = hv < BLOCKED
+    via_state = 9 * nL + selfid
+    for h in range(9):
+        rows.append(((layer_base + selfid[None, :]) * 9 + h)[ok])
+        cols.append(np.broadcast_to(via_state[None, :], (L, M))[ok])
+        data.append(hv[ok])
+    rows.append(np.broadcast_to(via_state[None, :], (L, M))[ok])
+    cols.append(((layer_base + selfid[None, :]) * 9 + FRESH)[ok])
+    data.append(hv[ok])
+    return csr_matrix((np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
+                      shape=(size, size))
+
+
+def turning_states(win: Window, sources: np.ndarray, targets: np.ndarray,
+                   heading=None, arrive=None) -> tuple[np.ndarray, np.ndarray]:
+    """The search states of ``sources`` and ``targets`` (node ids) in a
+    build_graph_turning graph.
+
+    ``heading``: per source, the move the route is already heading along
+    there, FRESH for none. ``arrive``: per target, a bit per move it may be
+    reached by (255: any); a layer target is also reached as a FRESH state
+    (a source standing on it), a via target by any arrival."""
+    nL = win.n_layer
+    sources = np.asarray(sources, dtype=np.int64)
+    targets = np.asarray(targets, dtype=np.int64)
+    h = np.full(len(sources), FRESH, dtype=np.int64) if heading is None         else np.asarray(heading, dtype=np.int64)
+    src = np.unique(np.where(sources < nL, sources * 9 + np.minimum(h, FRESH),
+                             9 * nL + (sources - nL)))
+    a = np.full(len(targets), 255, dtype=np.int64) if arrive is None         else np.asarray(arrive, dtype=np.int64)
+    layer = targets < nL
+    lt, la = targets[layer], a[layer]
+    allowed = ((la[:, None] >> np.arange(8)[None, :]) & 1).astype(bool)
+    allowed = np.concatenate([allowed, (la != 0)[:, None]], axis=1)       # FRESH
+    states = (lt[:, None] * 9 + np.arange(9)[None, :])[allowed]
+    vias = targets[~layer & (a != 0)]
+    return src, np.unique(np.concatenate([states, 9 * nL + (vias - nL)]))
+
+
+def _turning_path(graph: csr_matrix, win: Window, sources: np.ndarray, targets: np.ndarray,
+                  limit: float, heading=None, arrive=None) -> list[int] | None:
+    """shortest_path on a build_graph_turning graph, in node ids."""
+    nL = win.n_layer
+    src, tgt = turning_states(win, sources, targets, heading, arrive)
+    path = shortest_path(graph, src, tgt, limit)
+    if path is None:
+        return None
+    return [s // 9 if s < 9 * nL else nL + (s - 9 * nL) for s in path]
+
+
 def shortest_path(graph: csr_matrix, sources: np.ndarray, targets: np.ndarray,
                   limit: float) -> list[int] | None:
     """Cheapest path from any source to any target, as graph node ids."""
@@ -185,7 +336,7 @@ def shortest_path(graph: csr_matrix, sources: np.ndarray, targets: np.ndarray,
 
 KERNEL_ENV = "EDA_AGENT_ROUTE_KERNEL"
 #: The compiled search's interface this code was written against.
-KERNEL_API = 1
+KERNEL_API = 2
 KERNEL_HINT = "pip install eda-agent[route]"
 
 
@@ -209,9 +360,14 @@ def kernel() -> str:
 def find_path(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
               move_factor: np.ndarray, pitch: float, potential: np.ndarray | None,
               sources: np.ndarray, targets: np.ndarray,
-              limits: tuple[float, ...]) -> list[int] | None:
+              limits: tuple[float, ...], turns: Turns | None = None,
+              heading=None, arrive=None) -> list[int] | None:
     """The cheapest path from any source to any target, as graph node ids,
-    or None when none costs the last limit or less.
+    or None when none costs the last limit or less. With ``turns`` the
+    search knows which way each step went and prices its turns, and
+    ``heading`` (per source, the move it is already heading along, FRESH
+    for none) and ``arrive`` (per target, a bit per move that may reach
+    it) say how the route leaves and meets its ends.
 
     scipy settles every node under its limit, so it is tried at each limit
     in turn, smallest first: a path found under a smaller limit is the
@@ -220,11 +376,24 @@ def find_path(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
     """
     if len(sources) == 0 or len(targets) == 0:
         return None
+    if turns is not None and 9 * win.size > TURN_STATES:
+        # Nine states a node: over a whole six-layer board that is several
+        # hundred MB a search, and eight boards routed at once ran out of
+        # memory. A region this large is searched without turns; the
+        # clean-up passes straighten what it finds.
+        turns = None
     lib = compiled()
     if lib is None:
-        graph = build_graph(win, cell_cost, via_cost, move_factor, pitch, potential)
+        if turns is not None:
+            graph = build_graph_turning(win, cell_cost, via_cost, move_factor, pitch, turns,
+                                        potential)
+            search = lambda limit: _turning_path(graph, win, sources, targets, limit,  # noqa: E731
+                                                 heading, arrive)
+        else:
+            graph = build_graph(win, cell_cost, via_cost, move_factor, pitch, potential)
+            search = lambda limit: shortest_path(graph, sources, targets, limit)  # noqa: E731
         for limit in limits:
-            path = shortest_path(graph, sources, targets, limit)
+            path = search(limit)
             if path is not None:
                 return path
         return None
@@ -234,4 +403,10 @@ def find_path(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
     return lib.shortest_path(
         win.w, win.h, win.L, i32(win.cy), i32(win.cx), f64(cell_cost), f64(via_cost),
         f64(move_factor), float(pitch), i64(sources), i64(targets), float(limits[-1]),
-        None if potential is None else f64(potential))
+        None if potential is None else f64(potential),
+        None if turns is None else list(turns.turn),
+        bool(turns is not None and turns.no_squeeze),
+        None if turns is None or heading is None
+        else np.asarray(heading, dtype=np.uint8).tobytes(),
+        None if turns is None or arrive is None
+        else np.asarray(arrive, dtype=np.uint8).tobytes())

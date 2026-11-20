@@ -10,6 +10,8 @@ pcb_autoroute_apply refuses while a finding is unanswered.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from eda_agent.design.jobs import get_job_store
@@ -145,9 +147,10 @@ def test_the_return_path_is_cut_by_other_nets_pads_tracks_and_vias_on_the_next_l
         b.pads, b.tracks, b.vias = keep
 
 
-def test_a_round_reaches_pads_along_their_axes_and_the_review_has_nothing_to_ask():
-    # Live, nearly every round's review found a track ending on a pad at 45
-    # degrees; rounds now route with axis entries.
+def test_a_round_enters_pads_on_their_centres_and_the_review_has_nothing_to_ask():
+    # A round's pads are entered by a dogleg onto the centre: the last
+    # piece along the pad's axis or at 45 degrees to it, so the review asks
+    # nothing about them.
     from eda_agent.layout.route import review
 
     smd = [PadCopper("TopLayer", "rect", 30, 20)]
@@ -157,17 +160,16 @@ def test_a_round_reaches_pads_along_their_axes_and_the_review_has_nothing_to_ask
               Pad("U1", "1", 300, 250, net="X", copper=list(smd)),
               Pad("U1", "2", 300, 300, net="Y", copper=list(smd)),
               Pad("C2", "1", 450, 120, net="X", copper=list(smd))]
-    loose = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True},
-                       "gloss": False})
-    assert review.pad_entries(loose["tracks"], b.pads_by_net()), "the case still shows it"
-    # Gloss lays a run that leaves a pad askew again, along the pad's axis.
-    glossed = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True}})
-    assert review.pad_entries(glossed["tracks"], b.pads_by_net()) == {}
-    assert glossed["summary"]["gloss"]["relaid_clean"] >= 1
-    res = route_job({"board": b, "nets": ["X", "Y"],
-                     "stages": {"join_existing": True, "axis_entry": True}})
-    assert res["summary"]["completion"] == 1.0
-    assert review.pad_entries(res["tracks"], b.pads_by_net()) == {}
+    for glossed in (False, True):
+        res = route_job({"board": b, "nets": ["X", "Y"], "stages": {"join_existing": True},
+                         "gloss": glossed})
+        assert res["summary"]["completion"] == 1.0
+        assert review.pad_entries(res["tracks"], b.pads_by_net()) == {}, glossed
+        for p in b.pads:
+            ends = [t for t in res["tracks"] if t["net_name"] == p.net
+                    and min(math.hypot(t["x1"] - p.x, t["y1"] - p.y),
+                            math.hypot(t["x2"] - p.x, t["y2"] - p.y)) < 1e-3]
+            assert ends, f"{p.key} is not reached on its centre"
 
 
 def _jog_board(ox, oy):
@@ -189,18 +191,22 @@ def test_a_stub_meets_the_grid_route_without_an_off_angle_jog(monkeypatch):
     from eda_agent.layout.route import review
     from eda_agent.layout.route.router import Router
 
-    def jogs():
+    # The jogs come of a search that prices no turns; with turn costs its
+    # route meets the stub without one.
+    def jogs(turns):
         n = 0
         for ox, oy in ((0, 0), (1.3, 0.9), (2.7, 0)):
             res = route_job({"board": _jog_board(ox, oy), "nets": ["X", "Y"],
-                             "stages": {"join_existing": True, "axis_entry": True}})
+                             "stages": {"join_existing": True, "axis_entry": True,
+                                        "turn_cost": turns, "negotiate": not turns}})
             assert res["summary"]["completion"] == 1.0
             n += sum(k for k, _ in review.off_angle(res["tracks"]).values())
         return n
 
-    squared = jogs()
+    assert jogs(True) == 0
+    squared = jogs(False)
     monkeypatch.setattr(Router, "_square_jogs", lambda self, job, li, pts, ends=(): list(pts))
-    assert squared * 3 < jogs(), "most jogs are squared"
+    assert squared * 3 < jogs(False), "most jogs are squared"
 
 
 def test_the_axis_meets_the_next_corner_on_45_degrees():
@@ -227,14 +233,14 @@ def test_a_piece_off_the_45_degree_grid_is_a_finding():
     assert [f["id"] for f in found] == ["angle:N"] and found[0]["measured"] == 1
 
 
-def test_the_round_tool_asks_for_axis_entries():
+def test_the_round_tool_enters_pads_by_a_dogleg_not_along_their_axes_only():
     import inspect
 
     from eda_agent.tools import route as route_module
     src = inspect.getsource(route_module)
     body = src[src.index("async def pcb_route_round("):]
     body = body[:body.index("\n    @mcp.tool()")]
-    assert '"axis_entry": True' in body
+    assert '"axis_entry"' not in body
 
 
 def test_the_fallback_gives_up_axis_entries_before_a_connection():

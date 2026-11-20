@@ -8,6 +8,7 @@ from eda_agent.layout.drc import run_drc
 from eda_agent.layout.model import Layer, LayoutBoard, Pad, PadCopper, Region, Rule
 from eda_agent.layout.route import Router
 from eda_agent.layout.route.fanout import find_bgas
+from eda_agent.layout.route.stages import StageOptions
 
 
 def _rules(gap=4.0, width=4.0):
@@ -102,7 +103,8 @@ def test_a_fanned_out_board_routes_clean_and_the_callers_board_is_untouched():
     balls = _bga(19.685, 12.0, n=4)
     b = _board(_with_partners(balls))
     before = (len(b.vias), len(b.tracks))
-    r = Router(b)
+    # Routed with rip-up and repair: one connection at a time leaves N1_3 unmade.
+    r = Router(b, stages=StageOptions(negotiate=True))
     assert len(r.fanout.by_pad) == 4
     r.run()
     out = r.apply()

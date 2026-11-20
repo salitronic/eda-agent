@@ -40,6 +40,12 @@ EPS = 1e-6
 #: Mils round an area of the brief within which a stage leaves a net to the
 #: negotiation: a lane or fanout laid there could cross into it.
 AREA_MARGIN = 200.0
+#: What the router before the stages charged for a via, mils.
+LEGACY_VIA_COST = 30.0
+#: What a 45 and a 90 degree turn cost the search, mils on top of the step
+#: (StageOptions.turn_cost).
+TURN_45 = 2.4
+TURN_90 = 11.8
 
 
 @dataclass
@@ -147,6 +153,26 @@ class StageOptions:
     # A through via of a net already on the board is a free layer change
     # for the net's routes, where no second via is laid.
     reuse_vias: bool = False
+    # Off: each connection is routed once, in order, against everything
+    # routed before it as a wall; what is laid stays, and a connection that
+    # finds no room is left unmade, for the AI to decide (route its
+    # critical nets first, then the rest). On: rounds of rip-up and reroute
+    # at a rising price for sharing (PathFinder), then repair. MEASURED on
+    # 16 boards with no net routed first (2026-11-20): off, completion
+    # 0.9742 against 0.9930 on, fully routed 9 against 13, vias 1244
+    # against 688.
+    negotiate: bool = False
+    # The search knows which way each step went: a 45 degree turn costs
+    # TURN_45 mils on top of the step, a 90 degree turn TURN_90, a sharper
+    # one is never taken, and no diagonal step cuts between two walls. Off:
+    # every step costs its length alone, and a staircase costs what a
+    # single 45 degree bend does. MEASURED on 19 boards (2026-11-20), with
+    # via_cost 98.4: track pieces 10368 to 9388, vias 1548 to 1296, length
+    # +1.3%, completion 0.9951 to 0.9931, routing time 1.7x; with via_cost
+    # 30 the pieces fall alike and the vias by 2%.
+    turn_cost: bool = True
+    # What a via costs the search, mils of track.
+    via_cost: float = 98.4
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -159,7 +185,8 @@ class StageOptions:
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
                     or self.axis_entry or self.neck_pads or self.join_existing
                     or bool(self.exclude_layers) or self.reuse_vias
-                    or self.pad_vias != "any")
+                    or self.pad_vias != "any" or not self.negotiate or self.turn_cost
+                    or self.via_cost != LEGACY_VIA_COST)
 
     @classmethod
     def coerce(cls, value) -> "StageOptions":
@@ -173,7 +200,8 @@ class StageOptions:
             return cls(diff_pairs=False, plane_fanout=False, pin_lanes=False, bus_lanes=False,
                        class_order=False, pad_vias="any", fallback=False, bends=False,
                        straight=False, global_stall=False, exact_pad_via=False,
-                       quick_release=False, neck_pads=False)
+                       quick_release=False, neck_pads=False, negotiate=True, turn_cost=False,
+                       via_cost=LEGACY_VIA_COST)
         known = {f.name for f in fields(cls)}
         bad = set(value) - known
         if bad:

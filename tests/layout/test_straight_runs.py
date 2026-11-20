@@ -99,21 +99,24 @@ def test_a_run_is_laid_through_the_cell_where_another_route_meets_it():
 
 
 def test_the_routed_board_lays_a_shallow_connection_in_two_pieces():
+    # Without turn costs the search's path is a staircase and straightening
+    # lays it in two pieces; with them the search itself bends once.
     counts = {}
-    for straight in (False, True):
+    for straight, turns in ((False, False), (True, False), (True, True)):
         b = _board(w=600, h=400, layers=("TopLayer",))
         b.pads = [_pad("R1", "1", 100, 100, "A"), _pad("R2", "1", 500, 250, "A")]
-        r = Router(b, stages={"straight": straight})
+        r = Router(b, stages={"straight": straight, "turn_cost": turns})
         r.run()
         out = r.apply()
         drc = run_drc(out)
         assert drc.completion == 1.0 and not drc.violations
         ts = [t for t in out.tracks if t.net == "A"]
-        counts[straight] = len(ts)
+        counts[straight, turns] = len(ts)
         if straight:
             assert all(_octilinear((t.x1, t.y1), (t.x2, t.y2)) for t in ts)
             assert sharp_bends(out.tracks, out.pads, out.vias) == []
-    assert counts[True] == 2 and counts[False] > 6
+    assert counts[True, False] == 2 and counts[False, False] > 6
+    assert counts[True, True] == 2
 
 
 def test_a_line_holds_only_when_every_piece_the_first_pass_did_not_lay_clears():

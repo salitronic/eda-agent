@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "eda-agent-route"
-version = "0.1.0"
+version = "0.2.0"
 description = "Grid path search for eda-agent's board router"
 readme = "README.md"
 license = "Apache-2.0"

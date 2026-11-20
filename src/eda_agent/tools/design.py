@@ -570,9 +570,9 @@ def register_design_tools(mcp) -> None:
         done (nothing notifies you), then `design_job_result`.
 
         Args:
-            kind: registered job kind. Currently: ``route`` (offline A*
-                router; ``params`` needs a ``geometry`` dict, optional
-                ``rules`` / ``net_classes`` / ``grid_pitch_mils``).
+            kind: registered job kind. Currently: ``route`` (route_plan as
+                a job; ``params`` needs a ``geometry`` dict, optional
+                ``rules`` / ``nets`` / ``net_classes``).
             params: keyword arguments for the engine.
 
         Returns:

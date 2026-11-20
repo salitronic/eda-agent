@@ -103,10 +103,11 @@ VIAS_ASK = 4
 
 
 def pad_entries(tracks: list[dict], pads_of: dict) -> dict[str, list[str]]:
-    """Per net, its surface pads the round's tracks do not enter straight
-    and centrally: a track that crosses the pad without ending on its
-    centre, or that ends there at an angle to the pad's axes. DRC passes
-    both; a good layout has neither."""
+    """Per net, its surface pads the round's tracks do not enter on the
+    centre and on the 45 degree grid of its axes: a track that crosses the
+    pad without ending on its centre, or that ends there at an angle that
+    is neither along an axis nor at 45 degrees to one. DRC passes both; a
+    good layout has neither."""
     from .. import geom
 
     out: dict[str, list[str]] = {}
@@ -130,7 +131,7 @@ def pad_entries(tracks: list[dict], pads_of: dict) -> dict[str, list[str]]:
                 for t in ends:
                     a = math.degrees(math.atan2(t["y2"] - t["y1"], t["x2"] - t["x1"]))
                     off = (a - p.rotation) % 90.0
-                    if 1.0 < off < 89.0:
+                    if 1.0 < off < 89.0 and abs(off - 45.0) > 1.0:
                         out.setdefault(net, []).append(f"enters {p.key} at {round(min(off, 90 - off))} "
                                                        "degrees to its axis")
                         break
@@ -815,7 +816,8 @@ def findings(board: LayoutBoard, routed: LayoutBoard, tracks: list[dict], vias: 
         for net, what in sorted((entries or {}).items()):
             out.append(_finding(f"pad_entry:{net}", "pad_entry",
                                 f"{net}: {'; '.join(what)}. Acceptable, or redraw the entry by "
-                                "hand (straight along the pad's axis, ending on its centre)?",
+                                "hand (along the pad's axis or at 45 degrees to it, ending on "
+                                "its centre)?",
                                 net=net))
     return out
 
@@ -1032,15 +1034,25 @@ def _fits(board: LayoutBoard, ref: str) -> bool:
 def _trial(board: LayoutBoard, nets, brief: Brief, stages, release=None) -> tuple[bool, dict]:
     """Route ``nets`` alone on ``board`` (its copper fixed) and say whether
     every one of them is joined within the brief, with the copper it took;
-    planes given to routing only of ``release`` (route_adaptive)."""
+    planes given to routing only of ``release`` (route_adaptive).
+
+    Routed in order, without rip-up, the first net (the one the trial is
+    for) is laid before the others, which then go round it."""
     from ..drc import connectivity
     from .brief import broken
     from .router import route_adaptive
+    from .stages import StageOptions
 
     st = dict(stages) if isinstance(stages, dict) else {}
     st["join_existing"] = True
-    r = route_adaptive(board, nets=frozenset(nets), brief=brief, stages=st, release=release)
-    out = r.apply()
+    nets = list(nets)
+    groups = [nets]
+    if len(nets) > 1 and not StageOptions.coerce(st).negotiate:
+        groups = [nets[:1], nets[1:]]
+    out = board
+    for group in groups:
+        r = route_adaptive(out, nets=frozenset(group), brief=brief, stages=st, release=release)
+        out = r.apply()
     groups = connectivity(out)
     new_t = out.tracks[len(board.tracks):]
     new_v = out.vias[len(board.vias):]

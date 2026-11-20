@@ -112,7 +112,7 @@ def test_the_router_stops_negotiating_at_the_limit_and_keeps_its_routes():
     c.started -= 110.0
     job_control.bind(c)
     try:
-        res = route_job({"board": b, "gloss": False})
+        res = route_job({"board": b, "gloss": False, "stages": {"negotiate": True}})
     finally:
         job_control.bind(None)
     assert res["summary"]["stopped_at_time_limit"]

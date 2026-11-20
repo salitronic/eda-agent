@@ -1,29 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Routing tools: the in-house Manhattan router and DRC-feedback
-repair planning. No third-party routing engines.
+"""Routing tools, all on the one board router (``layout.route``), and
+DRC-feedback repair planning. No third-party routing engines.
 
-All computation is pure Python over the board geometry dict the bridge
-returns (the ``Gen_GetPcbGeometry`` shape that ``pcb_render_svg`` also
-consumes). Every tool accepts its data as arguments so calls are
-testable and composable; the bridge is touched ONLY when the explicit
-``fetch_geometry`` flag is set. All coordinates are MILS, integers on
-the wire.
+``pcb_autoroute`` and ``pcb_route_round`` read the live Altium board and
+route it; ``route_plan`` routes a board given as a geometry dict (the
+``Gen_GetPcbGeometry`` shape, or one any backend builds) and returns the
+copper to place. All coordinates are MILS, integers on the wire.
 
-Intended live sequence (the closed routing loop):
+The repair loop for copper placed from a plan:
 
-1. Fetch the board: any ``pcb_*`` getter that returns the geometry
-   payload, or pass ``fetch_geometry=True`` here.
-2. Route offline with ``route_plan`` (grid A*).
-3. Apply the resulting ops verbatim: ``tracks`` to
-   ``pcb_place_tracks``, each via to ``pcb_place_via``.
-4. ``pcb_run_drc``; feed the violation payload to
-   ``route_plan_repairs``.
-5. Apply the repair actions in order (``rip_and_reroute`` =
+1. ``pcb_run_drc``; feed the violation payload to ``route_plan_repairs``.
+2. Apply the repair actions in order (``rip_and_reroute`` =
    ``pcb_delete_net`` + route that net again; ``nudge`` =
    ``obj_modify`` on the offending primitive; ``widen``/``narrow`` =
    ``pcb_set_track_width``; ``escalate`` = stop and ask the user),
-   then re-run DRC and repeat from step 4 until clean.
+   then run DRC again and repeat until clean.
 """
 
 from __future__ import annotations
@@ -31,12 +23,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..bridge import get_bridge
-from ..route import (
-    DEFAULT_GRID_PITCH_MILS,
-    RouterOptions,
-    RoutingProblem,
-    route_problem,
-)
 from ..route.repair import plan_drc_repairs
 
 
@@ -226,14 +212,15 @@ def register_route_tools(mcp):
         gives the tracks and vias, the DRC verdict, the pours used as planes
         and the same ``review`` a round gives (per-net figures, a picture,
         ``questions``). Nothing is written until pcb_autoroute_apply, which
-        refuses while a finding is unanswered. Stages, each fixed
-        for the next: differential pairs, plane fanout, IC pin lanes,
-        buses, then the rest by priority. Bends are 45 degrees or less and
-        no via goes in a passive's pad. Lays only what pcb_route_brief
-        decides: a net with no entry giving layers and reason is left out
-        (decision_needed), a critical one without a source too
-        (brief_needed). The user's Routing discipline (Config tab) can
-        relax that.
+        refuses while a finding is unanswered. Stages: differential pairs,
+        plane fanout, IC pin lanes, buses, then every other connection
+        once, shortest first; nothing laid is moved, and a connection with
+        no room is left unmade for you to decide. Turns and vias are
+        priced, no bend is sharper than 90 degrees, pads are met by a
+        dogleg onto their centre, no via goes in a passive's pad. Lays
+        only what pcb_route_brief decides: a net with no entry is left
+        out (decision_needed), a critical one without a source too
+        (brief_needed).
 
         Args:
             expect_file: Full path of the board; refused if another board
@@ -251,11 +238,9 @@ def register_route_tools(mcp):
             bus_lanes: Route 3+ nets between the same two parts as nested
                 lanes (default True).
             gloss: Lay the routed tracks again as the shortest clean 45/90
-                runs, pad entries straight along a pad axis (default
-                True).
+                runs (default True).
             axis_entry: Reach surface pads only straight out of their centre
-                along an axis, turning clear of the pad; an IC's long pin
-                only through its ends.
+                along an axis.
             neck_pads: A net with a wider width rule than most keeps it,
                 necking into a narrower pad (default True).
             join_existing: Route only what the board's copper leaves apart;
@@ -677,12 +662,11 @@ def register_route_tools(mcp):
         if level == "enforced" and undecided:
             return {"round": {"kind": kind, "nets": todo}, **undecided,
                     "next_step": DECIDE_FIRST + ", then call this again"}
-        # Pads reached only along their axes, ending on their centres: a
-        # round is reviewed, and an angled entry is a finding to answer.
-        # Where that leaves a connection unmade the fallback routes it
-        # without, and the review names the entries that came of it.
+        # Pads entered by a dogleg onto the centre (straight or 45 degrees
+        # to the pad); an entry off that grid or off the centre is a
+        # finding the review asks about.
         stages = {"diff_pairs": True, "plane_fanout": False, "pin_lanes": True,
-                  "bus_lanes": True, "join_existing": True, "axis_entry": True}
+                  "bus_lanes": True, "join_existing": True}
         job_id = get_job_store().submit(
             "layout_route", route_job,
             {"board": board, "nets": todo, "planes": use_planes, "stages": stages,
@@ -1181,41 +1165,43 @@ def register_route_tools(mcp):
         rules: Optional[dict[str, Any]] = None,
         nets: Optional[list[str]] = None,
         net_classes: Optional[dict[str, str]] = None,
-        grid_pitch_mils: int = DEFAULT_GRID_PITCH_MILS,
-        bend_penalty: float = 1.0,
-        via_cost: float = 10.0,
-        max_expansions: int = 200_000,
         fetch_geometry: bool = False,
     ) -> dict[str, Any]:
-        """Route the board offline (grid A*) and return placeable ops.
+        """Route a board given as a geometry dict and return the copper to
+        place, checked by the exact DRC. Nothing is drawn.
 
-        Pure Python unless ``fetch_geometry``. ``tracks`` come in the
-        pcb_place_tracks shape and ``vias`` in the pcb_place_via shape,
-        integer mils, ready to apply. A net that fails is reported, not
-        raised. Loop: plan, place, DRC, route_plan_repairs, repeat.
+        The same router as pcb_autoroute: each connection shortest first,
+        committed before the next, turns and vias priced, pads entered on
+        their centre, every route checked against the exact copper.
+        ``tracks`` come in the pcb_place_tracks shape and ``vias`` in the
+        pcb_place_vias shape, mils to a thousandth. A net that fails is reported
+        with the connections it leaves unmade. On a live Altium board
+        pcb_autoroute reads the board itself and takes the brief.
 
         Args:
-            geometry: Board geometry payload (bbox, outline, pads, tracks,
-                vias, mils). Unrouted nets' copper stays an obstacle.
-            rules: clearance_mils, track_width_mils (int or per-class dict
-                with "default"), via_size_mils, via_drill_mils, layers
-                (default top and bottom).
+            geometry: pads (x, y, x_size, y_size, rotation, shape, layer,
+                net, hole_size), tracks, vias, regions, outline or bbox,
+                in mils. Copper already there stays as it is.
+            rules: clearance_mils, track_width_mils (a number, or a dict of
+                net class to width with "default"), via_size_mils,
+                via_drill_mils, layers (top first; default TopLayer and
+                BottomLayer).
             nets: Route only these (unknown ones in ``unknown_nets``).
-            net_classes: net -> class (power, ground, differential...),
-                setting order and width; others are "signal".
-            grid_pitch_mils: Grid pitch (default 25).
-            bend_penalty: Corner cost, in grid pitches.
-            via_cost: Layer-change cost, in grid pitches.
-            max_expansions: Search budget per connection.
+            net_classes: net -> class, for the per-class widths.
             fetch_geometry: Read the live board when geometry is None.
 
         Returns:
-            {"ok", "summary" (routed, failed, completion, counts,
-            length), "order", "nets" {net: {status, class, width, ...}},
-            "tracks", "vias", "validation", "geometry" (source "live" or
-            "caller", bbox, counts)}. A caller-supplied geometry is only
-            as fresh as its snapshot: re-read after placing anything.
+            {"ok", "summary" (connections, made, completion, routed,
+            failed, tracks, vias, length), "nets" {net: {status,
+            unmade}}, "tracks", "vias", "validation" (violation_count,
+            violations), "geometry" (source "live" or "caller", bbox,
+            counts)}. A caller-supplied geometry is only as fresh as its
+            snapshot: read it again after placing anything.
         """
+        import asyncio
+
+        from ..layout.route.geometry import plan
+
         geom, geom_source = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
             return {"ok": False,
@@ -1227,34 +1213,12 @@ def register_route_tools(mcp):
                 return {"ok": False,
                         "reason": "nets must be a list of net names"}
         try:
-            problem = RoutingProblem.from_geometry(
-                geom, rules, net_classes=net_classes,
-                grid_pitch_mils=grid_pitch_mils)
-            options = RouterOptions(
-                bend_penalty=float(bend_penalty),
-                via_cost=float(via_cost),
-                max_expansions=int(max_expansions))
+            result = await asyncio.to_thread(plan, geom, rules, nets, net_classes)
         except (ValueError, TypeError) as exc:
             return {"ok": False, "reason": str(exc)}
-
-        unknown: list[str] = []
-        if nets is not None:
-            wanted = set(nets)
-            unknown = sorted(wanted - set(problem.terminals))
-            problem.terminals = {
-                n: t for n, t in problem.terminals.items() if n in wanted
-            }
-        result = route_problem(problem, options)
         result["geometry"] = _planned_against(geom, geom_source)
-        if problem.off_grid_terminals:
-            result["off_grid_terminals"] = problem.off_grid_terminals
-            result["grid_hint"] = (
-                f"{problem.off_grid_terminals} blocked pad(s) have no "
-                f"{grid_pitch_mils} mil grid point on their copper; a "
-                "grid_pitch_mils under half the pad width can reach them")
         if nets is not None:
             result["requested_nets"] = sorted(set(nets))
-            result["unknown_nets"] = unknown
         return result
 
     @mcp.tool()

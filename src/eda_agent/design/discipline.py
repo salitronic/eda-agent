@@ -684,11 +684,10 @@ which is why they are written down rather than left to the checker.
 2. **No via in a pad unless the part forces it.** A via inside a
    surface-mount pad wicks solder off the joint and has to be filled
    and capped, which is a different and more expensive process. Put the
-   via beside the pad with a short stub. `route_plan` refuses via-in-pad
-   by default and takes `allow_via_in_pad=True` for the cases that
-   genuinely need it: BGA fanout with no room to escape, and a thermal
-   pad being stitched to a plane, where the via is intentional and the
-   fabricator is told about it.
+   via beside the pad with a short stub. The router (`route_plan`,
+   `pcb_autoroute`) puts a via in a pad only in a BGA's balls and an
+   IC's exposed pad, where it is intentional and the fabricator is told
+   about it.
 
 3. **One of these DRC can enforce and one it cannot.** Altium has a
    Vias Under SMD rule, and switching it on is worth more than care

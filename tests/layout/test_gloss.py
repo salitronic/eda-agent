@@ -2,7 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The gloss pass on boards small enough to check by hand: a run is laid
 again shorter and cleaner, or left alone when that would cost a join, a
-clearance or a pad entry."""
+clearance or a pad entry on the centre and the 45 degree grid of the pad."""
 from __future__ import annotations
 
 import math
@@ -63,7 +63,7 @@ def _octilinear(t):
     return min(ang, 45.0 - ang) < 0.05
 
 
-def test_a_square_detour_becomes_a_45_run_entering_both_pads_along_an_axis():
+def test_a_square_detour_becomes_a_45_run_onto_both_pad_centres():
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N")]
     _path(b, "N", [(0, 0), (0, 200), (300, 200)])
@@ -72,17 +72,17 @@ def test_a_square_detour_becomes_a_45_run_entering_both_pads_along_an_axis():
     assert abs(_length(b, "N") - (100 + 200 * math.sqrt(2))) < 0.01
     assert all(_octilinear(t) for t in _tracks(b, "N"))
     assert _max_turn(b, "N") <= 45.5
-    first = [t for t in _tracks(b, "N") if (t.x1, t.y1) == (0, 0) or (t.x2, t.y2) == (0, 0)]
-    last = [t for t in _tracks(b, "N") if (t.x1, t.y1) == (300, 200) or (t.x2, t.y2) == (300, 200)]
-    assert len(first) == 1 and first[0].y1 == first[0].y2       # leaves U1 along its axis
-    assert len(last) == 1 and last[0].y1 == last[0].y2          # enters U2 along its axis
+    for x, y in ((0, 0), (300, 200)):
+        assert sum(1 for t in _tracks(b, "N") if (x, y) in ((t.x1, t.y1), (t.x2, t.y2))) == 1
     assert not run_drc(b).violations and not run_drc(b).unrouted
 
 
 def test_a_shortcut_through_another_nets_copper_is_not_taken():
+    # M's pad fills the inside of the L: every shorter way from U1 to U2
+    # runs through it.
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N"),
-               _pad("U3", 150, 100, "M", 30, 30)]
+               _pad("U3", 150, 95, "M", 200, 160)]
     _path(b, "N", [(0, 0), (0, 200), (300, 200)])
     before = [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "N")]
     r = gloss(b)
@@ -151,18 +151,6 @@ def test_a_run_from_a_junction_never_folds_onto_another_track_there():
     assert not run_drc(b).unrouted
 
 
-def test_a_run_turns_only_once_it_is_clear_of_the_pad():
-    b = _board()
-    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 290, "N")]
-    # The shortest 45 run would leave U1 straight for 5 mil and turn inside it.
-    _path(b, "N", [(0, 0), (0, 290), (300, 290)])
-    gloss(b)
-    u1 = b.pads[0].shape_on("TopLayer")
-    for t in _tracks(b, "N"):
-        if not (t.x1 == t.x2 or t.y1 == t.y2):
-            assert geom.clearance(t.shape(), u1) > 0
-
-
 def test_a_run_never_crosses_a_pad_of_its_net_on_the_way():
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 0, 400, "N"), _pad("U3", 0, 200, "N")]
@@ -217,8 +205,10 @@ def test_a_run_of_short_pieces_is_laid_in_the_fewest_segments():
     before = _length(b, "N")
     r = gloss(b)
     ts = _tracks(b, "N")
-    assert r.simplified == 1 and (r.segments_before, r.segments_after) == (8, 3)
-    assert len(ts) == 3 and all(_octilinear(t) for t in ts)
+    # Laid again shorter (it may now leave a pad at 45 degrees), or the
+    # same way in fewer pieces.
+    assert r.simplified + r.relaid == 1
+    assert len(ts) <= 3 and all(_octilinear(t) for t in ts)
     assert min(math.hypot(t.x2 - t.x1, t.y2 - t.y1) for t in ts) > 40
     assert _length(b, "N") <= before + 0.01
     assert _max_turn(b, "N") <= 45.5
@@ -240,13 +230,15 @@ def test_tracks_in_line_become_one_and_a_join_between_them_stays():
     assert not run_drc(b).unrouted
 
 
-def test_a_jog_another_net_needs_is_kept():
+def test_a_jog_another_net_needs_is_kept_clear_of_it():
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 400, 0, "N"), _pad("U3", 200, 0, "X")]
     _path(b, "N", [(0, 0), (120, 0), (160, 40), (240, 40), (280, 0), (400, 0)])
-    r = gloss(b)
-    assert r.simplified == 0 and len(_tracks(b, "N")) == 5
-    assert not run_drc(b).violations
+    gloss(b)
+    x = b.pads[2].shape_on("TopLayer")
+    assert len(_tracks(b, "N")) <= 5 and all(_octilinear(t) for t in _tracks(b, "N"))
+    assert all(geom.clearance(t.shape(), x) >= GAP for t in _tracks(b, "N"))
+    assert not run_drc(b).violations and not run_drc(b).unrouted
 
 
 def test_a_fenced_net_is_laid_again_only_inside_its_region_and_out_of_its_keep_outs():
@@ -294,15 +286,15 @@ def _as_round(b):
              "x2": t.x2, "y2": t.y2} for t in b.tracks]
 
 
-def test_a_diagonal_out_of_a_pads_centre_leaves_along_the_pads_axis():
+def test_a_diagonal_out_of_a_pads_centre_is_a_clean_entry_and_is_kept():
     from eda_agent.layout.route import review
     b = _board()
     b.pads = [_pad("A", 0, 0, "N"), _pad("B", 100, 100, "N")]
     _path(b, "N", [(0, 0), (100, 100)])
-    assert review.pad_entries(_as_round(b), b.pads_by_net())
+    before = _as_round(b)
+    assert review.pad_entries(before, b.pads_by_net()) == {}
     r = gloss(b)
-    assert r.relaid_clean == 1
-    assert review.pad_entries(_as_round(b), b.pads_by_net()) == {}
+    assert r.relaid == 0 and r.relaid_clean == 0 and _as_round(b) == before
     assert run_drc(b).missing_connections == 0
 
 
@@ -314,7 +306,12 @@ def test_the_faults_a_run_can_have_are_named():
                         10, 180, 180) == ["short_piece"]
     assert house_faults([(0, 0), (100, 0), (50, 50)], None, None, "TopLayer",
                         10, 180, 180) == ["acute_corner"]
-    assert house_faults([(0, 0), (100, 100)], pad, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
+    # 45 degrees out of the centre is a dogleg's; 30 degrees to a pad turned
+    # 15 degrees is on the board's 45 grid but off the pad's.
+    assert house_faults([(0, 0), (100, 100)], pad, None, "TopLayer", 10, 180, 180) == []
+    turned = Pad(comp="A", name="1", x=0, y=0, net="N", rotation=15.0,
+                 copper=[PadCopper("TopLayer", "rect", 20.0, 20.0)])
+    assert house_faults([(0, 0), (100, 0)], turned, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
     assert house_faults([(3, 0), (100, 0)], pad, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
     assert house_faults([(0, 0), (100, 0)], None, None, "TopLayer", 10, 45, 180) == ["acute_join"]
     assert house_faults([(0, 0), (100, 0), (150, 50)], pad, None, "TopLayer", 10, 180, 180) == []

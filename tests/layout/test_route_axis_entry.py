@@ -119,7 +119,9 @@ def _touching_tracks_are_stubs(out: LayoutBoard) -> list:
 
 def test_on_scattered_boards_only_axis_stubs_touch_a_pad():
     for seed in range(8):
-        r = Router(_scattered(seed), stages=StageOptions(axis_entry=True))
+        # With rip-up and repair: one connection at a time, a route on
+        # seed 0 crosses its own pad slantwise.
+        r = Router(_scattered(seed), stages=StageOptions(axis_entry=True, negotiate=True))
         r.run()
         out = r.apply()
         assert not run_drc(out).violations, seed

@@ -5721,15 +5721,13 @@ def register_easyeda_tools(mcp):
         track_width_mils: float = 10.0,
         via_size_mils: float = 24.0,
         via_drill_mils: float = 12.0,
-        grid_pitch_mils: int = 5,
-        max_expansions: int = 200000,
     ) -> dict[str, Any]:
         """Route the board offline and return tracks and vias to place.
 
-        The router is the same grid A* the Altium side uses and has no
-        EDA dependency: it takes pads, existing copper and a board
-        outline, and returns segments. Only the reading is specific to
-        this backend.
+        The router is the one the Altium side uses (route_plan,
+        pcb_autoroute) and has no EDA dependency: it takes pads, existing
+        copper and a board outline, and returns segments checked by the
+        exact DRC. Only the reading is specific to this backend.
 
         PLANS ONLY. Nothing is drawn. The result is in the shape
         easyeda_add_track and easyeda_add_via take, so applying it is a
@@ -5753,11 +5751,10 @@ def register_easyeda_tools(mcp):
             track_width_mils: width for new track.
             via_size_mils: via pad diameter.
             via_drill_mils: via hole diameter.
-            grid_pitch_mils: routing grid. Finer finds more routes and
-                costs time superlinearly.
-            max_expansions: search ceiling per net.
         """
-        from ..route import RouterOptions, RoutingProblem, route_problem
+        import asyncio
+
+        from ..layout.route.geometry import plan
 
         pads_reply = _call("pcb.pads", timeout=60.0)
         if not pads_reply.get("ok"):
@@ -5911,30 +5908,19 @@ def register_easyeda_tools(mcp):
         }
         rules = {
             "clearance_mils": clearance_mils,
-            "track_width_mils": int(track_width_mils),
+            "track_width_mils": float(track_width_mils),
             "via_size_mils": via_size_mils,
             "via_drill_mils": via_drill_mils,
         }
-
+        wanted = None if nets is None else [str(n) for n in nets if str(n).strip()]
         try:
-            problem = RoutingProblem.from_geometry(
-                geometry, rules, grid_pitch_mils=grid_pitch_mils)
+            result = await asyncio.to_thread(plan, geometry, rules, wanted)
         except (TypeError, ValueError) as exc:
             return {"ok": False, "reason": str(exc)}
-
-        unknown: list[str] = []
-        if nets is not None:
-            wanted = {str(n) for n in nets if str(n).strip()}
-            unknown = sorted(wanted - set(problem.terminals))
-            problem.terminals = {n: t for n, t in problem.terminals.items()
-                                 if n in wanted}
-
-        result = route_problem(
-            problem, RouterOptions(max_expansions=int(max_expansions)))
-        if not isinstance(result, dict):
-            return {"ok": False, "reason": "the router returned no plan"}
-
-        result["ok"] = True
+        if not result.get("ok"):
+            return result
+        unknown = result.pop("unknown_nets", [])
+        result["pads_read"] = len(geom_pads)
         result["pads_read"] = len(geom_pads)
         result["existing_tracks"] = len(geom_tracks)
         result["existing_vias"] = len(geom_vias)

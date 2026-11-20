@@ -77,7 +77,7 @@ render3d = [
 # own, built from route-core/. Without it the router searches with scipy,
 # more slowly, and finds paths of the same cost.
 route = [
-    "eda-agent-route>=0.1",
+    "eda-agent-route>=0.2",
 ]
 # KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). It talks to
 # KiCad's API server with the standard library alone, so this extra is

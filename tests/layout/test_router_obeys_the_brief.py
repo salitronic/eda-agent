@@ -151,13 +151,17 @@ def test_the_review_names_a_pad_entered_at_an_angle_or_crossed_off_centre():
         return {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "width": 4, "layer": "TopLayer",
                 "net_name": "X"}
 
-    got = review.pad_entries([t(0, 0, 50, 50), t(50, 50, 150, 50), t(150, 50, 200, 50),
+    # Entered at 30 degrees: off the 45 degree grid of the pad's axes.
+    got = review.pad_entries([t(0, 0, 86.6, 50), t(86.6, 50, 150, 50), t(150, 50, 200, 50),
                               t(200, 50, 200, 0)], pads)
-    assert got == {"X": ["enters Y1.1 at 45 degrees to its axis", "crosses C1.1 off its centre"]}
+    assert got == {"X": ["enters Y1.1 at 30 degrees to its axis", "crosses C1.1 off its centre"]}
+    # A 45 degree piece onto the centre is a dogleg's, and is no finding.
+    ok = review.pad_entries([t(0, 0, 50, 50), t(50, 50, 100, 50)], pads)
+    assert ok == {}
     b = _board()
     found = review.findings(b, b, [], [], B.Brief(), [], {}, {}, {}, {}, entries=got)
     assert [f["id"] for f in found] == ["pad_entry:X"]
-    assert found[0]["text"].startswith("X: enters Y1.1 at 45 degrees")
+    assert found[0]["text"].startswith("X: enters Y1.1 at 30 degrees")
 
 
 def test_a_width_too_wide_for_the_gap_is_named_even_after_the_rip_ups():

@@ -12,8 +12,8 @@ the shortest octilinear path between its ends that
 * turns no more than 90 degrees at any joint, and meets the copper at
   its ends at no sharper angle than the run did (nor under 90 degrees
   where the run did not either);
-* leaves and enters a surface pad straight along one of the pad's axes,
-  from the pad's centre;
+* leaves and enters a surface pad from the pad's centre, along one of
+  the pad's axes or at 45 degrees to them;
 * still touches every piece of its net's copper the run touched, so no
   join is lost, a track teed onto its middle included;
 * clears every other net's copper by the board's clearance rules, net
@@ -22,7 +22,8 @@ the shortest octilinear path between its ends that
 A run is changed only when the new one is shorter, or as short with
 fewer bends. A run that breaks the house rules (a piece off the 45 degree
 grid, a piece shorter than its width, an acute corner, a pad left off its
-axis or off its centre, an acute angle where it meets its net's copper) is
+centre or off the 45 degree grid of its axes, an acute angle where it meets
+its net's copper) is
 changed, once the runs are laid in their fewest segments, for any clean
 path no more than a little longer (``DIRTY_STRETCH``, ``DIRTY_EXTRA``):
 shortest is no reason to keep it. What stays is named in the report
@@ -80,9 +81,9 @@ def house_faults(pts, a_pad, b_pad, layer: str, width: float,
     """What in a run breaks the house rules: ``off_grid`` (a piece off the
     45 degree grid), ``short_piece`` (shorter than the track is wide, in a
     run of more than one), ``acute_corner`` (a turn of more than 90
-    degrees), ``pad_entry`` (a pad left off one of its axes or off its
-    centre, or a turn on it), ``acute_join`` (under 90 degrees to the
-    copper an end meets)."""
+    degrees), ``pad_entry`` (a pad left off its centre, or off its axes
+    and the 45 degree lines between them), ``acute_join`` (under 90 degrees
+    to the copper an end meets)."""
     out = []
     segs = list(zip(pts, pts[1:]))
     if any(not _octilinear(a, b) for a, b in segs):
@@ -225,23 +226,21 @@ def _forms(p, q):
     return out
 
 
-def _pad_axis_ok(pad: Pad, a, b) -> bool:
-    """Whether the segment a->b runs along one of the pad's axes."""
+def _pad_angle_ok(pad: Pad, a, b) -> bool:
+    """Whether the segment a->b runs along one of the pad's axes or at 45
+    degrees to them."""
     d = _dir(a, b)
     if d is None:
         return True
-    ang = (math.degrees(math.atan2(d[1], d[0])) - pad.rotation) % 90.0
-    return min(ang, 90.0 - ang) < 0.05
+    ang = (math.degrees(math.atan2(d[1], d[0])) - pad.rotation) % 45.0
+    return min(ang, 45.0 - ang) < 0.05
 
 
 def _leaves_pad(pad: Pad, layer: str, centre, turn, width: float) -> bool:
     """Whether a run leaving the pad's centre for ``turn`` goes along one
-    of the pad's axes and turns only once the track is clear of the pad's
-    copper: a turn inside it leaves the pad on the slant all the same."""
-    if not _pad_axis_ok(pad, centre, turn):
-        return False
-    s = pad.shape_on(layer)
-    return s is None or geom.clearance(geom.circle(turn[0], turn[1], width), s) >= -1e-3
+    of the pad's axes or at 45 degrees to them: the straight or 45 degree
+    piece of a dogleg onto the centre."""
+    return _pad_angle_ok(pad, centre, turn)
 
 
 class _Copper:

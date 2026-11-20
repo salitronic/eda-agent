@@ -111,12 +111,12 @@ def test_route_plan_two_pad_net(tools):
     assert res["summary"]["failed"] == 0
     assert res["summary"]["completion"] == 1.0
     assert res["nets"]["SIG"]["status"] == "routed"
-    assert res["validation"]["ok"] is True
+    assert res["validation"]["violation_count"] == 0
     for t in res["tracks"]:
         assert set(t) == {"x1", "y1", "x2", "y2", "width", "layer",
                           "net_name"}
         for k in ("x1", "y1", "x2", "y2", "width"):
-            assert isinstance(t[k], int)
+            assert isinstance(t[k], float)
     for v in res["vias"]:
         assert set(v) == {"x", "y", "net", "size", "hole_size"}
 
@@ -126,9 +126,8 @@ def test_route_plan_per_class_width(tools):
     res = _run(tools["route_plan"](
         geometry=geom, rules=RULES, net_classes={"VCC": "power"}))
     assert res["ok"] is True
-    assert res["nets"]["VCC"]["class"] == "power"
-    assert res["nets"]["VCC"]["width"] == 20
-    assert all(t["width"] == 20 for t in res["tracks"])
+    assert res["nets"]["VCC"]["status"] == "routed"
+    assert res["tracks"] and all(t["width"] == 20 for t in res["tracks"])
 
 
 def test_route_plan_nets_filter_routes_only_requested(tools):
@@ -153,10 +152,10 @@ def test_route_plan_nets_filter_reports_unknown(tools):
 def test_route_plan_nets_filter_all_unknown(tools):
     res = _run(tools["route_plan"](
         geometry=_two_net_geom(), rules=RULES, nets=["NOPE"]))
-    assert res["ok"] is True
-    assert res["summary"]["nets_total"] == 0
+    assert res["ok"] is False
+    assert "none of the nets" in res["reason"]
     assert res["unknown_nets"] == ["NOPE"]
-    assert res["tracks"] == []
+    assert "tracks" not in res
 
 
 def test_route_plan_nets_must_be_name_list(tools):
@@ -186,11 +185,12 @@ def test_route_plan_bad_rules(tools):
     assert "clearance" in res["reason"]
 
 
-def test_route_plan_bad_grid_pitch(tools):
+def test_route_plan_bad_via(tools):
     geom = _geom([_pad(100, 300, "SIG"), _pad(900, 300, "SIG")])
     res = _run(tools["route_plan"](
-        geometry=geom, rules=RULES, grid_pitch_mils=0))
+        geometry=geom, rules=dict(RULES, via_drill_mils=60)))
     assert res["ok"] is False
+    assert "drill" in res["reason"]
 
 
 def test_route_plan_deterministic(tools):

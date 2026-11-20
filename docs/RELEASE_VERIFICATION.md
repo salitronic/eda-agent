@@ -1626,7 +1626,7 @@ exercised are `BoardOutline.SetState_XSizeYSize` and
 9. **route_plan joins what it reports routed.** Place a route_plan
    result verbatim: Altium's DRC shows no Un-Routed Net or Net Antennae
    for the nets reported `routed`, and each `validation.violations`
-   record names its two layers.
+   record names its layer and the two objects that are too close.
 
 Verified on AD 26.10.1.6 with the previous script, build 2 of 2026.10.02
 (scratch board), through the script side: step 1 (a bare `IsDesignator` filter refused with the

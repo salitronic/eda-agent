@@ -213,13 +213,20 @@ def get_job_store() -> JobStore:
 
 
 # --- job-kind registry (offline engines runnable as jobs) -------------------
+#: What a route job takes beside its geometry (route_plan's arguments).
+ROUTE_PARAMS = ("rules", "nets", "net_classes")
+
+
 def _run_route(params: dict) -> dict:
-    from ..route.router import route_geometry
+    from ..layout.route.geometry import plan
     geometry = params.get("geometry")
     if not geometry:
         raise ValueError("route job requires a 'geometry' dict")
-    kwargs = {k: v for k, v in params.items() if k != "geometry"}
-    return route_geometry(geometry, **kwargs)
+    extra = set(params) - {"geometry", *ROUTE_PARAMS}
+    if extra:
+        raise ValueError(f"route job takes geometry, {', '.join(ROUTE_PARAMS)}; "
+                         f"not {', '.join(sorted(extra))}")
+    return plan(geometry, params.get("rules"), params.get("nets"), params.get("net_classes"))
 
 
 # Only geometry-dict-driven engines are registered here. Placement
