@@ -6239,7 +6239,7 @@ Begin
         + JsonBool('gap_locked', T.IsTraceGapLocked) + ','
         + JsonRaw('width_mils', FloatToJsonStr(CoordToMilsF(T.TraceWidth))) + ','
         + JsonRaw('min_width_mils', FloatToJsonStr(CoordToMilsF(T.TraceMinWidth))) + ','
-        + JsonRaw('max_width_mils', FloatToJsonStr(CoordToMilsF(T.TraceMaxWidth))) + ','
+        + JsonRaw('max_width_mils', FloatToJsonStr(CoordToMilsF(T.GetState_TraceMaxWidth))) + ','
         + JsonRaw('gap_mils', FloatToJsonStr(CoordToMilsF(T.DiffPairGap))) + ','
         + JsonRaw('min_gap_mils', FloatToJsonStr(CoordToMilsF(T.GetState_DiffPairMinGap))) + ','
         + JsonRaw('max_gap_mils', FloatToJsonStr(CoordToMilsF(T.GetState_DiffPairMaxGap))) + ','
@@ -6335,7 +6335,7 @@ Begin
         V := ExtractJsonValue(Params, 'min_width_mils');
         If V <> '' Then Begin T.TraceMinWidth := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.TraceMinWidth, V) Then Missed := Missed + '"min_width_mils",'; End;
         V := ExtractJsonValue(Params, 'max_width_mils');
-        If V <> '' Then Begin T.TraceMaxWidth := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.TraceMaxWidth, V) Then Missed := Missed + '"max_width_mils",'; End;
+        If V <> '' Then Begin T.SetState_TraceMaxWidth(MilsToCoordF(StrToFloatDef(V, 0))); If Not ImpMilsTook(T.GetState_TraceMaxWidth, V) Then Missed := Missed + '"max_width_mils",'; End;
         V := ExtractJsonValue(Params, 'gap_mils');
         If V <> '' Then Begin T.DiffPairGap := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.DiffPairGap, V) Then Missed := Missed + '"gap_mils",'; End;
         V := ExtractJsonValue(Params, 'min_gap_mils');
