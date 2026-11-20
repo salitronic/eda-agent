@@ -1517,19 +1517,218 @@ Begin
 End;
 
 {..............................................................................}
+{ RULE PRIORITIES. Editing a rule moved it to priority 1 of its kind (#400):  }
+{ the PCBM_BeginModify / PCBM_EndModify pair alone does it, with nothing      }
+{ written (measured on AD 25.8.1). Rule.Priority is a read-only function, but }
+{ every rule carries a stored sort key: Rule.SetState_Priority writes it and  }
+{ Board.SortRulesByPriority re-orders ALL rules of ALL kinds by it. The sort  }
+{ does not renumber the keys and does not keep equal keys in their order, and }
+{ a rule whose place has drifted from its key goes back to the key, so the    }
+{ key of EVERY rule is written before the sort, each from its own place. The  }
+{ order is what Rule.Priority then reads, what decides the dominant rule and  }
+{ what the save writes; it was kept over save and reopen.                     }
+{..............................................................................}
+
+{ RulePriorityAsked - the priority asked for: 0 when none was given, -1 when   }
+{ the text is not a whole number from 1 to 9999. Checked by its characters    }
+{ first: StrToInt raises on a number past 32 bits.                            }
+Function RulePriorityAsked(V : String) : Integer;
+Var
+    I : Integer;
+    C : String;
+Begin
+    Result := 0;
+    If V = '' Then Exit;
+    Result := -1;
+    If Length(V) > 4 Then Exit;
+    For I := 1 To Length(V) Do
+    Begin
+        C := Copy(V, I, 1);
+        If (C < '0') Or (C > '9') Then Exit;
+    End;
+    Result := StrToInt(V);
+    If Result < 1 Then Result := -1;
+End;
+
+{ RulePriorityRecord - every rule's name, kind and place, in walk order.       }
+Procedure RulePriorityRecord(Board : IPCB_Board; Names, Kinds, Places : TStringList);
+Var
+    Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
+    K, P : Integer;
+Begin
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Rule := Iter.FirstPCBObject;
+        While Rule <> Nil Do
+        Begin
+            K := -1;
+            P := 0;
+            Try K := Rule.RuleKind; Except K := -1; End;
+            Try P := Rule.Priority; Except P := 0; End;
+            Names.Add(Rule.Name);
+            Kinds.Add(IntToStr(K));
+            Places.Add(IntToStr(P));
+            Rule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ RulePriorityWanted - the place each recorded rule should end up in: its own,  }
+{ except that the rule named MoveName goes to MoveTo (1 = first) within its     }
+{ kind and the rules of that kind it passes move one place. MoveTo 0 = nothing  }
+{ moves. Returns '' or why MoveTo cannot be had.                                 }
+Function RulePriorityWanted(Names, Kinds, Places, Wanted : TStringList;
+    MoveName : String; MoveTo : Integer) : String;
+Var
+    I, M, From, Count, P : Integer;
+Begin
+    Result := '';
+    For I := 0 To Places.Count - 1 Do
+        Wanted.Add(Places.Strings[I]);
+    If MoveTo <= 0 Then Exit;
+    M := Names.IndexOf(MoveName);
+    If M < 0 Then
+    Begin
+        Result := 'the rule was not among the rules read';
+        Exit;
+    End;
+    Count := 0;
+    For I := 0 To Kinds.Count - 1 Do
+        If Kinds.Strings[I] = Kinds.Strings[M] Then Inc(Count);
+    If MoveTo > Count Then
+    Begin
+        Result := 'priority ' + IntToStr(MoveTo) + ' is past the last place: '
+            + 'this kind has ' + IntToStr(Count) + ' rule(s)';
+        Exit;
+    End;
+    From := StrToInt(Places.Strings[M]);
+    For I := 0 To Places.Count - 1 Do
+    Begin
+        If (I <> M) And (Kinds.Strings[I] = Kinds.Strings[M]) Then
+        Begin
+            P := StrToInt(Places.Strings[I]);
+            If (From < MoveTo) And (P > From) And (P <= MoveTo) Then
+                P := P - 1
+            Else If (From > MoveTo) And (P >= MoveTo) And (P < From) Then
+                P := P + 1;
+            Wanted.Strings[I] := IntToStr(P);
+        End;
+    End;
+    Wanted.Strings[M] := IntToStr(MoveTo);
+End;
+
+{ RulePriorityOff - how many recorded rules are not at their wanted place;     }
+{ OffNames names the first ten.                                                 }
+Function RulePriorityOff(Board : IPCB_Board; Names, Wanted : TStringList;
+    Var OffNames : String) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
+    Idx, P : Integer;
+Begin
+    Result := 0;
+    OffNames := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Rule := Iter.FirstPCBObject;
+        While Rule <> Nil Do
+        Begin
+            Idx := Names.IndexOf(Rule.Name);
+            If Idx >= 0 Then
+            Begin
+                P := -1;
+                Try P := Rule.Priority; Except P := -1; End;
+                If IntToStr(P) <> Wanted.Strings[Idx] Then
+                Begin
+                    Inc(Result);
+                    If Result <= 10 Then
+                    Begin
+                        If OffNames <> '' Then OffNames := OffNames + ', ';
+                        OffNames := OffNames + Rule.Name;
+                    End;
+                End;
+            End;
+            Rule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ RulePriorityWrite - the stored sort key of every recorded rule, of every     }
+{ kind, set to its wanted place, ready for one SortRulesByPriority.            }
+Procedure RulePriorityWrite(Board : IPCB_Board; Names, Wanted : TStringList);
+Var
+    Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
+    Idx : Integer;
+Begin
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Rule := Iter.FirstPCBObject;
+        While Rule <> Nil Do
+        Begin
+            Idx := Names.IndexOf(Rule.Name);
+            If Idx >= 0 Then
+                Rule.SetState_Priority(StrToInt(Wanted.Strings[Idx]));
+            Rule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ RulePriorityDone - puts every recorded rule at its wanted place, frees the   }
+{ four lists, and returns the reply members: priority_kept (every rule at its   }
+{ place afterwards), places_restored (rules that were off it before the sort)   }
+{ and, when some still are, priority_off. Nothing is written when every rule    }
+{ is already in place.                                                           }
+Function RulePriorityDone(Board : IPCB_Board; Names, Kinds, Places, Wanted : TStringList) : String;
+Var
+    Moved, Off : Integer;
+    OffNames : String;
+Begin
+    OffNames := '';
+    Moved := RulePriorityOff(Board, Names, Wanted, OffNames);
+    Off := 0;
+    If Moved > 0 Then
+    Begin
+        RulePriorityWrite(Board, Names, Wanted);
+        Board.SortRulesByPriority;
+        Off := RulePriorityOff(Board, Names, Wanted, OffNames);
+    End;
+    Result := ',"priority_kept":' + BoolToJsonStr(Off = 0)
+        + ',"places_restored":' + IntToStr(Moved);
+    If Off > 0 Then
+        Result := Result + ',"priority_off":"' + EscapeJsonString(OffNames) + '"';
+    Names.Free;
+    Kinds.Free;
+    Places.Free;
+    Wanted.Free;
+End;
+
+{..............................................................................}
 { PCB_SetRuleProperties - Update metadata + constraint values of a rule.        }
 {                                                                               }
 { Metadata params (writable on the base IPCB_Rule reference):                   }
 {   enabled / scope1 / scope2 / comment                                          }
 {                                                                               }
-{ Priority is INTENTIONALLY not writable through this tool. Per the PCB API     }
-{ reference (pcb-api-design-objects-interfaces-reference.html:15331), IPCB_Rule }
-{ exposes `Function Priority : TRulePrecedence` as a read-only METHOD, not as   }
-{ a writable property. Assigning `Rule.Priority := N` against that function-   }
-{ kind property reference crashes the script engine at runtime with an         }
-{ unreadable error popup. There is no SetState_Priority / SetPriority method   }
-{ in the public SDK either. To change a rule's priority, use Altium's UI       }
-{ (PCB > Rules and Constraints Editor, drag-reorder the rule in its category). }
+{ Priority: Rule.Priority is a read-only function and assigning it crashes    }
+{ the script engine. Every rule keeps its place (RulePriorityRecord before the }
+{ first write, RulePriorityDone after the last), and `priority` moves the     }
+{ rule to that place within its kind; see RULE PRIORITIES above (#400).       }
 {                                                                               }
 { Constraint params (dispatched by Rule.RuleKind, written through typed        }
 { iterator-returned locals per the ModifyWidthRules.pas reference pattern):    }
@@ -1589,6 +1788,9 @@ Var
     GapReport, GapMMStr : String;
     L : TLayer;
     Found, GapVerified, GapKindSupported : Boolean;
+    PrioNames, PrioKinds, PrioPlaces, PrioWanted : TStringList;
+    PrioReport, PrioWhy : String;
+    MoveTo, PrioAfter : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1619,9 +1821,36 @@ Begin
     Kind := 0;
     Try Kind := Rule.RuleKind; Except End;
 
-    { -- Metadata path: writes against the base IPCB_Rule. priority is NOT    }
-    { included, it is a read-only function and writing to it crashes the      }
-    { engine. See the docstring above for details.                            }
+    { Every rule's place, read before anything is written: the writes below  }
+    { move the rule to priority 1 of its kind, and RulePriorityDone puts     }
+    { every rule back (or this one where `priority` asks).                  }
+    MoveTo := RulePriorityAsked(ExtractJsonValue(Params, 'priority'));
+    If MoveTo < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PRIORITY',
+            'priority is a whole number from 1 (1 = first of its kind). Nothing was written.');
+        Exit;
+    End;
+    PrioNames := TStringList.Create;
+    PrioKinds := TStringList.Create;
+    PrioPlaces := TStringList.Create;
+    PrioWanted := TStringList.Create;
+    RulePriorityRecord(Board, PrioNames, PrioKinds, PrioPlaces);
+    PrioWhy := RulePriorityWanted(PrioNames, PrioKinds, PrioPlaces, PrioWanted,
+        Rule.Name, MoveTo);
+    If PrioWhy <> '' Then
+    Begin
+        PrioNames.Free;
+        PrioKinds.Free;
+        PrioPlaces.Free;
+        PrioWanted.Free;
+        Result := BuildErrorResponse(RequestId, 'BAD_PRIORITY',
+            PrioWhy + '. Nothing was written.');
+        Exit;
+    End;
+
+    { -- Metadata path: writes against the base IPCB_Rule. Priority is not   }
+    { written here: RulePriorityDone sets it after the last write.           }
     PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
@@ -2143,6 +2372,8 @@ Begin
         XBad := 'matched_* is for a Matched Lengths rule';
     If XBad <> '' Then
     Begin
+        { The metadata above may already be written: keep every place. }
+        PrioReport := RulePriorityDone(Board, PrioNames, PrioKinds, PrioPlaces, PrioWanted);
         Result := BuildErrorResponse(RequestId, 'WRONG_RULE_KIND', XBad + '; ' + RuleName + ' is kind ' + IntToStr(Kind));
         Exit;
     End;
@@ -2374,12 +2605,22 @@ Begin
 
     LimitsReport := RuleLimitsReport(Board, Kind, RuleName, Params, UpdatedCount);
 
+    { Every rule back at its place, or this one at the place asked for. }
+    PrioReport := RulePriorityDone(Board, PrioNames, PrioKinds, PrioPlaces, PrioWanted);
+    If MoveTo > 0 Then
+    Begin
+        PrioAfter := -1;
+        Try PrioAfter := Rule.Priority; Except PrioAfter := -1; End;
+        PrioReport := PrioReport + ',"priority":' + IntToStr(PrioAfter)
+            + ',"priority_set":' + BoolToJsonStr(PrioAfter = MoveTo);
+    End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
         + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport
-        + LimitsReport + '}');
+        + LimitsReport + PrioReport + '}');
 End;
 
 {..............................................................................}
