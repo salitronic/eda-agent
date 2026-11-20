@@ -517,6 +517,12 @@ class Router:
                 terms.append(t)
             job.terminals = terms
             job._deep = None
+            # The room at each pad's centre was judged before this copper
+            # was laid: a ball's via went in 3.7 mil from a fanout via
+            # beside it, where 4 was required.
+            if not self.options.legacy():
+                job.pad_via, job.pv_arr = {}, None
+                self._pad_vias(job)
             # A pad given its via needs no second one at its centre.
             for t in terms:
                 if t.pad in self.laid_via:
@@ -972,8 +978,9 @@ class Router:
 
     def _pad_vias(self, job: NetJob) -> None:
         """Where each surface pad of the net would take a via: its centre,
-        and the room there, judged from the nearest cell less the distance
-        to it (distance to copper changes no faster than position)."""
+        and the room there: exactly, from the shapes, and with
+        ``exact_pad_via`` off no more than the nearest cell's room less the
+        distance to it."""
         row = self.rr.clearance_row(job.id)
         spec = self.grid.spec
         rows = []
@@ -992,8 +999,12 @@ class Router:
             off = math.hypot(float(spec.x(ci)) - pad.x, float(spec.y(cj)) - pad.y)
             at = (slice(cj, cj + 1), slice(ci, ci + 1))
             room = min(float(self._slack(job.id, l, at, row)[0, 0]) for l in range(self.L)) - off
-            if self.options.exact_pad_via:
-                room = max(room, self._room_at(job.id, pad.x, pad.y, max(v.diameter for v in job.vias) / 2))
+            exact = self._room_at(job.id, pad.x, pad.y, max(v.diameter for v in job.vias) / 2)
+            # The grid's room is sampled at cell centres and can overstate
+            # it: in a 0.5 mm ball beside a fanout via it gave 8.95 mil
+            # where 7.69 was there, and a 16 mil via went in 3.7 mil from
+            # the other where 4 was required. The exact room caps it.
+            room = exact if self.options.exact_pad_via else min(room, exact)
             # Only the cell nearest the centre: from any other cell of a
             # big pad, the via would move away from the track that meets
             # it on the next layer.
@@ -1637,7 +1648,12 @@ class Router:
         return fields[np.maximum(style, 0)]
 
     def _style_at(self, job: NetJob, y: int, x: int) -> int:
-        k = int(self._via_styles(job, (slice(y, y + 1), slice(x, x + 1)))[0, 0])
+        """The first via style that fits at cell (y, x); at a pad's
+        centre, in the room judged there (_pad_vias)."""
+        if (y, x) in job.pad_via:
+            k = int(self._styles_from(job, np.array([job.pad_via[(y, x)][2]]))[0])
+        else:
+            k = int(self._via_styles(job, (slice(y, y + 1), slice(x, x + 1)))[0, 0])
         return max(k, 0)
 
     # -- routing one net -----------------------------------------------------

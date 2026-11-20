@@ -114,6 +114,24 @@ def test_a_fanned_out_board_routes_clean_and_the_callers_board_is_untouched():
     assert drc.completion == 1.0, drc.unrouted
 
 
+def test_a_ball_beside_a_fanout_via_takes_only_the_via_that_fits_there():
+    # The room at each ball's centre is judged against the fanout's vias:
+    # a 16 mil via in a ball 19.685 mil from one stands 3.685 mil from it,
+    # where 4 is required.
+    r = Router(_board(_with_partners(_bga(19.685, 12.0, n=4))))
+    assert r.fanout.by_pad
+    checked = 0
+    for job in r.jobs:
+        for (y, x), (px, py, room) in job.pad_via.items():
+            exact = r._room_at(job.id, px, py, max(v.diameter for v in job.vias) / 2)
+            assert room <= exact + 1e-9, (job.name, room, exact)
+            checked += 1
+            fits = [k for k, v in enumerate(job.vias) if room >= v.diameter / 2 - 1e-9]
+            if fits:
+                assert r._style_at(job, y, x) == fits[0]
+    assert checked
+
+
 def test_a_ball_of_a_plane_net_is_done_once_its_via_is_in_the_plane():
     balls = _bga(19.685, 12.0, nets=lambda i, j: "GND" if (i + j) % 2 else f"N{i}_{j}")
     b = _board(_with_partners(balls))
