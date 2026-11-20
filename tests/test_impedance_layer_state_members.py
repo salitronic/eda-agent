@@ -3,13 +3,13 @@
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """An impedance profile layer's width and gap limits go through state methods.
 
-#422: on AD 25 the script engine has no ``TraceMaxWidth`` property on
+On AD 25 the script engine has no ``TraceMaxWidth`` property on
 IPCB_TraceImpedance, only ``GetState_TraceMaxWidth`` /
 ``SetState_TraceMaxWidth`` (AD 26 has the property as well), and
 ``DiffPairMinGap`` / ``DiffPairMaxGap`` are not properties on either. An
-undeclared member halts the script past any Try. pcb_impedance_profile_layer
-read ``TraceMaxWidth`` in its reply, after the edit was made, so on AD 25
-every call changed the layer and then reported a crash.
+undeclared member halts the script past any Try, and the reply is built
+after the edit is made, so a property read there would leave the edit made
+and the call reported as a crash.
 """
 from __future__ import annotations
 

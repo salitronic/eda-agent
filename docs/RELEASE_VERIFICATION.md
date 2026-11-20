@@ -1,4 +1,4 @@
-# Release verification: 2026.11.19.1
+# Release verification: 2026.11.20.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -431,7 +431,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.19.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.20.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4418,7 +4418,7 @@ No new Altium identifier outside the SDK's own interfaces:
 `IPCB_TraceImpedance.SetState_RefTopLayer/RefBottomLayer`, and
 `ISch_Document.SetState_TitleBlockOn/BorderOn`.
 
-Verified live on AD 26.11.1.5 (script 2026.11.19.1) on scratch copies of
+Verified live on AD 26.11.1.5 on scratch copies of
 the RoundLED demo:
 
 1. `pcb_local_grid add_cartesian` with `width=900 height=600`: read back

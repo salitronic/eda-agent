@@ -538,7 +538,7 @@ def unknown_unit_names(args: dict, params: Iterable[str]) -> list[str]:
 #: Altium holds a coordinate as a signed 32-bit number, 10,000 to the mil,
 #: so a place past this many mils wraps round to the other side of the
 #: origin. MEASURED on AD 25.8.1: a track at 214,000 mil was kept as given,
-#: one at 220,000 came back at -209,497 (#413: a No ERC marker given as
+#: one at 220,000 came back at -209,497 (a No ERC marker given as
 #: 5,600 mm landed at -209,024 mil).
 WRAP_MILS = (2 ** 31 - 1) / 10000
 

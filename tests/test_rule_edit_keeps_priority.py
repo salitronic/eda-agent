@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""Editing a rule keeps every rule's priority, and priority can be set (#400).
+"""Editing a rule keeps every rule's priority, and priority can be set.
 
 MEASURED on AD 25.8.1 (a copy of a test board with 55 clearance rules):
 pcb_set_rule_properties changing only a rule's comment moved that rule to

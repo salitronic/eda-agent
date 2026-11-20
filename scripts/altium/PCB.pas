@@ -1519,8 +1519,8 @@ End;
 { A Polygon Connect relief angle in degrees as the TPolygonReliefAngle value }
 { SetState_PolygonReliefAngle takes: 45 is ePolygonReliefAngle_45 (0), 90 is }
 { ePolygonReliefAngle_90 (1). Anything else is -1 and is refused. The setter }
-{ does not take degrees: 45 stored as a value left the rule reading "Relief  }
-{ Angle=Polygon" and 90 left it with an empty descriptor (#399).            }
+{ does not take degrees: 45 written as a value leaves the rule reading       }
+{ "Relief Angle=Polygon" and 90 leaves it with an empty descriptor.         }
 Function PolygonReliefAngleNo(Degrees : String) : Integer;
 Var
     T : String;
@@ -1532,8 +1532,8 @@ Begin
 End;
 
 {..............................................................................}
-{ RULE PRIORITIES. Editing a rule moved it to priority 1 of its kind (#400):  }
-{ the PCBM_BeginModify / PCBM_EndModify pair alone does it, with nothing      }
+{ RULE PRIORITIES. Editing a rule moves it to priority 1 of its kind: the     }
+{ PCBM_BeginModify / PCBM_EndModify pair alone does it, with nothing          }
 { written (measured on AD 25.8.1). Rule.Priority is a read-only function, but }
 { every rule carries a stored sort key: Rule.SetState_Priority writes it and  }
 { Board.SortRulesByPriority re-orders ALL rules of ALL kinds by it. The sort  }
@@ -1743,7 +1743,7 @@ End;
 { Priority: Rule.Priority is a read-only function and assigning it crashes    }
 { the script engine. Every rule keeps its place (RulePriorityRecord before the }
 { first write, RulePriorityDone after the last), and `priority` moves the     }
-{ rule to that place within its kind; see RULE PRIORITIES above (#400).       }
+{ rule to that place within its kind; see RULE PRIORITIES above.             }
 {                                                                               }
 { Constraint params (dispatched by Rule.RuleKind, written through typed        }
 { iterator-returned locals per the ModifyWidthRules.pas reference pattern):    }
@@ -10672,7 +10672,7 @@ Begin
     Else Result := -2;
 End;
 
-{ Whether a placed text is mirrored (issue #417): as asked (Flag 1 / 0),     }
+{ Whether a placed text is mirrored: as asked (Flag 1 / 0),                 }
 { else (Flag -1) when it is on a bottom-side layer (bottom copper, overlay,  }
 { solder mask or paste), as Altium's own Place String does. A bottom-side    }
 { text that is not mirrored reads backwards on the board, and the audit      }
@@ -10909,7 +10909,7 @@ Begin
         { Mirrored last and in place: Altium flips a text about its anchor,  }
         { so the text is moved back by the shift of its bounding box and   }
         { lands where it would sit unmirrored. x / y mean the same with or  }
-        { without the mirror (issue #417).                                  }
+        { without the mirror.                                               }
         If TextMirrorWanted(MirrorF, TargetLayer) Then
             SetTextMirrorInPlace(TextObj, True);
     Finally
@@ -31006,8 +31006,8 @@ End;
 { 'at' reads the grid that applies at x, y; 'list' reads every grid;        }
 { 'delete' removes the grids named name.                                    }
 {                                                                            }
-{ A grid made here carries its kind at the end of its name, _cart or _pol    }
-{ (issue 419). A script cannot ask a grid its kind: no member says it, and   }
+{ A grid made here carries its kind at the end of its name, _cart or _pol.   }
+{ A script cannot ask a grid its kind: no member says it, and                }
 { reading a member the grid lacks (GridStepX of a polar grid, AngularStep of }
 { a cartesian one) raises an Undeclared identifier error inside Try and      }
 { stops the script. So list reads the own members of a grid only when it is }

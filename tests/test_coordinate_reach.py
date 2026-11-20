@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe
-"""A place Altium cannot reach is refused before anything is sent (#413).
+"""A place Altium cannot reach is refused before anything is sent.
 
 Altium holds a coordinate as a signed 32-bit number, 10,000 to the mil: a
 place past +/-214,748 mil wraps to the other side of the origin. A board's

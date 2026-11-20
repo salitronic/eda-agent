@@ -234,7 +234,7 @@ def _assignments(value: Any) -> Any:
     """Property assignments as the wire takes them: ``Name=Value`` pairs
     joined by ``|``. A dict or a list of pairs is accepted too. Names go
     to Altium as written: UseTTFonts on board text is written by the
-    script, which reads each text's kind (issue #396)."""
+    script, which reads each text's kind."""
     def text(v: Any) -> str:
         return ("true" if v else "false") if isinstance(v, bool) else str(v)
 

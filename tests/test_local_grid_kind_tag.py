@@ -6,8 +6,7 @@
 A script cannot ask a placement grid its kind: no member says it, and
 reading a member the grid lacks (GridStepX of a polar grid, AngularStep of
 a cartesian one) raises an Undeclared identifier error that Try does not
-catch, so the script stops. ``pcb_local_grid list`` did exactly that on a
-board with a polar grid (issue #419, AD 25.8.1).
+catch, so the script stops (measured on AD 25.8.1).
 
 So a grid made through pcb.local_grid is stored with its kind at the end
 of its name (_cart, _pol), list reads the members of one kind only for a

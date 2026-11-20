@@ -3,14 +3,13 @@
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """zoom_to_xy on a schematic sheet or symbol library must move the view.
 
-The schematic branch ran Sch:ZoomToLocation. The schematic server has no
-process of that name (AdvSch.ins declares Jump and Zoom), RunProcess
-returned without a word, the reply said success and the view never moved.
+The schematic server has no Sch:ZoomToLocation, and RunProcess of an
+unknown process returns without a word, so a reply of success says
+nothing about the view.
 
-It now fits the view to the same square of +-radius mils round x,y as the
-board branch, through Sch:Zoom with Action=ZoomArea and the two corners as
-Location1.x / .y and Location2.x / .y in internal units, the names
-schematic server reads, beside its "Choose first corner..." prompt.
+The view is fitted to the same square of +-radius mils round x,y as on a
+board, through Sch:Zoom with Action=ZoomArea and the two corners as
+Location1.x / .y and Location2.x / .y in internal units.
 """
 
 from __future__ import annotations

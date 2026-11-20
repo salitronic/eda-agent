@@ -71,7 +71,7 @@ def _hole(p: Pad) -> str:
     cx, cy = p.x, -p.y
     if p.hole_length and p.hole_length > p.hole:
         w, h = p.hole_length, p.hole
-        # The slot turns with its pad and then by its own hole rotation (#416).
+        # The slot turns with its pad and then by its own hole rotation.
         turn = p.rotation + p.hole_rotation
         rot = f' transform="rotate({_f(-turn)} {_f(cx)} {_f(cy)})"' if turn else ""
         return (f'<rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" width="{_f(w)}" '

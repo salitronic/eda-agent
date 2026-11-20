@@ -256,7 +256,7 @@ def compare_live(a: FootprintModel, b: FootprintModel, *,
             diff["rotation"] = [x.rotation, y.rotation]
         # A slot runs at the pad rotation plus its own hole rotation, and
         # reads the same turned half a turn. Two slots of one size and one
-        # pad rotation differ only here when one runs across its pad (#416).
+        # pad rotation differ only here when one runs across its pad.
         if _is_slot(x) and _is_slot(y):
             sa, sb = _slot_angle(x), _slot_angle(y)
             if abs(((sa - sb) + 90) % 180 - 90) > 0.01:

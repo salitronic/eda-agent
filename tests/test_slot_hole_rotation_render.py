@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
-"""A slot is drawn the way Altium places it, in both renders (#416).
+"""A slot is drawn the way Altium places it, in both renders.
 
 Altium keeps two rotations on a slotted pad: the pad's own, which turns
 copper and drill together, and HoleRotation, which turns the drill inside

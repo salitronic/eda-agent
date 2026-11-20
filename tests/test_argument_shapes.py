@@ -53,7 +53,7 @@ def test_assignments_and_names_in_any_shape():
 
 
 def test_use_tt_fonts_goes_to_altium_as_written(monkeypatch):
-    # The script writes it from each text's own kind (issue #396), which
+    # The script writes it from each text's own kind, which
     # no rewrite here can see, whatever the type is called.
     assert _assignments({"Height": 49, "UseTTFonts": False}) == "Height=49|UseTTFonts=false"
     tools, bridge = _tools(monkeypatch, generic, generic.register_generic_tools)

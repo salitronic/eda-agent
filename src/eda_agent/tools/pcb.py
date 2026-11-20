@@ -747,7 +747,7 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
 MATCH_MODES = ("group", "within_pair")
 
 #: The relief angles a Polygon Connect rule takes, in degrees. Altium keeps
-#: them as two enum values (45 is 0, 90 is 1). Issue #399.
+#: them as two enum values (45 is 0, 90 is 1).
 RELIEF_ANGLES = (45, 90)
 
 
@@ -11631,7 +11631,7 @@ def register_pcb_tools(mcp):
         if "matched_tolerance_mils" in params and float(params["matched_tolerance_mils"]) <= 0:
             return {"ok": False, "reason": "matched_tolerance_mils is more than 0"}
         # Altium stores the relief angle as one of two values; any other
-        # number written there corrupts the rule (#399).
+        # number written there corrupts the rule.
         if relief_angle is not None:
             if isinstance(relief_angle, bool) or relief_angle not in RELIEF_ANGLES:
                 return {"ok": False, "reason": "relief_angle is 45 or 90 (degrees)"}
@@ -11676,7 +11676,7 @@ def register_pcb_tools(mcp):
                 f"relief_angle {int(relief_angle)} was written but the rule does not "
                 "read it back; its descriptor is in connect_descriptor")
         if isinstance(result, dict) and priority is None:
-            # #400: an edit that reorders rules changes which one applies.
+            # An edit that reorders rules changes which one applies.
             moved = [c for c in result.get("rule_changes") or []
                      if isinstance(c, dict) and c.get("change") == "priority"]
             if moved:

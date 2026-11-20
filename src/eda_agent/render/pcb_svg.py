@@ -773,7 +773,7 @@ def _render_drills(geometry: dict[str, Any], opt: PcbRenderOptions) -> str:
             # A slot is a rectangle with round ends. Altium's HoleSize is
             # its width (the drill) and HoleWidth its overall length; it
             # runs along the pad's X, turned by the pad rotation and then by
-            # its own hole rotation, which is relative to the pad (#416).
+            # its own hole rotation, which is relative to the pad.
             width = h
             length = max(float(p.get("hole_width", 0) or 0), h)
             rot = (float(p.get("rotation", 0) or 0)

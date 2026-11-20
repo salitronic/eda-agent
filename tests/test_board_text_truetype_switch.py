@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
-"""UseTTFonts is written on board text by the script (issue #396).
+"""UseTTFonts is written on board text by the script.
 
 obj_query read it and obj_modify refused it as unknown; TextKind=1 did
 the job. A rewrite to TextKind in the tool layer missed every spelling of

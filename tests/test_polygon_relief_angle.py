@@ -4,12 +4,11 @@
 """pcb_set_rule_properties writes a Polygon Connect relief angle Altium keeps.
 
 SetState_PolygonReliefAngle takes the TPolygonReliefAngle value, not
-degrees. Passing 45 stored member 45, which does not exist, and the rule
-then read "Relief Angle=Polygon"; 90 left it with an empty descriptor,
-and every later write to the rule reported success while the rule stayed
-broken (#399). 45 and 90 now go in as ePolygonReliefAngle_45 (0) and
-ePolygonReliefAngle_90 (1); any other value is refused before anything
-is written, and the angle is read back from the rule's descriptor.
+degrees: 45 written as a number leaves the rule reading "Relief
+Angle=Polygon" and 90 leaves it with an empty descriptor. 45 and 90 go in
+as ePolygonReliefAngle_45 (0) and ePolygonReliefAngle_90 (1); any other
+value is refused before anything is written, and the angle is read back
+from the rule's descriptor.
 
 The degrees-to-value helper is lifted out of PCB.pas and run under Free
 Pascal; the handler is checked for where it uses it.

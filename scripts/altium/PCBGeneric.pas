@@ -1772,8 +1772,8 @@ Begin
     If Owner <> Nil Then Owner.EndModify;
 End;
 
-{ UseTTFonts, the TrueType switch Altium keeps beside TextKind (issue     }
-{ #396). True makes the text TrueType. False makes a TrueType text stroke }
+{ UseTTFonts, the TrueType switch Altium keeps beside TextKind. True      }
+{ makes the text TrueType. False makes a TrueType text stroke             }
 { and leaves a barcode a barcode, which is not TrueType either: the      }
 { caller asked for no TrueType, not for stroke. The two are written in   }
 { step, as the TextKind writer does. False when Value is not a boolean.  }

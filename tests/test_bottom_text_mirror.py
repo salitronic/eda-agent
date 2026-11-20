@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
-"""pcb_place_text mirrors a text placed on a bottom layer (issue #417).
+"""pcb_place_text mirrors a text placed on a bottom layer.
 
 The placer never set MirrorFlag, so a text on BottomOverlay read backwards
 on the board, and the server's own audit then reported it as

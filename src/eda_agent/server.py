@@ -495,7 +495,7 @@ def _lengths_in(server, name: str, arguments: dict):
         converted = lengths.args_in(tool, args, unit, params,
                                     whole=_whole_params(server, tool))
         # A place Altium cannot hold wraps to the other side of the origin,
-        # and one off a board's area cannot be reached again (#413).
+        # and one off a board's area cannot be reached again.
         far = lengths.out_of_reach(tool, converted, unit)
         if far:
             raise ValueError(far)

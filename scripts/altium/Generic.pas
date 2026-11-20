@@ -7391,13 +7391,10 @@ End;
 { with none set, raised a modal "Location Marker 10 has not been set" that  }
 { stopped the polling loop; X and Y were never its parameters.              }
 { SCH / SCHLIB: Sch:Zoom with Action=ZoomArea and the corners as            }
-{ Location1.x / .y and Location2.x / .y in internal units (1 mil = 10000),  }
-{ the parameter names the schematic server reads (AD 25, 25B, 26),          }
-{ beside its "Choose first corner..." prompt. The branch ran                }
-{ Sch:ZoomToLocation,                                                       }
-{ which the schematic server does not have: RunProcess returned without     }
-{ a word and the view never moved. Sch:Jump with Location.x / .y does       }
-{ not move it either (measured on AD 25.8.1).                               }
+{ Location1.x / .y and Location2.x / .y in internal units (1 mil = 10000).  }
+{ The schematic server has no Sch:ZoomToLocation (RunProcess of an unknown  }
+{ process returns without a word), and Sch:Jump with Location.x / .y does   }
+{ not move the view (measured on AD 25.8.1).                                }
 {..............................................................................}
 
 Function Gen_ZoomToXY(Params : String; RequestId : String) : String;
