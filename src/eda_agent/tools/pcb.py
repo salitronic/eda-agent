@@ -11390,6 +11390,7 @@ def register_pcb_tools(mcp):
         scope1: str | None = None,
         scope2: str | None = None,
         comment: str | None = None,
+        priority: int | None = None,
         gap_mils: int | None = None,
         gap_mm: float | None = None,
         min_width_mils: float | None = None,
@@ -11463,8 +11464,8 @@ def register_pcb_tools(mcp):
         fields, checked as a set (min <= preferred <= max, diameter >
         hole). Writes are read back: ``gap_written``, ``via_sizes_written``
         and ``properties_updated`` count only what took. A template-mode
-        via rule keeps its templates (``via_note``). Priority cannot be
-        changed from a script; reorder rules in Altium's rules editor.
+        via rule keeps its templates (``via_note``). Rules keep their
+        places (``priority_kept``); ``priority`` (1 = first) moves this one.
 
         Args:
             name: Rule name to update.
@@ -11537,6 +11538,11 @@ def register_pcb_tools(mcp):
             if refusal:
                 return refusal
         params: dict[str, Any] = {"name": name}
+        if priority is not None:
+            if isinstance(priority, bool) or not isinstance(priority, int) or priority < 1:
+                return {"ok": False, "reason": "priority counts from 1 (1 = first of its kind)",
+                        "properties_updated": 0}
+            params["priority"] = str(priority)
         for key, value in [
             ("scope1", scope1),
             ("scope2", scope2),
@@ -11663,6 +11669,17 @@ def register_pcb_tools(mcp):
             result["reason"] = (
                 f"relief_angle {int(relief_angle)} was written but the rule does not "
                 "read it back; its descriptor is in connect_descriptor")
+        if isinstance(result, dict) and priority is None:
+            # #400: an edit that reorders rules changes which one applies.
+            moved = [c for c in result.get("rule_changes") or []
+                     if isinstance(c, dict) and c.get("change") == "priority"]
+            if moved:
+                result["priority_warning"] = (
+                    "the edit changed the order of rules: " + ", ".join(
+                        f"{c.get('rule')} {c.get('before')} -> {c.get('after')}"
+                        for c in moved)
+                    + ". The rule that applies may have changed; check it "
+                    "with pcb_find_dominant_rule.")
         return result
 
     @mcp.tool()
