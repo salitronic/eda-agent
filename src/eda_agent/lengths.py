@@ -533,6 +533,133 @@ def unknown_unit_names(args: dict, params: Iterable[str]) -> list[str]:
     return bad
 
 
+# ------------------------------------------------------------- Altium's reach
+
+#: Altium holds a coordinate as a signed 32-bit number, 10,000 to the mil,
+#: so a place past this many mils wraps round to the other side of the
+#: origin. MEASURED on AD 25.8.1: a track at 214,000 mil was kept as given,
+#: one at 220,000 came back at -209,497 (#413: a No ERC marker given as
+#: 5,600 mm landed at -209,024 mil).
+WRAP_MILS = (2 ** 31 - 1) / 10000
+
+#: A board's editor shows 0 to 99,999 mil on each axis, absolute (the
+#: script engine's kMinCoord and kMaxCoord). MEASURED on AD 25.8.1: a track
+#: outside that box is kept as given, but the view cannot be moved to it
+#: (Zoom All shows exactly 0 to 99,999), so it can be neither seen nor
+#: picked. A board tool takes a place either absolute or from the board
+#: origin, which lies inside the box, so a place further than this from
+#: zero is outside it either way. A sheet has no such edge short of the
+#: wrap: markers at -500 and at 133,858 mil were both zoomed to.
+BOARD_REACH_MILS = 99999
+
+#: Plain names whose numbers are places, or moves from one place to
+#: another. A size puts nothing anywhere and is not checked.
+POSITION_KEYS = frozenset({
+    "x", "y", "x1", "y1", "x2", "y2", "x3", "y3", "cx", "cy", "dx", "dy",
+    "x_center", "y_center", "center_x", "center_y", "centre_x", "centre_y",
+    "start_x", "start_y", "end_x", "end_y", "mid_x", "mid_y",
+    "from_x", "from_y", "to_x", "to_y", "source_x", "source_y",
+    "reference_x", "reference_y", "location_x", "location_y",
+    "directive_x", "directive_y", "origin_x", "origin_y",
+    "offset_x", "offset_y",
+})
+
+#: Names under which every number, or every vertex of a list, is a place.
+#: A box (bounds, bbox, box, rect, extent) is left out: it is mostly an
+#: area to search, and one larger than the board is a fair way to say all.
+PLACE_KEYS = frozenset({
+    "points", "vertices", "outline", "polygon", "corners",
+    "location", "position", "center", "centre", "origin", "at", "pos", "xy",
+})
+
+#: The tools that put or find something in an Altium document.
+_ALTIUM_PREFIXES = ("pcb_", "sch_", "lib_", "route_", "obj_")
+
+
+def _on_board(tool: str) -> bool:
+    """Whether ``tool`` acts on a board or a footprint (a symbol is drawn
+    on a sheet's plane, which has no edge short of the wrap)."""
+    return tool.startswith(("pcb_", "route_")) or (
+        tool.startswith("lib_") and re.search(r"footprint|pad|via", tool) is not None)
+
+
+def _places(obj: Any, path: str, unit: str, own_units: bool, in_place: bool,
+            found: list) -> None:
+    """Every place in ``obj`` as ``(path, number, unit)`` onto ``found``.
+    ``own_units``: a dict's ``units`` says the unit of its plain lengths
+    (the tools that convert their lengths themselves). A name that carries
+    its unit (``x_mils``) is in that unit whatever it sits in."""
+    if isinstance(obj, list):
+        for i, v in enumerate(obj):
+            at = f"{path}[{i}]"
+            if in_place and _numbers(v) and not isinstance(v, list):
+                found.append((at, v, unit))
+            else:
+                _places(v, at, unit, own_units, in_place, found)
+        return
+    if not isinstance(obj, dict):
+        return
+    if own_units and isinstance(obj.get("units"), str):
+        unit = normalise_units(obj["units"]) or unit
+    for key, value in obj.items():
+        if not isinstance(key, str):
+            continue
+        at = f"{path}.{key}" if path else key
+        name, here = key, unit
+        m = _SUFFIX.match(key)
+        if m:
+            name, here = m.group("stem"), _unit_of(m.group("unit"))
+        if name in POSITION_KEYS and _numbers(value):
+            for i, v in enumerate(value if isinstance(value, list) else [value]):
+                found.append((f"{at}[{i}]" if isinstance(value, list) else at, v, here))
+        elif name in PLACE_KEYS and isinstance(value, (list, dict)):
+            _places(value, at, here, own_units, True, found)
+        elif in_place and _numbers(value) and not _NOT_IN_LENGTHS.search(key):
+            for v in (value if isinstance(value, list) else [value]):
+                found.append((at, v, here))
+        elif isinstance(value, (list, dict)):
+            _places(value, at, here, own_units, in_place and isinstance(value, list), found)
+
+
+def out_of_reach(tool: str, args: dict, unit: str) -> str:
+    """Why ``tool`` must not be sent ``args`` (as the tool takes them),
+    or ''. A place past Altium's 32-bit coordinate wraps to the other side
+    of the origin, and on a board a place outside the editor's box can be
+    neither seen nor picked; both are refused before anything is sent.
+    ``unit`` is the call's, to give the value back as the caller wrote it."""
+    if not tool.startswith(_ALTIUM_PREFIXES) or not converts(tool) \
+            or not isinstance(args, dict):
+        return ""
+    own = tool in SELF_CONVERTING
+    found: list = []
+    _places(args, "", native_unit(tool), own, False, found)
+    board = _on_board(tool)
+    limit = BOARD_REACH_MILS if board else WRAP_MILS
+    far = []
+    for at, value, here in found:
+        mils = value * (MILS_PER_MM if here == "mm" else 1.0)
+        if abs(mils) > limit + 1e-6:
+            # As the caller wrote it: a plain length the server converted
+            # was given in the call's unit; any other is in its own.
+            named = _SUFFIX.match(at.rsplit(".", 1)[-1].split("[", 1)[0])
+            shown = unit if not own and not named else here
+            given = mils * (MM_PER_MIL if shown == "mm" else 1.0)
+            far.append(f"{at} = {_tidy(given):g} {shown}")
+    if not far:
+        return ""
+    more = f" and {len(far) - 3} more" if len(far) > 3 else ""
+    if board:
+        why = (f"outside the board area Altium can show, 0 to {BOARD_REACH_MILS:,} mil "
+               f"({BOARD_REACH_MILS * MM_PER_MIL:,.2f} mm) on each axis; there it "
+               "can be neither seen nor picked")
+    else:
+        why = (f"past Altium's coordinate range, +/-{WRAP_MILS:,.0f} mil "
+               f"({WRAP_MILS * MM_PER_MIL:,.1f} mm), where it wraps round to "
+               "the other side of the origin")
+    return (f"{tool}: {', '.join(far[:3])}{more} is {why}. Nothing was sent; "
+            f"check the unit (this call is in {unit}).")
+
+
 # ---------------------------------------------------------------- the setting
 
 #: Where each session's unit is kept, in the workspace.

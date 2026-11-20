@@ -492,8 +492,14 @@ def _lengths_in(server, name: str, arguments: dict):
             if refusal:
                 raise ValueError(refusal["error"])
             args = {**{k: v for k, v in args.items() if k != "file"}, key: listed}
-        return lengths.args_in(tool, args, unit, params,
-                               whole=_whole_params(server, tool))
+        converted = lengths.args_in(tool, args, unit, params,
+                                    whole=_whole_params(server, tool))
+        # A place Altium cannot hold wraps to the other side of the origin,
+        # and one off a board's area cannot be reached again (#413).
+        far = lengths.out_of_reach(tool, converted, unit)
+        if far:
+            raise ValueError(far)
+        return converted
 
     if name == "tool_invoke" and isinstance(arguments.get("arguments"), dict):
         inner = str(arguments.get("name") or "")
