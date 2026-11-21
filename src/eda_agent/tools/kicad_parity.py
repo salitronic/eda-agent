@@ -404,6 +404,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "app_document_owners": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
     "app_claim_document": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
     "app_release_document": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
+    "app_edited_documents": "the bridge's record of what a running Altium holds unsaved; KiCad boards are plain files",
     "pcb_get_room_rules": "Altium rooms",
     "pcb_get_impedance_profiles": "Altium impedance profiles",
     "pcb_impedance_profile": "Altium impedance profiles",

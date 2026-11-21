@@ -396,6 +396,7 @@ MkSet
 Now
 PCBServer
 ReadLn
+RenameFile
 Reset
 ResetParameters
 Rewrite

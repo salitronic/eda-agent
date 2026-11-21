@@ -2377,7 +2377,102 @@ Begin
         Or (Verb = 'document_owners')
         Or (Verb = 'claim_document')
         Or (Verb = 'release_document')
-        Or (Verb = 'open');
+        Or (Verb = 'open')
+        Or (Verb = 'acknowledge_lost');
+End;
+
+{ A command that leaves the content of every open document as it was: }
+{ the bridge's edited record is not marked for it (EdAfterCommand).   }
+Function CommandLeavesDocuments(Command : String; Params : String) : Boolean;
+Var
+    Verb, Op, Proc : String;
+Begin
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Proc := '';
+    If Verb = 'run_process' Then
+    Begin
+        Proc := LowerCase(Trim(ExtractJsonValue(Params, 'process')));
+        If Proc = '' Then Proc := LowerCase(Trim(ExtractJsonValue(Params, 'process_name')));
+        If Pos(':', Proc) > 0 Then Proc := Copy(Proc, Pos(':', Proc) + 1, Length(Proc));
+        If Proc = '' Then Proc := '?';
+    End;
+    Result := CommandOnlyLooks(Command)
+        Or ActionHasPrefix(Verb, 'save')
+        Or ActionHasPrefix(Verb, 'close')
+        Or ActionHasPrefix(Verb, 'select')
+        Or ActionHasPrefix(Verb, 'deselect')
+        Or ActionHasPrefix(Verb, 'install_')
+        Or ActionHasPrefix(Verb, 'uninstall_')
+        Or ActionHasPrefix(Verb, 'reload_')
+        Or ActionHasPrefix(Verb, 'measure_')
+        Or ActionHasPrefix(Verb, 'zoom')
+        Or ActionHasPrefix(Verb, 'run_outjob')
+        Or (Verb = 'autosave')
+        Or (Verb = 'stop_server')
+        Or (Verb = 'exit_active_command')
+        Or (Verb = 'compile')
+        Or (Verb = 'force_recompile')
+        Or (Verb = 'cross_probe')
+        Or (Verb = 'run_erc')
+        Or (Verb = 'run_drc')
+        Or (Verb = 'generate_output')
+        Or (Verb = 'footprint_export')
+        Or (Verb = 'extract_intlib')
+        Or (Verb = 'search')
+        Or (Verb = 'library_lookup')
+        Or (Verb = 'dashboard_snapshot')
+        Or (Verb = 'output_panel')
+        Or (Verb = 'explain_pin')
+        Or (Verb = 'crossref_net')
+        Or (Verb = 'run_simulation')
+        Or (Verb = 'run_spice_deck')
+        Or (Verb = 'diag_workspace')
+        Or (Verb = 'set_current_component')
+        Or (Verb = 'set_current_footprint')
+        Or (Verb = 'rewrite_file')
+        Or (Verb = 'load_project_sheets')
+        Or (Verb = 'add_document')
+        Or (Verb = 'remove_document')
+        Or (Verb = 'create_document')
+        Or (Verb = 'rename_document')
+        Or (Verb = 'file_info')
+        Or (Verb = 'pour_outline')
+        Or (Verb = 'pours_at')
+        Or (Verb = 'pour_copper')
+        Or (Verb = 'object_outline')
+        Or (Verb = 'part_outlines')
+        Or (Verb = 'net_figures')
+        Or (Verb = 'connected_copper')
+        Or (Verb = 'special_strings')
+        Or (Verb = 'rule_scope_check')
+        Or (Verb = 'copper_layers')
+        Or (Verb = 'dump_free_primitives')
+        Or (Verb = 'editor_options')
+        Or (Verb = 'sch_editor_options')
+        Or (Verb = 'polygon_repour_mode')
+        Or (Verb = 'view')
+        Or (Op = 'get')
+        Or (Op = 'list')
+        Or (Op = 'read')
+        Or (Op = 'status')
+        Or ActionHasPrefix(Proc, 'openobject')
+        Or ActionHasPrefix(Proc, 'saveobject')
+        Or ActionHasPrefix(Proc, 'closeobject')
+        Or ActionHasPrefix(Proc, 'saveall')
+        Or ActionHasPrefix(Proc, 'zoom')
+        Or ActionHasPrefix(Proc, 'jump')
+        Or ActionHasPrefix(Proc, 'select')
+        Or ActionHasPrefix(Proc, 'deselect')
+        Or ActionHasPrefix(Proc, 'gotolibrarycomponent')
+        Or ActionHasPrefix(Proc, 'firstcomponent')
+        Or ActionHasPrefix(Proc, 'nextcomponent')
+        Or ActionHasPrefix(Proc, 'lastcomponent')
+        Or ActionHasPrefix(Proc, 'previouscomponent')
+        Or ActionHasPrefix(Proc, 'setcurrentlayer')
+        Or ActionHasPrefix(Proc, 'managelayersets')
+        Or ActionHasPrefix(Proc, 'changeviewconfiguration')
+        Or ActionHasPrefix(Proc, 'togglecomponentdisplaymode');
 End;
 
 { END COMMAND RULES }
@@ -2408,6 +2503,312 @@ Begin
     End;
     If Result = '' Then Result := ExtractJsonValue(Params, 'project_path');
     If Result = '' Then Result := Focus;
+End;
+
+{..............................................................................}
+{ THE BRIDGE'S UNSAVED RECORD, the dispatcher's side (EdRecord in Main.pas).  }
+{ Handlers note what they edited however they name it (NoteDocEdited); here   }
+{ each note becomes the full path of the file, never a bare name's first     }
+{ match: two projects may each hold a PCB.PcbDoc. And a command that edits   }
+{ but whose handler noted nothing still marks the document it acted on, so   }
+{ no handler has to remember to.                                             }
+{..............................................................................}
+
+{ The full path of the document in front: the client's own document, whose }
+{ FileName is a full path even outside every project (DM_FullPath is then  }
+{ a bare name).                                                            }
+Function EdFrontPath(Dummy : Integer) : String;
+Var
+    View : IServerDocumentView;
+    Doc : IServerDocument;
+Begin
+    Result := '';
+    Try
+        View := Client.CurrentView;
+        If View <> Nil Then
+        Begin
+            Doc := View.OwnerDocument;
+            If Doc <> Nil Then Result := Doc.FileName;
+        End;
+    Except
+        Result := '';
+    End;
+    If Not EdLooksFull(Result) Then Result := EdOpenFullPath(CurrentFocusedDocPath(0));
+End;
+
+{ The projects holding PATH, '|'-joined .PrjPcb paths. A project file is  }
+{ held by itself; a document outside every project by none.               }
+Function EdProjectsOf(Path : String) : String;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have, ProjPath : String;
+    Held : Boolean;
+Begin
+    Result := '';
+    Want := EdKey(Path);
+    If Want = '' Then Exit;
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except Proj := Nil; End;
+        If Proj <> Nil Then
+        Begin
+            ProjPath := '';
+            Try ProjPath := Proj.DM_ProjectFullPath; Except ProjPath := ''; End;
+            Held := EdKey(ProjPath) = Want;
+            J := 0;
+            While (Not Held) And (J < Proj.DM_LogicalDocumentCount) Do
+            Begin
+                Doc := Nil;
+                Try Doc := Proj.DM_LogicalDocuments(J); Except Doc := Nil; End;
+                If Doc <> Nil Then
+                Begin
+                    Have := '';
+                    Try Have := Doc.DM_FullPath; Except Have := ''; End;
+                    If EdKey(Have) = Want Then Held := True;
+                End;
+                Inc(J);
+            End;
+            If Held And (ProjPath <> '') Then
+            Begin
+                If Result <> '' Then Result := Result + '|';
+                Result := Result + ProjPath;
+            End;
+        End;
+    End;
+End;
+
+{ LIST ('|'-joined paths) with PATH added, unless it is there already. }
+Function EdAddPath(List : String; Path : String) : String;
+Begin
+    Result := List;
+    If Path = '' Then Exit;
+    If Pos('|' + EdKey(Path) + '|', '|' + EdKey(List) + '|') > 0 Then Exit;
+    If Result <> '' Then Result := Result + '|';
+    Result := Result + Path;
+End;
+
+{ The full path(s) behind a path as a handler noted it. A full path is    }
+{ itself. A bare name is looked up inside the project the command names,  }
+{ then inside the projects holding the document in front, then among      }
+{ every open document; a name alone never picks one file by order.       }
+{ '|'-joined, '' when no open file has it.                                }
+Function EdResolve(Raw : String; Params : String; Front : String) : String;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    Name, ProjPath, Holders, Hit, Full : String;
+    I, J, N : Integer;
+Begin
+    Result := '';
+    If Raw = '' Then Exit;
+    If EdLooksFull(Raw) Then
+    Begin
+        Result := StringReplace(Raw, '/', '\', -1);
+        Exit;
+    End;
+    Name := UpperCase(ExtractFileName(Raw));
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    ProjPath := ExtractJsonValue(Params, 'project_path');
+    If ProjPath <> '' Then
+    Begin
+        Proj := OpenProjectAt(Workspace, ProjPath);
+        Hit := MatchDocPathInProject(Proj, Name);
+        If Hit <> '' Then
+        Begin
+            Result := Hit;
+            Exit;
+        End;
+    End;
+    Holders := EdProjectsOf(Front);
+    If Holders <> '' Then
+    Begin
+        N := EdFieldCount(Holders, '|');
+        For I := 0 To N - 1 Do
+        Begin
+            Proj := OpenProjectAt(Workspace, EdPart(Holders, '|', I));
+            Result := EdAddPath(Result, MatchDocPathInProject(Proj, Name));
+        End;
+    End;
+    If Result <> '' Then Exit;
+    For I := -1 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try
+            If I < 0 Then Proj := Workspace.DM_FreeDocumentsProject
+            Else Proj := Workspace.DM_Projects(I);
+        Except
+            Proj := Nil;
+        End;
+        If Proj <> Nil Then
+        Begin
+            For J := 0 To Proj.DM_LogicalDocumentCount - 1 Do
+            Begin
+                Doc := Nil;
+                Try Doc := Proj.DM_LogicalDocuments(J); Except Doc := Nil; End;
+                Full := '';
+                If Doc <> Nil Then
+                Begin
+                    Try Full := Doc.DM_FullPath; Except Full := ''; End;
+                End;
+                If (Full <> '') And (UpperCase(ExtractFileName(Full)) = Name) Then
+                Begin
+                    Full := EdOpenFullPath(Full);
+                    If EdLooksFull(Full) And EdIsOpen(Full) Then
+                        Result := EdAddPath(Result, Full);
+                End;
+            End;
+        End;
+    End;
+End;
+
+{ Mark every open file RAW resolves to; the number marked. AGE is the     }
+{ file's age taken before the edit when RAW named that file; else the age }
+{ now, after the edit and still before any save of it.                    }
+Function EdMarkResolved(Raw : String; Age : Integer; Command : String; Params : String;
+    Front : String; Session : String) : Integer;
+Var
+    Paths, One, Note, Projects, Body : String;
+    I, N, UseAge : Integer;
+Begin
+    Result := 0;
+    Paths := EdResolve(Raw, Params, Front);
+    If Paths = '' Then Exit;
+    N := EdFieldCount(Paths, '|');
+    Note := '';
+    If N > 1 Then
+        Note := 'ambiguous name ' + ExtractFileName(Raw)
+            + ': every open file of that name was marked';
+    For I := 0 To N - 1 Do
+    Begin
+        One := EdPart(Paths, '|', I);
+        If (One <> '') And EdIsOpen(One) Then
+        Begin
+            UseAge := Age;
+            If (UseAge < 0) Or (EdKey(One) <> EdKey(Raw)) Then UseAge := EdAgeNow(One);
+            Body := EdBodyOf(EdRecord, EdKey(One));
+            Projects := '';
+            If (Body = '') Or (EdPart(Body, Chr(2), 6) <> 'E') Then Projects := EdProjectsOf(One);
+            EdMark(One, Projects, UseAge, Command, Session, Note);
+            Inc(Result);
+        End;
+    End;
+End;
+
+{ Once a command is done: mark what its handlers noted; and when a command }
+{ that edits noted nothing, the document it acted on -- the path it names, }
+{ else (that path not being an open document) the one that was in front.  }
+{ Not after a refusal (an error reply: handlers refuse before writing),    }
+{ but after an exception, which may come after a write. Errs towards       }
+{ "unsaved": a mark too many costs a question or a save, a mark missed a   }
+{ read of a file that is not what Altium holds.                            }
+Procedure EdAfterCommand(Command : String; Params : String; Reply : String; Tag : String;
+    RequestId : String; SerialBefore : Integer; Front : String; Target : String;
+    TargetAge : Integer; FrontAge : Integer);
+Var
+    Rest, Item, Session : String;
+    P, Q, Marked : Integer;
+    Done : Boolean;
+Begin
+    Session := RequestTag(RequestId);
+    Rest := EdPending;
+    EdPending := '';
+    P := Pos(Chr(3), Rest);
+    While P > 0 Do
+    Begin
+        Item := Copy(Rest, 2, P - 2);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Item);
+        If Q > 0 Then
+            Marked := EdMarkResolved(Copy(Item, 1, Q - 1),
+                EdAgeOf(Copy(Item, Q + 1, Length(Item))), Command, Params, Front, Session);
+        P := Pos(Chr(3), Rest);
+    End;
+    If EdNoteSerial <> SerialBefore Then Exit;
+    If Target = '' Then Exit;
+    If CommandOnlyLooks(Command) Or CommandLeavesDocuments(Command, Params) Then Exit;
+    Done := (Tag = 'EXCEPTION') Or (Pos('"success":true', Copy(Reply, 1, 300)) > 0);
+    If Not Done Then Exit;
+    Marked := EdMarkResolved(Target, TargetAge, Command, Params, Front, Session);
+    If (Marked = 0) And (Front <> '') And (EdKey(Front) <> EdKey(Target)) Then
+        Marked := EdMarkResolved(Front, FrontAge, Command, Params, Front, Session);
+End;
+
+{ The record after a start or a script restart is what the journal says:  }
+{ replayed (EdReplay), checked against the disk and what is open as       }
+{ EdRefresh does, then written back short: to a temporary file first and  }
+{ swapped in by delete + rename, so a crash during the rewrite leaves the  }
+{ old journal, or the new one under the temporary name, read next time.   }
+{ An Altium restart that reopened an edited document from disk leaves its }
+{ entry unsaved: nothing tells that reload apart, and a save then writes  }
+{ the same content back.                                                  }
+Procedure EdUnwind(Dummy : Integer);
+Var
+    SL : TStringList;
+    Journal, Tmp, Text, Snapshot, Key, Body : String;
+    N : Integer;
+    F : TextFile;
+Begin
+    EdRecord := '';
+    EdPending := '';
+    EdSeq := 0;
+    Journal := EdJournalPath(0);
+    Tmp := Journal + '.tmp';
+    Text := '';
+    SL := TStringList.Create;
+    Try
+        If FileExists(Journal) Then
+        Begin
+            If LoadTextFile(SL, Journal) Then Text := SL.Text;
+        End
+        Else
+        Begin
+            If FileExists(Tmp) Then
+                If LoadTextFile(SL, Tmp) Then Text := SL.Text;
+        End;
+    Finally
+        SL.Free;
+    End;
+    EdRecord := EdReplay(Text);
+    EdQuiet := True;
+    Try
+        EdRefresh(1);
+    Finally
+        EdQuiet := False;
+    End;
+    Try
+        AssignFile(F, Tmp);
+        Rewrite(F);
+        Try
+            N := 0;
+            Snapshot := EdRecord;
+            Key := EdKeyAt(Snapshot, 0);
+            While Key <> '' Do
+            Begin
+                Body := EdBodyOf(Snapshot, Key);
+                EdSeq := EdSeq + 1;
+                WriteLn(F, EdJournalLine(EdSeq, EdPart(Body, Chr(2), 2),
+                    EdPart(Body, Chr(2), 6), Body));
+                Inc(N);
+                Key := EdKeyAt(Snapshot, N);
+            End;
+        Finally
+            CloseFile(F);
+        End;
+        If FileExists(Journal) Then DeleteFile(Journal);
+        RenameFile(Tmp, Journal);
+    Except
+        EdJournalFailed := EdJournalFailed + 1;
+    End;
 End;
 
 {..............................................................................}
@@ -2576,6 +2977,8 @@ Var
     DashDetail, DashErrPayload, DashCode : String;
     NamedDocs : TStringList;
     LoadedBefore, OpenedField : String;
+    EdFront, EdTarget : String;
+    EdSerialBefore, EdTargetAge, EdFrontAge : Integer;
 Begin
     Result := False;
     If WorkspaceDir = '' Then EnsureWorkspaceDir(0);
@@ -2679,6 +3082,25 @@ Begin
     NamedDocs := TStringList.Create;
     CollectDocPaths(Params, NamedDocs);
     LoadedBefore := LoadedNow(NamedDocs);
+    { The bridge's unsaved record (EdAfterCommand): what a command that
+      edits acts on, and the files' ages, taken before the handler runs. }
+    EdPending := '';
+    EdSerialBefore := EdNoteSerial;
+    EdFront := '';
+    EdTarget := '';
+    EdTargetAge := -1;
+    EdFrontAge := -1;
+    If Not CommandOnlyLooks(Command) Then
+    Begin
+        Try
+            EdFront := EdFrontPath(0);
+            EdTarget := CommandTarget(Params, EdFront);
+            EdTargetAge := EdAgeNow(EdTarget);
+            EdFrontAge := EdAgeNow(EdFront);
+        Except
+            EdTarget := '';
+        End;
+    End;
 
     ExceptionMsg := '';
     { Heartbeat: write progress_<id>.json so Python can distinguish "still      }
@@ -2713,6 +3135,17 @@ Begin
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
             ResultTag := 'EXCEPTION';
+        End;
+
+        { The bridge's own record of unsaved documents, marked here where
+          every command passes, so no handler has to remember to; on the
+          exception path too, as for the compiled netlist below. Journaled
+          before the reply is written. }
+        Try
+            EdAfterCommand(Command, Params, ResponseContent, ResultTag, RequestId,
+                EdSerialBefore, EdFront, EdTarget, EdTargetAge, EdFrontAge);
+        Except
+            EdJournalFailed := EdJournalFailed + 1;
         End;
 
         { The compiled netlist is stale the moment anything is written, and
@@ -3189,6 +3622,10 @@ Begin
     LoadMCPConfig(0);
     LoadSavingSwitch(0);
     LoadPreferences(0);
+    { The bridge's record of unsaved documents, rebuilt from its journal:
+      what was edited and not saved before a stop, a script restart or a
+      crash is known again, and what went away unsaved is reported lost. }
+    Try EdUnwind(0); Except EdJournalFailed := EdJournalFailed + 1; End;
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
