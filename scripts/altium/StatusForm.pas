@@ -2353,7 +2353,8 @@ Begin
         Or (Verb = 'claim_document')
         Or (Verb = 'release_document')
         Or (Verb = 'open')
-        Or (Verb = 'acknowledge_lost');
+        Or (Verb = 'acknowledge_lost')
+        Or (Verb = 'set_active_project');
 End;
 
 { A command that leaves the content of every open document as it was: }
@@ -2463,7 +2464,9 @@ Function CommandTarget(Params : String; Focus : String) : String;
 Var
     Scope : String;
 Begin
-    Result := ExtractJsonValue(Params, 'board_path');
+    { The document Ensure put in front (#428) is the narrowest name of all. }
+    Result := ExtractJsonValue(Params, 'target_document');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'board_path');
     If Result = '' Then Result := ExtractJsonValue(Params, 'expect_file');
     If Result = '' Then Result := ExtractJsonValue(Params, 'file_path');
     If Result = '' Then Result := ExtractJsonValue(Params, 'library_path');
@@ -2816,6 +2819,7 @@ End;
 
 Procedure CollectDocPaths(Params : String; Paths : TStringList);
 Begin
+    AddDocPath(Paths, ExtractJsonValue(Params, 'target_document'));
     AddDocPath(Paths, ExtractJsonValue(Params, 'board_path'));
     AddDocPath(Paths, ExtractJsonValue(Params, 'expect_file'));
     AddDocPath(Paths, ExtractJsonValue(Params, 'file_path'));
@@ -2937,6 +2941,242 @@ Begin
         JsonStr('restored', Pin) + ',' + JsonStr('from', Current));
 End;
 
+{..............................................................................}
+{ ENSURE (#428): a command names its document by FULL PATH, and the bridge   }
+{ puts that document in front, inside its project, or refuses the command.  }
+{                                                                              }
+{ A write used to land on whatever was in front: most handlers take the      }
+{ board or sheet in front, and when the session's own document could not be }
+{ put back the command ran anyway. A request may now carry target_document  }
+{ and target_project, both ABSOLUTE. Before the handler runs, EnsureTarget:  }
+{   1. refuses any other spelling: relative, forward slashes, a . or ..      }
+{      part, a short 8.3 name (it opens a second copy) -- BAD_TARGET;        }
+{   2. refuses a pcb. command at a sheet, a library. command at a board     }
+{      -- KIND_MISMATCH;                                                      }
+{   3. opens target_project if it is not open (a member opened while its     }
+{      project is closed loads as an orphan: no project lists it);          }
+{   4. refuses a document its project does not list -- NOT_IN_PROJECT;      }
+{   5. opens the document if it is not loaded, inside its project; without  }
+{      a project it must be loaded already -- NOT_OPEN;                     }
+{   6. brings it to the front and checks the front is that file -- else     }
+{      WRONG_DOCUMENT; for a project. command, or a project with no         }
+{      document, also that the focused project is target_project -- else    }
+{      WRONG_PROJECT (a file shared by two open projects focuses the first).}
+{ Nothing runs after a refusal. A request with no target is untouched.       }
+{ Returns '' (no target), the reply's "target" field, or an error reply.    }
+{..............................................................................}
+
+{ The path helpers (EnsurePathProblem, EnsureKindProblem, EnsureSame,       }
+{ EnsureMember, EnsureOpen) are in Application.pas, shared with             }
+{ set_active_document / set_active_project.                                  }
+
+{ Bring a document of PROJECT that no other open project lists to the front, }
+{ so the focused project is PROJECT. True when it is.                        }
+Function EnsureFocusProject(Workspace : IWorkspace; Project : IProject; Prj : String) : Boolean;
+Var
+    I, Pass : Integer;
+    D : IDocument;
+    P, Holders : String;
+    ServerDoc : IServerDocument;
+Begin
+    Result := FocusedProjectPathIs(Prj);
+    If Result Then Exit;
+    { A document of this project alone is shown: one already loaded first     }
+    { (pass 0), and only when none will do is one opened (pass 1), so moving   }
+    { the focus does not load a board for nothing.                             }
+    For Pass := 0 To 1 Do
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        D := Nil;
+        Try D := Project.DM_LogicalDocuments(I); Except D := Nil; End;
+        If D = Nil Then Continue;
+        P := '';
+        Try P := D.DM_FullPath; Except P := ''; End;
+        If EnsureDocKind(P) = '' Then Continue;
+        Holders := ProjectsHoldingJson(P);
+        If Pos('","', Holders) > 0 Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(P); Except ServerDoc := Nil; End;
+        If (ServerDoc = Nil) And (Pass = 1) Then
+            If FileExists(P) Then ServerDoc := EnsureOpen(P);
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        Result := FocusedProjectPathIs(Prj);
+        If Result Then Exit;
+    End;
+End;
+
+Function EnsureTarget(Command : String; Params : String; RequestId : String) : String;
+Var
+    Doc, Prj, Why, Front : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    ServerDoc : IServerDocument;
+    Opened, Fronted, ProjectOpened, NeedProject : Boolean;
+Begin
+    Result := '';
+    Doc := Trim(ExtractJsonValue(Params, 'target_document'));
+    Prj := Trim(ExtractJsonValue(Params, 'target_project'));
+    If (Doc = '') And (Prj = '') Then Exit;
+
+    If Doc <> '' Then
+    Begin
+        Why := EnsurePathProblem(Doc, False);
+        If Why <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'target_document ' + Doc
+                + ': ' + Why + '. Name the document by its full absolute path. Nothing was run.');
+            Exit;
+        End;
+        Why := EnsureKindProblem(Command, Doc);
+        If Why <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'KIND_MISMATCH', Command + ' at '
+                + Doc + ': ' + Why + '. Nothing was run.');
+            Exit;
+        End;
+    End;
+    If Prj <> '' Then
+    Begin
+        Why := EnsurePathProblem(Prj, True);
+        If Why <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'target_project ' + Prj
+                + ': ' + Why + '. Name the project by its full absolute path. Nothing was run.');
+            Exit;
+        End;
+    End;
+
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_FAILED',
+            'No workspace: the target cannot be checked. Nothing was run.');
+        Exit;
+    End;
+
+    Opened := False;
+    Fronted := False;
+    ProjectOpened := False;
+    Project := Nil;
+    If Prj <> '' Then
+    Begin
+        Project := OpenProjectAt(Workspace, Prj);
+        If Project = Nil Then
+        Begin
+            If Not FileExists(Prj) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'TARGET_NOT_FOUND', 'target_project '
+                    + Prj + ' does not exist. Nothing was run.');
+                Exit;
+            End;
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Project');
+            AddStringParameter('FileName', Prj);
+            RunProcess('WorkspaceManager:OpenObject');
+            Try Workspace := GetWorkspace; Except End;
+            Project := OpenProjectAt(Workspace, Prj);
+            If Project = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'TARGET_FAILED', 'target_project '
+                    + Prj + ' did not open. Nothing was run.');
+                Exit;
+            End;
+            ProjectOpened := True;
+        End;
+    End;
+
+    If Doc <> '' Then
+    Begin
+        If (Project <> Nil) And Not EnsureMember(Project, Doc) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_IN_PROJECT', 'target_document '
+                + Doc + ' is not a document of ' + Prj + ' (open projects listing it: '
+                + ProjectsHoldingJson(Doc) + '). Nothing was run.');
+            Exit;
+        End;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Doc); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then
+        Begin
+            If Project = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_OPEN', 'target_document ' + Doc
+                    + ' is not open. Name its project (target_project) to have it opened'
+                    + ' inside it. Nothing was run.');
+                Exit;
+            End;
+            If Not FileExists(Doc) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'TARGET_NOT_FOUND', 'target_document '
+                    + Doc + ' is listed by ' + Prj + ' but is not on disk. Nothing was run.');
+                Exit;
+            End;
+            ServerDoc := EnsureOpen(Doc);
+            If ServerDoc = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'TARGET_FAILED', 'target_document '
+                    + Doc + ' did not open. Nothing was run.');
+                Exit;
+            End;
+            Opened := True;
+        End;
+        Front := EdFrontPath(0);
+        If Not EnsureSame(Front, Doc) Then
+        Begin
+            Try Client.ShowDocument(ServerDoc); Except End;
+            Fronted := True;
+            Front := EdFrontPath(0);
+        End;
+        If Not EnsureSame(Front, Doc) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT', 'target_document ' + Doc
+                + ' could not be brought to the front (' + Front + ' is). Nothing was run.');
+            Exit;
+        End;
+    End;
+
+    NeedProject := (Project <> Nil) And ((Doc = '')
+        Or (LowerCase(Copy(Trim(Command), 1, 8)) = 'project.'));
+    If NeedProject Then
+    Begin
+        If (Doc = '') Then
+        Begin
+            If Not FocusedProjectPathIs(Prj) Then Fronted := True;
+            If Not EnsureFocusProject(Workspace, Project, Prj) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'WRONG_PROJECT', 'target_project '
+                    + Prj + ' could not be made the focused project (no document of it'
+                    + ' alone could be brought to the front). Nothing was run.');
+                Exit;
+            End;
+        End;
+        If (Doc <> '') And Not FocusedProjectPathIs(Prj) Then
+        Begin
+            { A file several open projects list leaves Altium on the project      }
+            { that was focused before. Focus the named one through a document of }
+            { it alone, then show the file again: Altium then stays on it.        }
+            EnsureFocusProject(Workspace, Project, Prj);
+            Try Client.ShowDocument(ServerDoc); Except End;
+            Fronted := True;
+            Front := EdFrontPath(0);
+            If (Not EnsureSame(Front, Doc)) Or (Not FocusedProjectPathIs(Prj)) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'WRONG_PROJECT', 'target_document '
+                    + Doc + ' is listed by several open projects ('
+                    + ProjectsHoldingJson(Doc) + ') and Altium could not be brought onto '
+                    + Prj + ' with it in front (' + Front + ' is in front). Nothing was run.');
+                Exit;
+            End;
+        End;
+    End;
+
+    Result := '"target":' + JsonObj(JsonStr('document', Doc) + ','
+        + JsonStr('project', Prj) + ',' + JsonBool('project_opened', ProjectOpened) + ','
+        + JsonBool('opened', Opened) + ',' + JsonBool('fronted', Fronted));
+End;
+
 Function ProcessSingleRequest(Dummy : Integer): Boolean;
 Var
     RequestPath, RequestId : String;
@@ -2944,6 +3184,7 @@ Var
     Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
     FocusBefore, FocusAfter, SessionNote : String;
+    EnsureOut, EnsureRefusal, EnsureNote : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
@@ -3057,6 +3298,24 @@ Begin
     NamedDocs := TStringList.Create;
     CollectDocPaths(Params, NamedDocs);
     LoadedBefore := LoadedNow(NamedDocs);
+    { ENSURE (#428): the document the request names, by full path, put in   }
+    { front inside its project, or the command refused before it runs.      }
+    EnsureOut := '';
+    Try
+        EnsureOut := EnsureTarget(Command, Params, RequestId);
+    Except
+        EnsureOut := BuildErrorResponse(RequestId, 'TARGET_FAILED',
+            'Checking the target raised an error. Nothing was run.');
+    End;
+    EnsureRefusal := '';
+    EnsureNote := '';
+    If Copy(EnsureOut, 1, 1) = '{' Then EnsureRefusal := EnsureOut;
+    If Copy(EnsureOut, 1, 1) = '"' Then EnsureNote := EnsureOut;
+    If EnsureNote <> '' Then
+    Begin
+        FocusBefore := CurrentFocusedDocPath(0);
+        OwnTarget := CommandTarget(Params, FocusBefore);
+    End;
     { The bridge's unsaved record (EdAfterCommand): what a command that
       edits acts on, and the files' ages, taken before the handler runs. }
     EdPending := '';
@@ -3091,6 +3350,8 @@ Begin
             { The Config tab's permissions: refused here, where every request
               passes, so a client running older Python is held to them too. }
             ResponseContent := SettingRefusal(Command, Params, RequestId);
+            If (ResponseContent = '') And (EnsureRefusal <> '') Then
+                ResponseContent := EnsureRefusal;
             { A write from a session's tool call, never the person at the
               dashboard, may not land on a document another session is
               editing (OwnerRefusal). }
@@ -3103,7 +3364,7 @@ Begin
             End;
             If ResponseContent = '' Then
                 ResponseContent := ProcessCommand(Command, Params, RequestId);
-            If Writes And (Actor <> 'user') And (Not OwnRefused)
+            If Writes And (Actor <> 'user') And (Not OwnRefused) And (EnsureRefusal = '')
                 And (OwnTarget <> '') And Not CommandOnlyLooks(Command) Then
                 OwnerSet(OwnerKey(OwnTarget), RequestTag(RequestId), Command);
         Except
@@ -3153,6 +3414,8 @@ Begin
 
         If SessionNote <> '' Then
             ResponseContent := AppendEnvelopeField(ResponseContent, SessionNote);
+        If EnsureNote <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent, EnsureNote);
 
         OpenedField := OpenedDocumentsField(NamedDocs, LoadedBefore);
         If OpenedField <> '' Then

@@ -196,6 +196,8 @@ INTERACTION_OVERRIDES = {
     # The bridge's record of unsaved documents: reading it, or clearing
     # its lost list, writes nothing to a design.
     "app_edited_documents": READONLY,
+    # A project's documents by full path (#428): a read.
+    "app_get_project_files": READONLY,
     # Reads the rules, or keeps an approved copy beside the board: nothing
     # in the design changes.
     "pcb_drc_rules": READONLY,
