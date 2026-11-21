@@ -140,12 +140,13 @@ def command_is_read_only(command: str) -> bool:
 #: and the next session's focus on it was refused before it wrote anything.
 #: project.open (verb "open") loads a project and changes no document, so
 #: it is not checked against the document another session left in front.
-#: release_document only gives up the caller's own claim.
+#: release_document only gives up the caller's own claim, and
+#: acknowledge_lost only clears entries of the bridge's edited record.
 LOOK_VERBS_EXACT = (
     "focus_board", "set_active_document", "cockpit_state", "zoom",
     "switch_view", "refresh_document", "highlight_net", "clear_highlights",
     "layer_view", "document_owners", "claim_document", "release_document",
-    "open",
+    "open", "acknowledge_lost",
 )
 
 
@@ -191,17 +192,86 @@ def command_closes(command: str) -> bool:
     return (command or "").strip().lower() in _CLOSE_COMMANDS
 
 
+# What does NOT leave a document unsaved, for the bridge's own record of
+# unsaved documents (EdAfterCommand in StatusForm.pas). Altium's Modified
+# flag cannot stand in for it: it misses API edits, and on a PcbLib it
+# reads False while the editor's tab shows the library edited. A command
+# that is no read and no look, and whose handler recorded no edit, marks
+# the document it acted on, unless it is one of these: it saves or closes
+# (the record is cleared instead), writes only a file of its own, changes
+# the session, the view or a preference, or reads under a name the read
+# rules do not catch. A command missing here counts as an edit: the record
+# errs towards "unsaved", which costs a question or a save, never a read
+# of a file that is not what Altium holds.
+_NO_EDIT_VERB_PREFIXES = (
+    "save", "close", "select", "deselect", "install_", "uninstall_",
+    "reload_", "measure_", "zoom", "run_outjob",
+)
+_NO_EDIT_VERBS_EXACT = (
+    "autosave", "stop_server", "exit_active_command", "compile",
+    "force_recompile", "cross_probe", "run_erc", "run_drc",
+    "generate_output", "footprint_export", "extract_intlib", "search",
+    "library_lookup", "dashboard_snapshot", "output_panel", "explain_pin",
+    "crossref_net", "run_simulation", "run_spice_deck", "diag_workspace",
+    "set_current_component", "set_current_footprint", "rewrite_file",
+    "load_project_sheets",
+    # these save the project file themselves; the documents they name are
+    # added, removed, created or renamed on disk, not edited in the editor
+    "add_document", "remove_document", "create_document", "rename_document",
+    # reads under names the read rules do not catch
+    "file_info", "pour_outline", "pours_at", "pour_copper",
+    "object_outline", "part_outlines", "net_figures", "connected_copper",
+    "special_strings", "rule_scope_check", "copper_layers",
+    "dump_free_primitives",
+    # preferences and the view
+    "editor_options", "sch_editor_options", "polygon_repour_mode", "view",
+)
+#: An action argument naming a read.
+_NO_EDIT_ACTIONS = ("get", "list", "read", "status")
+#: Altium processes (run_process) that open, save, close or move between
+#: documents, or move only the view or the selection: the part after the
+#: colon, lower case. Any other process counts as an edit of the document
+#: in front (PCB:Clear, PCB:CustomPadShape, Sch:ManageUnions ...).
+_NO_EDIT_PROCESS_PREFIXES = (
+    "openobject", "saveobject", "closeobject", "saveall", "zoom", "jump",
+    "select", "deselect", "gotolibrarycomponent", "firstcomponent",
+    "nextcomponent", "lastcomponent", "previouscomponent", "setcurrentlayer",
+    "managelayersets", "changeviewconfiguration", "togglecomponentdisplaymode",
+)
+
+
+def _process_action(command: str, params: dict | None) -> str:
+    """The process a run_process command runs, after its colon, lower case."""
+    verb = (command or "").strip().lower().split(".", 1)[-1]
+    if verb != "run_process":
+        return ""
+    params = params or {}
+    proc = str(params.get("process") or params.get("process_name") or "")
+    return proc.strip().lower().split(":", 1)[-1]
+
+
+def command_leaves_documents(command: str, params: dict | None = None) -> bool:
+    """Does this command leave the content of every open document as it was?"""
+    verb = (command or "").strip().lower().split(".", 1)[-1]
+    action = str((params or {}).get("action", "")).strip().lower()
+    proc = _process_action(command, params)
+    return (command_only_looks(command) or verb.startswith(_NO_EDIT_VERB_PREFIXES)
+            or verb in _NO_EDIT_VERBS_EXACT or action in _NO_EDIT_ACTIONS
+            or bool(proc) and proc.startswith(_NO_EDIT_PROCESS_PREFIXES))
+
+
 #: The markers around the generated rules in StatusForm.pas.
 PASCAL_RULES_BEGIN = "{ BEGIN COMMAND RULES, generated from safety.py: edit the Python. }"
 PASCAL_RULES_END = "{ END COMMAND RULES }"
 
 
 def pascal_command_rules() -> str:
-    """CommandIsReadOnly, CommandDeletes, CommandCloses and CommandOnlyLooks
-    as DelphiScript.
+    """CommandIsReadOnly, CommandDeletes, CommandCloses, CommandOnlyLooks
+    and CommandLeavesDocuments as DelphiScript.
 
-    The same rules as command_is_read_only, command_deletes and
-    command_closes, from the same tables. Uses ActionHasPrefix and
+    The same rules as command_is_read_only, command_deletes,
+    command_closes, command_only_looks and command_leaves_documents, from
+    the same tables. Uses ActionHasPrefix and
     ExtractJsonValue, which StatusForm.pas defines before the region.
     """
     def either(terms: list[str]) -> str:
@@ -219,6 +289,11 @@ def pascal_command_rules() -> str:
     closes = either([f"(Cmd = '{c}')" for c in _CLOSE_COMMANDS])
     looks = either(["CommandIsReadOnly(Command)"]
                    + [f"(Verb = '{v}')" for v in LOOK_VERBS_EXACT])
+    leaves = either(["CommandOnlyLooks(Command)"]
+                    + [f"ActionHasPrefix(Verb, '{p}')" for p in _NO_EDIT_VERB_PREFIXES]
+                    + [f"(Verb = '{v}')" for v in _NO_EDIT_VERBS_EXACT]
+                    + [f"(Op = '{a}')" for a in _NO_EDIT_ACTIONS]
+                    + [f"ActionHasPrefix(Proc, '{p}')" for p in _NO_EDIT_PROCESS_PREFIXES])
     return f"""{PASCAL_RULES_BEGIN}
 
 {{ The verb of a command: lower case, after the first dot. }}
@@ -264,6 +339,25 @@ Var
 Begin
     Verb := CommandVerb(Command);
     Result := {looks};
+End;
+
+{{ A command that leaves the content of every open document as it was: }}
+{{ the bridge's edited record is not marked for it (EdAfterCommand).   }}
+Function CommandLeavesDocuments(Command : String; Params : String) : Boolean;
+Var
+    Verb, Op, Proc : String;
+Begin
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Proc := '';
+    If Verb = 'run_process' Then
+    Begin
+        Proc := LowerCase(Trim(ExtractJsonValue(Params, 'process')));
+        If Proc = '' Then Proc := LowerCase(Trim(ExtractJsonValue(Params, 'process_name')));
+        If Pos(':', Proc) > 0 Then Proc := Copy(Proc, Pos(':', Proc) + 1, Length(Proc));
+        If Proc = '' Then Proc := '?';
+    End;
+    Result := {leaves};
 End;
 
 {PASCAL_RULES_END}"""

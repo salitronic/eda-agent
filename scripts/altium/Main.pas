@@ -133,6 +133,20 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { THE BRIDGE'S RECORD OF UNSAVED DOCUMENTS, by full path. See EdMark.
+      EdRecord: one entry per file, Chr(1) KEY Chr(2) body Chr(3), the body
+      nine Chr(2)-separated fields (EdBody). EdPending: the paths handlers
+      noted during the current command, Chr(1) path Chr(2) file age
+      Chr(3), resolved by the dispatcher (EdAfterCommand). EdNoteSerial
+      counts the notes, EdSeq the journal lines, EdJournalFailed the
+      journal writes that raised; EdQuiet holds the journal while the
+      record is rebuilt from it (EdUnwind). }
+    EdRecord : String;
+    EdPending : String;
+    EdNoteSerial : Integer;
+    EdSeq : Integer;
+    EdJournalFailed : Integer;
+    EdQuiet : Boolean;
     { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
     { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
     { upper case with back slashes. See OwnerRefusal.                     }
@@ -663,11 +677,27 @@ End;
 Procedure NoteDocEdited(FilePath : String);
 Var
     Key : String;
+    Age : Integer;
 Begin
     WriteSerial := WriteSerial + 1;
     If FilePath = '' Then Exit;
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
+    { The full-path record (EdRecord) takes the path as the handler gave   }
+    { it; the dispatcher resolves it once the command is done             }
+    { (EdAfterCommand). The file's age is taken now, before any save the   }
+    { handler makes after its edit, so that save reads as one.            }
+    EdNoteSerial := EdNoteSerial + 1;
+    If Pos(Chr(1) + FilePath + Chr(2), EdPending) = 0 Then
+    Begin
+        Age := -1;
+        Try
+            If FileExists(FilePath) Then Age := FileAge(FilePath);
+        Except
+            Age := -1;
+        End;
+        EdPending := EdPending + Chr(1) + FilePath + Chr(2) + IntToStr(Age) + Chr(3);
+    End;
 End;
 
 { ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
@@ -779,6 +809,462 @@ Begin
     If P > 0 Then
         EditedDocs := Copy(EditedDocs, 1, P - 1)
             + Copy(EditedDocs, P + Length(Key), Length(EditedDocs));
+End;
+
+{..............................................................................}
+{ THE BRIDGE'S RECORD OF UNSAVED DOCUMENTS, BY FULL PATH (#426).              }
+{                                                                              }
+{ Altium's Modified flag cannot answer "does this document hold edits that    }
+{ are not on disk?": it misses edits made through the API, and on a PcbLib it }
+{ reads False while the editor's own tab shows the library edited (MEASURED, }
+{ AD 25.8.1: set_footprint_description and set_pad_properties both left the  }
+{ tab marked and Modified False; the mark reached the right document). The   }
+{ file-name list above (EditedDocs) answers saves and closes, but it cannot  }
+{ tell two open files of one name apart -- two projects each holding a       }
+{ PCB.PcbDoc -- and nothing reported it.                                     }
+{                                                                              }
+{ So the bridge keeps its own record, one entry per FILE, keyed by its full   }
+{ path. An entry is unsaved while the file on disk is no newer than it was at }
+{ the first edit: ANY save clears it (the bridge's, Altium's own File > Save, }
+{ another program's), with no code per save route. A document closed with    }
+{ its edits unsaved becomes LOST, reported until a caller acknowledges it.    }
+{ Every change is appended to a journal in the workspace before the reply is }
+{ written, so a script restart or a crash replays it (EdUnwind).             }
+{                                                                              }
+{ The dispatcher marks entries once each command is done (EdAfterCommand):   }
+{ the paths handlers noted (NoteDocEdited), and, when a command that edits   }
+{ noted nothing, the document it acted on. These helpers come first because  }
+{ every save and close below clears through them.                            }
+{                                                                              }
+{ Body fields (EdBody): 0 path, 1 projects holding it ('|'-joined .PrjPcb    }
+{ paths), 2 last edit, 3 the file's age before the first edit, 4 command,    }
+{ 5 session, 6 state (E unsaved, L lost), 7 note.                           }
+{..............................................................................}
+
+{ The record key of a path: trimmed, back slashes, upper case. }
+Function EdKey(Path : String) : String;
+Begin
+    Result := UpperCase(Trim(StringReplace(Path, '/', '\', -1)));
+End;
+
+{ Field I (0 first) of TEXT split on the one-character SEP. }
+Function EdPart(Text : String; Sep : String; I : Integer) : String;
+Var
+    N, P : Integer;
+Begin
+    Result := '';
+    For N := 1 To I Do
+    Begin
+        P := Pos(Sep, Text);
+        If P = 0 Then Exit;
+        Text := Copy(Text, P + 1, Length(Text));
+    End;
+    P := Pos(Sep, Text);
+    If P = 0 Then Result := Text
+    Else Result := Copy(Text, 1, P - 1);
+End;
+
+{ How many fields TEXT holds when split on SEP. }
+Function EdFieldCount(Text : String; Sep : String) : Integer;
+Var
+    P : Integer;
+Begin
+    Result := 1;
+    P := Pos(Sep, Text);
+    While P > 0 Do
+    Begin
+        Inc(Result);
+        Text := Copy(Text, P + 1, Length(Text));
+        P := Pos(Sep, Text);
+    End;
+End;
+
+{ A text fit for one field: no separator, tab or line break in it. }
+Function EdClean(S : String) : String;
+Begin
+    Result := StringReplace(S, Chr(1), ' ', -1);
+    Result := StringReplace(Result, Chr(2), ' ', -1);
+    Result := StringReplace(Result, Chr(3), ' ', -1);
+    Result := StringReplace(Result, Chr(9), ' ', -1);
+    Result := StringReplace(Result, Chr(10), ' ', -1);
+    Result := StringReplace(Result, Chr(13), ' ', -1);
+End;
+
+Function EdBody(Path, Projects, Edited, Age, Command, Session, State, Note : String) : String;
+Begin
+    Result := EdClean(StringReplace(Path, '/', '\', -1)) + Chr(2)
+        + EdClean(Projects) + Chr(2) + EdClean(Edited) + Chr(2)
+        + EdClean(Age) + Chr(2) + EdClean(Command) + Chr(2)
+        + EdClean(Session) + Chr(2) + EdClean(State) + Chr(2) + EdClean(Note);
+End;
+
+{ The body of KEY's entry in STORE, '' when there is none. }
+Function EdBodyOf(Store : String; Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), Store);
+    If P = 0 Then Exit;
+    Rest := Copy(Store, P + Length(Key) + 2, Length(Store));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Rest, 1, E - 1);
+End;
+
+{ STORE without KEY's entry. }
+Function EdWithout(Store : String; Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := Store;
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), Store);
+    If P = 0 Then Exit;
+    Rest := Copy(Store, P, Length(Store));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Store, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+End;
+
+{ STORE with KEY's entry set to BODY, replacing the one there was. }
+Function EdWith(Store : String; Key : String; Body : String) : String;
+Begin
+    Result := EdWithout(Store, Key) + Chr(1) + Key + Chr(2) + Body + Chr(3);
+End;
+
+{ The key of the N-th entry (0 first) of STORE, '' past the last one. }
+Function EdKeyAt(Store : String; N : Integer) : String;
+Var
+    I, P : Integer;
+Begin
+    Result := '';
+    For I := 0 To N Do
+    Begin
+        P := Pos(Chr(1), Store);
+        If P = 0 Then Exit;
+        Store := Copy(Store, P + 1, Length(Store));
+    End;
+    P := Pos(Chr(2), Store);
+    If P = 0 Then Exit;
+    Result := Copy(Store, 1, P - 1);
+End;
+
+{ A file age as written in a field, -1 when it is not one. StrToIntDef     }
+{ raises (a modal) on a number past 32 bits, so the text is checked first: }
+{ digits only, a minus first allowed, and ten digits only below two        }
+{ thousand million -- a file age is a DOS date, which stays there until    }
+{ 2043. (The 32-bit boundary itself cannot be written: AD 25's compiler    }
+{ refuses that literal, see MaxInt above.)                                 }
+Function EdAgeOf(S : String) : Integer;
+Var
+    I, First : Integer;
+Begin
+    Result := -1;
+    S := Trim(S);
+    If S = '' Then Exit;
+    First := 1;
+    If Copy(S, 1, 1) = '-' Then First := 2;
+    If (Length(S) < First) Or (Length(S) - First + 1 > 10) Then Exit;
+    For I := First To Length(S) Do
+        If (Copy(S, I, 1) < '0') Or (Copy(S, I, 1) > '9') Then Exit;
+    If (Length(S) - First + 1 = 10) And (Copy(S, First, 1) <> '1') Then Exit;
+    Result := StrToIntDef(S, -1);
+End;
+
+{ The file's age now (FileAge, two-second ticks), -1 when there is no file. }
+Function EdAgeNow(Path : String) : Integer;
+Begin
+    Result := -1;
+    If Path = '' Then Exit;
+    Try
+        If FileExists(Path) Then Result := FileAge(Path);
+    Except
+        Result := -1;
+    End;
+End;
+
+Function EdStamp(Dummy : Integer) : String;
+Begin
+    Result := '';
+    Try Result := FormatDateTime('yyyy-mm-dd hh:nn:ss', Now); Except End;
+End;
+
+Function EdLooksFull(Path : String) : Boolean;
+Begin
+    Result := (Copy(Path, 2, 1) = ':') Or (Copy(Path, 1, 2) = '\\') Or (Copy(Path, 1, 2) = '//');
+End;
+
+{ One journal line: running number, time, op, then the body's path,       }
+{ projects, file age, command, session and note, tab-separated. Always    }
+{ nine fields: a line with any other count was torn and is not replayed.  }
+Function EdJournalLine(Seq : Integer; Stamp : String; Op : String; Body : String) : String;
+Var
+    T : String;
+Begin
+    T := Chr(9);
+    Result := IntToStr(Seq) + T + EdClean(Stamp) + T + EdClean(Op) + T
+        + EdPart(Body, Chr(2), 0) + T + EdPart(Body, Chr(2), 1) + T
+        + EdPart(Body, Chr(2), 3) + T + EdPart(Body, Chr(2), 4) + T
+        + EdPart(Body, Chr(2), 5) + T + EdPart(Body, Chr(2), 7);
+End;
+
+{ The record a journal's text leaves behind. The lines in order, the last }
+{ event of each path wins: E (edited) and L (lost) set its entry, S       }
+{ (saved), C (closed) and R (released) remove it. A torn line, or an op   }
+{ the journal does not know, ends the replay: nothing after it is trusted.}
+Function EdReplay(Text : String) : String;
+Var
+    Rest, Line, Op, Path, Key : String;
+    P : Integer;
+    Done, Sets, Clears : Boolean;
+Begin
+    Result := '';
+    Rest := Text;
+    Done := False;
+    While (Rest <> '') And (Not Done) Do
+    Begin
+        P := Pos(Chr(10), Rest);
+        If P = 0 Then
+        Begin
+            Line := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Line := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End;
+        If Copy(Line, Length(Line), 1) = Chr(13) Then Line := Copy(Line, 1, Length(Line) - 1);
+        If Line <> '' Then
+        Begin
+            Op := EdPart(Line, Chr(9), 2);
+            Path := EdPart(Line, Chr(9), 3);
+            Key := EdKey(Path);
+            Sets := (Op = 'E') Or (Op = 'L');
+            Clears := (Op = 'S') Or (Op = 'C') Or (Op = 'R');
+            If (EdFieldCount(Line, Chr(9)) <> 9) Or (Key = '') Or Not (Sets Or Clears) Then
+                Done := True;
+            If (Not Done) And Sets Then
+                Result := EdWith(Result, Key, EdBody(Path, EdPart(Line, Chr(9), 4),
+                    EdPart(Line, Chr(9), 1), EdPart(Line, Chr(9), 5),
+                    EdPart(Line, Chr(9), 6), EdPart(Line, Chr(9), 7), Op,
+                    EdPart(Line, Chr(9), 8)));
+            If (Not Done) And Clears Then
+                Result := EdWithout(Result, Key);
+        End;
+    End;
+End;
+
+Function EdJournalPath(Dummy : Integer) : String;
+Begin
+    Result := WorkspaceDir + 'edited_journal.txt';
+End;
+
+{ Append one event to the journal. Every change to the record is written   }
+{ here before the reply that follows it, by the route AppendLog uses; a    }
+{ write that raises is counted (EdJournalFailed) and reported.             }
+Procedure EdJournal(Op : String; Body : String);
+Var
+    F : TextFile;
+    Path : String;
+Begin
+    If EdQuiet Then Exit;
+    EdSeq := EdSeq + 1;
+    Try
+        Path := EdJournalPath(0);
+        AssignFile(F, Path);
+        If FileExists(Path) Then Append(F) Else Rewrite(F);
+        Try
+            WriteLn(F, EdJournalLine(EdSeq, EdStamp(0), Op, Body));
+        Finally
+            CloseFile(F);
+        End;
+    Except
+        EdJournalFailed := EdJournalFailed + 1;
+    End;
+End;
+
+{ Record an edit of PATH, a full path, by COMMAND for SESSION. AGE is the  }
+{ file's age before the edit; PROJECTS the projects holding the file, which}
+{ the caller works out only when the entry is new. The first edit is      }
+{ journaled (E) with its age, which is all a replay needs; a further edit }
+{ only updates the entry. An entry whose file got newer than its age, and }
+{ a lost one, are saved / replaced by this edit as a new one.             }
+Procedure EdMark(Path : String; Projects : String; Age : Integer; Command : String;
+    Session : String; Note : String);
+Var
+    Key, Body, Stamp : String;
+Begin
+    Key := EdKey(Path);
+    If Key = '' Then Exit;
+    Stamp := EdStamp(0);
+    Body := EdBodyOf(EdRecord, Key);
+    If (Body <> '') And (EdPart(Body, Chr(2), 6) = 'E') Then
+    Begin
+        If Age <= EdAgeOf(EdPart(Body, Chr(2), 3)) Then
+        Begin
+            EdRecord := EdWith(EdRecord, Key, EdBody(EdPart(Body, Chr(2), 0),
+                EdPart(Body, Chr(2), 1), Stamp, EdPart(Body, Chr(2), 3),
+                Command, Session, 'E', EdPart(Body, Chr(2), 7)));
+            Exit;
+        End;
+        { Saved since the first edit, and edited again: a new entry. }
+        EdJournal('S', Body);
+        If Projects = '' Then Projects := EdPart(Body, Chr(2), 1);
+    End;
+    Body := EdBody(Path, Projects, Stamp, IntToStr(Age), Command, Session, 'E', Note);
+    EdRecord := EdWith(EdRecord, Key, Body);
+    EdJournal('E', Body);
+End;
+
+{ The entry key for PATH: its own key when it is a full path; for a bare  }
+{ name, the key of the ONE entry with that file name, '' when none or     }
+{ several have it (never one picked by order).                           }
+Function EdKeyFor(Path : String) : String;
+Var
+    N, Hits : Integer;
+    Key, Name : String;
+Begin
+    Result := '';
+    If Path = '' Then Exit;
+    If EdLooksFull(Path) Then
+    Begin
+        Result := EdKey(Path);
+        Exit;
+    End;
+    Name := UpperCase(ExtractFileName(Path));
+    Hits := 0;
+    N := 0;
+    Key := EdKeyAt(EdRecord, 0);
+    While Key <> '' Do
+    Begin
+        If UpperCase(ExtractFileName(Key)) = Name Then
+        Begin
+            Inc(Hits);
+            Result := Key;
+        End;
+        Inc(N);
+        Key := EdKeyAt(EdRecord, N);
+    End;
+    If Hits <> 1 Then Result := '';
+End;
+
+{ Drop the paths noted during this command that resolve to KEY. }
+Procedure EdDropPending(Key : String);
+Var
+    Rest, Item, Kept : String;
+    P : Integer;
+Begin
+    Kept := '';
+    Rest := EdPending;
+    P := Pos(Chr(3), Rest);
+    While P > 0 Do
+    Begin
+        Item := Copy(Rest, 1, P);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If EdKey(Copy(Item, 2, Pos(Chr(2), Item) - 2)) <> Key Then Kept := Kept + Item;
+        P := Pos(Chr(3), Rest);
+    End;
+    EdPending := Kept;
+End;
+
+{ PATH was saved (OP 'S') or closed (OP 'C') by the bridge: its unsaved   }
+{ entry goes. A lost entry stays until a caller acknowledges it.          }
+Procedure EdForget(Path : String; Op : String);
+Var
+    Key, Body : String;
+Begin
+    Key := EdKeyFor(Path);
+    If Key = '' Then Exit;
+    EdDropPending(Key);
+    Body := EdBodyOf(EdRecord, Key);
+    If (Body = '') Or (EdPart(Body, Chr(2), 6) <> 'E') Then Exit;
+    EdRecord := EdWithout(EdRecord, Key);
+    EdJournal(Op, Body);
+End;
+
+{ Whether PATH is open in Altium: a document the client holds, or a      }
+{ project of the workspace (a .PrjPcb has no editor document of its own). }
+Function EdIsOpen(Path : String) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Have : String;
+    I : Integer;
+Begin
+    Result := False;
+    If Path = '' Then Exit;
+    Try
+        If Client.GetDocumentByPath(Path) <> Nil Then Result := True;
+    Except
+        Result := False;
+    End;
+    If Result Then Exit;
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except Proj := Nil; End;
+        If Proj <> Nil Then
+        Begin
+            Have := '';
+            Try Have := Proj.DM_ProjectFullPath; Except Have := ''; End;
+            If EdKey(Have) = EdKey(Path) Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ Bring the record up to date with the disk and with what is open: an     }
+{ entry whose file got newer than its age was saved, by whatever route    }
+{ (S); one no longer open was closed with its edits unsaved (L, lost,     }
+{ until acknowledged). Called before every report; AFTER_RESTART 1 when   }
+{ the record was just rebuilt from its journal (EdUnwind).                }
+Procedure EdRefresh(AfterRestart : Integer);
+Var
+    Snapshot, Key, Body, Path, Reason : String;
+    N : Integer;
+Begin
+    Reason := 'closed without saving';
+    If AfterRestart = 1 Then Reason := 'not open when the bridge started again';
+    Snapshot := EdRecord;
+    N := 0;
+    Key := EdKeyAt(Snapshot, 0);
+    While Key <> '' Do
+    Begin
+        Body := EdBodyOf(Snapshot, Key);
+        If EdPart(Body, Chr(2), 6) = 'E' Then
+        Begin
+            Path := EdPart(Body, Chr(2), 0);
+            If EdAgeNow(Path) > EdAgeOf(EdPart(Body, Chr(2), 3)) Then
+            Begin
+                EdRecord := EdWithout(EdRecord, Key);
+                EdJournal('S', Body);
+            End
+            Else
+            Begin
+                If Not EdIsOpen(Path) Then
+                Begin
+                    Body := EdBody(Path, EdPart(Body, Chr(2), 1), EdPart(Body, Chr(2), 2),
+                        EdPart(Body, Chr(2), 3), EdPart(Body, Chr(2), 4),
+                        EdPart(Body, Chr(2), 5), 'L', Reason);
+                    EdRecord := EdWith(EdRecord, Key, Body);
+                    EdJournal('L', Body);
+                End;
+            End;
+        End;
+        Inc(N);
+        Key := EdKeyAt(Snapshot, N);
+    End;
 End;
 
 Function IsLibraryDocPath(FilePath : String) : Boolean;
@@ -1460,7 +1946,11 @@ Begin
         { sheet left marked would be rewritten by every later stop.          }
         AgeAfter := -1;
         Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
-        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then
+        Begin
+            ForgetDocEdited(Path);
+            EdForget(Path, 'S');
+        End;
 End;
 
 { Write the project FILE itself. Adding or removing a document changes the  }

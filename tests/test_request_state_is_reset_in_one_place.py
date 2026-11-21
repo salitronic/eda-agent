@@ -37,6 +37,11 @@ SESSION = {
     "LengthUnits", "Basic3dMode", "AutorouterMode",
     # Save passes and the documents edited this session.
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
+    # The record of unsaved documents by full path, kept across requests
+    # and in its journal (EdPending is emptied around each command by the
+    # dispatcher itself).
+    "EdRecord", "EdPending", "EdNoteSerial", "EdSeq", "EdJournalFailed",
+    "EdQuiet",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
     "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial",
