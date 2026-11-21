@@ -85,6 +85,45 @@ Begin
     Result := BuildSuccessResponse(RequestId, Data);
 End;
 
+{ The full path of an open document, given as Altium's project model    }
+{ gives it: DM_FullPath is a bare file name for a document outside every }
+{ project, and the client's own document then names the full path.       }
+Function EdOpenFullPath(Path : String) : String;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := Path;
+    If (Path = '') Or EdLooksFull(Path) Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+    If ServerDoc <> Nil Then
+    Begin
+        Try
+            If EdLooksFull(ServerDoc.FileName) Then Result := ServerDoc.FileName;
+        Except
+        End;
+    End;
+End;
+
+{ What a reply says beside "modified" (Altium's own flag): "edited" (the  }
+{ bridge's record, EdRecord) and "unsaved" (either). Altium's flag misses }
+{ API edits, and on a PcbLib it reads False while the editor shows the    }
+{ library edited; the record misses only edits made by hand, which       }
+{ Altium's flag sees on every other kind. The caller runs EdRefresh first.}
+Function EdDocFields(Path : String; Modified : Boolean) : String;
+Var
+    Body : String;
+    Edited : Boolean;
+Begin
+    Body := EdBodyOf(EdRecord, EdKey(EdOpenFullPath(Path)));
+    Edited := (Body <> '') And (EdPart(Body, Chr(2), 6) = 'E');
+    Result := ',' + JsonBool('edited', Edited)
+        + ',' + JsonBool('unsaved', Edited Or Modified);
+    If Edited Then
+        Result := Result + ',' + JsonStr('last_edit', EdPart(Body, Chr(2), 2))
+            + ',' + JsonStr('last_command', EdPart(Body, Chr(2), 4));
+End;
+
 Function App_GetOpenDocuments(RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -94,6 +133,7 @@ Var
     Data, DocInfo, FileName, FullPath, Kind, LoadedStr, ModifiedStr : String;
     FirstItem, IsLoaded : Boolean;
 Begin
+    EdRefresh(0);
     Workspace := GetWorkspace;
     Data := '[';
     FirstItem := True;
@@ -144,7 +184,8 @@ Begin
                         DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FullPath) + '"';
                         DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Kind) + '"';
                         DocInfo := DocInfo + ',"loaded":' + LoadedStr;
-                        DocInfo := DocInfo + ',"modified":' + ModifiedStr + '}';
+                        DocInfo := DocInfo + ',"modified":' + ModifiedStr
+                            + EdDocFields(FullPath, ModifiedStr = 'true') + '}';
                         Data := Data + DocInfo;
                     End;
                 End;
@@ -165,6 +206,7 @@ Var
     ServerDoc : IServerDocument;
     Data, FileName : String;
 Begin
+    EdRefresh(0);
     Data := '';
     Workspace := GetWorkspace;
     If Workspace <> Nil Then
@@ -176,7 +218,8 @@ Begin
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
             Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"';
-            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName))
+                + EdDocFields(FileName, DocIsModified(FileName)) + '}';
         End;
     End;
 
@@ -201,7 +244,8 @@ Begin
                 Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
                 Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
                 Data := Data + ',"document_kind":"' + EscapeJsonString(ServerDoc.Kind) + '"';
-                Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+                Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName))
+                + EdDocFields(FileName, DocIsModified(FileName)) + '}';
             End;
         End;
     End;
@@ -215,7 +259,8 @@ Begin
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
             Data := Data + ',"document_kind":"SCH"';
-            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName))
+                + EdDocFields(FileName, DocIsModified(FileName)) + '}';
         End;
     End;
     If Data = '' Then
@@ -228,7 +273,8 @@ Begin
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
             Data := Data + ',"document_kind":"PCB"';
-            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName))
+                + EdDocFields(FileName, DocIsModified(FileName)) + '}';
         End;
     End;
 
@@ -407,7 +453,10 @@ Begin
     Again := Nil;
     Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
     Closed := Again = Nil;
+    { Closed by the bridge, edits and all: no longer unsaved, and not lost }
+    { either, since the caller chose it (discard).                         }
     If Closed Then ForgetDocEdited(FilePath);
+    If Closed Then EdForget(FilePath, 'C');
     KeptByProject := False;
     If Discard And WasModified And (UpperCase(ExtractFileExt(FilePath)) = '.SCHDOC') Then
         KeptByProject := DocBelongsToOpenProject(FilePath);
@@ -945,6 +994,7 @@ Begin
     Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
     { Written, so a later stop has nothing of this edit left to save. }
     If Saved Then ForgetDocEdited(FilePath);
+    If Saved Then EdForget(FilePath, 'S');
 
     Reason := '';
     If Not Saved Then
@@ -1572,6 +1622,137 @@ Begin
         + JsonStr('session', Tag)));
 End;
 
+{ One entry of the bridge's unsaved record (EdRecord) as JSON. }
+Function EdEntryJson(Body : String) : String;
+Var
+    Path, Projects, List, One : String;
+    I, N : Integer;
+Begin
+    Path := EdPart(Body, Chr(2), 0);
+    Projects := EdPart(Body, Chr(2), 1);
+    List := '';
+    If Projects <> '' Then
+    Begin
+        N := EdFieldCount(Projects, '|');
+        For I := 0 To N - 1 Do
+        Begin
+            One := EdPart(Projects, '|', I);
+            If One <> '' Then
+            Begin
+                If List <> '' Then List := List + ',';
+                List := List + '"' + EscapeJsonString(One) + '"';
+            End;
+        End;
+    End;
+    Result := JsonObj(JsonStr('file_path', Path) + ','
+        + JsonRaw('projects', '[' + List + ']') + ','
+        + JsonStr('last_edit', EdPart(Body, Chr(2), 2)) + ','
+        + JsonStr('last_command', EdPart(Body, Chr(2), 4)) + ','
+        + JsonStr('session', EdPart(Body, Chr(2), 5)) + ','
+        + JsonInt('file_age_then', EdAgeOf(EdPart(Body, Chr(2), 3))) + ','
+        + JsonInt('file_age_now', EdAgeNow(Path)) + ','
+        + JsonBool('open', EdIsOpen(Path)) + ','
+        + JsonStr('note', EdPart(Body, Chr(2), 7)));
+End;
+
+{ Whether an entry passes the filters: a file's key, a project's key. }
+Function EdEntryWanted(Body : String; FileKey : String; ProjectKey : String) : Boolean;
+Var
+    Projects : String;
+    I, N : Integer;
+Begin
+    Result := True;
+    If (FileKey <> '') And (EdKey(EdPart(Body, Chr(2), 0)) <> FileKey) Then Result := False;
+    If Result And (ProjectKey <> '') Then
+    Begin
+        Result := False;
+        Projects := EdPart(Body, Chr(2), 1);
+        N := EdFieldCount(Projects, '|');
+        For I := 0 To N - 1 Do
+            If EdKey(EdPart(Projects, '|', I)) = ProjectKey Then Result := True;
+    End;
+End;
+
+{..............................................................................}
+{ App_GetEditedDocuments - the bridge's record of unsaved documents (see      }
+{ EdRecord in Main.pas). Params: file_path, project_path, both optional       }
+{ filters by full path. documents = files holding edits that are not on disk, }
+{ each with the projects holding it; two projects each with a PCB.PcbDoc are  }
+{ two entries. lost = files edited and gone unsaved (closed without saving,   }
+{ or not open when the record was rebuilt from its journal), kept until       }
+{ acknowledge_lost. Read only.                                                }
+{..............................................................................}
+Function App_GetEditedDocuments(Params : String; RequestId : String) : String;
+Var
+    FileKey, ProjectKey, Key, Body, Docs, Lost : String;
+    N : Integer;
+Begin
+    EdRefresh(0);
+    FileKey := EdKey(ExtractJsonValue(Params, 'file_path'));
+    ProjectKey := EdKey(ExtractJsonValue(Params, 'project_path'));
+    Docs := '';
+    Lost := '';
+    N := 0;
+    Key := EdKeyAt(EdRecord, 0);
+    While Key <> '' Do
+    Begin
+        Body := EdBodyOf(EdRecord, Key);
+        If EdEntryWanted(Body, FileKey, ProjectKey) Then
+        Begin
+            If EdPart(Body, Chr(2), 6) = 'E' Then
+            Begin
+                If Docs <> '' Then Docs := Docs + ',';
+                Docs := Docs + EdEntryJson(Body);
+            End
+            Else
+            Begin
+                If Lost <> '' Then Lost := Lost + ',';
+                Lost := Lost + EdEntryJson(Body);
+            End;
+        End;
+        Inc(N);
+        Key := EdKeyAt(EdRecord, N);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('documents', '[' + Docs + ']') + ','
+        + JsonRaw('lost', '[' + Lost + ']') + ','
+        + JsonStr('journal', EdJournalPath(0)) + ','
+        + JsonInt('journal_write_failures', EdJournalFailed)));
+End;
+
+{..............................................................................}
+{ App_AcknowledgeLost - drop entries of the lost list (journal R). Params:     }
+{ file_path, one file by full path; none drops them all. Unsaved entries are   }
+{ not touched: they go when their file is saved.                              }
+{..............................................................................}
+Function App_AcknowledgeLost(Params : String; RequestId : String) : String;
+Var
+    FileKey, Snapshot, Key, Body, Done : String;
+    N : Integer;
+Begin
+    EdRefresh(0);
+    FileKey := EdKey(ExtractJsonValue(Params, 'file_path'));
+    Done := '';
+    Snapshot := EdRecord;
+    N := 0;
+    Key := EdKeyAt(Snapshot, 0);
+    While Key <> '' Do
+    Begin
+        Body := EdBodyOf(Snapshot, Key);
+        If (EdPart(Body, Chr(2), 6) = 'L') And ((FileKey = '') Or (Key = FileKey)) Then
+        Begin
+            EdRecord := EdWithout(EdRecord, Key);
+            EdJournal('R', Body);
+            If Done <> '' Then Done := Done + ',';
+            Done := Done + '"' + EscapeJsonString(EdPart(Body, Chr(2), 0)) + '"';
+        End;
+        Inc(N);
+        Key := EdKeyAt(Snapshot, N);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('acknowledged', '[' + Done + ']')));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1597,6 +1778,8 @@ Begin
         'document_owners':     Result := App_DocumentOwners(RequestId);
         'claim_document':      Result := App_ClaimDocument(Params, RequestId);
         'release_document':    Result := App_ReleaseDocument(Params, RequestId);
+        'get_edited_documents': Result := App_GetEditedDocuments(Params, RequestId);
+        'acknowledge_lost':    Result := App_AcknowledgeLost(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

@@ -19136,6 +19136,7 @@ Begin
     { A fresh output did not exist before DoFileSave. Its creation proves
       the write, so do not leave the bridge's edit marker blocking close. }
     ForgetDocEdited(OutPath);
+    EdForget(OutPath, 'S');
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('library', LibPath) + ','
         + JsonStr('footprint_name', FpWanted) + ','

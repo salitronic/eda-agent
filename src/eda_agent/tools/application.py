@@ -1385,6 +1385,46 @@ def register_application_tools(mcp):
             "application.release_document", params)
 
     @mcp.tool()
+    async def app_edited_documents(project_path: str = "", file_path: str = "",
+                                   acknowledge_lost: bool = False) -> dict[str, Any]:
+        """Which open documents hold edits that are not saved to disk.
+
+        The bridge's own record, by full path: every command that edits
+        marks the document it changed, and the entry goes when the file
+        on disk gets newer (any save, Altium's own File > Save included)
+        or the bridge closes it. Altium's ``modified`` flag cannot answer
+        this: it misses edits made through the API, and on a PcbLib it
+        reads false while the editor shows the library edited. The record
+        is journaled in the workspace, so a script restart or a crash
+        keeps it. Edits made by hand in Altium are not in it; app_list_documents
+        gives both (``unsaved``).
+
+        Args:
+            project_path: Only documents of this project (full .PrjPcb
+                path). Two projects may each hold a PCB.PcbDoc: each is
+                its own entry.
+            file_path: Only this document (full path).
+            acknowledge_lost: Clear the ``lost`` list (of file_path, or
+                all of it) instead of reading.
+
+        Returns:
+            ``documents`` (each ``file_path``, ``projects``, ``last_edit``,
+            ``last_command``, ``session``, ``file_age_then`` /
+            ``file_age_now``, ``open``, ``note``), ``lost`` (documents
+            edited and gone unsaved: closed without saving, or not open
+            when the bridge started again), ``journal``. With
+            acknowledge_lost, ``acknowledged``.
+        """
+        params = {k: v for k, v in (("project_path", project_path),
+                                    ("file_path", file_path)) if v}
+        if acknowledge_lost:
+            params.pop("project_path", None)
+            return await get_bridge().send_command_async(
+                "application.acknowledge_lost", params)
+        return await get_bridge().send_command_async(
+            "application.get_edited_documents", params)
+
+    @mcp.tool()
     async def app_list_documents() -> list[dict[str, Any]]:
         """List all documents known to the current Altium workspace.
 
@@ -1403,10 +1443,14 @@ def register_application_tools(mcp):
             - loaded: True if the doc is resident in the editor server.
               False means it's a project member on disk whose editor
               state hasn't been opened yet.
-            - modified: True if the editor holds unsaved edits. A false
-              is a floor rather than a clean bill, since the flag does
-              not always propagate from ProcessControl. app_save_all
-              measures file timestamps instead of trusting it.
+            - modified: Altium's own flag. A false is a floor rather than
+              a clean bill: it misses edits made through the API, and on
+              a PcbLib it reads false while the editor shows it edited.
+            - edited: True if a command edited it and the file on disk
+              has not been saved since (the bridge's own record,
+              app_edited_documents); last_edit and last_command with it.
+            - unsaved: modified or edited. The one to ask before reading
+              a document's file from disk.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_open_documents")
