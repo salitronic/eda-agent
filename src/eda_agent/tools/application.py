@@ -1504,30 +1504,40 @@ def register_application_tools(mcp):
         return result
 
     @mcp.tool()
-    async def app_set_active_document(file_path: str) -> dict[str, Any]:
-        """Set a specific document as the active (focused) document,
-        opening it first when it is a file Altium has not loaded yet (a
-        member of a project just opened, say).
+    async def app_set_active_document(file_path: str,
+                                      project_path: str = "") -> dict[str, Any]:
+        """Bring a document to the front by its full path, and check it is.
+
+        The path must be absolute: a bare name or a relative path is refused
+        (it could name the same-named file of another project). With
+        project_path the project is opened if needed, the document must be
+        one of its documents, and it is opened inside it when not loaded.
+        The front is read back; anything else in front is refused.
 
         Args:
-            file_path: Full path to the document to activate
+            file_path: Absolute path of the document.
+            project_path: Absolute path of its project (.PrjPcb); needed to
+                open a document that is not loaded.
 
         Returns:
-            Dictionary with result of the operation; ``opened`` true when
-            the document had to be opened first.
+            ``file_path``, ``project_path``, ``opened`` (the document was
+            opened first), ``project_opened``.
         """
         from ..bridge.exceptions import AltiumError
 
         bridge = get_bridge()
+        params = {"file_path": file_path}
+        if project_path:
+            params["project_path"] = project_path
         opened = False
         try:
             result = await bridge.send_command_async(
-                "application.set_active_document", {"file_path": file_path}
-            )
+                "application.set_active_document", params)
         except AltiumError as exc:
-            # Measured: a demo run opened its project and then could not
-            # bring the board forward because no editor had loaded it.
-            if "not loaded" not in str(exc).lower() or not os.path.isfile(file_path):
+            # Without a project the bridge opens nothing: a file that is
+            # not loaded is opened here the old way, then fronted.
+            if (project_path or "not loaded" not in str(exc).lower()
+                    or not os.path.isfile(file_path)):
                 raise
             # file_path names the document the open acts on, so ownership
             # judges that one and not whichever document is in front.
@@ -1537,16 +1547,49 @@ def register_application_tools(mcp):
                 "file_path": file_path})
             opened = True
             result = await bridge.send_command_async(
-                "application.set_active_document", {"file_path": file_path}
-            )
+                "application.set_active_document", params)
         if opened:
             result = {"opened": True, **(result if isinstance(result, dict) else {})}
         if isinstance(result, dict):
             return {"success": True, "file_path": file_path, **result}
-        elif result:
-            return {"success": True, "file_path": file_path, "data": result}
-        else:
-            return {"success": True, "file_path": file_path}
+        return {"success": True, "file_path": file_path}
+
+    @mcp.tool()
+    async def app_set_active_project(project_path: str) -> dict[str, Any]:
+        """Open a project by its full path (if needed) and list its documents.
+
+        Open the project before naming any of its documents: a document
+        opened while its project is closed belongs to no project.
+
+        Args:
+            project_path: Absolute path of the .PrjPcb.
+
+        Returns:
+            ``project_path``, ``opened`` (it was not open before), and
+            ``files``: every document with ``file_path``, ``kind``,
+            ``in_project_folder``, ``exists``, ``loaded``, ``front``,
+            ``modified``, ``edited``, ``unsaved``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "application.set_active_project", {"project_path": project_path})
+
+    @mcp.tool()
+    async def app_get_project_files(project_path: str) -> dict[str, Any]:
+        """Every document of an open project by full path, and its state.
+
+        Shared files outside the project folder are listed too. Use it to
+        find a document's full path before naming it.
+
+        Args:
+            project_path: Absolute path of an open .PrjPcb.
+
+        Returns:
+            ``project_path`` and ``files`` as app_set_active_project.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "application.get_project_files", {"project_path": project_path})
 
     @mcp.tool()
     async def app_get_version() -> dict[str, Any]:

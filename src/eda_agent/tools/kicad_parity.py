@@ -342,6 +342,8 @@ NOT_APPLICABLE: dict[str, str] = {
     "app_close_document": _NO_API,
     "app_close_opened_documents": _NO_API,
     "app_set_active_document": _NO_API,
+    "app_set_active_project": _NO_API,
+    "app_get_project_files": _NO_API,
     "app_update_from_libraries": "Altium's update-from-libraries dialog",
     "obj_refresh_document": "KiCad redraws after every API change",
     "sch_reload_document": "the schematic editor has no reload call; revert it in KiCad",

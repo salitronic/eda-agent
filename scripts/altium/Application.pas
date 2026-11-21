@@ -282,79 +282,6 @@ Begin
     Result := BuildSuccessResponse(RequestId, Data);
 End;
 
-Function App_SetActiveDocument(Params : String; RequestId : String) : String;
-Var
-    FilePath, LowerInput, LowerDocPath, FullPath : String;
-    ServerDoc : IServerDocument;
-    Workspace : IWorkspace;
-    Project : IProject;
-    Doc : IDocument;
-    I : Integer;
-Begin
-    FilePath := ExtractJsonValue(Params, 'file_path');
-
-    // Only switch focus to a document that is ALREADY loaded.
-    // RunProcess('WorkspaceManager:OpenObject') would load it but strip
-    // any project association, producing a "free document" in the UI
-    // (tab title shows the full absolute path instead of filename).
-    // Refuse the call if the doc isn't loaded, the caller must open
-    // it in Altium first.
-    ServerDoc := Client.GetDocumentByPath(FilePath);
-    If ServerDoc = Nil Then
-    Begin
-        // Fallback: many callers (the dashboard sheet picker, the
-        // project.get_documents list) only have the bare filename
-        // (e.g. "ESP32.SchDoc"). GetDocumentByPath needs an exact full
-        // path, so the first call returns Nil. Walk the focused
-        // project's logical docs (Client.GetDocumentCount is undeclared
-        // in DelphiScript -- the project DM enumeration is the right
-        // way) and match by filename suffix to recover the full path.
-        LowerInput := LowerCase(FilePath);
-        Try
-            Workspace := GetWorkspace;
-            If Workspace <> Nil Then Project := Workspace.DM_FocusedProject;
-        Except End;
-        If Project <> Nil Then
-        Begin
-            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-            Begin
-                Try
-                    Doc := Project.DM_LogicalDocuments(I);
-                    If Doc = Nil Then Continue;
-                    FullPath := '';
-                    Try FullPath := Doc.DM_FullPath; Except FullPath := Doc.DM_FileName; End;
-                    If FullPath = '' Then Continue;
-                    LowerDocPath := LowerCase(FullPath);
-                    // Exact match OR endswith match: "ESP32.SchDoc"
-                    // should match "C:\path\to\ESP32.SchDoc".
-                    If (LowerDocPath = LowerInput)
-                        Or ((Length(LowerDocPath) > Length(LowerInput))
-                            And (Copy(LowerDocPath,
-                                      Length(LowerDocPath) - Length(LowerInput) + 1,
-                                      Length(LowerInput)) = LowerInput)) Then
-                    Begin
-                        Try ServerDoc := Client.GetDocumentByPath(FullPath); Except End;
-                        If ServerDoc <> Nil Then Break;
-                    End;
-                Except End;
-            End;
-        End;
-    End;
-
-    If ServerDoc = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
-            'Document not loaded: ' + FilePath +
-            '. Open it in Altium first (File > Open or via the project tree).');
-        Exit;
-    End;
-
-    // Make it the active/focused document.
-    Client.ShowDocument(ServerDoc);
-
-    Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(ServerDoc.FileName) + '"}');
-End;
-
 { A path in one spelling: back slashes, lower case. }
 Function PathKey(Path : String) : String;
 Begin
@@ -771,6 +698,380 @@ Begin
         End;
     End;
 End;
+
+{..............................................................................}
+{ DOCUMENTS BY FULL PATH (#428): the helpers shared by Ensure in the         }
+{ dispatcher and the active document / project calls below.                 }
+{..............................................................................}
+
+{ What is wrong with the spelling of an absolute path, '' when nothing.      }
+Function EnsurePathProblem(P : String; IsProject : Boolean) : String;
+Var
+    I : Integer;
+    Ext, Padded : String;
+Begin
+    Result := '';
+    If Length(P) < 4 Then
+    Begin
+        Result := 'not an absolute path';
+        Exit;
+    End;
+    If Pos('/', P) > 0 Then
+    Begin
+        Result := 'forward slashes: write it with back slashes';
+        Exit;
+    End;
+    If Not (((Copy(P, 2, 2) = ':\') And (Pos(UpperCase(Copy(P, 1, 1)),
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZ') > 0)) Or (Copy(P, 1, 2) = '\\')) Then
+    Begin
+        Result := 'not an absolute path (a drive letter or \\server\share first)';
+        Exit;
+    End;
+    Padded := P + '\';
+    If (Pos('\..\', Padded) > 0) Or (Pos('\.\', Padded) > 0) Then
+    Begin
+        Result := 'a . or .. part: write the path out in full';
+        Exit;
+    End;
+    For I := 1 To Length(P) - 1 Do
+        If (Copy(P, I, 1) = '~') And (Pos(Copy(P, I + 1, 1), '0123456789') > 0) Then
+        Begin
+            Result := 'a short 8.3 spelling: write the long path';
+            Exit;
+        End;
+    Ext := LowerCase(ExtractFileExt(P));
+    If IsProject Then
+    Begin
+        If Not ((Copy(Ext, 1, 4) = '.prj') Or (Ext = '.libpkg')) Then
+            Result := 'not a project file (.PrjPcb, .PrjScr, .LibPkg ...)';
+        Exit;
+    End;
+    If Ext = '' Then Result := 'no file extension';
+End;
+
+{ What is wrong with sending COMMAND to DOC, '' when nothing. Only the        }
+{ categories that act on one kind of document are checked.                  }
+Function EnsureKindProblem(Command : String; Doc : String) : String;
+Var
+    Category, Ext : String;
+Begin
+    Result := '';
+    Category := LowerCase(Trim(Command));
+    If Pos('.', Category) > 0 Then Category := Copy(Category, 1, Pos('.', Category) - 1);
+    Ext := LowerCase(ExtractFileExt(Doc));
+    If (Category = 'pcb') And Not ((Ext = '.pcbdoc') Or (Ext = '.pcblib')) Then
+        Result := 'a pcb. command needs a .PcbDoc (or a .PcbLib)';
+    If (Category = 'library') And Not ((Ext = '.pcblib') Or (Ext = '.schlib')) Then
+        Result := 'a library. command needs a .PcbLib or a .SchLib';
+End;
+
+{ The kind Client.OpenDocument takes for DOC, '' for one opened by process.  }
+Function EnsureDocKind(Doc : String) : String;
+Var
+    Ext : String;
+Begin
+    Result := '';
+    Ext := LowerCase(ExtractFileExt(Doc));
+    If Ext = '.pcbdoc' Then Result := 'PCB';
+    If Ext = '.schdoc' Then Result := 'SCH';
+    If Ext = '.pcblib' Then Result := 'PCBLIB';
+    If Ext = '.schlib' Then Result := 'SCHLIB';
+End;
+
+Function EnsureSame(A : String; B : String) : Boolean;
+Begin
+    Result := (A <> '') And (UpperCase(CanonicalPathValue('path', A))
+        = UpperCase(CanonicalPathValue('path', B)));
+End;
+
+{ The file of the editor's own document in front: not DM_FullPath, which is  }
+{ a bare name for a document outside every project.                        }
+Function EnsureFrontPath(Dummy : Integer) : String;
+Var
+    View : IServerDocumentView;
+Begin
+    Result := '';
+    Try
+        View := Client.CurrentView;
+        If View <> Nil Then Result := View.OwnerDocument.FileName;
+    Except Result := ''; End;
+End;
+
+{ Is DOC one of PROJECT's documents (shared files outside its folder too)? }
+Function EnsureMember(Project : IProject; Doc : String) : Boolean;
+Var
+    I : Integer;
+    D : IDocument;
+    P : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        D := Nil;
+        Try D := Project.DM_LogicalDocuments(I); Except D := Nil; End;
+        If D = Nil Then Continue;
+        P := '';
+        Try P := D.DM_FullPath; Except P := ''; End;
+        If EnsureSame(P, Doc) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{ Open DOC inside the project already open. Measured on AD 25.8.1 (#428): a  }
+{ member of an OPEN project stays in it whichever way it is opened; opened  }
+{ while its project is closed it loads as an orphan no project lists.       }
+Function EnsureOpen(Doc : String) : IServerDocument;
+Var
+    Kind : String;
+Begin
+    Result := Nil;
+    Kind := EnsureDocKind(Doc);
+    If Kind <> '' Then
+    Begin
+        Try Client.OpenDocument(Kind, Doc); Except End;
+    End;
+    If Kind = '' Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', Doc);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    Try Result := Client.GetDocumentByPath(Doc); Except Result := Nil; End;
+End;
+
+{ Is the project at PRJ open now? }
+Function EnsureProjectIsOpen(Prj : String) : Boolean;
+Var
+    Workspace : IWorkspace;
+Begin
+    Result := False;
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then Result := OpenProjectAt(Workspace, Prj) <> Nil;
+End;
+
+{ The open project at PRJ, opened when it is not. }
+Function EnsureProjectOpen(Prj : String) : IProject;
+Var
+    Workspace : IWorkspace;
+Begin
+    Result := Nil;
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    Result := OpenProjectAt(Workspace, Prj);
+    If Result <> Nil Then Exit;
+    If Not FileExists(Prj) Then Exit;
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Project');
+    AddStringParameter('FileName', Prj);
+    RunProcess('WorkspaceManager:OpenObject');
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then Result := OpenProjectAt(Workspace, Prj);
+End;
+
+{ Every document of PROJECT, with where it is and what state it is in. }
+Function ProjectFilesJson(Project : IProject) : String;
+Var
+    I : Integer;
+    D : IDocument;
+    P, Kind, Folder, Front, Items : String;
+    ServerDoc : IServerDocument;
+    Modified : Boolean;
+Begin
+    Items := '';
+    Folder := '';
+    Try Folder := UpperCase(ExtractFilePath(Project.DM_ProjectFullPath)); Except End;
+    Front := EnsureFrontPath(0);
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        D := Nil;
+        Try D := Project.DM_LogicalDocuments(I); Except D := Nil; End;
+        If D = Nil Then Continue;
+        P := '';
+        Try P := D.DM_FullPath; Except P := ''; End;
+        If P = '' Then Continue;
+        Kind := '';
+        Try Kind := D.DM_DocumentKind; Except Kind := ''; End;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(P); Except ServerDoc := Nil; End;
+        Modified := False;
+        If ServerDoc <> Nil Then Modified := DocIsModified(P);
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '{' + JsonStr('file_path', P) + ',' + JsonStr('kind', Kind) + ','
+            + JsonBool('in_project_folder', (Folder <> '')
+                And (Copy(UpperCase(P), 1, Length(Folder)) = Folder)) + ','
+            + JsonBool('exists', FileExists(P)) + ','
+            + JsonBool('loaded', ServerDoc <> Nil) + ','
+            + JsonBool('front', EnsureSame(Front, P)) + ','
+            + '"modified":' + BoolToJsonStr(Modified)
+            + EdDocFields(P, Modified) + '}';
+    End;
+    Result := '[' + Items + ']';
+End;
+
+{ application.get_project_files (#428): every document of an OPEN project by }
+{ full path (shared files outside its folder too), loaded or not, in front   }
+{ or not, unsaved or not. A caller learns from it whether a file exists and  }
+{ where, before it names one as a target.                                   }
+Function App_GetProjectFiles(Params : String; RequestId : String) : String;
+Var
+    Prj, Why : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+Begin
+    Prj := Trim(ExtractJsonValue(Params, 'project_path'));
+    Why := EnsurePathProblem(Prj, True);
+    If Why <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'project_path ' + Prj + ': '
+            + Why + '. Name the project by its full absolute path.');
+        Exit;
+    End;
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    Project := Nil;
+    If Workspace <> Nil Then Project := OpenProjectAt(Workspace, Prj);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN', 'project ' + Prj
+            + ' is not open (application.set_active_project opens it).');
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('project_path',
+        Project.DM_ProjectFullPath) + ',"files":' + ProjectFilesJson(Project) + '}');
+End;
+
+{ application.set_active_project (#428): the project a session works in,     }
+{ named by full path, opened when it is not, and its documents listed. A    }
+{ member of a closed project opens as an orphan, so the project comes first. }
+Function App_SetActiveProject(Params : String; RequestId : String) : String;
+Var
+    Prj, Why : String;
+    Project : IProject;
+    Opened : Boolean;
+Begin
+    Prj := Trim(ExtractJsonValue(Params, 'project_path'));
+    Why := EnsurePathProblem(Prj, True);
+    If Why <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'project_path ' + Prj + ': '
+            + Why + '. Name the project by its full absolute path.');
+        Exit;
+    End;
+    If Not FileExists(Prj) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_NOT_FOUND', 'project ' + Prj
+            + ' does not exist.');
+        Exit;
+    End;
+    Opened := Not EnsureProjectIsOpen(Prj);
+    Project := EnsureProjectOpen(Prj);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_FAILED', 'project ' + Prj
+            + ' did not open.');
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('project_path',
+        Project.DM_ProjectFullPath) + ',' + JsonBool('opened', Opened)
+        + ',"files":' + ProjectFilesJson(Project) + '}');
+End;
+
+{ application.set_active_document (#428): the document by its FULL path      }
+{ only. With project_path the project is opened if needed, the document must }
+{ be one of its documents, and it is opened inside it if it is not loaded.  }
+{ It is then brought to the front, and the front is read back: anything     }
+{ else in front is WRONG_DOCUMENT. The old bare-name match ("ends with", in  }
+{ the focused project only) is gone: it could pick MyPCB.PcbDoc for         }
+{ PCB.PcbDoc, or the same-named file of another project.                    }
+Function App_SetActiveDocument(Params : String; RequestId : String) : String;
+Var
+    Doc, Prj, Why, Front : String;
+    Project : IProject;
+    ServerDoc : IServerDocument;
+    Opened, ProjectOpened : Boolean;
+Begin
+    Doc := Trim(ExtractJsonValue(Params, 'file_path'));
+    Prj := Trim(ExtractJsonValue(Params, 'project_path'));
+    Why := EnsurePathProblem(Doc, False);
+    If Why <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'file_path ' + Doc + ': ' + Why
+            + '. Name the document by its full absolute path (application.get_project_files'
+            + ' lists a project''s documents).');
+        Exit;
+    End;
+    Opened := False;
+    ProjectOpened := False;
+    Project := Nil;
+    If Prj <> '' Then
+    Begin
+        Why := EnsurePathProblem(Prj, True);
+        If Why <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'project_path ' + Prj + ': '
+                + Why + '. Name the project by its full absolute path.');
+            Exit;
+        End;
+        ProjectOpened := Not EnsureProjectIsOpen(Prj);
+        Project := EnsureProjectOpen(Prj);
+        If Project = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TARGET_FAILED', 'project ' + Prj
+                + ' is not open and did not open.');
+            Exit;
+        End;
+        If Not EnsureMember(Project, Doc) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_IN_PROJECT', Doc
+                + ' is not a document of ' + Prj + ' (open projects listing it: '
+                + ProjectsHoldingJson(Doc) + ').');
+            Exit;
+        End;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Doc); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        If Project = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: '
+                + Doc + '. Name its project (project_path) to have it opened inside it.');
+            Exit;
+        End;
+        If Not FileExists(Doc) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TARGET_NOT_FOUND', Doc
+                + ' is listed by ' + Prj + ' but is not on disk.');
+            Exit;
+        End;
+        ServerDoc := EnsureOpen(Doc);
+        If ServerDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TARGET_FAILED', Doc + ' did not open.');
+            Exit;
+        End;
+        Opened := True;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
+    Front := EnsureFrontPath(0);
+    If Not EnsureSame(Front, Doc) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT', Doc
+            + ' could not be brought to the front (' + Front + ' is).');
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"success":true,'
+        + JsonStr('file_path', ServerDoc.FileName) + ',' + JsonStr('project_path', Prj) + ','
+        + JsonBool('opened', Opened) + ',' + JsonBool('project_opened', ProjectOpened) + '}');
+End;
+
 
 {..............................................................................}
 { Create a new blank document of a given kind (PCB, SCH, PCBLIB, SCHLIB,       }
@@ -1780,6 +2081,8 @@ Begin
         'release_document':    Result := App_ReleaseDocument(Params, RequestId);
         'get_edited_documents': Result := App_GetEditedDocuments(Params, RequestId);
         'acknowledge_lost':    Result := App_AcknowledgeLost(Params, RequestId);
+        'get_project_files':   Result := App_GetProjectFiles(Params, RequestId);
+        'set_active_project':  Result := App_SetActiveProject(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

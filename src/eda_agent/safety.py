@@ -146,7 +146,7 @@ LOOK_VERBS_EXACT = (
     "focus_board", "set_active_document", "cockpit_state", "zoom",
     "switch_view", "refresh_document", "highlight_net", "clear_highlights",
     "layer_view", "document_owners", "claim_document", "release_document",
-    "open", "acknowledge_lost",
+    "open", "acknowledge_lost", "set_active_project",
 )
 
 
