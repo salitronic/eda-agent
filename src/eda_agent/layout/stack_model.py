@@ -318,3 +318,104 @@ def impedance_solve_report(before_xml: str, after_xml: str) -> dict[str, Any]:
     return {"lines": rows,
             "lines_changed": sum(1 for r in rows if r["changed"]),
             "outside_tolerance": sum(1 for r in rows if r["within_tolerance"] is False)}
+
+
+#: A line's calculation mode as the manager's records number it, by what
+#: the solver does with it (measured on AD 25.8.1).
+CALCMODE_RECORD = {"width": "1", "gap": "2", "impedance": "3"}
+_SOLVE_OF_RECORD = {v: k for k, v in CALCMODE_RECORD.items()}
+
+
+def _numbered(values: dict[str, str], prefix: str, field: str) -> dict[int, str]:
+    """{n: value} of the records PREFIX<n>FIELD."""
+    rx = re.compile(re.escape(prefix) + r"(\d+)" + re.escape(field))
+    out: dict[int, str] = {}
+    for key, value in values.items():
+        m = rx.fullmatch(key)
+        if m:
+            out[int(m.group(1))] = value
+    return out
+
+
+def impedance_mode_edits(model: str, modes: list[dict[str, Any]]
+                         ) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Set impedance lines' calculation modes in the manager's model.
+
+    ``model`` is the Layer Stack Manager's model as |KEY=VALUE| records (its
+    format 0); ``modes`` one entry per line to change: profile (its name or
+    description), layer, solve ("width", "gap" for a pair, "impedance") and
+    optionally stack, names compared without case. A line the profile does
+    not have (its layer not enabled on it) is a problem, as is a gap on a
+    single line or one line named twice. Returns the model, one change per
+    line whose mode changed (profile, stack, layer, solve, was) and the
+    problems; nothing is to be loaded while there are any.
+    """
+    bom = "\ufeff" if model.startswith("\ufeff") else ""
+    recs = model.lstrip("\ufeff").split("|")
+    values: dict[str, str] = {}
+    place: dict[str, int] = {}
+    for i, rec in enumerate(recs):
+        key, sep, value = rec.partition("=")
+        if sep:
+            values[key] = value
+            place[key] = i
+    layers = {_key(v): values.get(f"LAYER_V8_{n}NAME", "")
+              for n, v in _numbered(values, "LAYER_V8_", "ID").items()}
+    stacks = {_key(v): values.get(f"LAYERSUBSTACK_V8_{n}NAME", "")
+              for n, v in _numbered(values, "LAYERSUBSTACK_V8_", "ID").items()}
+    profiles = {_key(v): (values.get(f"IMPEDANCEPROFILE_V8_{n}NAME", ""),
+                          values.get(f"IMPEDANCEPROFILE_V8_{n}DESCRIPTION", ""))
+                for n, v in _numbered(values, "IMPEDANCEPROFILE_V8_", "ID").items()}
+    lines = []
+    for n, layer_id in sorted(_numbered(values, "TRACEIMPEDANCE_V8_", "LAYERID").items()):
+        head = f"TRACEIMPEDANCE_V8_{n}"
+        lines.append({
+            "mode_key": head + "CALCMODE",
+            "profile": profiles.get(_key(values.get(head + "PROFILEID")), ("", "")),
+            "layer": layers.get(_key(layer_id), ""),
+            "stack": stacks.get(_key(values.get(head + "SUBSTACKID")), ""),
+            "pair": values.get(head + "DIFFERENTIAL", "").strip().lower() == "true"})
+
+    changes: list[dict[str, Any]] = []
+    problems: list[str] = []
+    named: set[str] = set()
+    for want in modes:
+        want = want if isinstance(want, dict) else {}
+        solve = str(want.get("solve") or "").strip().lower()
+        prof = str(want.get("profile") or "").strip()
+        layer = str(want.get("layer") or "").strip()
+        stack = str(want.get("stack") or "").strip()
+        where = f"{prof} on {layer}" + (f" in {stack}" if stack else "")
+        if solve not in CALCMODE_RECORD:
+            problems.append(f"{where}: solve is width, gap or impedance")
+            continue
+        if not prof or not layer:
+            problems.append("each mode names a profile and a layer")
+            continue
+        hits = [ln for ln in lines
+                if prof.lower() in (ln["profile"][0].lower(), ln["profile"][1].lower())
+                and ln["layer"].lower() == layer.lower()
+                and (not stack or ln["stack"].lower() == stack.lower())]
+        if not hits:
+            problems.append(f"{where}: the profile has no line there; enable the layer "
+                            "on it first (pcb_impedance_profile_layer)")
+            continue
+        for ln in hits:
+            if solve == "gap" and not ln["pair"]:
+                problems.append(f"{where}: a gap is solved only for a pair")
+                continue
+            if ln["mode_key"] in named:
+                problems.append(f"{where}: the line is named twice")
+                continue
+            named.add(ln["mode_key"])
+            if ln["mode_key"] not in place:
+                problems.append(f"{where}: the model gives the line no mode")
+                continue
+            was = values[ln["mode_key"]]
+            if was == CALCMODE_RECORD[solve]:
+                continue
+            recs[place[ln["mode_key"]]] = f"{ln['mode_key']}={CALCMODE_RECORD[solve]}"
+            label = next((x for x in ln["profile"] if x.lower() == prof.lower()), prof)
+            changes.append({"profile": label, "stack": ln["stack"], "layer": ln["layer"],
+                            "solve": solve, "was": _SOLVE_OF_RECORD.get(was, was)})
+    return bom + "|".join(recs), changes, problems

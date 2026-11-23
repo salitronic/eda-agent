@@ -18,6 +18,7 @@ from ..bridge.exceptions import AltiumCommandError
 from ..layout.stack_model import (
     drill_pair_stacks,
     impedance_by_stack,
+    impedance_mode_edits,
     impedance_solve_report,
     read_stack_model,
 )
@@ -3163,8 +3164,10 @@ def register_pcb_tools(mcp):
         return await sync_stack_manager(get_bridge(), dry_run)
 
     @mcp.tool()
-    async def pcb_compute_impedance(apply: bool = True,
-                                    force: bool = False) -> dict[str, Any]:
+    async def pcb_compute_impedance(
+        apply: bool = True, force: bool = False,
+        modes: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
         """Run Altium's impedance solver on the board's impedance profiles.
 
         The Layer Stack Manager's own field solver (its Impedance tab), run
@@ -3178,7 +3181,13 @@ def register_pcb_tools(mcp):
         "gap": finds a pair's gap, the width kept.
         "impedance": works out the impedance of the width as it is (most
         existing lines); a width of 0 is skipped.
-        This tool does not change a line's mode.
+        ``modes`` changes that first: one entry per line, profile, layer,
+        solve ("width", "gap" for a pair, "impedance") and, on a rigid-flex
+        board, stack. The line must exist (the layer enabled on the
+        profile); anything unclear is refused before anything is written.
+        The change is loaded through the manager's model, which gives
+        every id in the stack a new one; width and pair rules linked to a
+        profile are linked to it again (``profile_rules``).
 
         With apply the results are written into the board, as the
         manager's own apply does; profile links in design rules are kept.
@@ -3189,9 +3198,10 @@ def register_pcb_tools(mcp):
 
         Args:
             apply: Write the solved values into the board (default).
-                False only reports what the solver finds.
+                False only reports what the solver finds (no modes).
             force: Apply even when the Layer Stack Manager disagrees with
                 the board's stack (its values are then written back).
+            modes: Lines whose mode to change first, as above.
 
         Returns:
             ``applied``, ``solve_ms``, ``apply_ms`` and ``lines``, one per
@@ -3199,12 +3209,27 @@ def register_pcb_tools(mcp):
             gap_mils (pairs), ohms, target_ohms, error_percent,
             within_tolerance and ``changed`` (each value the solve changed,
             as [before, after]); ``lines_changed`` and
-            ``outside_tolerance`` count them. Refused for disagreement:
-            ``out_of_step``.
+            ``outside_tolerance`` count them. With modes: ``modes_set``
+            (profile, stack, layer, solve, was), ``rules_relinked`` and
+            ``profile_rules``. Refused: ``out_of_step``, ``problems``.
         """
+        modes = list(modes or [])
+        if modes and not apply:
+            return {"ok": False,
+                    "reason": ("modes are written into the board's stack, and the "
+                               "solve with them; they need apply")}
         bridge = get_bridge()
+        manager: Any = None
+        if modes:
+            manager = await bridge.send_command_async(
+                "pcb.layer_stack_manager", {"include_model": "records"})
+            if not isinstance(manager, dict) or not manager.get("model"):
+                return {"ok": False,
+                        "reason": "the Layer Stack Manager's model could not be read",
+                        "reply": manager}
         if apply and not force:
-            manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
+            if manager is None:
+                manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
             physical = await bridge.send_command_async("pcb.physical_stack", {})
             diff = stack_manager_out_of_step(manager, physical)
             if diff:
@@ -3215,6 +3240,17 @@ def register_pcb_tools(mcp):
                                    "step (force=True applies anyway, apply=False only "
                                    "solves)"),
                         "out_of_step": diff}
+        modes_set: list[dict[str, Any]] = []
+        loaded: Any = None
+        if modes:
+            model, modes_set, problems = impedance_mode_edits(manager["model"], modes)
+            if problems:
+                return {"ok": False, "reason": "; ".join(problems), "problems": problems}
+            if modes_set:
+                loaded = await bridge.send_command_async(
+                    "pcb.load_stack_manager_model", {"model": model}, timeout=120.0)
+                if not isinstance(loaded, dict) or loaded.get("success") is False:
+                    return loaded
         result = await bridge.send_command_async(
             "pcb.compute_impedance", {"apply": "true" if apply else "false"},
             timeout=120.0)
@@ -3226,8 +3262,15 @@ def register_pcb_tools(mcp):
         except (ValueError, SyntaxError) as exc:  # ET.ParseError is a SyntaxError
             return {"ok": False, "applied": result.get("applied"),
                     "reason": "the Layer Stack Manager's model did not parse: %s" % exc}
-        return {"applied": result.get("applied"), "solve_ms": result.get("solve_ms"),
-                "apply_ms": result.get("apply_ms"), **report}
+        out = {"applied": result.get("applied"), "solve_ms": result.get("solve_ms"),
+               "apply_ms": result.get("apply_ms"), **report}
+        if modes:
+            out["modes_set"] = modes_set
+            if isinstance(loaded, dict):
+                out["rules_relinked"] = loaded.get("rules_relinked")
+                out["profile_rules"] = loaded.get("profile_rules")
+                out["symmetric_after"] = loaded.get("symmetric_after")
+        return out
 
     @mcp.tool()
     async def pcb_make_layer_stack(
