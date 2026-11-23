@@ -1720,6 +1720,24 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "dielectric or mask layer; pcb_add_layer takes above / below."),
     },
     {
+        "task": "Solve an impedance profile's trace width or pair gap",
+        "keywords": ("impedance", "profile", "solve", "solver", "calculate",
+                     "recalculate", "width", "gap", "ohm", "field"),
+        "when": (("impedance", "solve"), ("impedance", "solver"),
+                 ("impedance", "calculate"), ("impedance", "recalculate"),
+                 ("profile", "width")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_impedance_profile", "pcb_impedance_profile_layer",
+                "pcb_compute_impedance"],
+        "avoid": [("pcb_calc", "a closed-form estimate, not Altium's field solver")],
+        "note": ("Set the profile and enable its layers, then pcb_compute_impedance "
+                 "runs the Layer Stack Manager's solver and writes the widths, gaps "
+                 "and impedances into the board. Each line solves what its mode "
+                 "says (width, gap or impedance); a newly enabled layer solves its "
+                 "width."),
+    },
+    {
         "task": "The Layer Stack Manager shows old values after a scripted stack change",
         "keywords": ("manager", "stale", "old", "values", "sync", "resync"),
         "when": (("stack", "manager", "old"), ("stack", "manager", "stale"),

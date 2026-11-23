@@ -117,7 +117,7 @@ def read_stack_model(model_xml: str) -> dict[str, Any]:
     ``impedance_lines``: per profile (name, type, impedance_ohms,
     tolerance_percent) its lines (stack, layer, line_type, top_reference,
     bottom_reference, trace_width_mils, trace_gap_mils, impedance_error,
-    impedance_ohms).
+    impedance_ohms, differential, calc_mode).
     """
     root = _root(model_xml)
     stackup = root if _tag(root) == "Stackup" else next(
@@ -170,6 +170,12 @@ def read_stack_model(model_xml: str) -> dict[str, Any]:
             z = elec.get("Z") if elec is not None else None
             if z is None and elec is not None:
                 z = elec.get("Zdiff") or elec.get("Zodd")
+            diff = _flag(tl, "IsDifferential", False)
+            ohms = _number(z)
+            # A pair's line carries its odd-mode impedance (Zo); the pair's
+            # own impedance is twice that.
+            if ohms is None and diff and elec is not None and _number(elec.get("Zo")) is not None:
+                ohms = round(2 * _number(elec.get("Zo")), 6)
             lines.append({
                 "stack": stack_names.get(_key(tl.get("StackId")), ""),
                 "layer": names.get(_key(tl.get("LayerId")), ""),
@@ -179,7 +185,9 @@ def read_stack_model(model_xml: str) -> dict[str, Any]:
                 "trace_width_mils": to_mils(tl.get("TraceWidth")),
                 "trace_gap_mils": to_mils(tl.get("TraceGap")),
                 "impedance_error": _number(tl.get("ImpedanceError")),
-                "impedance_ohms": _number(z),
+                "impedance_ohms": ohms,
+                "differential": diff,
+                "calc_mode": tl.get("CalcMode", ""),
             })
         profiles.append({"name": pr.get("CustomName") or pr.get("AutoName", ""),
                          "type": pr.get("Type", ""),
@@ -247,3 +255,66 @@ def impedance_by_stack(profiles: list[dict[str, Any]],
             kept.append(row)
         prof["layers"] = kept
     return profiles
+
+
+#: What the impedance solver does with a line, by the line's calculation
+#: mode in the Layer Stack Manager's model.
+SOLVES = {"TraceWidth": "width", "TraceClearance": "gap",
+          "Impedance": "impedance", "Manual": "manual"}
+
+#: The values a solve can change, and how far apart two readings must be to
+#: count as a change (the model prints them to many places).
+_SOLVED = (("width_mils", "trace_width_mils", 1e-4),
+           ("gap_mils", "trace_gap_mils", 1e-4),
+           ("ohms", "impedance_ohms", 1e-4),
+           ("error_percent", "impedance_error", 1e-6))
+
+
+def impedance_solve_report(before_xml: str, after_xml: str) -> dict[str, Any]:
+    """Each impedance line as the solver left it, and what it changed.
+
+    ``before_xml`` / ``after_xml`` are the Layer Stack Manager's model
+    (StackupDocument XML) before and after a solve. One row per profile and
+    line: profile, stack, layer, solves (SOLVES, else the model's own
+    word), width_mils, gap_mils (pairs), ohms, target_ohms, error_percent,
+    within_tolerance and changed ({value: [before, after]}). Profiles are
+    matched by position, then by name; lines by stack and layer.
+    """
+    old = read_stack_model(before_xml)["impedance_lines"]
+    new = read_stack_model(after_xml)["impedance_lines"]
+    old_by_name = {p["name"]: p for p in old}
+    rows: list[dict[str, Any]] = []
+    for i, prof in enumerate(new):
+        was = (old[i] if i < len(old) and old[i]["name"] == prof["name"]
+               else old_by_name.get(prof["name"], {}))
+        was_lines = {(ln["stack"], ln["layer"]): ln for ln in was.get("lines", [])}
+        tol = prof.get("tolerance_percent")
+        for ln in prof["lines"]:
+            pair = ln["differential"]
+            row: dict[str, Any] = {
+                "profile": prof["name"], "stack": ln["stack"], "layer": ln["layer"],
+                "solves": SOLVES.get(ln["calc_mode"], ln["calc_mode"]),
+                "width_mils": ln["trace_width_mils"],
+                "gap_mils": ln["trace_gap_mils"] if pair else None,
+                "ohms": ln["impedance_ohms"],
+                "target_ohms": prof.get("impedance_ohms"),
+                "error_percent": ln["impedance_error"]}
+            err = ln["impedance_error"]
+            row["within_tolerance"] = (None if err is None or tol is None
+                                       else abs(err) <= tol)
+            before = was_lines.get((ln["stack"], ln["layer"]))
+            changed: dict[str, list[Any]] = {}
+            if before is not None:
+                for out, key, eps in _SOLVED:
+                    if out == "gap_mils" and not pair:
+                        continue
+                    a, b = before.get(key), ln.get(key)
+                    if a is None and b is None:
+                        continue
+                    if a is None or b is None or abs(a - b) > eps:
+                        changed[out] = [a, b]
+            row["changed"] = changed
+            rows.append(row)
+    return {"lines": rows,
+            "lines_changed": sum(1 for r in rows if r["changed"]),
+            "outside_tolerance": sum(1 for r in rows if r["within_tolerance"] is False)}

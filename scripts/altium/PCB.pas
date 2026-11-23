@@ -32379,6 +32379,82 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_ComputeImpedance - run the Layer Stack Manager's impedance solver on    }
+{ the board's stack (issue #397). Params: apply ('true' writes what it solved }
+{ into the board, as the manager's own window does on an apply).              }
+{                                                                              }
+{ The solver is ComputeImpedance on the document the manager opens for the    }
+{ board, as pcb.move_layer opens it: no arguments, no dialog. What it solves  }
+{ is each line's own calculation mode (the model's CalcMode): TraceWidth      }
+{ finds the width, TraceClearance the pair gap, Impedance only works out Z    }
+{ from the width as it is. Nothing here changes a mode. A plain apply keeps   }
+{ every id in the stack, so rules linked to a profile stay linked (measured  }
+{ on AD 25.8.1). The model is handed back as the manager's StackupDocument    }
+{ XML before the solve and after it; after an apply it is read again from    }
+{ the board.                                                                   }
+{..............................................................................}
+Function PCB_ComputeImpedance(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LSM, Doc : Variant;
+    Before, After : String;
+    DoApply : Boolean;
+    T0, SolveMs, ApplyMs : Integer;
+Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    DoApply := LowerCase(Trim(ExtractJsonValue(Params, 'apply'))) <> 'false';
+
+    LSM := LayerStackManager;
+    LSM.RemoveLayerStackProvider(Board);
+    Doc := LSM.OpenDocumentFromPcb(Board);
+    Before := Doc.SerializeToString(1);
+
+    T0 := GetTickCount;
+    Try
+        Doc.ComputeImpedance;
+    Except
+        Result := BuildErrorResponse(RequestId, 'SOLVE_FAILED',
+            'The Layer Stack Manager''s impedance solver raised an error; nothing was applied');
+        Exit;
+    End;
+    SolveMs := GetTickCount - T0;
+    After := Doc.SerializeToString(1);
+
+    ApplyMs := -1;
+    If DoApply Then
+    Begin
+        T0 := GetTickCount;
+        Try
+            Doc.ApplyToPcb(Board.FileName);
+        Except
+            Result := BuildErrorResponse(RequestId, 'APPLY_FAILED',
+                'The solve ran but writing it into the board raised an error');
+            Exit;
+        End;
+        ApplyMs := GetTickCount - T0;
+        { Read back from the board, not from the document that was applied. }
+        LSM.RemoveLayerStackProvider(Board);
+        Doc := LSM.OpenDocumentFromPcb(Board);
+        After := Doc.SerializeToString(1);
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{'
+        + JsonBool('applied', DoApply) + ','
+        + JsonInt('solve_ms', SolveMs) + ','
+        + JsonInt('apply_ms', ApplyMs) + ','
+        + JsonStr('model_before', Before) + ','
+        + JsonStr('model_after', After) + '}');
+End;
+
+{..............................................................................}
 { pcb.pad_relief -- one pad's own thermal relief, the way Properties > Thermal }
 { Relief and its custom-relief "Edit" show it (issue #226).                   }
 {                                                                              }
@@ -33265,6 +33341,7 @@ Begin
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'move_layer':              Result := PCB_MoveLayer(Params, RequestId);
         'load_stack_manager_model': Result := PCB_LoadStackManagerModel(Params, RequestId);
+        'compute_impedance':       Result := PCB_ComputeImpedance(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
         'set_plane_net':           Result := PCB_SetPlaneNet(Params, RequestId);

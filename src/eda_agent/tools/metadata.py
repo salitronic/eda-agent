@@ -162,7 +162,9 @@ _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
 # substring rule above assumes a calc tool is pure maths; these query
 # Altium first, so reporting them as offline sends anyone filtering for
 # "works without Altium" straight into a bridge error.
-_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
+_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area",
+                                # Altium's own solver, on the open board.
+                                "pcb_compute_impedance"})
 
 # design_* tools that are pure Python (per the design-agent surface: plan
 # authoring, analysis, and derivation all run offline). The bridge-backed
@@ -240,6 +242,10 @@ INTERACTION_OVERRIDES = {
     # board, and reporting it readonly tells anyone filtering for safe
     # operations the opposite of the truth.
     "pcb_create_diff_pair": SILENT,
+    # "_compute_" reads as a pure calculation, but this runs Altium's
+    # impedance solver on the board and, unless told not to, writes the
+    # solved widths and gaps into it.
+    "pcb_compute_impedance": SILENT,
     # Launches Altium's INTERACTIVE polygon mode: the user draws the
     # boundary by clicking. "silent" claimed it had completed a mutation,
     # so an agent would believe a polygon exists when none does.

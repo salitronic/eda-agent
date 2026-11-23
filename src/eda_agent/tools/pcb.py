@@ -18,6 +18,7 @@ from ..bridge.exceptions import AltiumCommandError
 from ..layout.stack_model import (
     drill_pair_stacks,
     impedance_by_stack,
+    impedance_solve_report,
     read_stack_model,
 )
 from ..design import fab_library
@@ -3093,6 +3094,73 @@ def register_pcb_tools(mcp):
             is). Refused: ``layers_differ``.
         """
         return await sync_stack_manager(get_bridge(), dry_run)
+
+    @mcp.tool()
+    async def pcb_compute_impedance(apply: bool = True,
+                                    force: bool = False) -> dict[str, Any]:
+        """Run Altium's impedance solver on the board's impedance profiles.
+
+        The Layer Stack Manager's own field solver (its Impedance tab), run
+        with no dialog. Widths and impedances set on a profile through
+        pcb_impedance_profile_layer are not recalculated until it runs.
+
+        What it solves on a line is that line's calculation mode, set in
+        the Layer Stack Manager (``solves`` in the reply):
+        "width": finds the trace width for the profile's target (a layer
+        newly enabled on a profile starts this way); a pair keeps its gap.
+        "gap": finds a pair's gap, the width kept.
+        "impedance": works out the impedance of the width as it is (most
+        existing lines); a width of 0 is skipped.
+        This tool does not change a line's mode.
+
+        With apply the results are written into the board, as the
+        manager's own apply does; profile links in design rules are kept.
+        The apply writes the manager's whole copy of the stack, so like
+        pcb_move_layer it is refused while that copy disagrees with the
+        board's stack (``out_of_step``; pcb_sync_stack_manager brings them
+        in step), unless force.
+
+        Args:
+            apply: Write the solved values into the board (default).
+                False only reports what the solver finds.
+            force: Apply even when the Layer Stack Manager disagrees with
+                the board's stack (its values are then written back).
+
+        Returns:
+            ``applied``, ``solve_ms``, ``apply_ms`` and ``lines``, one per
+            profile and layer: profile, stack, layer, solves, width_mils,
+            gap_mils (pairs), ohms, target_ohms, error_percent,
+            within_tolerance and ``changed`` (each value the solve changed,
+            as [before, after]); ``lines_changed`` and
+            ``outside_tolerance`` count them. Refused for disagreement:
+            ``out_of_step``.
+        """
+        bridge = get_bridge()
+        if apply and not force:
+            manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
+            physical = await bridge.send_command_async("pcb.physical_stack", {})
+            diff = stack_manager_out_of_step(manager, physical)
+            if diff:
+                return {"ok": False,
+                        "reason": ("the Layer Stack Manager disagrees with the board's "
+                                   "stack; an apply would write its values back over "
+                                   "the board's. pcb_sync_stack_manager brings it in "
+                                   "step (force=True applies anyway, apply=False only "
+                                   "solves)"),
+                        "out_of_step": diff}
+        result = await bridge.send_command_async(
+            "pcb.compute_impedance", {"apply": "true" if apply else "false"},
+            timeout=120.0)
+        if not isinstance(result, dict) or "model_after" not in result:
+            return result
+        try:
+            report = impedance_solve_report(result.get("model_before") or "",
+                                            result.get("model_after") or "")
+        except (ValueError, SyntaxError) as exc:  # ET.ParseError is a SyntaxError
+            return {"ok": False, "applied": result.get("applied"),
+                    "reason": "the Layer Stack Manager's model did not parse: %s" % exc}
+        return {"applied": result.get("applied"), "solve_ms": result.get("solve_ms"),
+                "apply_ms": result.get("apply_ms"), **report}
 
     @mcp.tool()
     async def pcb_make_layer_stack(

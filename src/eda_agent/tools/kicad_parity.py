@@ -446,6 +446,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_apply_stackup_template": _STACKUP_RO,
     "pcb_modify_layer": _STACKUP_RO,
     "pcb_move_layer": _STACKUP_RO,
+    "pcb_compute_impedance": "KiCad's impedance calculator is a separate tool with no API",
     "pcb_check_stackup": _STACKUP_RO,
     "pcb_create_nets_from_list": "nets come from the schematic; the API cannot add a net",
     "pcb_delete_net": "nets come from the schematic; the API cannot remove a net",
