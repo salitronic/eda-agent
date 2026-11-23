@@ -292,21 +292,36 @@ End;
 { the target (bad path, file missing, doc not loadable), leaving the PREVIOUS   }
 { library current. That one is still a valid eSchLib, so without this check a   }
 { handler reads the WRONG library and labels the answer with the requested      }
-{ path. Compares the full path, falling back to the file name so path-format    }
-{ differences do not cause false negatives.                                     }
+{ path. Compares the full path, slashes either way.                             }
+{                                                                               }
+{ A FILE NAME IS NOT ENOUGH (#436). This used to accept any library whose     }
+{ file name matched, so a library of the same name from another folder (a     }
+{ copy beside the original, another project) passed for the one asked for,   }
+{ and the handler wrote into it. A free library can report only its bare     }
+{ file name, so for that one the library open at WantPath must be this very  }
+{ document.                                                                   }
 Function SchLibIsAtPath(SchLib : ISch_Lib; WantPath : String) : Boolean;
 Var
     Actual : String;
+    AtWant : ISch_Document;
 Begin
     Result := False;
     If (SchLib = Nil) Or (WantPath = '') Then Exit;
     Actual := '';
     Try Actual := SchLib.DocumentName; Except End;
     If Actual = '' Then Exit;
-    If UpperCase(Actual) = UpperCase(WantPath) Then
-        Result := True
-    Else If UpperCase(ExtractFileName(Actual)) = UpperCase(ExtractFileName(WantPath)) Then
+    If UpperCase(CanonicalPathValue('path', Actual))
+        = UpperCase(CanonicalPathValue('path', WantPath)) Then
+    Begin
         Result := True;
+        Exit;
+    End;
+    If LooksAbsolutePath(Actual) Or (Not LooksAbsolutePath(WantPath)) Then Exit;
+    If UpperCase(ExtractFileName(Actual)) <> UpperCase(ExtractFileName(WantPath)) Then Exit;
+    AtWant := Nil;
+    Try AtWant := SchServer.GetSchDocumentByPath(WantPath); Except AtWant := Nil; End;
+    If AtWant = Nil Then Exit;
+    Result := (AtWant = SchLib);
 End;
 
 { Focus a SchLib by path (empty = the focused document) and return it, or Nil  }
@@ -9336,7 +9351,9 @@ Begin
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
     If Doc <> Nil Then
-        Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+        { The library file itself: a free library reports a bare name,  }
+        { and a refresh below saves and reopens what this path names.   }
+        Try FocusedPath := CanonicalPathValue('path', DocFullPath(Doc)); Except End;
 
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then

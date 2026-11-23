@@ -1780,7 +1780,9 @@ End;
 { reported "SWEEP_A.SchLib" for a document whose actual path is under the     }
 { scratch directory, while the same call given an explicit library_path       }
 { reported the full path. A reopen built on the basename did nothing at all   }
-{ and the failure looked like a lookup bug.                                   }
+{ and the failure looked like a lookup bug. That was AD 26.9.1.9. On AD      }
+{ 25.8.1, 26.8.1 and 26.12.2 a free document, opened or newly made, reports  }
+{ its full path from both, so code here must handle either.                 }
 {                                                                             }
 { Returns '' when no absolute path can be found, so a caller can REFUSE       }
 { rather than proceed with a string that will quietly do nothing.             }
@@ -1789,13 +1791,57 @@ Begin
     Result := (Copy(P, 2, 1) = ':') Or (Copy(P, 1, 2) = '\\');
 End;
 
-Function MatchDocPathInProject(Project : IProject; Wanted : String) : String;
+{ A list of distinct paths joined by a vertical bar, case ignored. A Windows  }
+{ path holds no vertical bar, so the separator cannot occur inside one.      }
+Function DistinctPathsAdd(List : String; P : String) : String;
+Begin
+    Result := List;
+    If P = '' Then Exit;
+    If Pos('|' + UpperCase(P) + '|', '|' + UpperCase(List) + '|') > 0 Then Exit;
+    If Result = '' Then
+        Result := P
+    Else
+        Result := Result + '|' + P;
+End;
+
+{ The one path a distinct list holds; empty when it holds none or several.  }
+Function OnlyDistinctPath(List : String) : String;
+Begin
+    Result := '';
+    If (List <> '') And (Pos('|', List) = 0) Then Result := List;
+End;
+
+{ DocServerPath - the file of THIS document, from its own server document.    }
+{                                                                             }
+{ When the DM_FullPath of a free document gives a bare file name (see above; }
+{ seen on AD 26.9; AD 25.8, 26.8 and 26.12 give the full path), the         }
+{ server document behind it still knows the file it was loaded from.         }
+{ That is the document itself, not a search by name: two open files of one    }
+{ name in two folders stay two documents. Empty when it is not loaded.       }
+Function DocServerPath(Doc : IDocument) : String;
+Var
+    ServerDoc : IServerDocument;
+    P : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Doc.DM_ServerDocument; Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    P := '';
+    Try P := ServerDoc.FileName; Except P := ''; End;
+    If LooksAbsolutePath(P) Then Result := P;
+End;
+
+{ Every absolute path in Project whose file name is Wanted, added to Found.   }
+{ A member reports its full path; a free document is asked for its own file. }
+Function DocPathsNamedIn(Project : IProject; Wanted : String; Found : String) : String;
 Var
     J : Integer;
     Doc : IDocument;
     Full : String;
 Begin
-    Result := '';
+    Result := Found;
     If Project = Nil Then Exit;
     For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
     Begin
@@ -1804,20 +1850,31 @@ Begin
         Begin
             Full := '';
             Try Full := Doc.DM_FullPath; Except End;
+            If (Full <> '') And (Not LooksAbsolutePath(Full))
+                And (UpperCase(ExtractFileName(Full)) = UpperCase(Wanted)) Then
+                Full := DocServerPath(Doc);
             If LooksAbsolutePath(Full)
                 And (UpperCase(ExtractFileName(Full)) = UpperCase(Wanted)) Then
-            Begin
-                Result := Full;
-                Exit;
-            End;
+                Result := DistinctPathsAdd(Result, Full);
         End;
     End;
 End;
 
+{ A BARE NAME NAMES A DOCUMENT ONLY WHEN ONE OPEN DOCUMENT CARRIES IT (#436). }
+{                                                                             }
+{ This used to return the first open project member of that file name, and   }
+{ the free-documents branch below it could never answer: it wanted an        }
+{ absolute DM_FullPath, which a free document reporting a bare name lacks.   }
+{ So the bare name of a free document (a sheet or library copied from        }
+{ another project and opened, before it is added to its own project)         }
+{ resolved to the file of that name in the OTHER project. Library writers    }
+{ then opened, wrote and saved that file. Now every match is collected,      }
+{ members and free documents alike, and two different files of one name     }
+{ resolve to nothing: the caller refuses rather than guess.                  }
 Function ResolveLoadedDocPath(NameOrPath : String) : String;
 Var
     Workspace : IWorkspace;
-    Wanted : String;
+    Wanted, Found : String;
     I : Integer;
 Begin
     Result := '';
@@ -1832,18 +1889,13 @@ Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
 
+    Found := '';
     For I := 0 To Workspace.DM_ProjectCount - 1 Do
-    Begin
-        Result := MatchDocPathInProject(Workspace.DM_Projects(I), Wanted);
-        If Result <> '' Then Exit;
-    End;
-
-    { Free documents live in the synthetic FreeDocumentsProject, and they are }
-    { precisely the ones that report a basename, so this is the branch that   }
-    { usually answers.                                                        }
+        Found := DocPathsNamedIn(Workspace.DM_Projects(I), Wanted, Found);
     Try
-        Result := MatchDocPathInProject(Workspace.DM_FreeDocumentsProject, Wanted);
+        Found := DocPathsNamedIn(Workspace.DM_FreeDocumentsProject, Wanted, Found);
     Except End;
+    Result := OnlyDistinctPath(Found);
 End;
 
 { DocFullPath - the absolute path of a document, never its bare name.         }
@@ -1851,20 +1903,37 @@ End;
 { DM_FileName is the file NAME. MEASURED on AD 26.10.1.6: a project member    }
 { came back as "CloseSheet.SchDoc", and two handlers passed that on as        }
 { file_path. A caller got a path that was not one, and a modified lookup on   }
-{ it could never resolve. DM_FullPath first, the name only as a last resort,  }
-{ and a bare result resolved against the open projects.                       }
+{ it could never resolve. DM_FullPath first; for a document that reports a    }
+{ bare name, the file of its own server document. A document that reports    }
+{ its bare name and has no file of its own keeps the bare name, which every  }
+{ caller refuses: a search by that name finds other files and cannot tell    }
+{ which one this is. Only a document with no DM_FullPath at all is looked up }
+{ by its DM_FileName, and that search answers only when the name is unique.  }
 Function DocFullPath(Doc : IDocument) : String;
 Var
-    P, Resolved : String;
+    P, Own, Resolved : String;
 Begin
     Result := '';
     If Doc = Nil Then Exit;
     P := '';
     Try P := Doc.DM_FullPath; Except P := ''; End;
-    If P = '' Then
+    If LooksAbsolutePath(P) Then
     Begin
-        Try P := Doc.DM_FileName; Except P := ''; End;
+        Result := P;
+        Exit;
     End;
+    Own := DocServerPath(Doc);
+    If Own <> '' Then
+    Begin
+        Result := Own;
+        Exit;
+    End;
+    If P <> '' Then
+    Begin
+        Result := P;
+        Exit;
+    End;
+    Try P := Doc.DM_FileName; Except P := ''; End;
     If (P <> '') And (Not LooksAbsolutePath(P)) Then
     Begin
         Resolved := ResolveLoadedDocPath(P);
