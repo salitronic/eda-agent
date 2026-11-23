@@ -32287,6 +32287,239 @@ Begin
 End;
 
 {..............................................................................}
+{ Design rules linked to an impedance profile. A width rule and a          }
+{ differential pair routing rule name their profile by its id              }
+{ (ImpedanceProfileId). Loading a model into the Layer Stack Manager's      }
+{ document and applying it gives every layer, stack and profile in it a new }
+{ id, and Altium clears the profile of every rule that named one: the rule  }
+{ stays impedance driven with no profile (measured on AD 25.8.1). So the    }
+{ links are read before a load, by the profile's place and name, and        }
+{ written back with the new ids after the apply. A return path rule can     }
+{ name a profile too; its interface is not in the script engine's table, so }
+{ it is left alone. Issue #433.                                              }
+{..............................................................................}
+
+{ An id as one compares it: braces and spaces dropped, upper case. }
+Function ProfileIdKey(Id : String) : String;
+Var
+    I : Integer;
+    C : String;
+Begin
+    Result := '';
+    For I := 1 To Length(Id) Do
+    Begin
+        C := Copy(Id, I, 1);
+        If (C <> '{') And (C <> '}') And (C <> ' ') Then Result := Result + C;
+    End;
+    Result := UpperCase(Result);
+End;
+
+{ A new profile id in the form the rule held the old one: a rule keeps it   }
+{ in braces, upper case, while the profile gives it bare, lower case.        }
+Function ProfileIdLike(NewId, OldId : String) : String;
+Begin
+    Result := NewId;
+    If Copy(Trim(OldId), 1, 1) = '{' Then
+        Result := '{' + ProfileIdKey(NewId) + '}';
+End;
+
+Function ProfileLinkKind(Kind : Integer) : Boolean;
+Begin
+    Result := (Kind = eRule_MaxMinWidth) Or (Kind = eRule_DifferentialPairsRouting);
+End;
+
+Function RuleProfileId(R : IPCB_Rule) : String;
+Var
+    RW : IPCB_MaxMinWidthConstraint;
+    RD : IPCB_DifferentialPairsRoutingRule;
+Begin
+    Result := '';
+    If R.RuleKind = eRule_MaxMinWidth Then
+    Begin
+        RW := R;
+        Result := RW.ImpedanceProfileId;
+    End
+    Else If R.RuleKind = eRule_DifferentialPairsRouting Then
+    Begin
+        RD := R;
+        Result := RD.ImpedanceProfileId;
+    End;
+End;
+
+Procedure SetRuleProfileId(R : IPCB_Rule; Id : String);
+Var
+    RW : IPCB_MaxMinWidthConstraint;
+    RD : IPCB_DifferentialPairsRoutingRule;
+Begin
+    If R.RuleKind = eRule_MaxMinWidth Then
+    Begin
+        RW := R;
+        RW.ImpedanceProfileId := Id;
+    End
+    Else If R.RuleKind = eRule_DifferentialPairsRouting Then
+    Begin
+        RD := R;
+        RD.ImpedanceProfileId := Id;
+    End;
+End;
+
+{ The place of the profile with this id in the board's list, -1 when none. }
+Function ProfilePlace(Stack : IPCB_MasterLayerStack2; Id : String) : Integer;
+Var
+    I : Integer;
+    P : IPCB_ImpedanceProfile;
+Begin
+    Result := -1;
+    For I := 0 To Stack.GetImpedanceProfileCount - 1 Do
+    Begin
+        P := Stack.GetImpedanceProfileByIndex(I);
+        If P <> Nil Then
+            If ProfileIdKey(P.Id) = ProfileIdKey(Id) Then
+            Begin
+                Result := I;
+                Exit;
+            End;
+    End;
+End;
+
+{ Every rule linked to a profile the board has: the rule's name, the       }
+{ profile's place and name, and the id as the rule holds it.               }
+Procedure ProfileLinksRead(Board : IPCB_Board; Rules, Places, Names, Ids : TStringList);
+Var
+    Stack : IPCB_MasterLayerStack2;
+    Iter : IPCB_BoardIterator;
+    R : IPCB_Rule;
+    P : IPCB_ImpedanceProfile;
+    Id : String;
+    At : Integer;
+Begin
+    Stack := Nil;
+    Try Stack := Board.MasterLayerStack; Except Stack := Nil; End;
+    If Stack = Nil Then Exit;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If ProfileLinkKind(R.RuleKind) Then
+            Begin
+                Id := RuleProfileId(R);
+                If Id <> '' Then
+                Begin
+                    At := ProfilePlace(Stack, Id);
+                    If At >= 0 Then
+                    Begin
+                        P := Stack.GetImpedanceProfileByIndex(At);
+                        Rules.Add(R.Name);
+                        Places.Add(IntToStr(At));
+                        Names.Add(P.Name);
+                        Ids.Add(Id);
+                    End;
+                End;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ The profile a link named, after a load: the one at its old place while   }
+{ the name still matches, else the only one of that name.                  }
+Function ProfileAfterLoad(Stack : IPCB_MasterLayerStack2; Place : Integer; Name : String) : IPCB_ImpedanceProfile;
+Var
+    I, Hits : Integer;
+    P, Found : IPCB_ImpedanceProfile;
+Begin
+    Result := Nil;
+    If (Place >= 0) And (Place < Stack.GetImpedanceProfileCount) Then
+    Begin
+        P := Stack.GetImpedanceProfileByIndex(Place);
+        If P <> Nil Then
+            If P.Name = Name Then
+            Begin
+                Result := P;
+                Exit;
+            End;
+    End;
+    Hits := 0;
+    Found := Nil;
+    For I := 0 To Stack.GetImpedanceProfileCount - 1 Do
+    Begin
+        P := Stack.GetImpedanceProfileByIndex(I);
+        If P <> Nil Then
+            If P.Name = Name Then
+            Begin
+                Inc(Hits);
+                Found := P;
+            End;
+    End;
+    If Hits = 1 Then Result := Found;
+End;
+
+{ Writes each link back. One JSON entry per link: rule, profile and state: }
+{ kept (it still named the profile), relinked, failed (the write did not   }
+{ read back) or profile_gone. No modify bracket: one moves the rule to the  }
+{ top of its kind's priorities (issue #400).                                }
+Function ProfileLinksRestore(Board : IPCB_Board; Rules, Places, Names, Ids : TStringList; Var Relinked : Integer) : String;
+Var
+    Stack : IPCB_MasterLayerStack2;
+    Iter : IPCB_BoardIterator;
+    R : IPCB_Rule;
+    P : IPCB_ImpedanceProfile;
+    Cur, State : String;
+    Idx : Integer;
+Begin
+    Result := '';
+    Relinked := 0;
+    If Rules.Count = 0 Then Exit;
+    Stack := Nil;
+    Try Stack := Board.MasterLayerStack; Except Stack := Nil; End;
+    If Stack = Nil Then Exit;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            Idx := Rules.IndexOf(R.Name);
+            If (Idx >= 0) And ProfileLinkKind(R.RuleKind) Then
+            Begin
+                Cur := RuleProfileId(R);
+                P := ProfileAfterLoad(Stack, StrToIntDef(Places[Idx], -1), Names[Idx]);
+                If P = Nil Then
+                    State := 'profile_gone'
+                Else If ProfileIdKey(Cur) = ProfileIdKey(P.Id) Then
+                    State := 'kept'
+                Else
+                Begin
+                    SetRuleProfileId(R, ProfileIdLike(P.Id, Ids[Idx]));
+                    If ProfileIdKey(RuleProfileId(R)) = ProfileIdKey(P.Id) Then
+                    Begin
+                        State := 'relinked';
+                        Inc(Relinked);
+                    End
+                    Else
+                        State := 'failed';
+                End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '{' + JsonStr('rule', R.Name) + ','
+                    + JsonStr('profile', Names[Idx]) + ','
+                    + JsonStr('state', State) + '}';
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{..............................................................................}
 { PCB_LoadStackManagerModel - load a model into the Layer Stack Manager's     }
 { document for the board and apply it to the board. Params: model, the       }
 { manager's model as |KEY=VALUE| records (its format 0).                     }
@@ -32298,7 +32531,9 @@ End;
 { records and applying them is what brings the manager's window in step: an  }
 { apply of the document as opened writes its old values back instead.       }
 { Altium clears a stack's symmetric flag on the load; it is asked back and   }
-{ kept only when the stack is symmetric.                                      }
+{ kept only when the stack is symmetric. The load also renews every id and    }
+{ drops the profile of each rule linked to one; the links are read first and }
+{ written back after the apply (ProfileLinksRead / ProfileLinksRestore).     }
 {..............................................................................}
 Function PCB_LoadStackManagerModel(Params : String; RequestId : String) : String;
 Var
@@ -32308,8 +32543,10 @@ Var
     Su : ILsmSdkStackup;
     Sts : ILsmSdkLayerStackCollection;
     St : ILsmSdkLayerStack;
-    SL : TStringList;
+    SL, Rules, Places, Names, Ids : TStringList;
     WasSym, SymAfter, Can : Boolean;
+    Links : String;
+    Relinked : Integer;
 Begin
     Result := LayerStackManagerRefusal(RequestId);
     If Result <> '' Then Exit;
@@ -32326,6 +32563,13 @@ Begin
             'model is the Layer Stack Manager model as |KEY=VALUE| records');
         Exit;
     End;
+
+    Rules := TStringList.Create;
+    Places := TStringList.Create;
+    Names := TStringList.Create;
+    Ids := TStringList.Create;
+    Try
+    ProfileLinksRead(Board, Rules, Places, Names, Ids);
 
     LSM := LayerStackManager;
     LSM.RemoveLayerStackProvider(Board);
@@ -32364,6 +32608,7 @@ Begin
         If Can Then StEd.UpdateStack(St);
         Doc.ApplyToPcb(Board.FileName);
     End;
+    Links := ProfileLinksRestore(Board, Rules, Places, Names, Ids, Relinked);
     LSM.RemoveLayerStackProvider(Board);
     Doc := LSM.OpenDocumentFromPcb(Board);
     Su := Doc.Stackup;
@@ -32375,7 +32620,15 @@ Begin
     Result := BuildSuccessResponse(RequestId, '{'
         + JsonBool('loaded', True) + ','
         + JsonBool('symmetric', WasSym) + ','
-        + JsonBool('symmetric_after', SymAfter) + '}');
+        + JsonBool('symmetric_after', SymAfter) + ','
+        + JsonInt('rules_relinked', Relinked) + ','
+        + '"profile_rules":[' + Links + ']}');
+    Finally
+        Rules.Free;
+        Places.Free;
+        Names.Free;
+        Ids.Free;
+    End;
 End;
 
 {..............................................................................}
