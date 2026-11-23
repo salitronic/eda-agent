@@ -13612,6 +13612,14 @@ Begin
     If Result <> '' Then Exit;
     Result := BoardTypeScopeError(RequestId, Scope, ScopeType, ObjTypeStr, 'counted');
     If Result <> '' Then Exit;
+    { A lib_component scope, @N included, puts that symbol and part on    }
+    { screen, so the count below reads the part asked for.               }
+    If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'Library component not found in active library: ' + ScopePath);
+        Exit;
+    End;
 
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
     If ObjTypeInt = -1 Then

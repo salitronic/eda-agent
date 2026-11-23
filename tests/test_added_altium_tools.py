@@ -79,6 +79,7 @@ def test_symbol_parts_sends_only_what_was_asked(monkeypatch, tmp_path):
     {"name": "U", "display_mode_count": 0},
     {"name": "U"},
     {"name": "U", "part_count": 2, "library_path": "C:/no/such.SchLib"},
+    {"name": "U", "remove_parts": [2], "library_path": "C:/no/such.SchLib"},
 ])
 def test_symbol_parts_refuses_before_altium(monkeypatch, kwargs):
     tools, bridge = _tools(library, "register_library_tools", monkeypatch)
@@ -103,6 +104,54 @@ def test_symbol_parts_reads_back_every_step():
     # A part is removed from the end: the last part is made current first.
     assert body.index("Comp.CurrentPartID := Was;") < body.index(
         "SetState_CurrentSchComponentRemovePart")
+
+
+def test_removing_parts_sends_the_numbers_and_refuses_a_mix(monkeypatch):
+    tools, bridge = _tools(library, "register_library_tools", monkeypatch)
+    asyncio.run(tools["lib_set_symbol_parts"]("MOD", remove_parts=[4, 6, 11]))
+    assert bridge.sent == [("library.set_symbol_parts", {
+        "name": "MOD", "remove_parts": "4,6,11", "allow_pins": "false"})]
+    for kwargs in ({"remove_parts": [2], "part_count": 3},
+                   {"remove_parts": [2], "display_mode_count": 1},
+                   {"remove_parts": [0]}):
+        bridge.sent.clear()
+        result = asyncio.run(tools["lib_set_symbol_parts"]("MOD", **kwargs))
+        assert bridge.sent == [] and result["ok"] is False, kwargs
+
+
+def test_a_part_is_removed_only_when_the_others_are_left_as_they_were():
+    body = _body("Library.pas", "RemoveSymbolParts")
+    # Highest first, so the numbers still to come do not move.
+    assert "For P := Before DownTo 1 Do" in body
+    # Each removal is checked by what every other part holds.
+    expect = body.index("Expected := SymbolPartPrints(Comp, P);")
+    remove = body.index("SchLib.SetState_CurrentSchComponentRemovePart;")
+    check = body.index("If SymbolPartPrints(Comp, 0) <> Expected Then")
+    assert expect < body.index("Comp.CurrentPartID := P;") < remove < check
+    # Refused before anything changes: pins without allow_pins, every part.
+    assert body.index("'PART_HAS_PINS'") < body.index("SchBeginEdit(SchLib, '')")
+    assert "If Count >= Before Then" in body
+    routed = _body("Library.pas", "Lib_SetSymbolParts")
+    assert "Result := RemoveSymbolParts(SchLib, Comp, LibPath, Name, RemoveStr," in routed
+
+
+def test_the_displayed_part_is_moved_by_the_editor_and_read_back(monkeypatch):
+    tools, bridge = _tools(library, "register_library_tools", monkeypatch)
+    asyncio.run(tools["lib_set_current_component"]("MOD", part=3))
+    assert bridge.sent == [("library.set_current_component",
+                            {"name": "MOD", "part": "3"})]
+    bridge.sent.clear()
+    assert asyncio.run(tools["lib_set_current_component"]("MOD", part=0))["ok"] is False
+    assert bridge.sent == []
+    body = _body("Library.pas", "Lib_SetCurrentComponent")
+    assert "Component := SelectLibComponentPart(Name, Part);" in body
+    assert "'PART_NOT_REACHED'" in body
+
+
+def test_a_count_reads_the_part_its_scope_names():
+    body = _body("Generic.pas", "Gen_GetObjectCount")
+    assert body.index("ApplyLibComponentScope(ScopeType, ScopePath)") < body.index(
+        "SchDoc := SchServer.GetCurrentSchDocument;")
 
 
 def test_model_export_sends_and_refuses(monkeypatch, tmp_path):

@@ -2606,6 +2606,7 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_set_current_component(
         component_name: str,
+        part: Optional[int] = None,
     ) -> dict[str, Any]:
         """Make a named component the editor's current selection in the
         active SchLib.
@@ -2620,18 +2621,28 @@ def register_library_tools(mcp):
 
         Args:
             component_name: Component name (LibRef) in the active SchLib.
+            part: The part to display, from 1, moved by the editor's own
+                command and read back. The library editor's "current
+                part" commands (Tools > Remove Part and the like) then act
+                on it. Part 1 is reached by reselecting the symbol from
+                another one, so the saved library needs a second symbol.
 
         Returns:
-            Dict with ``success`` + ``name``, or an error if no SchLib
-            is active or the component name isn't found in it.
+            Dict with ``success`` + ``name`` (and ``part``,
+            ``part_count`` when a part was given), or an error if no
+            SchLib is active, the name isn't in it, or the part was not
+            reached (``PART_NOT_REACHED``).
         """
         bridge = get_bridge()
         if _NEW_SYMBOL and _NEW_SYMBOL[0].lower() != str(component_name).lower():
             _NEW_SYMBOL.clear()
+        params: dict[str, Any] = {"name": component_name}
+        if part is not None:
+            if part < 1:
+                return {"ok": False, "reason": "part starts at 1"}
+            params["part"] = str(part)
         return await bridge.send_command_async(
-            "library.set_current_component",
-            {"name": component_name},
-        )
+            "library.set_current_component", params)
 
     @mcp.tool()
     async def lib_set_current_footprint(
@@ -7292,8 +7303,11 @@ def register_library_tools(mcp):
         library_path: str = "",
         part_count: Optional[int] = None,
         display_mode_count: Optional[int] = None,
+        remove_parts: Optional[list[int]] = None,
+        allow_pins: bool = False,
     ) -> dict[str, Any]:
-        """Set how many parts and display modes a SchLib symbol has.
+        """Set how many parts and display modes a SchLib symbol has, or
+        remove given parts.
 
         Uses the library editor's own Add Part / Remove Part and Add /
         Remove Display Mode, one step at a time, each read back. Parts
@@ -7308,6 +7322,13 @@ def register_library_tools(mcp):
             part_count: Parts wanted, from 1. Omit to leave as is.
             display_mode_count: Display modes wanted, from 1 (the normal
                 mode only). Omit to leave as is.
+            remove_parts: Part numbers to take out from anywhere, e.g.
+                [4, 6, 11]: removed highest first, each checked by what
+                every other part still holds; the parts after a removed
+                one move down. Given alone, without the counts. A part
+                that still has pins is refused (``PART_HAS_PINS``, nothing
+                changed) unless ``allow_pins``.
+            allow_pins: Remove parts in ``remove_parts`` with their pins.
 
         Does NOT save the library.
 
@@ -7315,12 +7336,31 @@ def register_library_tools(mcp):
             ``part_count_before``, ``part_count``,
             ``display_mode_count_before``, ``display_mode_count``,
             ``pins_removed``, and ``complete`` (false with ``stopped``
-            saying which step did not take).
+            saying which step did not take). With ``remove_parts``:
+            ``removed_parts`` and ``parts`` (pins per part left).
         """
         if not name.strip():
             return {"ok": False, "reason": "name is required"}
+        if remove_parts:
+            if part_count is not None or display_mode_count is not None:
+                return {"ok": False, "reason": "give remove_parts alone, "
+                        "without part_count or display_mode_count"}
+            if any(int(p) < 1 for p in remove_parts):
+                return {"ok": False, "reason": "parts are numbered from 1"}
+            params_rm: dict[str, Any] = {
+                "name": name.strip(),
+                "remove_parts": ",".join(str(int(p)) for p in remove_parts),
+                "allow_pins": "true" if allow_pins else "false"}
+            path = library_path.strip()
+            if path:
+                if not Path(path).is_file():
+                    return {"ok": False, "reason": f"{path} is not a file"}
+                params_rm["library_path"] = path
+            return await get_bridge().send_command_async(
+                "library.set_symbol_parts", params_rm, timeout=60.0)
         if part_count is None and display_mode_count is None:
-            return {"ok": False, "reason": "give part_count, display_mode_count or both"}
+            return {"ok": False, "reason": "give part_count, display_mode_count, "
+                    "remove_parts, or both counts"}
         params: dict[str, Any] = {"name": name.strip()}
         for key, value in (("part_count", part_count),
                            ("display_mode_count", display_mode_count)):

@@ -1108,12 +1108,38 @@ End;
 Function Lib_SetCurrentComponent(Params : String; RequestId : String) : String;
 Var
     Name : String;
+    Part : Integer;
     Component : ISch_Component;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     If Name = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_NAME', 'name is required');
+        Exit;
+    End;
+
+    Part := StrToIntDef(ExtractJsonValue(Params, 'part'), 0);
+    If Part > 0 Then
+    Begin
+        { The displayed part, moved by the editor's own command and read back: }
+        { "current part" menu commands then act on it.                         }
+        If SelectLibComponent(Name) = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+                'Component not found in active library: ' + Name);
+            Exit;
+        End;
+        Component := SelectLibComponentPart(Name, Part);
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PART_NOT_REACHED',
+                'The editor did not reach part ' + IntToStr(Part) + ' of ' + Name
+                + '; the symbol may have fewer parts.');
+            Exit;
+        End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"name":"' + EscapeJsonString(Name) + '","part":'
+            + IntToStr(Part) + ',"part_count":' + IntToStr(Component.PartCount) + '}');
         Exit;
     End;
 
@@ -17916,6 +17942,175 @@ Begin
     End;
 End;
 
+{ What part P of a symbol holds, as text to compare: its pin designators,    }
+{ sorted, and how many other objects it owns. Shared objects (part 0) are   }
+{ not counted. Pins gives the pin count.                                     }
+Function SymbolPartPrint(Comp : ISch_Component; P : Integer; Var Pins : Integer) : String;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Names : TStringList;
+    Owner, Others : Integer;
+Begin
+    Pins := 0;
+    Others := 0;
+    Names := TStringList.Create;
+    Names.Sorted := True;
+    Names.Duplicates := dupIgnore;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Owner := -1;
+            Try Owner := Obj.OwnerPartId; Except End;
+            If Owner = P Then
+            Begin
+                If Obj.ObjectId = ePin Then
+                Begin
+                    Inc(Pins);
+                    Names.Add(Obj.Designator);
+                End
+                Else
+                    Inc(Others);
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+        Result := Names.CommaText + '/' + IntToStr(Others);
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+        Names.Free;
+    End;
+End;
+
+{ Every part's print, in order, leaving out part Skip (0 leaves none out). }
+Function SymbolPartPrints(Comp : ISch_Component; Skip : Integer) : String;
+Var
+    P, Pins : Integer;
+Begin
+    Result := '';
+    For P := 1 To Comp.PartCount Do
+        If P <> Skip Then
+            Result := Result + '#' + SymbolPartPrint(Comp, P, Pins);
+End;
+
+{ Remove the named parts of a symbol, highest first, so the numbers still to }
+{ come do not move. Each removal goes through the library's own Remove Part  }
+{ on the part CurrentPartID names, and is checked by what every other part   }
+{ holds: the parts left must be the ones before it, less the one removed, in }
+{ order. A removal that took anything else stops the run (Undo restores it). }
+{ A part that still has pins is refused unless AllowPins.                    }
+Function RemoveSymbolParts(SchLib : ISch_Lib; Comp : ISch_Component; LibPath : String;
+    Name : String; RemoveStr : String; AllowPins : Boolean; RequestId : String) : String;
+Var
+    Rest, Item, Wanted, Held, Done, Stopped, PartsJson, Expected : String;
+    P, Before, Count, Pins, Comma : Integer;
+Begin
+    Before := Comp.PartCount;
+    Wanted := ',';
+    Rest := RemoveStr + ',';
+    Count := 0;
+    While Rest <> '' Do
+    Begin
+        Comma := Pos(',', Rest);
+        Item := Trim(Copy(Rest, 1, Comma - 1));
+        Rest := Copy(Rest, Comma + 1, Length(Rest));
+        If Item <> '' Then
+        Begin
+            P := StrToIntDef(Item, 0);
+            If (P < 1) Or (P > Before) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+                    Name + ' has parts 1 to ' + IntToStr(Before) + '; there is no part '
+                    + Item + '. Nothing was changed.');
+                Exit;
+            End;
+            If Pos(',' + IntToStr(P) + ',', Wanted) = 0 Then
+            Begin
+                Wanted := Wanted + IntToStr(P) + ',';
+                Inc(Count);
+            End;
+        End;
+    End;
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'remove_parts names no part. Nothing was changed.');
+        Exit;
+    End;
+    If Count >= Before Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'A symbol keeps at least one part; ' + Name + ' has ' + IntToStr(Before)
+            + '. Nothing was changed.');
+        Exit;
+    End;
+
+    Held := '';
+    For P := 1 To Before Do
+        If Pos(',' + IntToStr(P) + ',', Wanted) > 0 Then
+        Begin
+            SymbolPartPrint(Comp, P, Pins);
+            If Pins > 0 Then
+            Begin
+                If Held <> '' Then Held := Held + ', ';
+                Held := Held + 'part ' + IntToStr(P) + ' (' + IntToStr(Pins) + ' pins)';
+            End;
+        End;
+    If (Held <> '') And (Not AllowPins) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PART_HAS_PINS',
+            'Still holding pins: ' + Held + '. Give allow_pins to remove them with '
+            + 'their pins, or move the pins first. Nothing was changed.');
+        Exit;
+    End;
+
+    SchLib.CurrentSchComponent := Comp;
+    Done := '';
+    Stopped := '';
+    SchBeginEdit(SchLib, '');
+    Try
+        For P := Before DownTo 1 Do
+            If (Stopped = '') And (Pos(',' + IntToStr(P) + ',', Wanted) > 0) Then
+            Begin
+                Expected := SymbolPartPrints(Comp, P);
+                Comp.CurrentPartID := P;
+                SchLib.SetState_CurrentSchComponentRemovePart;
+                If SymbolPartPrints(Comp, 0) <> Expected Then
+                    Stopped := 'removing part ' + IntToStr(P) + ' did not leave the other '
+                        + 'parts as they were; Undo in Altium restores the symbol'
+                Else
+                Begin
+                    If Done <> '' Then Done := Done + ',';
+                    Done := Done + IntToStr(P);
+                End;
+            End;
+        Comp.CurrentPartID := 1;
+    Finally
+        SchEndEdit(SchLib, 'Edit');
+    End;
+    Try SchLib.GraphicallyInvalidate; Except End;
+    If Comp.PartCount <> Before Then MarkDocDirtyByPath(LibPath);
+
+    PartsJson := '';
+    For P := 1 To Comp.PartCount Do
+    Begin
+        SymbolPartPrint(Comp, P, Pins);
+        If PartsJson <> '' Then PartsJson := PartsJson + ',';
+        PartsJson := PartsJson + '{"part":' + IntToStr(P) + ',"pins":' + IntToStr(Pins) + '}';
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('name', Name) + ','
+        + JsonInt('part_count_before', Before) + ','
+        + JsonInt('part_count', Comp.PartCount) + ','
+        + JsonRaw('removed_parts', '[' + Done + ']') + ','
+        + JsonRaw('parts', '[' + PartsJson + ']') + ','
+        + JsonBool('complete', Stopped = '') + ','
+        + JsonStr('stopped', Stopped)));
+End;
+
 { Lib_SetSymbolParts - set how many parts and display modes a SchLib symbol   }
 { has, through the library's own part and mode commands                       }
 { (ISch_Lib.SetState_CurrentSchComponentAddPart / RemovePart / AddDisplayMode }
@@ -17927,7 +18122,7 @@ End;
 { (either may be empty: left as it is).                                       }
 Function Lib_SetSymbolParts(Params : String; RequestId : String) : String;
 Var
-    LibPath, Name, PartStr, ModeStr, Stopped : String;
+    LibPath, Name, PartStr, ModeStr, Stopped, RemoveStr : String;
     SchLib : ISch_Lib;
     Comp : ISch_Component;
     WantParts, WantModes, PartsBefore, ModesBefore, Was, Guard : Integer;
@@ -17937,9 +18132,16 @@ Begin
     Name := ExtractJsonValue(Params, 'name');
     PartStr := ExtractJsonValue(Params, 'part_count');
     ModeStr := ExtractJsonValue(Params, 'display_mode_count');
+    RemoveStr := ExtractJsonValue(Params, 'remove_parts');
     If Name = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required');
+        Exit;
+    End;
+    If (RemoveStr <> '') And ((PartStr <> '') Or (ModeStr <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'remove_parts goes alone: give part_count or display_mode_count in another call');
         Exit;
     End;
     WantParts := StrToIntDef(PartStr, -1);
@@ -17962,6 +18164,13 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
             'No symbol named ' + Name + ' in ' + LibPath);
+        Exit;
+    End;
+
+    If RemoveStr <> '' Then
+    Begin
+        Result := RemoveSymbolParts(SchLib, Comp, LibPath, Name, RemoveStr,
+            ExtractJsonValue(Params, 'allow_pins') = 'true', RequestId);
         Exit;
     End;
 
