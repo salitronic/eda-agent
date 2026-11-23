@@ -175,6 +175,19 @@ def test_altium_answers_for_the_dblib_and_nothing_opens_the_file():
         assert f"Doc.{member}" in definition, f"the definition no longer asks {member}"
 
 
+def test_no_quote_means_a_bare_name_not_square_brackets():
+    # MySQL and PostgreSQL reject [Name]; a DbLib that sets no quote, and
+    # whose query Altium builds bare, sends its names bare.
+    routines = _dblib_routines()
+    for name in ("Lib_GetDbLibInfo", "DbLibSearchOne", "Lib_GetDbLibRecord"):
+        code = _after_begin(routines[name])
+        assert "LeftQ := '['" not in code and "RightQ := ']'" not in code, (
+            f"{name} puts square brackets in place of a missing quote")
+    definition = _after_begin(routines["DbLibDefinition"])
+    assert "Doc.GetCommandString(0, '', '')" in definition
+    assert "DbLibCommandQuote(Cmd, Name, True)" in definition
+
+
 def test_only_a_library_installed_for_the_read_is_uninstalled():
     definition = _after_begin(_dblib_routines()["DbLibDefinition"])
     install = definition.index("IntegratedLibraryManager.InstallLibrary(LibPath)")

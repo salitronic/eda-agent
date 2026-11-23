@@ -20682,6 +20682,29 @@ Begin
     End;
 End;
 
+{ The quote Altium wraps table NAME in, read off the query Altium builds for  }
+{ it (GetCommandString, "Select * From <schema.>NAME <Where ...>"): one side }
+{ of a real SQL pair, else '' (the name goes bare). Left picks the side.     }
+Function DbLibCommandQuote(Cmd : String; Name : String; Left : Boolean) : String;
+Var
+    P : Integer;
+    Tail, LeftQ, RightQ : String;
+Begin
+    Result := '';
+    Tail := '';
+    P := Pos(' FROM ', UpperCase(Cmd));
+    If P > 0 Then Tail := Trim(Copy(Cmd, P + 6, Length(Cmd)));
+    P := Pos(' WHERE ', UpperCase(Tail));
+    If P > 0 Then Tail := Trim(Copy(Tail, 1, P - 1));
+    If (Name <> '') And (Length(Tail) >= Length(Name) + 2)
+        And (Copy(Tail, Length(Tail) - Length(Name), Length(Name)) = Name) Then
+    Begin
+        LeftQ := Copy(Tail, Length(Tail) - Length(Name) - 1, 1);
+        RightQ := Copy(Tail, Length(Tail), 1);
+        Result := DbLibColumnQuote(LeftQ, RightQ, Left);
+    End;
+End;
+
 Function DbLibQuoteIdent(Name : String; LeftQ : String; RightQ : String) : String;
 Var
     I : Integer;
@@ -21033,6 +21056,16 @@ Begin
                         EndAt := Pos(' ', Rest);
                         If EndAt > 0 Then RightQ := Copy(Rest, 1, EndAt - 1);
                     End;
+                    { No quote in the filter text: take the pair Altium wraps   }
+                    { the first table's name in when it builds its own query.   }
+                    { None there either leaves names bare.                      }
+                    If (LeftQ = '') And (RightQ = '') Then
+                    Begin
+                        Name := Doc.GetTableNameAt(0);
+                        Cmd := Doc.GetCommandString(0, '', '');
+                        LeftQ := DbLibCommandQuote(Cmd, Name, True);
+                        RightQ := DbLibCommandQuote(Cmd, Name, False);
+                    End;
                 End;
                 Bare := False;
                 MapNo := 0;
@@ -21185,8 +21218,6 @@ Begin
             ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
             LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
             RightQ := DbLibGlobalValue(Lines, 'RightQuote');
-            If LeftQ = '' Then LeftQ := '[';
-            If RightQ = '' Then RightQ := ']';
             TableList := DbLibTableNames(Lines);
 
             Tried := WantFields And (Trim(ConnStr) <> '') And (TableList <> '');
@@ -21317,8 +21348,6 @@ Begin
             ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
             LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
             RightQ := DbLibGlobalValue(Lines, 'RightQuote');
-            If LeftQ = '' Then LeftQ := '[';
-            If RightQ = '' Then RightQ := ']';
             TableList := DbLibTableNames(Lines);
             If TableFilter <> '' Then
             Begin
@@ -21756,8 +21785,6 @@ Begin
             ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
             LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
             RightQ := DbLibGlobalValue(Lines, 'RightQuote');
-            If LeftQ = '' Then LeftQ := '[';
-            If RightQ = '' Then RightQ := ']';
             TableList := DbLibTableNames(Lines);
             Declared := DbLibFindTab(TableList, Table);
             If Declared = '' Then

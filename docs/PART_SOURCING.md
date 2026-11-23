@@ -21,7 +21,7 @@ tells you whether you can draw it.
 
 | Provider | Kind | What it is | Network | Credential |
 |---|---|---|---|---|
-| `altium_local` | library | The `.SchLib` libraries already on this machine. The only source that answers whether you **already own** a part, which is what stops an import creating a second symbol with a slightly different name. Reads the OLE files directly, so it works with Altium closed. Nothing to download: a hit is already an Altium symbol. Point it with `EDA_AGENT_ALTIUM_LIBRARIES` | no | no |
+| `altium_local` | library | The `.SchLib` libraries already on this machine. The only source that answers whether you **already own** a part, which is what stops an import creating a second symbol with a slightly different name. Altium reads the libraries through its own library reader, so it needs Altium running; the files are never opened directly. Nothing to download: a hit is already an Altium symbol. Point it with `EDA_AGENT_ALTIUM_LIBRARIES` | no | no |
 | `digikey` | catalogue | Digi-Key's catalogue: MPN, datasheet, lifecycle and live stock. Needs an OAuth client from their developer portal via `DIGIKEY_CLIENT_ID` and `DIGIKEY_CLIENT_SECRET` | yes | yes |
 | `easyeda` | library | EasyEDA / LCSC component data. Fetch by LCSC part number works; **search is unavailable** because the upstream endpoint was withdrawn | yes | no |
 | `element14` | catalogue | element14 (Farnell, Newark): MPN, datasheet and stock. Needs `ELEMENT14_API_KEY`; `ELEMENT14_STORE` picks the regional storefront, which changes the catalogue you see | yes | yes |
@@ -51,7 +51,7 @@ you choose one. Call `part_search` with an empty query to list the providers
 and who operates them.
 
 **Four of the ten answer on a fresh install**, none of them needing a
-credential: `altium_local` and `kicad_local` read libraries already on disk,
+credential: `altium_local` (through Altium) and `kicad_local` read libraries already on disk,
 `partreel` queries an open registry, and `public_libraries` indexes openly
 published KiCad libraries from GitHub. That is deliberately more than one, so
 no single free source is load-bearing. The five catalogues each need their own

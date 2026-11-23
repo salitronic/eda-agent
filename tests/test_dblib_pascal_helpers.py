@@ -101,7 +101,7 @@ _ROUTINES = [
     "DbLibDoubled", "DbLibIsSecretKey", "DbLibRedactConnStr", "DbLibConnHasSecret",
     "DbLibConnValue", "DbLibSetConnValue", "DbLibIsJetOrAce", "DbLibIsAbsolutePath",
     "DbLibConnectionForRead", "DbLibConnKind", "DbLibIsPlainIdentChar",
-    "DbLibTableQuote", "DbLibColumnQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
+    "DbLibTableQuote", "DbLibColumnQuote", "DbLibCommandQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
     "DbLibKeyField",
     "DbLibFootprintFields",
 ]
@@ -275,6 +275,25 @@ def test_a_key_column_takes_only_a_real_sql_quote_pair(tmp_path):
         (key("Part Number", '"', '"'), '<"Part Number">'),
         (key("PN", "", ""), "<PN>"),
         (key("PN", "[", "["), "<PN>"),
+    ])
+
+
+def test_the_quote_is_read_off_the_query_altium_builds(tmp_path):
+    # When Altium's filter text carries no quote, the pair Altium wraps the
+    # table in for its own query is the one the database takes: a DbLib on
+    # PostgreSQL quotes with ", one on MySQL may quote nothing at all.
+    def side(cmd, name):
+        return (f"'<' + DbLibCommandQuote({_pas(cmd)}, {_pas(name)}, True) + "
+                f"DbLibCommandQuote({_pas(cmd)}, {_pas(name)}, False) + '>'")
+    _check(tmp_path, [
+        (side("Select * From [ICs] ", "ICs"), "<[]>"),
+        (side('Select * From "Amplifiers-Audio" ', "Amplifiers-Audio"), '<"">'),
+        (side('Select * From public."Amplifiers-Audio" Where 1=0', "Amplifiers-Audio"), '<"">'),
+        (side("Select * From `parts` ", "parts"), "<``>"),
+        (side("Select * From Parts ", "Parts"), "<>"),
+        (side("Select * From }ic{ ", "ic"), "<>"),
+        (side("Select * From [Other] ", "ICs"), "<>"),
+        (side("", "ICs"), "<>"),
     ])
 
 
