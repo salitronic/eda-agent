@@ -245,7 +245,9 @@ async def sync_stack_manager(bridge: Any, dry_run: bool = False) -> dict[str, An
             "in_step_after": left == [] and not changed,
             "out_of_step_after": left, "board_changed": changed,
             "symmetric": applied.get("symmetric"),
-            "symmetric_after": applied.get("symmetric_after")}
+            "symmetric_after": applied.get("symmetric_after"),
+            "rules_relinked": applied.get("rules_relinked"),
+            "profile_rules": applied.get("profile_rules")}
 
 
 def board_stack_changes(before: dict[str, Any],
@@ -3145,11 +3147,17 @@ def register_pcb_tools(mcp):
         Args:
             dry_run: Only list what would change (the default).
 
+        The load gives every layer and impedance profile in the manager a
+        new id; width and differential pair rules linked to a profile are
+        linked to it again (``profile_rules``).
+
         Returns:
             ``in_step`` before, ``changes`` (layer, field, value) and, once
             run, ``in_step_after``, ``out_of_step_after``, ``symmetric`` and
             ``symmetric_after`` (Altium keeps a stack symmetric only when it
-            is). Refused: ``layers_differ``.
+            is), ``rules_relinked`` and ``profile_rules`` (rule, profile,
+            state: kept, relinked, failed or profile_gone). Refused:
+            ``layers_differ``.
         """
         return await sync_stack_manager(get_bridge(), dry_run)
 
