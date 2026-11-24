@@ -1918,6 +1918,14 @@ Begin
         + ',"PCBGeneric":"' + UnitStamp_PCBGeneric(0) + '"'
         + ',"PCB":"' + UnitStamp_PCB(0) + '"'
         + ',"Generic":"' + UnitStamp_Generic(0) + '"'
+        + ',"RowsCore":"' + UnitStamp_RowsCore(0) + '"'
+        + ',"RowsPcbLib":"' + UnitStamp_RowsPcbLib(0) + '"'
+        + ',"RowsPcbLibMore":"' + UnitStamp_RowsPcbLibMore(0) + '"'
+        + ',"RowsPcb":"' + UnitStamp_RowsPcb(0) + '"'
+        + ',"RowsPadVia":"' + UnitStamp_RowsPadVia(0) + '"'
+        + ',"RowsSchLib":"' + UnitStamp_RowsSchLib(0) + '"'
+        + ',"RowsSchGraph":"' + UnitStamp_RowsSchGraph(0) + '"'
+        + ',"Rows":"' + UnitStamp_Rows(0) + '"'
         + ',"Audit":"' + UnitStamp_Audit(0) + '"'
         + ',"StatusForm":"' + UnitStamp_StatusForm(0) + '"}');
 End;
@@ -2082,6 +2090,11 @@ Begin
     PcbEditDepth := 0;
     SchEditOpen := '|';
     SchBulkHold := False;
+    { the rows stage profile (RowsProfStart turns it on per request) }
+    RowsProfOn := False;
+    RowsProfText := '';
+    RowsProfTick := 0;
+    RowsProfStartTick := 0;
     ResetPropertyDiag(0);
     ResetItemState(0);
 End;
@@ -2121,6 +2134,7 @@ Begin
         'generic':     Result := HandleGenericCommand(Action, Params, RequestId);
         'pcb':         Result := HandlePCBCommand(Action, Params, RequestId);
         'audit':       Result := HandleAuditCommand(Action, Params, RequestId);
+        'rows':        Result := HandleRowsCommand(Action, Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown command category: ' + Category +

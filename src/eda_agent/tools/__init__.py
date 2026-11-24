@@ -37,6 +37,7 @@ from .sim import register_sim_tools
 from .design import register_design_tools
 from .render import register_render_tools
 from .audit import register_audit_tools
+from .rows import register_rows_tools
 from .route import register_route_tools
 from .sch_template import register_sch_template_tools
 from .easyeda import register_easyeda_tools
@@ -208,6 +209,7 @@ def register_all_tools(mcp):
     register_design_tools(mcp)
     register_render_tools(mcp)
     register_audit_tools(mcp)
+    register_rows_tools(mcp)
     register_route_tools(mcp)
     register_sch_template_tools(mcp)
     register_convention_tools(mcp)
@@ -414,6 +416,7 @@ __all__ = [
     "register_render_tools",
     "register_audit_tools",
     "register_route_tools",
+    "register_rows_tools",
     "register_sch_template_tools",
     "register_kicad_tools",
 ]

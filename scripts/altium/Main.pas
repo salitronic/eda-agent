@@ -321,6 +321,15 @@ Var
       freed. Comparing this number never touches the remembered symbol. }
     LastCreatedLibDocAddr : Integer;
 
+    { The rows commands' stage profile (RowsCore.pas, RowsProfStart): on   }
+    { when the request asks profile=1, the stages so far as JSON members,   }
+    { the tick of the last mark and of the start. Set at the start of every }
+    { rows command, before anything reads them.                             }
+    RowsProfOn : Boolean;
+    RowsProfText : String;
+    RowsProfTick : Integer;
+    RowsProfStartTick : Integer;
+
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
 { dispatcher startup before LoadMCPConfig so a missing/corrupt config file    }

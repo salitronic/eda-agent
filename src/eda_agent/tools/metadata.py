@@ -87,6 +87,9 @@ _CATEGORY_BY_PREFIX = (
     ("datasheet_", "parts"),
     # Altium 365 through its own API or Nexar; no editor involved.
     ("altium365_", "altium365"),
+    # Filtered bulk read / write of one object kind on any document, by
+    # object type like the obj_ tools.
+    ("rows_", "generic"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -198,6 +201,8 @@ INTERACTION_OVERRIDES = {
     # Reads the rules, or keeps an approved copy beside the board: nothing
     # in the design changes.
     "pcb_drc_rules": READONLY,
+    # Reads the objects of one kind; writes nothing.
+    "rows_read": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog
