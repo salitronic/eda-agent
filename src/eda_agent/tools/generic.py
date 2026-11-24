@@ -771,7 +771,7 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all.
+                "Text=VCC"; "" matches all. Lengths are mil in any session.
                 Numbers match as numbers ('.' or ','): Location.Y=9000.0
                 meets 9000; text matches exactly.
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;

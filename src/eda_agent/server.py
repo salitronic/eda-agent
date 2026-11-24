@@ -138,6 +138,14 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 # Deliberately short. This is prepended to a client's context on every
 # session, so it earns its place by covering the mistakes that actually
 # happened and nothing else.
+#
+# And short enough to arrive whole: Claude Code passes on only the first
+# CLIENT_INSTRUCTIONS_LIMIT characters. At 4,683 the preamble lost its
+# end there, mid-word in the length rule, so the sentence saying a plain
+# length is in the session's unit "whatever its description says" never
+# reached a client reading descriptions that say mils (#448).
+CLIENT_INSTRUCTIONS_LIMIT = 4096
+
 #: The schematic-engine paragraph, per backend, because the tools it
 #: names are not the same on each. The Altium surface carries the whole
 #: family; EasyEDA carries the plan-building half and emits through its
@@ -149,22 +157,17 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 #: layout is being retired; a planned template came out clean first time
 #: where the engine did not after many rounds).
 _ENGINE_ALTIUM = (
-    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Plan the sheet the way\n"
-    "an engineer draws it, every coordinate on the 100 mil grid: the IC\n"
-    "in the middle, supply rails as straight wires with their capacitors\n"
-    "hanging straight down to ground, a feedback divider as a vertical\n"
-    "stack whose midpoint runs straight across to its pin, net labels\n"
-    "only where a signal leaves the block. Read each symbol's pins with\n"
-    "lib_get_pin_list, write the template (parts, wires through pin\n"
-    "anchors like U1.EN, power ports, labels and the expected nets),\n"
-    "check it with sch_preview_template and look at its PNG, then draw\n"
-    "it with sch_draw_template. That places the parts, works out every\n"
-    "pin end, checks the wiring against the placed pins and refuses a\n"
-    "short or a misplaced part before the first wire.\n"
-    "\n"
-    "To CHANGE a block, redraw it from a template on a fresh sheet\n"
-    "rather than moving parts one at a time. The sch_ and obj_ tools\n"
-    "are for small repairs.\n"
+    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE, as an engineer draws,\n"
+    "on the 100 mil grid: the IC in the middle, rails as straight wires\n"
+    "with capacitors hanging straight down to ground, a divider as a\n"
+    "vertical stack whose midpoint runs across to its pin, net labels only\n"
+    "where a signal leaves the block. Read the pins (lib_get_pin_list),\n"
+    "write the template (parts, wires through pin anchors like U1.EN,\n"
+    "power ports, labels, expected nets), check it with\n"
+    "sch_preview_template and look at its PNG, then draw it with\n"
+    "sch_draw_template, which refuses a short or a misplaced part before\n"
+    "the first wire. To CHANGE a block, redraw it from a template on a\n"
+    "fresh sheet; the sch_ and obj_ tools are for small repairs.\n"
     "\n"
 )
 
@@ -204,20 +207,17 @@ _ENGINE_PARAGRAPHS = {
 # one, otherwise the interface, without asking.
 _UI_AUTOMATION_ALTIUM = (
     "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
-    "press buttons, pick menus and type into Altium's dialogs\n"
-    "(app_menu, app_ui, app_press_dialog_button, app_drive_dialogs and\n"
-    "the rest) come second to an API tool. When an API tool seems to fail or be\n"
-    "missing, the cause has usually been a wrong argument or a tool that\n"
-    "was not found, and driving a dialog instead has ended with Altium\n"
-    "crashed, so first {reach} with what you are trying to do. When there\n"
-    "is no API route, drive the interface yourself and carry on: never\n"
-    "ask the user to click, pick a menu or press a button you can press.\n"
-    "Read every dialog you raise (app_list_open_dialogs, app_screenshot)\n"
-    "and answer it as the task requires; needs_a_human marks one the\n"
-    "dialog driver will not answer blindly, not one to hand to the user.\n"
-    "Ask the user only for a decision that is theirs, never for a click.\n"
-    "Say in your report which step needed the interface: a missing API\n"
-    "route is worth reporting, because it gets fixed.\n"
+    "press buttons, pick menus and type into dialogs (app_menu, app_ui,\n"
+    "app_drive_dialogs ...) come second. An API tool that seemed to fail\n"
+    "or be missing has usually had a wrong argument or was not found, and\n"
+    "driving a dialog instead has crashed Altium: first {reach} with\n"
+    "what you are trying to do. When there is no API route,\n"
+    "drive the interface yourself: never ask the user to click, pick a\n"
+    "menu or press a button you can press. Answer every dialog you raise\n"
+    "(app_screenshot, app_list_open_dialogs) as the task requires;\n"
+    "needs_a_human marks one the driver will not answer blindly, not one\n"
+    "for the user. Ask the user only for decisions. Say which step needed\n"
+    "the interface: a missing API route gets fixed.\n"
     "\n"
 )
 
@@ -231,15 +231,21 @@ _UI_AUTOMATION_PARAGRAPHS = {
 
 #: The length rule, the same on every backend (lengths.py).
 _UNITS = (
-    "LENGTHS IN MILS OR MM. Each session works in one unit, mil or mm:\n"
-    "length_units reads or sets it; a new session starts in the unit\n"
-    "chosen on the Config tab (mil unless changed). A length whose name\n"
-    "has no unit (x, width, hole_size) is in the session's unit, in\n"
-    "arguments and in replies, whatever its description says. A name with\n"
-    "a unit always means it: thickness_mils is mils, and thickness_mm may\n"
-    "be given in its place. Replies rename such keys to the session's\n"
-    "unit and say length_units. One call can use the other unit by giving\n"
-    "length_units beside its arguments.\n"
+    "LENGTHS IN MILS OR MM. Each session works in one unit, mil or mm\n"
+    "(length_units reads or sets it; mil unless set otherwise). A length\n"
+    "whose name has no unit (x, width, hole_size) is in the session's\n"
+    "unit, in arguments and replies, even where its description says\n"
+    "mils. A name with a unit means it: thickness_mils is mils,\n"
+    "thickness_mm may replace it, and replies rename such keys to the\n"
+    "session's unit and say length_units. length_units beside a call's\n"
+    "arguments sets the unit for that call alone.\n"
+)
+
+#: Altium only: a filter or set string goes to Altium as written, so its
+#: numbers are Altium's own, mils, whatever the session's unit (#448).
+_UNITS_IN_TEXT_ALTIUM = (
+    "obj_ filter and set text goes to Altium as written: its lengths are\n"
+    "mil in any session; obj_query and obj_modify take X_mm as mm.\n"
 )
 
 
@@ -259,8 +265,7 @@ def build_server_instructions(
     client would send it looking for a tool that backend never registers.
     """
     if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
-        reach = ('reach tool_guide through tool_invoke, since this server '
-                 'is advertising only the two meta-tools,')
+        reach = 'reach tool_guide through tool_invoke'
     else:
         reach = "call tool_guide"
     engine = _ENGINE_PARAGRAPHS.get(
@@ -271,59 +276,53 @@ def build_server_instructions(
     altium = (backend or DEFAULT_BACKEND).strip().lower() in ("altium", "both")
     items = (
         "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
-        "arguments, one dict per item, with arguments given beside it\n"
-        "applying to all. Twenty arcs, ten pin renames or a column of net\n"
-        + ("labels are one call and one undo step in Altium, not twenty\n"
+        "arguments, one dict per item; arguments beside it apply to all.\n"
+        "Twenty arcs or ten pin renames are one call"
+        + (" and one undo step in Altium\n"
            "(up to 200 items a request). The reply gives each item's result\n"
-           "in order and says which failed; items run before a failure stay\n"
-           "applied. A tool named in the plural (pcb_place_arcs) takes its\n"
-           "list directly.\n"
+           "in order and which failed; items before a failure stay applied.\n"
+           "A plural tool (pcb_place_arcs) takes its list directly.\n"
            if altium else
-           "labels are one call, not twenty. The reply lists each item's\n"
-           "result in order.\n")
+           ", not twenty. The reply lists\n"
+           "each item's result in order.\n")
         + "A single call works as it always has.\n"
         "\n"
         "NO SERVER OF YOUR OWN. Call these tools through this connection.\n"
-        "Never write a script that starts eda-agent as its own MCP server\n"
-        "to call tools in a loop: that server is refused. Many objects go\n"
-        "in one call's items.\n"
+        "A script that starts eda-agent as its own MCP server is refused;\n"
+        "many objects go in one call's items.\n"
         "\n"
         + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
            "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
            "goes straight to its objects; any other condition (X=, Y=, Name)\n"
-           "is checked on every object of the type, seconds on a busy board.\n"
-           "pcb_get_copper reads one layer's copper in bulk. tool_guide names\n"
-           "the quick route for a task. obj_query and obj_modify take\n"
-           "Altium's own names (X, Width): mils in any session; X_mm is mm.\n"
+           "checks every object of the type, seconds on a busy board.\n"
+           "pcb_get_copper reads a layer's copper in bulk; tool_guide names\n"
+           "the quick route for a task.\n"
            "\n" if altium else ""))
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
-        "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
-        "pcb_ on an open .PcbDoc, sch_ on an open .SchDoc, and obj_ on\n"
-        "either, by the object type it is given (eTrackObject acts on the\n"
-        "active board). A board tool aimed at a library does not always\n"
-        "fail. It can resolve some other open board and report success for\n"
-        "work you never asked for."
-        + (" (pcb_layer_view, pcb_pad_relief and\n"
-           "pcb_renumber_pads also act on a .PcbLib in front.)"
+        "is the most common error: lib_ acts on a .PcbLib or .SchLib, pcb_\n"
+        "on an open .PcbDoc, sch_ on an open .SchDoc, obj_ on either by the\n"
+        "object type it is given (eTrackObject: the active board). A board\n"
+        "tool aimed at a library can resolve another open board and report\n"
+        "success for work you never asked for."
+        + (" (pcb_layer_view, pcb_pad_relief\n"
+           "and pcb_renumber_pads also act on a .PcbLib in front.)"
            if altium else "")
         + "\n"
         "\n"
         f"Before concluding that this server cannot do something, {reach}\n"
         "with what you are trying to do"
-        + (',\nand backend="altium" (without it the dead ends of the other EDA\n'
-           "backends come back too)"
+        + (',\nand backend="altium" (or other backends\' dead ends come too)'
            if (backend or DEFAULT_BACKEND).strip().lower() == "altium" else "")
-        + ". It answers three separate things:\n"
-        "the tool and what it needs first, the tool you were probably\n"
-        "reaching for and why it acts on a different document, and the\n"
-        "short list of things that are genuinely impossible with the\n"
-        "reason. Use tool_catalog to search the surface by name or\n"
+        + ".\nIt names the tool and what it needs first, the tool you probably\n"
+        "meant and why it acts on another document, and what is impossible,\n"
+        "with the reason. tool_catalog searches the surface by name or\n"
         "category.\n"
         "\n"
         + ui
         + engine + items
         + _UNITS
+        + (_UNITS_IN_TEXT_ALTIUM if altium else "")
         + "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
         "the user what is new and ask; call server_update(apply=True) only\n"
