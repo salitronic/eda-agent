@@ -741,7 +741,7 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all.
+                "Text=VCC"; "" matches all. Lengths are mil in any session.
                 Numbers match as numbers ('.' or ','): Location.Y=9000.0
                 meets 9000; text matches exactly.
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;
@@ -909,7 +909,7 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant (see `obj_query`)
             set: Pipe-separated assignments, e.g. "Text=NEW_NAME" or
                 "Location.X=100|Location.Y=200". Board lengths are
-                decimal mils; a non-number is reported failed, never
+                decimal mils in any session; a non-number fails, never
                 written as 0. Board properties include, besides the
                 usual geometry: HolePositiveTolerance and
                 HoleNegativeTolerance on pads and vias ("unset" when

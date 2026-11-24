@@ -234,3 +234,62 @@ def test_the_ui_paragraph_reaches_tool_guide_the_same_way_minimal_can():
     text = build_server_instructions("minimal", "altium")
     assert "API FIRST" in text
     assert "call tool_guide" not in text
+
+
+# --------------------------------------------------------------------------
+# The whole preamble arrives, and its length rule says what the code does
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("toolset", ["full", "minimal"])
+@pytest.mark.parametrize("backend", ["altium", "both", "kicad", "easyeda"])
+def test_every_wording_arrives_whole(toolset, backend):
+    """Claude Code hands a session only the first 4096 characters of a
+    server's instructions. At 4,683 the preamble lost its end there,
+    mid-word in the length rule, so the sentence that overrides the mils
+    in the tool descriptions never arrived, and an mm session placed
+    tracks 25.4 times too large from a description saying mils (#448).
+    What follows the limit is not shortened, it is gone."""
+    from eda_agent.server import CLIENT_INSTRUCTIONS_LIMIT
+
+    assert CLIENT_INSTRUCTIONS_LIMIT == 4096, (
+        "the limit is the client's, measured, not ours to raise")
+    text = build_server_instructions(toolset, backend)
+    assert len(text) <= CLIENT_INSTRUCTIONS_LIMIT, (
+        f"the {toolset} {backend} preamble is {len(text)} characters; a "
+        f"client keeps {CLIENT_INSTRUCTIONS_LIMIT} and drops the rest: "
+        f"{text[CLIENT_INSTRUCTIONS_LIMIT:][:60]!r}...")
+
+
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_the_length_rule_outranks_descriptions_that_say_mils(backend):
+    """Most tool descriptions still say mils for lengths the server reads
+    in the session's unit; the preamble is where that is put right."""
+    text = " ".join(build_server_instructions("full", backend).split())
+    assert "even where its description says mils" in text
+
+
+def test_filter_and_set_text_is_said_to_stay_in_mil():
+    """A filter or set string goes to Altium as written, so an mm session
+    that writes Y1=12 in a filter matches nothing at 12 mm (#448). The
+    preamble says so; this holds it to the converter."""
+    from eda_agent import lengths
+    from eda_agent.tools.generic import _mm_properties
+
+    for backend in ("altium", "both"):
+        text = " ".join(build_server_instructions("full", backend).split())
+        assert "filter and set text goes to Altium as written" in text
+        assert "mil in any session" in text
+    for backend in ("kicad", "easyeda"):
+        assert "filter and set text" not in build_server_instructions("full", backend)
+
+    for tool, args in (
+            ("obj_query", {"object_type": "eTrackObject", "filter": "Y1=472.4409",
+                           "properties": "X1"}),
+            ("obj_modify", {"object_type": "eTextObject", "filter": "Text=H",
+                            "set": "Y=37.6"}),
+            ("obj_delete", {"object_type": "eTrackObject", "filter": "X1=968.5"})):
+        assert lengths.args_in(tool, dict(args), "mm", list(args)) == args, (
+            f"{tool} now converts its filter or set text; the preamble "
+            f"says it does not")
+    assert _mm_properties("X_mm", "eTrackObject")[0] == "X", (
+        "obj_query no longer reads X_mm on a board; the preamble says it does")
