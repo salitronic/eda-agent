@@ -40,12 +40,15 @@ def test_the_command_is_routed():
 
 def test_the_walk_is_filtered_to_the_six_kinds():
     body = _routine("Gen_ZoomToObject")
-    at = body.index("SchIter.AddFilter_ObjectSet(MkSet(")
-    kinds = body[at:body.index("));", at)]
+    # AD 26.1.1.7 omitted eCrossSheetConnector (ObjectId 48) in a combined
+    # six-kind MkSet iterator. Walk one kind per iterator and verify ObjectId.
+    at = body.index("SchIter.AddFilter_ObjectSet(MkSet(ObjTypeInt))")
+    kinds = body[body.index("Case TypeIndex Of"):at]
     for kind in ("eSchComponent", "eNetLabel", "ePort", "ePowerObject",
                  "eCrossSheetConnector", "eHarnessConnector"):
         assert kind in kinds, kind
     assert at < body.index("SchIter.FirstSchObject")
+    assert "If Obj.ObjectId = ObjTypeInt Then" in body
 
 
 def test_each_kind_is_named_by_its_own_member():
@@ -54,13 +57,13 @@ def test_each_kind_is_named_by_its_own_member():
     # A port has no Text: asking stops the script. It answers to Name, and
     # its branch comes before the Text one.
     port = body.index("Obj.ObjectId = ePort")
-    assert "Result := Obj.Name" in body[port:body.index("eHarnessConnector", port)]
+    assert "SchQuickRead(Obj, 111)" in body[port:body.index("eHarnessConnector", port)]
     harness = body.index("Obj.ObjectId = eHarnessConnector")
     branch = body[harness:body.index("SchObjectHasText(Obj)", harness)]
     assert "Harness.HarnessConnectorType" in branch
-    assert "Result := TypeLabel.Text" in branch
+    assert "SchQuickRead(TypeLabel, 110)" in branch
     assert body.index("If SchObjectHasText(Obj) Then") > harness
-    assert "Result := Obj.Text" in body[body.index("If SchObjectHasText(Obj) Then"):]
+    assert "SchQuickRead(Obj, 110)" in body[body.index("If SchObjectHasText(Obj) Then"):]
 
 
 def test_names_compare_without_case():
