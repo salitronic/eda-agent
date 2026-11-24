@@ -99,9 +99,11 @@ Const
     SPONSOR_URL          = 'https://github.com/sponsors/salitronic';
     SPONSOR_CLOSED_FILE  = 'sponsor_note_closed';
     UPDATE_FLAG_FILE     = 'update_available.flag';
+    WAKE_READY_FILE      = 'wake.ready';
 
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
+    STATS_REFRESH_MS    = 2000;
 
 
 { The notice line under the figures takes no room until there is something }
@@ -1883,6 +1885,15 @@ Var
     { Set by the first tick, which logs _tick_first. A session that logs  }
     { _session_start and never _tick_first armed a timer that never ran.  }
     PumpTicked           : Boolean;
+    { Set once a Win32 WM_COMMAND wake hits btn_WakeClick. While True,    }
+    { tmr_Poll stays at PollIntervalWatchdogMs instead of high-frequency  }
+    { 10/30 ms polling, avoiding Altium DelphiScript timer re-entry heap  }
+    { growth (~2 KB/tick measured on AD 26.1.1.7).                        }
+    PumpWakeSeen         : Boolean;
+    { Set if btn_WakeClick fires while PumpInTick is True, so the active  }
+    { tick re-checks the queue before leaving the guard.                  }
+    PumpWakeMissed       : Boolean;
+    PumpLastStatsTick    : Cardinal;
 
 
 { UnitStamp_StatusForm - which build of StatusForm.pas Altium compiled; 'dev' here. }
@@ -2553,7 +2564,7 @@ Var
     LoadedBefore, OpenedField : String;
 Begin
     Result := False;
-    EnsureWorkspaceDir(0);
+    If WorkspaceDir = '' Then EnsureWorkspaceDir(0);
 
     If Not ScanForRequestFile(RequestPath, RequestId) Then Exit;
 
@@ -2843,6 +2854,10 @@ Begin
     { FIRST, and unconditionally. A tick that fires after this point would }
     { run against an engine Altium may already be unloading.                }
     Try tmr_Poll.Enabled := False; Except { the engine is going away; nothing is left to tell } End;
+    Try
+        If (WorkspaceDir <> '') And FileExists(WorkspaceDir + WAKE_READY_FILE) Then
+            DeleteFile(WorkspaceDir + WAKE_READY_FILE);
+    Except { best-effort wake marker cleanup } End;
 
     QuitTag := 'no';
     If PumpQuitting Then QuitTag := 'yes';
@@ -2901,9 +2916,12 @@ End;
 
 Procedure tmr_PollTimer(Sender : TObject);
 Var
-    HadRequest : Boolean;
-    Drained    : Integer;
-    NowMs      : Cardinal;
+    HadRequest   : Boolean;
+    HadNonPing   : Boolean;
+    KeepDraining : Boolean;
+    Drained      : Integer;
+    NowMs        : Cardinal;
+    TargetMs     : Integer;
 Begin
     { RE-ENTRANCY GUARD. A tick is not atomic: a handler can run for seconds  }
     { and calls Application.ProcessMessages while it works, which lets this    }
@@ -2996,33 +3014,58 @@ Begin
 
             { Drain rather than one-per-tick: see PUMP_DRAIN_MAX. Running is }
             { re-tested each pass so a Detach or a close mid-burst stops it. }
+            { If btn_WakeClick arrived while PumpInTick held, PumpWakeMissed }
+            { triggers one more scan before leaving the guard.               }
             Drained := 0;
             HadRequest := False;
-            While (Drained < PUMP_DRAIN_MAX) And Running Do
+            HadNonPing := False;
+            KeepDraining := True;
+            While KeepDraining And (Drained < PUMP_DRAIN_MAX) And Running Do
             Begin
-                If Not ProcessSingleRequest(0) Then Break;
-                HadRequest := True;
-                Inc(Drained);
-                { Yield between requests so a long drain cannot freeze the UI. }
-                { Safe against the timer re-entering here: the guard holds.    }
-                Application.ProcessMessages;
+                PumpWakeMissed := False;
+                While (Drained < PUMP_DRAIN_MAX) And Running Do
+                Begin
+                    If Not ProcessSingleRequest(0) Then Break;
+                    HadRequest := True;
+                    If StatusLastCommand <> 'application.ping' Then
+                        HadNonPing := True;
+                    Inc(Drained);
+                    { Yield between requests so a long drain cannot freeze the UI. }
+                    { Safe against the timer re-entering here: the guard holds.    }
+                    Application.ProcessMessages;
+                End;
+                KeepDraining := PumpWakeMissed;
             End;
 
             If HadRequest Then
             Begin
-                PumpIdleCount := 0;
-                PumpLastActivityMs := GetTickCount;
-                If PumpInterval <> PollIntervalActiveMs Then
+                NowMs := GetTickCount;
+                PumpLastActivityMs := NowMs;
+                If PumpWakeSeen Then
                 Begin
-                    PumpInterval := PollIntervalActiveMs;
+                    PumpIdleCount := 0;
+                    TargetMs := PollIntervalWatchdogMs;
+                End
+                Else If HadNonPing Then
+                Begin
+                    PumpIdleCount := 0;
+                    TargetMs := PollIntervalActiveMs;
+                End
+                Else
+                    TargetMs := PumpInterval;
+
+                If PumpInterval <> TargetMs Then
+                Begin
+                    PumpInterval := TargetMs;
                     Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
-                    (GetTickCount - StatusStartTick) Div 1000,
+                    (NowMs - StatusStartTick) Div 1000,
                     StatusRequestCount,
                     StatusTotalAltiumMs,
-                    (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
+                    (AutoShutdownMs - (NowMs - PumpLastActivityMs)) Div 1000);
+                PumpLastStatsTick := NowMs;
                 { Perf row already updated in-place by TrackPerf (called }
                 { from AppendLogLine inside ProcessSingleRequest). Skip  }
                 { the full RefreshPerfPanel rebuild that used to flash  }
@@ -3030,24 +3073,39 @@ Begin
             End
             Else
             Begin
-                Inc(PumpIdleCount);
-                { Back off to the idle interval. Assigning Interval restarts }
-                { the timer, so only touch it when the value actually        }
-                { changes.                                                    }
-                If PumpIdleCount > IdleThreshold Then
+                NowMs := GetTickCount;
+                If PumpWakeSeen Then
                 Begin
-                    If PumpInterval <> PollIntervalIdleMs Then
+                    If PumpInterval <> PollIntervalWatchdogMs Then
                     Begin
-                        PumpInterval := PollIntervalIdleMs;
+                        PumpInterval := PollIntervalWatchdogMs;
                         Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                     End;
+                End
+                Else
+                Begin
+                    Inc(PumpIdleCount);
+                    { Back off to the idle interval. Assigning Interval restarts }
+                    { the timer, so only touch it when the value actually        }
+                    { changes.                                                    }
+                    If PumpIdleCount > IdleThreshold Then
+                    Begin
+                        If PumpInterval <> PollIntervalIdleMs Then
+                        Begin
+                            PumpInterval := PollIntervalIdleMs;
+                            Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
+                        End;
+                    End;
                 End;
-                If (PumpIdleCount Mod 10) = 0 Then
+                If (NowMs < PumpLastStatsTick) Or ((NowMs - PumpLastStatsTick) >= STATS_REFRESH_MS) Then
+                Begin
                     UpdateStatsLine(
-                        (GetTickCount - StatusStartTick) Div 1000,
+                        (NowMs - StatusStartTick) Div 1000,
                         StatusRequestCount,
                         StatusTotalAltiumMs,
-                        (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
+                        (AutoShutdownMs - (NowMs - PumpLastActivityMs)) Div 1000);
+                    PumpLastStatsTick := NowMs;
+                End;
             End;
         Except
             { Altium tearing down underneath the tick. Stop quietly, exactly }
@@ -3060,6 +3118,26 @@ Begin
     Finally
         PumpInTick := False;
     End;
+End;
+
+
+{..............................................................................}
+{ Event-driven wake handler. Python posts WM_COMMAND (BN_CLICKED) for the      }
+{ off-screen btn_Wake button on StatusForm after publishing a request file,    }
+{ waking Altium's message loop immediately without stealing focus and letting  }
+{ tmr_Poll drop to the slow watchdog interval.                                 }
+{..............................................................................}
+
+Procedure btn_WakeClick(Sender : TObject);
+Begin
+    If Not Running Then Exit;
+    PumpWakeSeen := True;
+    If PumpInTick Then
+    Begin
+        PumpWakeMissed := True;
+        Exit;
+    End;
+    tmr_PollTimer(Sender);
 End;
 
 
@@ -3126,6 +3204,9 @@ Begin
     PumpFinalised := False;
     PumpQuitting := False;
     PumpTicked := False;
+    PumpWakeSeen := False;
+    PumpWakeMissed := False;
+    PumpLastStatsTick := GetTickCount;
 
     StatusStartTick := GetTickCount;
     StatusRequestCount := 0;
@@ -3135,6 +3216,10 @@ Begin
     { The timer only ticks while the form is visible, so this is not just  }
     { cosmetic: showing the dashboard is what starts the pump running.     }
     ShowStatusForm(0);
+    Try
+        WriteFileContent(WorkspaceDir + WAKE_READY_FILE,
+            '{"caption":"EDA Agent MCP","button":"eda_wake"}');
+    Except { fallback timer still serves requests if marker cannot be written } End;
     UpdateStatusHeader('MCP: idle');
     UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
     AppendLog(FormatLogStamp(0) + ',0,_session_start,version=' + SCRIPT_VERSION

@@ -247,10 +247,13 @@ class MCPRuntimeConfig(BaseModel):
 
     # Pascal-side polling tunables (milliseconds)
     poll_interval_active_ms: int = 10
-    # Idle poll cadence. Worst-case request-pickup latency when the loop
-    # has gone idle. 30 ms keeps the dashboard feeling responsive without
-    # meaningfully loading Altium (one FindFiles glob per tick).
+    # Idle poll cadence when event-driven wake is unavailable (e.g. WSL or an
+    # older client that does not post WM_COMMAND).
     poll_interval_idle_ms: int = 30
+    # Slow watchdog cadence once Win32 event-driven wake (btn_Wake) is active.
+    # Kept under 3000 ms so Client.IsQuitting is still observed within Altium's
+    # shutdown window while reducing DelphiScript timer re-entries by ~70x.
+    poll_interval_watchdog_ms: int = 2000
     # Empty-poll count before dropping to the idle cadence. At 10 ms active
     # this keeps the loop in fast mode for ~1.5 s after the last request,
     # so a burst of dashboard calls all get 10 ms pickup.

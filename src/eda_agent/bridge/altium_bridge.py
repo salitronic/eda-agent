@@ -332,6 +332,135 @@ def _close_dir_watcher(handle) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Event-driven wake for the Altium Pascal side (Windows)
+#
+# Altium's DelphiScript engine leaks ~2 KB of script-symbol heap memory on
+# every TTimer event re-entry (measured at 5.2 GB over a 20-hour session on
+# AD 26.1.1.7 at 30 ms idle polling). StatusForm.dfm now hosts an off-screen
+# TButton (Caption='eda_wake') and writes ``wake.ready`` into its workspace
+# on StartMCPPump. After publishing a request file, Python posts WM_COMMAND
+# (BN_CLICKED = 0) to StatusForm for that button handle, waking the Pascal
+# dispatcher in <1 ms without stealing focus and letting tmr_Poll drop to
+# the 2 s watchdog cadence.
+#
+# Degrades gracefully: when user32 is unavailable (WSL/non-Windows) or
+# ``wake.ready`` is absent (older script or isolated test workspace),
+# _wake_altium is a no-op and tmr_Poll picks up the request as before.
+# ---------------------------------------------------------------------------
+
+_WAKE_READY_FILE = "wake.ready"
+_WAKE_BUTTON_CAPTION = "eda_wake"
+_WM_COMMAND = 0x0111
+
+_user32 = None
+_ENUM_WINDOWS_PROC = None
+if sys.platform == "win32":
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        _user32 = ctypes.WinDLL("user32", use_last_error=True)
+        _ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        _user32.EnumWindows.restype = wintypes.BOOL
+        _user32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, wintypes.LPARAM]
+        _user32.FindWindowExW.restype = wintypes.HWND
+        _user32.FindWindowExW.argtypes = [
+            wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        _user32.PostMessageW.restype = wintypes.BOOL
+        _user32.PostMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        _user32.IsWindow.restype = wintypes.BOOL
+        _user32.IsWindow.argtypes = [wintypes.HWND]
+        _user32.GetParent.restype = wintypes.HWND
+        _user32.GetParent.argtypes = [wintypes.HWND]
+        _user32.GetWindowTextW.restype = ctypes.c_int
+        _user32.GetWindowTextW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        _user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    except Exception as _e:  # pragma: no cover - platform dependent
+        _user32 = None
+        _ENUM_WINDOWS_PROC = None
+        logger.debug("win32 wake unavailable, falling back to timer poll: %s", _e)
+
+
+def _win32_window_text(hwnd: int) -> str:
+    if _user32 is None or not hwnd:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        n = _user32.GetWindowTextW(hwnd, buf, 256)
+        return buf.value[:n] if n > 0 else ""
+    except (OSError, ctypes.ArgumentError):
+        return ""
+
+
+def _is_valid_wake_target(form_hwnd: int, wake_hwnd: int,
+                          title_prefix: str) -> bool:
+    """Confirm cached handles still refer to StatusForm and its wake button.
+
+    Guards against recycled HWNDs after a crash or RecreateWnd (e.g. toggling
+    Always-on-top on StatusForm) so WM_COMMAND can never reach another window.
+    """
+    if _user32 is None or not form_hwnd or not wake_hwnd:
+        return False
+    try:
+        if not (_user32.IsWindow(form_hwnd) and _user32.IsWindow(wake_hwnd)):
+            return False
+        if int(_user32.GetParent(wake_hwnd)) != int(form_hwnd):
+            return False
+        if not _win32_window_text(form_hwnd).startswith(title_prefix):
+            return False
+        return _win32_window_text(wake_hwnd) == _WAKE_BUTTON_CAPTION
+    except (OSError, ctypes.ArgumentError):
+        return False
+
+
+def _find_wake_target(title_prefix: str,
+                      pid: Optional[int] = None) -> Optional[tuple[int, int]]:
+    """Locate ``(form_hwnd, wake_hwnd)`` for Altium's MCP status window."""
+    if _user32 is None or _ENUM_WINDOWS_PROC is None:
+        return None
+    found: list[tuple[int, int]] = []
+
+    def _on_window(hwnd, _lparam):
+        try:
+            if pid is not None:
+                win_pid = wintypes.DWORD(0)
+                _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(win_pid))
+                if int(win_pid.value) != int(pid):
+                    return True
+            if not _win32_window_text(hwnd).startswith(title_prefix):
+                return True
+            btn = _user32.FindWindowExW(hwnd, 0, None, _WAKE_BUTTON_CAPTION)
+            if btn:
+                found.append((int(hwnd), int(btn)))
+                return False
+        except (OSError, ctypes.ArgumentError):
+            pass
+        return True
+
+    try:
+        cb = _ENUM_WINDOWS_PROC(_on_window)
+        _user32.EnumWindows(cb, 0)
+    except (OSError, ctypes.ArgumentError):
+        return None
+    return found[0] if found else None
+
+
+def _post_wake(form_hwnd: int, wake_hwnd: int) -> bool:
+    """Post WM_COMMAND (BN_CLICKED) for ``wake_hwnd`` to ``form_hwnd``."""
+    if _user32 is None or not form_hwnd or not wake_hwnd:
+        return False
+    try:
+        return bool(_user32.PostMessageW(form_hwnd, _WM_COMMAND, 0, wake_hwnd))
+    except (OSError, ctypes.ArgumentError):
+        return False
+
+
 #: Set by Claude Code in every process it starts; one per Claude process.
 CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
 
@@ -928,6 +1057,9 @@ class AltiumBridge:
         # The script version Altium last reported (every ping carries it),
         # and when a reply last said this server is out of date.
         self._loop_script_version = ""
+        # Cached Win32 (form_hwnd, wake_hwnd) for StatusForm's off-screen
+        # btn_Wake control; re-validated before every PostMessageW.
+        self._wake_target: Optional[tuple[int, int]] = None
         self._outdated_noted_at = 0.0
 
     def _load_session_doc(self) -> None:
@@ -1092,6 +1224,7 @@ class AltiumBridge:
         self._attached = False
         self._attach_time = None
         self._detach_hint_shown = False
+        self._wake_target = None
 
     def _ensure_keepalive(self) -> None:
         if self._attached and self._keepalive_thread and self._keepalive_thread.is_alive():
@@ -1242,6 +1375,40 @@ class AltiumBridge:
     def _progress_path(self, request_id: str) -> Path:
         return self.config.workspace_dir / f"progress_{request_id}.json"
 
+    def _wake_altium(self) -> bool:
+        """Notify Altium's StatusForm that a request file is ready.
+
+        Only runs when ``wake.ready`` exists inside THIS bridge's workspace,
+        so isolated test workspaces and older Pascal scripts never enumerate
+        or signal windows. Returns True if WM_COMMAND was posted.
+        """
+        if _user32 is None:
+            return False
+        wake_marker = self.config.workspace_dir / _WAKE_READY_FILE
+        if not wake_marker.exists():
+            self._wake_target = None
+            return False
+        title_prefix = getattr(
+            self.process_manager, "STATUS_FORM_TITLE", "EDA Agent MCP")
+        target = self._wake_target
+        if target is not None and _is_valid_wake_target(
+                target[0], target[1], title_prefix):
+            if _post_wake(target[0], target[1]):
+                return True
+        self._wake_target = None
+        pid: Optional[int] = None
+        try:
+            info = self.process_manager.get_altium_info()
+            if info is not None and info.pid:
+                pid = int(info.pid)
+        except Exception:                        # noqa: BLE001
+            pid = None
+        target = _find_wake_target(title_prefix, pid=pid)
+        if target is None:
+            return False
+        self._wake_target = target
+        return _post_wake(target[0], target[1])
+
     def _publish_request(self, request: CommandRequest) -> None:
         """Publish a request to its own per-request file.
 
@@ -1278,6 +1445,7 @@ class AltiumBridge:
         except PermissionError:
             discard(tmp_path)
             raise
+        self._wake_altium()
         logger.debug("Published request %s: %s", request.id, request.command)
 
     def _poll_response(self, request_id: str, timeout: float) -> CommandResponse:
