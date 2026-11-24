@@ -238,6 +238,85 @@ SELF_CONVERTING = frozenset({
     "lib_set_via_properties", "pcb_place_pad", "pcb_place_pads",
 })
 
+#: Altium's board properties whose value is a length in mils, as the
+#: generic layer reads and writes them (IsLengthProperty in the script).
+#: obj_query and obj_modify take Altium's own names, so a plain one is
+#: mils in any session; named with its unit (Y_mm, Width_mils) it is that
+#: unit (#444).
+BOARD_LENGTH_PROPERTIES = frozenset({
+    "X", "Y", "X1", "Y1", "X2", "Y2", "Width", "HoleSize", "XCenter",
+    "YCenter", "Radius", "TopXSize", "TopYSize", "StandoffHeight",
+    "OverallHeight", "Height", "StrokeWidth", "ModelHeight", "Size",
+    "BotXSize", "BotYSize", "HoleWidth", "SizeTop", "SizeMid", "SizeBottom",
+    "SolderMaskExpansion", "SolderMaskBottomExpansion", "BoundsLeft",
+    "BoundsBottom", "BoundsRight", "BoundsTop", "Grid", "TrackSize",
+    "MinTrack", "ArcApproximation", "NeckWidthThreshold",
+})
+
+#: The board object types (Utils.pas ObjectTypeFromStringPCB), by the
+#: word they share with their short spelling.
+BOARD_TYPES = frozenset({"track", "pad", "via", "component", "arc", "fill", "text",
+                         "poly", "polygon", "region", "rule", "dimension",
+                         "splitplane", "connection", "componentbody"})
+
+
+def board_type(object_type: Any) -> bool:
+    """Whether ``object_type`` names a board object (eTrackObject, track)."""
+    word = re.sub(r"[^a-z]", "", str(object_type).lower())
+    return word.removeprefix("e").removesuffix("object") in BOARD_TYPES
+
+
+#: Arguments that are Altium's own property text, names and values as the
+#: generic layer takes them, by tool: passed on as given. A ``y`` in
+#: obj_modify's set is Altium's Y, not this vocabulary's length: converted
+#: here, it went in another unit from the same set written ``Y`` (#444).
+AS_GIVEN: dict[str, frozenset[str]] = {
+    "obj_modify": frozenset({"set"}),
+}
+
+#: Tools that name Altium's own board properties, by the argument that
+#: holds the names: a plain length there is mils whatever the call's unit.
+ALTIUM_NAMES: dict[str, str] = {
+    "obj_query": "properties",
+    "obj_modify": "set",
+    "obj_batch_modify": "operations",
+}
+
+
+def _assigned(value: Any, sep: str) -> list[str]:
+    """The property names in a ``Name=Value`` set or a list of names,
+    parts joined by ``sep``; a dict of assignments or a list of parts."""
+    if isinstance(value, dict):
+        return [str(k).strip() for k in value]
+    if isinstance(value, (list, tuple)):
+        parts = [str(v) for v in value]
+    else:
+        parts = str(value or "").split(sep)
+    return [p.split("=", 1)[0].strip() for p in parts if p.strip()]
+
+
+def plain_board_lengths(tool: str, args: Any) -> list[str]:
+    """The board lengths ``tool`` names by Altium's plain names (mils),
+    once each in order; [] for a tool that takes no Altium names."""
+    key = ALTIUM_NAMES.get(tool)
+    if key is None or not isinstance(args, dict):
+        return []
+    if tool == "obj_batch_modify":
+        ops = [op for op in args.get(key) or [] if isinstance(op, dict)]
+        key = "set"
+    else:
+        ops = [args] + [{"object_type": args.get("object_type"), **item}
+                        for item in args.get("items") or [] if isinstance(item, dict)]
+    sep = "," if key == "properties" else "|"
+    names: list[str] = []
+    for op in ops:
+        if not board_type(op.get("object_type", "")):
+            continue
+        for name in _assigned(op.get(key), sep):
+            if name in BOARD_LENGTH_PROPERTIES and name not in names:
+                names.append(name)
+    return names
+
 #: The tools whose own unit is the millimetre; every other tool's is the
 #: mil. KiCad's tools work in its unit; the land-pattern tools in the
 #: datasheet's, on every backend.
@@ -460,18 +539,19 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
     whole = frozenset(whole)
     native = native_unit(tool)
     taken = _taken(names | NESTED_NAMES.get(tool, frozenset()), native)
+    given = {key: args[key] for key in AS_GIVEN.get(tool, frozenset()) if key in args}
     out = {}
     for key, value in args.items():
         if key == "items" and isinstance(value, list) and not _item:
             out[key] = [args_in(tool, v, unit, names, _item=True, whole=whole)
                         if isinstance(v, dict) else v for v in value]
-        else:
+        elif key not in given:
             out[key] = value
     if tool in SELF_CONVERTING:
         # Given beside the items, the unit applies to every one of them.
         if "units" in names and "units" not in out and not _item:
             out["units"] = unit
-        return _whole_mils(_walk(out, frozenset(), 1.0, taken), out, whole)
+        return {**_whole_mils(_walk(out, frozenset(), 1.0, taken), out, whole), **given}
     items = out.pop("items", None)
     documents = {key: _document(out.pop(key), unit, LENGTH_DOCUMENTS[key])
                  for key in list(out) if key in LENGTH_DOCUMENTS}
@@ -483,6 +563,7 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
             converted[key] = _length_text(out[key], k)
     converted = _whole_mils(converted, out, whole)
     converted.update(documents)
+    converted.update(given)
     if items is not None:
         converted["items"] = items
     return converted
@@ -517,6 +598,13 @@ def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None) -> A
                 arcs=ARC_VERTICES.get(tool, frozenset()))
     if isinstance(out, dict):
         out = {**out, OVERRIDE: unit}
+        # Stamped mm, a plain Altium length read or written in mils looked
+        # like millimetres: 37.6 written as Y moved a text to 0.955 mm (#444).
+        plain = plain_board_lengths(tool, args) if unit == "mm" else []
+        if plain and "length_note" not in out:
+            out["length_note"] = (
+                f"{', '.join(plain)} in mils: Altium's own names are mils "
+                f"in any session; {plain[0]}_mm is mm")
     return out
 
 
