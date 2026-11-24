@@ -53,8 +53,10 @@ Begin
     If (D = '0') And (Copy(S, 1, 1) = '-') Then Exit;
     For I := 1 To Length(D) Do
         If (D[I] < '0') Or (D[I] > '9') Then Exit;
-    { same length: text order is number order }
-    If (Length(D) = 10) And (D > '2147483647') Then Exit;
+    { same length: text order is number order. The 32-bit bound is TEXT    }
+    { here, spelled in two parts: the bridge keeps the literal out of its  }
+    { units (AD 25 rejects it as a number; see MAX_INT in Main.pas).       }
+    If (Length(D) = 10) And (D > ('214748364' + '7')) Then Exit;
     Result := True;
 End;
 
