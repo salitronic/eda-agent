@@ -16,7 +16,8 @@ from ..bridge import get_bridge
 from ..safety import refuse_altium_autorouter, refuse_process, untrusted_text_note
 from ..sch_members import member_refusals
 from .library import _mils
-from ..units import MM_PER_MIL, format_length
+from ..units import MILS_PER_MM, MM_PER_MIL, format_length
+from ..lengths import BOARD_LENGTH_PROPERTIES, board_type
 from .pin_hints import pin_location_hint
 from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
@@ -256,18 +257,11 @@ def _literal_wildcard_note(filt: str) -> str:
     return ""
 
 
-#: The board object types (Utils.pas ObjectTypeFromStringPCB), by the
-#: word they share with their short spelling.
-_BOARD_TYPES = frozenset({"track", "pad", "via", "component", "arc", "fill", "text",
-                          "poly", "polygon", "region", "rule", "dimension",
-                          "splitplane", "connection", "componentbody"})
-
-
 def _mm_properties(properties: str, object_type: str) -> tuple[str, dict[str, tuple[str, bool]]]:
     """A board property asked for with _mm (X_mm, Width_mm) is the mil
     property read in millimetres. Returns the names to ask Altium for and,
     for each _mm name, its property and whether that was asked for too."""
-    if re.sub(r"[^a-z]", "", str(object_type).lower()).removeprefix("e")             .removesuffix("object") not in _BOARD_TYPES:
+    if not board_type(object_type):
         return properties, {}
     names = [n.strip() for n in str(properties).split(",") if n.strip()]
     plain = {n.lower() for n in names if not n.lower().endswith("_mm")}
@@ -296,6 +290,42 @@ def _mm_values(result: dict, in_mm: dict[str, tuple[str, bool]]) -> None:
                 obj[name] = value
             if not keep:
                 obj.pop(stem, None)
+
+
+#: A board length named with its unit in a set: Y_mm, Width_mils.
+_LENGTH_WITH_UNIT = re.compile(r"^(?P<stem>.+)_(?P<unit>mm|mils|mil)$", re.IGNORECASE)
+_BOARD_LENGTHS = {name.lower(): name for name in BOARD_LENGTH_PROPERTIES}
+
+
+def _set_in_mils(set_str: str, object_type: str) -> tuple[str, str]:
+    """``set_str`` with each board length named with its unit (Y_mm=44.55,
+    Width_mils=10) written by Altium's own name, in mils (Y=1753.937008),
+    as obj_query reads it (#444); and why it cannot be, or ''. A plain
+    name and a schematic set go as given."""
+    if not board_type(object_type):
+        return set_str, ""
+    out, seen = [], set()
+    for part in str(set_str).split("|"):
+        name, eq, value = part.partition("=")
+        m = _LENGTH_WITH_UNIT.match(name.strip()) if eq else None
+        prop = _BOARD_LENGTHS.get((m.group("stem") if m else name.strip()).lower())
+        if m and prop is None:
+            return set_str, (f"{name.strip()}: {m.group('stem')} is not a board length "
+                             f"Altium takes in mils; give it by its own name")
+        if m:
+            try:
+                mils = float(value.strip())
+                if m.group("unit").lower() == "mm":
+                    mils *= MILS_PER_MM
+                part = f"{prop}={format_length(mils)}"
+            except ValueError:
+                return set_str, f"{name.strip()}={value.strip()} is not a number"
+        if prop is not None:
+            if prop in seen:
+                return set_str, f"{prop} is given twice"
+            seen.add(prop)
+        out.append(part)
+    return "|".join(out), ""
 
 
 def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
@@ -909,9 +939,9 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant (see `obj_query`)
             set: Pipe-separated assignments, e.g. "Text=NEW_NAME" or
                 "Location.X=100|Location.Y=200". Board lengths are
-                decimal mils; a non-number is reported failed, never
-                written as 0. Board properties include, besides the
-                usual geometry: HolePositiveTolerance and
+                decimal mils in any session, mm with _mm (Y_mm=44.5);
+                a non-number is reported failed, never written as 0.
+                Board properties include: HolePositiveTolerance and
                 HoleNegativeTolerance on pads and vias ("unset" when
                 none is set; Altium keeps a negative tolerance as its
                 size; IsCounterHole reads); BarCode* and Multiline* on a
@@ -1022,6 +1052,10 @@ def register_generic_tools(mcp):
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
+        set, bad = _set_in_mils(set, object_type)
+        if bad:
+            return {"ok": False, "success": False, "error": "BAD_SET",
+                    "reason": f"{bad}; nothing was written", "matched": 0}
         try:
             wire_scope = scope_to_wire(scope)
         except ScopeError as exc:
@@ -1772,7 +1806,8 @@ def register_generic_tools(mcp):
                 - filter: Pipe-separated conditions, e.g. "Name=VDD".
                 - set: Pipe-separated assignments, e.g.
                   "Location.X=300|Location.Y=-100|Orientation=2". A value
-                  may contain ';' but not '|'.
+                  may contain ';' but not '|'. Board lengths as in
+                  obj_modify: mils, or mm with _mm (Y_mm=44.5).
 
         Returns:
             operations_processed, operations_skipped, total_matched, and
@@ -1821,6 +1856,11 @@ def register_generic_tools(mcp):
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
+            set_str, bad = _set_in_mils(set_str, obj_type)
+            if bad:
+                return {"ok": False, "error": "BAD_SET", "reason":
+                        f"operations[{i}].set: {bad}; nothing was sent",
+                        "operations_processed": 0}
             op_strings.append(
                 f"scope={scope};object_type={obj_type};"
                 f"filter={filt};set={set_str}"

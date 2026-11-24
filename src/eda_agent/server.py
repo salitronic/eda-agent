@@ -293,7 +293,8 @@ def build_server_instructions(
            "goes straight to its objects; any other condition (X=, Y=, Name)\n"
            "is checked on every object of the type, seconds on a busy board.\n"
            "pcb_get_copper reads one layer's copper in bulk. tool_guide names\n"
-           "the quick route for a task.\n"
+           "the quick route for a task. obj_query and obj_modify take\n"
+           "Altium's own names (X, Width): mils in any session; X_mm is mm.\n"
            "\n" if altium else ""))
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
