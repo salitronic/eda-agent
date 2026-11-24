@@ -30,7 +30,9 @@ _STAMP = re.compile(
 #: The units the script can report; Dispatcher.pas comes after the unit
 #: that collects the stamps, so it cannot be asked.
 STAMPED_UNITS = ("Main", "Utils", "Application", "Project", "Library",
-                 "PCBGeneric", "PCB", "Generic", "Audit", "StatusForm")
+                 "PCBGeneric", "PCB", "Generic", "RowsCore", "RowsPcbLib",
+                 "RowsPcbLibMore", "RowsPcb", "RowsPadVia", "RowsSchLib",
+                 "RowsSchGraph", "Rows", "Audit", "StatusForm")
 
 
 def unit_stamp(text: str) -> str:

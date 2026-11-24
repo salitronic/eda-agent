@@ -98,7 +98,7 @@ works elsewhere cannot be an undeclared identifier:
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
 | 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | yes, `PCB_SetViaTenting` | low, written and read back live both ways; dropped silently unless the mask is manual |
-| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
+| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | only by `RowsPadVia.pas`, the rows pad writer, itself new | low, written and read back live both ways; dropped silently unless the paste is manual |
 | 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
 | 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
 | 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
@@ -237,7 +237,7 @@ works elsewhere cannot be an undeclared identifier:
 | 62, net name display | `ShowNetName` on a power port, off-sheet connector or port | yes, `Gen_PlacePowerPort` (power ports) | low, one object; ran live, saved and reopened |
 | 62, off-sheet connector side | `CrossSheetStyle` on an off-sheet connector, through obj_modify; the placer's side option wrote a sheet entry's member and stopped the loop, and now writes this | yes, `Gen_PlaceCrossSheetConnector` | low, one object; ran live, saved and reopened |
 | 62, port height | `Height` on a port, in mils | yes, `Library.pas` (a footprint's height, not a port) | low, one object; ran live, saved and reopened |
-| 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | no, nowhere | low, one object; ran live, saved and reopened; types that drop them on save are refused |
+| 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | only by `RowsSchGraph.pas` (lines and polylines), itself new | low, one object; ran live, saved and reopened; types that drop them on save are refused |
 | 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
