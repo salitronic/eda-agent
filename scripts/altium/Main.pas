@@ -97,9 +97,10 @@ Var
 
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
-    PollIntervalActiveMs : Integer;
-    PollIntervalIdleMs   : Integer;
-    IdleThreshold        : Integer;
+    PollIntervalActiveMs   : Integer;
+    PollIntervalIdleMs     : Integer;
+    PollIntervalWatchdogMs : Integer;
+    IdleThreshold          : Integer;
     AutoShutdownMs       : Cardinal;
     { The auto-off period a double-click on the status window's auto-off  }
     { card returns to after "always on": the config file's value when it  }
@@ -328,9 +329,10 @@ Var
 
 Procedure InitDefaultConfig(Dummy : Integer);
 Begin
-    PollIntervalActiveMs := 10;
-    PollIntervalIdleMs   := 30;
-    IdleThreshold        := 150;
+    PollIntervalActiveMs   := 10;
+    PollIntervalIdleMs     := 30;
+    PollIntervalWatchdogMs := 2000;
+    IdleThreshold          := 150;
     AutoShutdownMs       := 600000;  { 10 min }
     ConfiguredShutdownMs := 600000;
     YieldIterations      := 5;
@@ -3565,6 +3567,9 @@ Begin
 
     V := ExtractJsonValue(Content, 'poll_interval_idle_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then PollIntervalIdleMs := N; Except End; End;
+
+    V := ExtractJsonValue(Content, 'poll_interval_watchdog_ms');
+    If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then PollIntervalWatchdogMs := N; Except End; End;
 
     V := ExtractJsonValue(Content, 'idle_threshold');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then IdleThreshold := N; Except End; End;

@@ -2396,6 +2396,16 @@ object StatusForm: TStatusForm
       OnClick = btn_CopyCmdClick
     end
   end
+  object btn_Wake: TButton
+    Left = -100
+    Top = -100
+    Width = 1
+    Height = 1
+    Caption = 'eda_wake'
+    TabOrder = 99
+    TabStop = False
+    OnClick = btn_WakeClick
+  end
   object tmr_Spinner: TTimer
     Enabled = False
     Interval = 120
