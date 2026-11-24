@@ -303,8 +303,9 @@ def build_server_instructions(
         "active board). A board tool aimed at a library does not always\n"
         "fail. It can resolve some other open board and report success for\n"
         "work you never asked for."
-        + (" (pcb_layer_view, pcb_pad_relief and\n"
-           "pcb_renumber_pads also act on a .PcbLib in front.)"
+        + (" (pcb_layer_view, pcb_pad_relief,\n"
+           "pcb_renumber_pads and pcb_set_grids also act on a .PcbLib in\n"
+           "front.)"
            if altium else "")
         + "\n"
         "\n"

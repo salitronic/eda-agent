@@ -24508,33 +24508,133 @@ Begin
         + JsonBool('dot_grid', Board.DrawDotGrid);
 End;
 
+{ A grid style as Altium's TDrawGridMode: lines 0 (dgLines), dots 1         }
+{ (dgDots), none 2 (dgDoNotDraw), the engine's own values (read from it on  }
+{ AD 26.12); -1 for any other word.                                          }
+Function GridStyleNo(S : String) : Integer;
+Var
+    T : String;
+Begin
+    T := LowerCase(Trim(S));
+    Result := -1;
+    If T = 'lines' Then Result := 0
+    Else If T = 'dots' Then Result := 1
+    Else If T = 'none' Then Result := 2;
+End;
+
+Function GridStyleWord(N : Integer) : String;
+Begin
+    If N = 0 Then Result := 'lines'
+    Else If N = 1 Then Result := 'dots'
+    Else If N = 2 Then Result := 'none'
+    Else Result := '';
+End;
+
+{ The default grid of a board or library (the grid manager's "Global Board  }
+{ Snap Grid"), or Nil. Colours and draw styles sit on the members every grid }
+{ kind shares, so they are safe to ask whatever its kind (#419).             }
+Function DefaultPlacementGrid(Mgr : IPCB_GridManager) : IPCB_PlacementGrid;
+Var
+    It : IPCB_PlacementGridIterator;
+    G : IPCB_PlacementGrid;
+    IsDefault : Boolean;
+Begin
+    Result := Nil;
+    If Mgr = Nil Then Exit;
+    It := Nil;
+    Try It := Mgr.CreatePlacementGridIterator; Except It := Nil; End;
+    If It = Nil Then Exit;
+    G := It.First;
+    While G <> Nil Do
+    Begin
+        IsDefault := False;
+        Try IsDefault := G.GetProperty_IsDefault; Except End;
+        If IsDefault Then
+        Begin
+            Result := G;
+            Exit;
+        End;
+        G := It.Next;
+    End;
+End;
+
+{ The default grid's look as JSON members (no braces): fine and coarse      }
+{ colour as #RRGGBB and style as lines / dots / none ('' when unread).      }
+Function GridLookJson(G : IPCB_PlacementGrid) : String;
+Var
+    FineColor, CoarseColor, FineStyle, CoarseStyle : Integer;
+    FineHex, CoarseHex : String;
+Begin
+    FineColor := -1;
+    CoarseColor := -1;
+    FineStyle := -1;
+    CoarseStyle := -1;
+    Try FineColor := G.GetProperty_Color; Except End;
+    Try CoarseColor := G.GetProperty_ColorLarge; Except End;
+    Try FineStyle := G.GetProperty_DrawMode; Except End;
+    Try CoarseStyle := G.GetProperty_DrawModeLarge; Except End;
+    FineHex := '';
+    CoarseHex := '';
+    If FineColor >= 0 Then FineHex := ColorToHexRgb(FineColor);
+    If CoarseColor >= 0 Then CoarseHex := ColorToHexRgb(CoarseColor);
+    Result := JsonStr('fine_color', FineHex) + ','
+        + JsonStr('coarse_color', CoarseHex) + ','
+        + JsonStr('fine_style', GridStyleWord(FineStyle)) + ','
+        + JsonStr('coarse_style', GridStyleWord(CoarseStyle));
+End;
+
 {..............................................................................}
-{ PCB_SetGrids - read, or set, the board's snap, track, via and visible     }
-{ grids (mils) and whether the visible grid is drawn as dots. Each value is  }
-{ read back; one that did not take is listed in not_applied. The component  }
-{ grid is read only: on AD 26.11 it follows the snap grid, and a value      }
-{ written to it read back as the snap grid (measured).                      }
+{ PCB_SetGrids - read, or set, the snap, track, via and visible grids (mils)  }
+{ and how the visible grid is drawn: fine and coarse colour and style. With a }
+{ PCB library in front it acts on that library (its own board, never another }
+{ open one); otherwise on the active board. Every value is checked before   }
+{ the first write, so a refusal changes nothing, and each is read back; one  }
+{ that did not take is listed in not_applied. The component grid is read    }
+{ only: on AD 26.11 it follows the snap grid, and a value written to it read }
+{ back as the snap grid (measured).                                          }
 { Params: snap_x, snap_y, track, via, visible, visible_big (mils, more than  }
 { 0; empty = keep), dot_grid ('true'/'false'), visible_big_factor (the     }
 { coarse visible grid as a multiple of the snap grid, more than 0),         }
-{ snap_unit, visible_unit and visible_big_unit ('mm' or 'mil').             }
+{ snap_unit, visible_unit and visible_big_unit ('mm' or 'mil'), fine_color }
+{ and coarse_color ('#RRGGBB'), fine_style and coarse_style ('lines',      }
+{ 'dots' or 'none'; dot_grid sets the fine style too, so not both).        }
+{ Colour and style are the default grid's, the grid manager's "Global Board }
+{ Snap Grid", whose step is the snap grid. A style or multiplier written to }
+{ it is kept but not drawn until the grid manager's BeginUpdate / EndUpdate }
+{ (measured on AD 26.12 in a library: FullUpdate, RefreshView and a         }
+{ PCB:Zoom redraw left the old grid on screen), so every write goes inside  }
+{ that bracket, and the bracket is always closed (#442).                    }
 {..............................................................................}
 Function PCB_SetGrids(Params : String; RequestId : String) : String;
 Var
+    PcbLib : IPCB_Library;
     Board : IPCB_Board;
-    Keys, Key, ValStr, NotApplied, DotStr : String;
-    CommaPos, UnitWanted, UnitGot : Integer;
+    Mgr : IPCB_GridManager;
+    G : IPCB_PlacementGrid;
+    Keys, Key, ValStr, NotApplied, DotStr, Problem, Look : String;
+    CommaPos, UnitWanted, UnitGot, N : Integer;
+    FineColor, CoarseColor, FineStyle, CoarseStyle : Integer;
     V, Got : Double;
     Changed : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { A library in front: its own board, never another open one. }
+    PcbLib := Nil;
+    Board := Nil;
+    If LvPcbLibInFront(0) Then
+    Begin
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib <> Nil Then
+            Try Board := PcbLib.Board; Except Board := Nil; End;
+    End
+    Else
+        Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document or PCB library is active');
         Exit;
     End;
-    NotApplied := '';
-    Changed := False;
+
+    { Check every value before the first write. }
     Keys := 'snap_x,snap_y,track,via,visible,visible_big';
     While Keys <> '' Do
     Begin
@@ -24548,63 +24648,19 @@ Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' is not a number');
             Exit;
         End;
-        V := StrToFloatDef(ValStr, 0);
-        If V <= 0 Then
+        If StrToFloatDef(ValStr, 0) <= 0 Then
         Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' is more than 0');
             Exit;
         End;
-        If Key = 'snap_x' Then Board.SnapGridSizeX := MilsToCoordF(V)
-        Else If Key = 'snap_y' Then Board.SnapGridSizeY := MilsToCoordF(V)
-        Else If Key = 'track' Then Board.TrackGridSize := MilsToCoordF(V)
-        Else If Key = 'via' Then Board.ViaGridSize := MilsToCoordF(V)
-        Else If Key = 'visible' Then Board.VisibleGridSize := MilsToCoordF(V)
-        Else If Key = 'visible_big' Then Board.BigVisibleGridSize := MilsToCoordF(V);
-        Changed := True;
-        Got := -1;
-        If Key = 'snap_x' Then Got := CoordToMilsF(Board.SnapGridSizeX)
-        Else If Key = 'snap_y' Then Got := CoordToMilsF(Board.SnapGridSizeY)
-        Else If Key = 'track' Then Got := CoordToMilsF(Board.TrackGridSize)
-        Else If Key = 'via' Then Got := CoordToMilsF(Board.ViaGridSize)
-        Else If Key = 'visible' Then Got := CoordToMilsF(Board.VisibleGridSize)
-        Else If Key = 'visible_big' Then Got := CoordToMilsF(Board.BigVisibleGridSize);
-        If Abs(Got - V) > 0.001 Then
-        Begin
-            If NotApplied <> '' Then NotApplied := NotApplied + ',';
-            NotApplied := NotApplied + '"' + Key + '"';
-        End;
     End;
-    DotStr := LowerCase(ExtractJsonValue(Params, 'dot_grid'));
-    If DotStr <> '' Then
-    Begin
-        Board.DrawDotGrid := (DotStr = 'true');
-        Changed := True;
-        If Board.DrawDotGrid <> (DotStr = 'true') Then
-        Begin
-            If NotApplied <> '' Then NotApplied := NotApplied + ',';
-            NotApplied := NotApplied + '"dot_grid"';
-        End;
-    End;
-    { The coarse visible grid as a multiple of the snap grid, and each       }
-    { grid's unit. The fine one's factor reads 1 and stayed 1 for 2, 5, 0.5 }
-    { and 10 (measured on AD 26.11), so it is reported, not written.        }
     ValStr := ExtractJsonValue(Params, 'visible_big_factor');
     If ValStr <> '' Then
-    Begin
-        V := StrToFloatDef(ValStr, 0);
-        If (Not IsFloatStr(ValStr)) Or (V <= 0) Then
+        If (Not IsFloatStr(ValStr)) Or (StrToFloatDef(ValStr, 0) <= 0) Then
         Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'visible_big_factor is a number more than 0');
             Exit;
         End;
-        Board.BigVisibleGridMultFactor := V;
-        Changed := True;
-        If Abs(Board.BigVisibleGridMultFactor - V) > 0.001 Then
-        Begin
-            If NotApplied <> '' Then NotApplied := NotApplied + ',';
-            NotApplied := NotApplied + '"visible_big_factor"';
-        End;
-    End;
     Keys := 'snap_unit,visible_unit,visible_big_unit';
     While Keys <> '' Do
     Begin
@@ -24618,11 +24674,153 @@ Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' is mm or mil');
             Exit;
         End;
+    End;
+    { -2 = not asked. }
+    FineColor := -2;
+    CoarseColor := -2;
+    FineStyle := -2;
+    CoarseStyle := -2;
+    ValStr := ExtractJsonValue(Params, 'fine_color');
+    If ValStr <> '' Then FineColor := HexRgbToColor(ValStr);
+    ValStr := ExtractJsonValue(Params, 'coarse_color');
+    If ValStr <> '' Then CoarseColor := HexRgbToColor(ValStr);
+    If (FineColor = -1) Or (CoarseColor = -1) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'fine_color and coarse_color are #RRGGBB');
+        Exit;
+    End;
+    ValStr := ExtractJsonValue(Params, 'fine_style');
+    If ValStr <> '' Then FineStyle := GridStyleNo(ValStr);
+    ValStr := ExtractJsonValue(Params, 'coarse_style');
+    If ValStr <> '' Then CoarseStyle := GridStyleNo(ValStr);
+    If (FineStyle = -1) Or (CoarseStyle = -1) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'fine_style and coarse_style are lines, dots or none');
+        Exit;
+    End;
+    DotStr := LowerCase(ExtractJsonValue(Params, 'dot_grid'));
+    If (DotStr <> '') And (FineStyle <> -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'dot_grid sets the fine style: give fine_style or dot_grid, not both');
+        Exit;
+    End;
+    Mgr := Nil;
+    Try Mgr := Board.GetState_GridManager; Except Mgr := Nil; End;
+    G := DefaultPlacementGrid(Mgr);
+    If (G = Nil) And ((FineColor <> -2) Or (CoarseColor <> -2) Or (FineStyle <> -2) Or (CoarseStyle <> -2)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED', 'The board gives scripts no default grid, so its colours and styles cannot be set');
+        Exit;
+    End;
+
+    { Write, inside the grid manager's bracket (see above). }
+    Changed := False;
+    Problem := '';
+    If Mgr <> Nil Then
+        Try Mgr.BeginUpdate; Except End;
+    Try
+        Keys := 'snap_x,snap_y,track,via,visible,visible_big';
+        While Keys <> '' Do
+        Begin
+            CommaPos := Pos(',', Keys);
+            If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+            Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+            ValStr := ExtractJsonValue(Params, Key);
+            If ValStr = '' Then Continue;
+            V := StrToFloatDef(ValStr, 0);
+            If Key = 'snap_x' Then Board.SnapGridSizeX := MilsToCoordF(V)
+            Else If Key = 'snap_y' Then Board.SnapGridSizeY := MilsToCoordF(V)
+            Else If Key = 'track' Then Board.TrackGridSize := MilsToCoordF(V)
+            Else If Key = 'via' Then Board.ViaGridSize := MilsToCoordF(V)
+            Else If Key = 'visible' Then Board.VisibleGridSize := MilsToCoordF(V)
+            Else If Key = 'visible_big' Then Board.BigVisibleGridSize := MilsToCoordF(V);
+            Changed := True;
+        End;
+        If DotStr <> '' Then
+        Begin
+            Board.DrawDotGrid := (DotStr = 'true');
+            Changed := True;
+        End;
+        { The coarse visible grid as a multiple of the snap grid. The fine   }
+        { one's factor reads 1 and stayed 1 for 2, 5, 0.5 and 10 (measured on }
+        { AD 26.11), so it is reported, not written.                         }
+        ValStr := ExtractJsonValue(Params, 'visible_big_factor');
+        If ValStr <> '' Then
+        Begin
+            V := StrToFloatDef(ValStr, 0);
+            Board.BigVisibleGridMultFactor := V;
+            Changed := True;
+        End;
+        Keys := 'snap_unit,visible_unit,visible_big_unit';
+        While Keys <> '' Do
+        Begin
+            CommaPos := Pos(',', Keys);
+            If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+            Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+            ValStr := LowerCase(ExtractJsonValue(Params, Key));
+            If ValStr = '' Then Continue;
+            If ValStr = 'mm' Then UnitWanted := eMetric Else UnitWanted := eImperial;
+            If Key = 'snap_unit' Then Board.SnapGridUnit := UnitWanted
+            Else If Key = 'visible_unit' Then Board.VisibleGridUnit := UnitWanted
+            Else Board.BigVisibleGridUnit := UnitWanted;
+            Changed := True;
+        End;
+        If FineColor >= 0 Then Begin G.SetProperty_Color(FineColor); Changed := True; End;
+        If CoarseColor >= 0 Then Begin G.SetProperty_ColorLarge(CoarseColor); Changed := True; End;
+        If FineStyle >= 0 Then Begin G.SetProperty_DrawMode(FineStyle); Changed := True; End;
+        If CoarseStyle >= 0 Then Begin G.SetProperty_DrawModeLarge(CoarseStyle); Changed := True; End;
+    Except
+        Problem := 'a grid write raised an error';
+    End;
+    If Mgr <> Nil Then
+        Try Mgr.EndUpdate; Except End;
+
+    { Read every value back. }
+    NotApplied := '';
+    Keys := 'snap_x,snap_y,track,via,visible,visible_big';
+    While Keys <> '' Do
+    Begin
+        CommaPos := Pos(',', Keys);
+        If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+        Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+        ValStr := ExtractJsonValue(Params, Key);
+        If ValStr = '' Then Continue;
+        V := StrToFloatDef(ValStr, 0);
+        Got := -1;
+        If Key = 'snap_x' Then Got := CoordToMilsF(Board.SnapGridSizeX)
+        Else If Key = 'snap_y' Then Got := CoordToMilsF(Board.SnapGridSizeY)
+        Else If Key = 'track' Then Got := CoordToMilsF(Board.TrackGridSize)
+        Else If Key = 'via' Then Got := CoordToMilsF(Board.ViaGridSize)
+        Else If Key = 'visible' Then Got := CoordToMilsF(Board.VisibleGridSize)
+        Else If Key = 'visible_big' Then Got := CoordToMilsF(Board.BigVisibleGridSize);
+        If Abs(Got - V) > 0.001 Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Key + '"';
+        End;
+    End;
+    If DotStr <> '' Then
+        If Board.DrawDotGrid <> (DotStr = 'true') Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"dot_grid"';
+        End;
+    ValStr := ExtractJsonValue(Params, 'visible_big_factor');
+    If ValStr <> '' Then
+        If Abs(Board.BigVisibleGridMultFactor - StrToFloatDef(ValStr, 0)) > 0.001 Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"visible_big_factor"';
+        End;
+    Keys := 'snap_unit,visible_unit,visible_big_unit';
+    While Keys <> '' Do
+    Begin
+        CommaPos := Pos(',', Keys);
+        If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+        Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+        ValStr := LowerCase(ExtractJsonValue(Params, Key));
+        If ValStr = '' Then Continue;
         If ValStr = 'mm' Then UnitWanted := eMetric Else UnitWanted := eImperial;
-        If Key = 'snap_unit' Then Board.SnapGridUnit := UnitWanted
-        Else If Key = 'visible_unit' Then Board.VisibleGridUnit := UnitWanted
-        Else Board.BigVisibleGridUnit := UnitWanted;
-        Changed := True;
         If Key = 'snap_unit' Then UnitGot := Board.SnapGridUnit
         Else If Key = 'visible_unit' Then UnitGot := Board.VisibleGridUnit
         Else UnitGot := Board.BigVisibleGridUnit;
@@ -24632,13 +24830,58 @@ Begin
             NotApplied := NotApplied + '"' + Key + '"';
         End;
     End;
+    If FineColor >= 0 Then
+    Begin
+        N := -1;
+        Try N := G.GetProperty_Color; Except End;
+        If N <> FineColor Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"fine_color"';
+        End;
+    End;
+    If CoarseColor >= 0 Then
+    Begin
+        N := -1;
+        Try N := G.GetProperty_ColorLarge; Except End;
+        If N <> CoarseColor Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"coarse_color"';
+        End;
+    End;
+    If FineStyle >= 0 Then
+    Begin
+        N := -1;
+        Try N := G.GetProperty_DrawMode; Except End;
+        If N <> FineStyle Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"fine_style"';
+        End;
+    End;
+    If CoarseStyle >= 0 Then
+    Begin
+        N := -1;
+        Try N := G.GetProperty_DrawModeLarge; Except End;
+        If N <> CoarseStyle Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"coarse_style"';
+        End;
+    End;
     If Changed Then
     Begin
         Try Board.ViewManager_FullUpdate; Except End;
         MarkDocDirtyByPath(Board.FileName);
     End;
+    Look := '';
+    If G <> Nil Then Look := GridLookJson(G) + ',';
     Result := BuildSuccessResponse(RequestId, JsonObj(
         BoardGridsJson(Board) + ','
+        + Look
+        + JsonStr('document', Board.FileName) + ','
+        + JsonStr('problem', Problem) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']')));
 End;
 

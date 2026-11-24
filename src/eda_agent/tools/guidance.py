@@ -1778,17 +1778,20 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "Altium's own zone (\"3B\") for each object on the active sheet.",
     },
     {
-        "task": "Set the board's snap, track, via or visible grid",
+        "task": "Set the board's snap, track, via or visible grid, or its colours and styles",
         "keywords": ("grid", "snap", "track", "via", "visible", "dot",
-                     "board"),
+                     "board", "colour", "color", "style", "fine", "coarse"),
         "when": (("board", "grid"), ("snap", "grid"), ("track", "grid"),
-                 ("via", "grid")),
+                 ("via", "grid"), ("grid", "colour"), ("grid", "color"),
+                 ("grid", "style")),
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_set_grids"],
         "avoid": [("obj_set_grid", "sets the schematic's grid, not the board's")],
         "note": ("Mils. Every value is read back; the grid for moving parts "
-                 "follows the snap grid."),
+                 "follows the snap grid. fine_color / coarse_color and "
+                 "fine_style / coarse_style (lines, dots, none) set how the "
+                 "visible grid is drawn; a .PcbLib in front is acted on."),
     },
     {
         "task": "Export one placed part's 3D model to STEP",

@@ -2076,10 +2076,15 @@ def register_pcb_tools(mcp):
         snap_unit: Optional[str] = None,
         visible_unit: Optional[str] = None,
         visible_big_unit: Optional[str] = None,
+        fine_color: Optional[str] = None,
+        coarse_color: Optional[str] = None,
+        fine_style: Optional[str] = None,
+        coarse_style: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Read, or set, the active board's grids, in mils.
+        """Read, or set, the active board's grids, in mils, and their look.
 
-        Call with nothing to read. Every value set is read back, and any
+        Call with nothing to read. A .PcbLib in front is acted on, never
+        another open board. Every value set is read back, and any
         that did not take is listed in ``not_applied``. The grid for
         moving parts (``component_x`` / ``component_y``) is read only: it
         follows the snap grid. obj_set_grid is the schematic's grid.
@@ -2093,17 +2098,22 @@ def register_pcb_tools(mcp):
             visible_big: The coarse visible grid.
             dot_grid: Draw the visible grid as dots (True) or lines.
             visible_big_factor: The coarse visible grid as a multiple of
-                the snap grid. The fine one's (``visible_factor``) is
-                read only.
+                the snap grid (Altium's grid editor offers 2, 5 and 10).
+                The fine one's (``visible_factor``) is read only.
             snap_unit / visible_unit / visible_big_unit: "mm" or "mil",
                 the unit each grid is shown and stepped in.
+            fine_color / coarse_color: "#RRGGBB", the colour of the fine
+                and the coarse visible grid.
+            fine_style / coarse_style: "lines", "dots" or "none" (not
+                drawn). dot_grid sets the fine style too: give one.
 
         Returns:
             ``snap_x``, ``snap_y``, ``component_x``, ``component_y``,
             ``track``, ``via``, ``visible``, ``visible_big``,
             ``visible_factor``, ``visible_big_factor``, ``snap_unit``,
-            ``visible_unit``, ``visible_big_unit``, ``dot_grid`` and
-            ``not_applied``.
+            ``visible_unit``, ``visible_big_unit``, ``dot_grid``,
+            ``fine_color``, ``coarse_color``, ``fine_style``,
+            ``coarse_style``, ``document`` and ``not_applied``.
         """
         params: dict[str, Any] = {}
         for key, value in (("snap_x", snap_x), ("snap_y", snap_y),
@@ -2127,6 +2137,21 @@ def register_pcb_tools(mcp):
             if value.strip().lower() not in ("mm", "mil"):
                 return {"ok": False, "reason": f"{key} is mm or mil"}
             params[key] = value.strip().lower()
+        for key, value in (("fine_color", fine_color), ("coarse_color", coarse_color)):
+            if value is None:
+                continue
+            digits = value.strip().lstrip("#")
+            if len(digits) != 6 or any(c not in "0123456789abcdefABCDEF" for c in digits):
+                return {"ok": False, "reason": f"{key} is #RRGGBB"}
+            params[key] = "#" + digits.upper()
+        for key, value in (("fine_style", fine_style), ("coarse_style", coarse_style)):
+            if value is None:
+                continue
+            if value.strip().lower() not in ("lines", "dots", "none"):
+                return {"ok": False, "reason": f"{key} is lines, dots or none"}
+            params[key] = value.strip().lower()
+        if dot_grid is not None and fine_style is not None:
+            return {"ok": False, "reason": "dot_grid sets the fine style: give fine_style or dot_grid"}
         return await get_bridge().send_command_async("pcb.set_grids", params)
 
     @mcp.tool()
