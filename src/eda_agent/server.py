@@ -305,8 +305,8 @@ def build_server_instructions(
         "object type it is given (eTrackObject: the active board). A board\n"
         "tool aimed at a library can resolve another open board and report\n"
         "success for work you never asked for."
-        + (" (pcb_layer_view, pcb_pad_relief\n"
-           "and pcb_renumber_pads also act on a .PcbLib in front.)"
+        + (" (pcb_layer_view, pcb_pad_relief,\n"
+           "pcb_renumber_pads and pcb_set_grids also act on a .PcbLib in front.)"
            if altium else "")
         + "\n"
         "\n"
