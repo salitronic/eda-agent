@@ -7499,7 +7499,7 @@ Begin
     { A port names itself with Name; asking it for Text stops the script. }
     Else If Obj.ObjectId = ePort Then
     Begin
-        Try Result := Obj.Name; Except Result := ''; End;
+        Result := SchQuickRead(Obj, 111);
     End
     { The name shown on a harness connector is its type label, a child   }
     { object of its own (MoveHarnessConnector reaches it the same way).   }
@@ -7510,12 +7510,13 @@ Begin
         Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
         If TypeLabel <> Nil Then
         Begin
-            Try Result := TypeLabel.Text; Except Result := ''; End;
+            Result := SchQuickRead(TypeLabel, 110);
         End;
     End
     Else If SchObjectHasText(Obj) Then
     Begin
-        Try Result := Obj.Text; Except Result := ''; End;
+        { Use the same Text reader as query_objects. }
+        Result := SchQuickRead(Obj, 110);
     End;
 End;
 
@@ -7540,7 +7541,7 @@ Var
     SchIter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Scale : Double;
-    Want, Count, Listed : Integer;
+    Want, Count, Listed, TypeIndex, ObjTypeInt, IteratorFailures : Integer;
     X1, Y1, X2, Y2, BX1, BY1, BX2, BY2, Cx, Cy, Hw, Hh : TCoord;
 Begin
     NameStr := Trim(ExtractJsonValue(Params, 'name'));
@@ -7598,58 +7599,82 @@ Begin
     NameUpper := UpperCase(NameStr);
     Count := 0;
     Listed := 0;
+    IteratorFailures := 0;
     Matches := '';
     Picked := '';
-    SchIter := SchDoc.SchIterator_Create;
-    If SchIter <> Nil Then
+    { AD 26.1.1.7 regression: a combined six-kind MkSet iterator silently
+      omitted eCrossSheetConnector (ObjectId 48), while a single-kind
+      iterator found it. Match query_objects by walking one kind at a time. }
+    For TypeIndex := 0 To 5 Do
     Begin
-        Try
-            SchIter.AddFilter_ObjectSet(MkSet(eSchComponent, eNetLabel, ePort,
-                ePowerObject, eCrossSheetConnector, eHarnessConnector));
-            Obj := SchIter.FirstSchObject;
-            While Obj <> Nil Do
-            Begin
-                ObjName := SchZoomObjectName(Obj);
-                If (ObjName <> '') And (UpperCase(ObjName) = NameUpper) Then
+        Case TypeIndex Of
+            0: ObjTypeInt := eSchComponent;
+            1: ObjTypeInt := eNetLabel;
+            2: ObjTypeInt := ePort;
+            3: ObjTypeInt := ePowerObject;
+            4: ObjTypeInt := eCrossSheetConnector;
+            5: ObjTypeInt := eHarnessConnector;
+        End;
+        SchIter := SchDoc.SchIterator_Create;
+        If SchIter = Nil Then
+            IteratorFailures := IteratorFailures + 1
+        Else
+        Begin
+            Try
+                SchIter.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                Obj := SchIter.FirstSchObject;
+                While Obj <> Nil Do
                 Begin
-                    X1 := Obj.BoundingRectangle.X1;
-                    Y1 := Obj.BoundingRectangle.Y1;
-                    X2 := Obj.BoundingRectangle.X2;
-                    Y2 := Obj.BoundingRectangle.Y2;
-                    Count := Count + 1;
-                    Entry := '{"kind":"' + SchZoomKindName(Obj.ObjectId) + '",'
-                        + '"name":"' + EscapeJsonString(ObjName) + '",'
-                        + '"box":[' + FloatToJsonStr(CoordToMilsF(X1)) + ','
-                        + FloatToJsonStr(CoordToMilsF(Y1)) + ','
-                        + FloatToJsonStr(CoordToMilsF(X2)) + ','
-                        + FloatToJsonStr(CoordToMilsF(Y2)) + ']}';
-                    If Listed < 200 Then
+                    If Obj.ObjectId = ObjTypeInt Then
                     Begin
-                        If Matches <> '' Then Matches := Matches + ',';
-                        Matches := Matches + Entry;
-                        Listed := Listed + 1;
+                        ObjName := SchZoomObjectName(Obj);
+                        If (ObjName <> '') And (UpperCase(ObjName) = NameUpper) Then
+                        Begin
+                            X1 := Obj.BoundingRectangle.X1;
+                            Y1 := Obj.BoundingRectangle.Y1;
+                            X2 := Obj.BoundingRectangle.X2;
+                            Y2 := Obj.BoundingRectangle.Y2;
+                            Count := Count + 1;
+                            Entry := '{"kind":"' + SchZoomKindName(Obj.ObjectId) + '",'
+                                + '"name":"' + EscapeJsonString(ObjName) + '",'
+                                + '"box":[' + FloatToJsonStr(CoordToMilsF(X1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Y1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(X2)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Y2)) + ']}';
+                            If Listed < 200 Then
+                            Begin
+                                If Matches <> '' Then Matches := Matches + ',';
+                                Matches := Matches + Entry;
+                                Listed := Listed + 1;
+                            End;
+                            If Count = Want Then
+                            Begin
+                                BX1 := X1;
+                                BY1 := Y1;
+                                BX2 := X2;
+                                BY2 := Y2;
+                                Picked := Entry;
+                            End;
+                        End;
                     End;
-                    If Count = Want Then
-                    Begin
-                        BX1 := X1;
-                        BY1 := Y1;
-                        BX2 := X2;
-                        BY2 := Y2;
-                        Picked := Entry;
-                    End;
+                    Obj := SchIter.NextSchObject;
                 End;
-                Obj := SchIter.NextSchObject;
+            Finally
+                SchDoc.SchIterator_Destroy(SchIter);
             End;
-        Finally
-            SchDoc.SchIterator_Destroy(SchIter);
         End;
     End;
 
     If Count = 0 Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no part, net label, port, '
-            + 'power port, off-sheet connector or harness connector on this sheet is named "'
-            + NameStr + '"');
+        If IteratorFailures > 0 Then
+            Result := BuildErrorResponse(RequestId, 'INTERNAL_ERROR',
+                'schematic object scan incomplete (' + IntToStr(IteratorFailures)
+                + ' iterator creation failure(s)) while searching for "' + NameStr + '"')
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no part, net label, port, '
+                + 'power port, off-sheet connector or harness connector on this sheet is named "'
+                + NameStr + '"');
         Exit;
     End;
     If Want > Count Then
