@@ -61,6 +61,14 @@ _NO_HINT_NEEDED = {
     "NOT_A_MEMBER": "the project resolved fine and the document simply is "
                     "not in it, so there is no other document to point at. "
                     "The message names the path that was asked for.",
+    # target_document / target_project (#428) name the document and its
+    # project by full path. These refusals come after both were found:
+    # Altium would not bring them to the front, so there is no other
+    # document kind to point at.
+    "WRONG_DOCUMENT": "the named document was found; the message names it "
+                      "and the document that stayed in front",
+    "WRONG_PROJECT": "the named project was found; the message names it, "
+                     "the projects listing the file and what is in front",
 }
 
 
