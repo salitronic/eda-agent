@@ -374,3 +374,46 @@ def test_a_package_the_table_does_not_head_names_the_ones_it_does(two_packages):
 def test_a_refusal_without_a_package_column_says_it_can_be_given(sheet):
     out = check_pin_table({"path": sheet, "page": "2"}, _pins(("1", "GND")))
     assert "package_column" in out["reason"]
+
+
+# One name for many pins: the row's number cell is a list, with a span and
+# wrapped over lines, as module datasheets print ground and no-connect.
+_LISTED = [["Pin Definitions", "Name No. Type Function",
+            "GND 1, 2, 11, 14,36-53 P Ground", "3V3 3 P Power supply",
+            "NC", "4, 7, 9, 10,", "15, 17, 24,", "25, 28, 29,", "32-35", "- NC",
+            "IO2 5 I/O/T GPIO2, ADC1_CH2", "EN 8 I High: on. Supply 2-4 V, 13-16 mA"]]
+
+
+@pytest.fixture
+def listed_sheet(tmp_path):
+    pdf = tmp_path / "module.pdf"
+    pdf.write_bytes(_pdf(_LISTED))
+    return str(pdf)
+
+
+def test_a_pin_inside_a_span_is_in_its_row(listed_sheet):
+    out = check_pin_table({"path": listed_sheet}, _pins(
+        ("1", "GND"), ("14", "GND"), ("36", "GND"), ("44", "GND"), ("53", "GND")))
+    assert out["ok"], out
+    assert out["found"] == 5
+
+
+def test_a_list_wrapped_over_lines_belongs_to_the_name_above_it(listed_sheet):
+    out = check_pin_table({"path": listed_sheet}, _pins(
+        ("4", "NC"), ("10", "NC"), ("17", "NC"), ("29", "NC"), ("32", "NC"),
+        ("33", "NC"), ("35", "NC"), ("3", "3V3"), ("5", "IO2")))
+    assert out["ok"], out
+
+
+def test_a_listed_pin_still_needs_its_rows_name(listed_sheet):
+    # 44 is ground and 33 is no-connect: the other name is on neither row.
+    out = check_pin_table({"path": listed_sheet}, _pins(("44", "NC"), ("33", "GND"), ("54", "GND")))
+    assert not out["ok"]
+    assert [m["pin"] for m in out["missing"]] == ["44", "33", "54"]
+
+
+def test_a_span_in_running_text_is_not_a_list_of_pins(listed_sheet):
+    # "2-4 V" and "13-16 mA" on the EN row do not make pins 3, 14 or 15 EN.
+    out = check_pin_table({"path": listed_sheet}, _pins(("15", "EN"), ("14", "EN")))
+    assert not out["ok"]
+    assert len(out["missing"]) == 2
