@@ -908,6 +908,27 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     return 0
 
 
+def _start_again(command: list[str]) -> int:
+    """Run the server again with the environment as it now is, keeping the
+    client's connection.
+
+    On Windows os.execv does not replace the process: it starts a new one
+    and ends this one. An MCP client holds the pipes of the process it
+    started, so its connection ended there, and the new server read a
+    closed input and left without a word; the client waited out its whole
+    connect limit. There the new server runs as a child on this process's
+    own stdin and stdout, and this one stays until it ends and passes its
+    exit code on. Elsewhere execv replaces the process and the pipes stay.
+    """
+    if os.name != "nt":
+        os.execv(command[0], command)
+    import subprocess
+    try:
+        return subprocess.call(command)
+    except KeyboardInterrupt:
+        return 130
+
+
 def main() -> int:
     """CLI entry point.
 
@@ -1185,8 +1206,8 @@ def main() -> int:
         if needs_toolset:
             os.environ["EDA_AGENT_TOOLSET"] = requested_toolset
         os.environ["_EDA_AGENT_BACKEND_REEXEC"] = "1"
-        os.execv(sys.executable,
-                 [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
+        return _start_again([sys.executable, "-m", "eda_agent.server",
+                             *sys.argv[1:]])
 
     if (args.command is None or args.command == "serve") \
             and os.environ.get("EDA_AGENT_RELOAD") == "1":
