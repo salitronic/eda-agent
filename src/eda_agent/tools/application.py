@@ -1508,14 +1508,16 @@ def register_application_tools(mcp):
                                       project_path: str = "") -> dict[str, Any]:
         """Bring a document to the front by its full path, and check it is.
 
-        The path must be absolute: a bare name or a relative path is refused
+        A bare file name is taken when exactly one open document carries
+        it; two open files of that name, or a relative path, are refused
         (it could name the same-named file of another project). With
         project_path the project is opened if needed, the document must be
         one of its documents, and it is opened inside it when not loaded.
         The front is read back; anything else in front is refused.
 
         Args:
-            file_path: Absolute path of the document.
+            file_path: Absolute path of the document, or its file name
+                when only one open document has it.
             project_path: Absolute path of its project (.PrjPcb); needed to
                 open a document that is not loaded.
 

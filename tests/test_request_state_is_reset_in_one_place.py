@@ -32,7 +32,7 @@ SESSION = {
     "IdleThreshold", "AutoShutdownMs", "ConfiguredShutdownMs", "YieldIterations", "YieldEveryNActive",
     "PumpStopPath", "PumpIdleCount", "PumpLastActivityMs", "PumpInterval",
     "PumpInTick", "PumpFinalised", "PumpQuitting", "PumpTicked",
-    "PumpWakeSeen", "PumpWakeMissed", "PumpLastStatsTick",
+    "PumpWakeSeen", "PumpWakeMissed", "PumpWokenTick", "PumpLastStatsTick",
     # Config tab settings.
     "SavingOff", "ValueFormat", "ValueUnit", "EditsMode", "DeletingMode",
     "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode", "UsageMode", "RoutingMode", "ChecksOff",

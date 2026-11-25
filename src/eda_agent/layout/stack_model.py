@@ -337,6 +337,11 @@ def _numbered(values: dict[str, str], prefix: str, field: str) -> dict[int, str]
     return out
 
 
+def _layer_key(name: str) -> str:
+    """A layer name as both spellings compare: "Top Layer" and "TopLayer"."""
+    return "".join(str(name).split()).lower()
+
+
 def impedance_mode_edits(model: str, modes: list[dict[str, Any]]
                          ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Set impedance lines' calculation modes in the manager's model.
@@ -394,7 +399,7 @@ def impedance_mode_edits(model: str, modes: list[dict[str, Any]]
             continue
         hits = [ln for ln in lines
                 if prof.lower() in (ln["profile"][0].lower(), ln["profile"][1].lower())
-                and ln["layer"].lower() == layer.lower()
+                and _layer_key(ln["layer"]) == _layer_key(layer)
                 and (not stack or ln["stack"].lower() == stack.lower())]
         if not hits:
             problems.append(f"{where}: the profile has no line there; enable the layer "

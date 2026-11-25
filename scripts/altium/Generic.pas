@@ -7499,7 +7499,7 @@ Begin
     { A port names itself with Name; asking it for Text stops the script. }
     Else If Obj.ObjectId = ePort Then
     Begin
-        Result := SchQuickRead(Obj, 111);
+        Try Result := Obj.Name; Except Result := ''; End;
     End
     { The name shown on a harness connector is its type label, a child   }
     { object of its own (MoveHarnessConnector reaches it the same way).   }
@@ -7510,13 +7510,12 @@ Begin
         Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
         If TypeLabel <> Nil Then
         Begin
-            Result := SchQuickRead(TypeLabel, 110);
+            Try Result := TypeLabel.Text; Except Result := ''; End;
         End;
     End
     Else If SchObjectHasText(Obj) Then
     Begin
-        { Use the same Text reader as query_objects. }
-        Result := SchQuickRead(Obj, 110);
+        Try Result := Obj.Text; Except Result := ''; End;
     End;
 End;
 

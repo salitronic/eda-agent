@@ -1,4 +1,4 @@
-# Release verification: 2026.11.25.1
+# Release verification: 2026.11.25.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -259,6 +259,7 @@ works elsewhere cannot be an undeclared identifier:
 | 89, grids, references, layer copper, title block | `SetProperty_QuadrantSizeX`, `SetState_RefTopLayer`, `CopperThickness`, `SetState_TitleBlockOn` on a grid, an impedance line, a new layer and a sheet | partly, `PCB_ModifyLayer` writes the copper thickness | low; grid size and references change no copper, ran live on scratch copies and read back |
 | 90, DbLib quote, parts removed from the middle | `CurrentPartID` before a library Remove Part | yes, `Library.pas` (Lib_SetSymbolParts removes the last part the same way) | low; each removal is checked against every other part's pins and objects, ran live on a scratch library |
 | 91, clearance table, silk-to-mask choice, uncoupled run | `SetClearance`, `GetClearance` on a Clearance rule with two primitives made for the call and destroyed; `SetState_IsClearanceToExposedCopper` on a Silk To Solder Mask rule; `MaxUncoupledLength` on an existing pair rule | partly, `PCB_CreateDesignRule` (the uncoupled length on create) | low; rule values only, each read back; ran live on a scratch copy and closed without saving |
+| 92, grid look, impedance solve, custom pad spokes | `SetProperty_Color`, `SetProperty_ColorLarge` on the default grid inside `BeginUpdate` / `EndUpdate`; `ComputeImpedance` and `ApplyToPcb` on the Layer Stack Manager's document; `ImpedanceProfileId` on width and pair rules after a model load | only by `PCB.pas` (pcb_set_grids, pcb.compute_impedance), each new | low; display settings and the manager's own solve and apply, read back; ran live on a scratch copy |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -433,7 +434,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.25.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.25.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.3`.
 
 Those are two different versions and they fail differently.
@@ -4479,7 +4480,7 @@ New Altium identifiers: `IPCB_ClearanceConstraint.GetClearance` /
 `SetState_IsClearanceToExposedCopper`. `MaxUncoupledLength` was already
 written on create.
 
-Verified live on AD 26.12.2.8, script 2026.11.25.1, on a scratch copy of
+Verified live on AD 26.12.2.8 on a scratch copy of
 a board and of a library, closed without saving:
 
 1. `pcb_get_rule_properties Clearance`: 45 cells, all 3.937 mil (the
@@ -4494,6 +4495,45 @@ a board and of a library, closed without saving:
    rule: 250 read back.
 5. `library.add_pin` at 500, -300 on a symbol: `lib_get_pin_list` reads
    the pin at 500, -300 (0, 0 before the fix).
+
+## 92. A record of unsaved documents, documents named by path, a woken poll loop, rows, grids, the impedance solver
+
+Each defect was run first on the code before the change, then on the
+change, on AD 26.12.2.8 with scratch copies of a project and two
+libraries, script 2026.11.25.2:
+
+1. Instructions: 4,843 characters before (Altium, minimal tools), cut at
+   4,096 by the client; 4,083 after.
+2. `obj_modify set="Y1_mm=..."` in a mm session: refused as unknown
+   before, written after.
+3. A footprint description set through the API on a PcbLib: Altium's
+   `modified` read false before and after; `app_edited_documents` now
+   lists the library with the command that edited it.
+4. Altium's private memory over three idle minutes: +25.6 MB with the
+   timer loop, -1.6 MB with the woken loop. A client that does not wake
+   the loop waited about 2 s a call on the woken loop; it now brings the
+   loop back to the active rate and is answered in about 140 ms.
+5. `app_set_active_document` with a file name two open projects share:
+   refused, saying so; with a name one open document has: brought to the
+   front.
+6. `pcb_set_grids` fine #FF0000 dots, coarse #00FF00 lines: read back.
+7. `rows_read` board tracks on the top layer: 2,795 scanned, rows with
+   ids, in 0.7 s.
+8. `pcb_compute_impedance` on a 90 ohm pair profile on the top layer over
+   Mid-Layer 1: the width solved to 13.84 mil (90.04 ohm); with
+   `modes` solving the gap, 5.98 mil (89.96 ohm), the mode read back.
+9. Footprint track, via and region added to a new footprint without the
+   footprint broadcast, saved, closed and reopened: all three read back.
+10. `proj_annotate` on three sub-parts of one dual inverter at `U?`: U1,
+    U2 and U3 before; after, with two more sub-parts of a second device,
+    U1 holds parts 3, 1 and 2 and U2 parts 1 and 2.
+
+Not reproduced here: the zoom to an off-sheet connector found it before
+the change too (reported on AD 26.1); the pad crash on a blank PcbLib
+(reported on AD 26.10). Not run live: a design rule linked to an
+impedance profile across a stack load (no tool links a rule to a
+profile), and spokes aimed at a concave corner (no tool makes a custom
+pad).
 
 ## Still open, and not blocking
 

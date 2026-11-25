@@ -82,6 +82,14 @@ def test_a_profile_is_named_by_its_name_or_description_without_case():
     assert changes[0]["profile"] == "USB"
 
 
+def test_a_layer_is_named_with_or_without_its_spaces():
+    """pcb_impedance_profile_layer takes TopLayer; the same name works here."""
+    for name in ("TopLayer", "toplayer", "Top Layer"):
+        _, changes, problems = _edit({"profile": "DC90", "layer": name, "solve": "gap"})
+        assert problems == []
+        assert [c["layer"] for c in changes] == ["Top Layer"]
+
+
 def test_a_layer_in_several_stacks_changes_in_each_unless_one_is_named():
     _, both, _ = _edit({"profile": "S50", "layer": "Mid-Layer 1", "solve": "width"})
     assert [c["stack"] for c in both] == ["Rigid", "Flex"]

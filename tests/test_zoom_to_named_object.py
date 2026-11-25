@@ -57,13 +57,13 @@ def test_each_kind_is_named_by_its_own_member():
     # A port has no Text: asking stops the script. It answers to Name, and
     # its branch comes before the Text one.
     port = body.index("Obj.ObjectId = ePort")
-    assert "SchQuickRead(Obj, 111)" in body[port:body.index("eHarnessConnector", port)]
+    assert "Result := Obj.Name" in body[port:body.index("eHarnessConnector", port)]
     harness = body.index("Obj.ObjectId = eHarnessConnector")
     branch = body[harness:body.index("SchObjectHasText(Obj)", harness)]
     assert "Harness.HarnessConnectorType" in branch
-    assert "SchQuickRead(TypeLabel, 110)" in branch
+    assert "Result := TypeLabel.Text" in branch
     assert body.index("If SchObjectHasText(Obj) Then") > harness
-    assert "SchQuickRead(Obj, 110)" in body[body.index("If SchObjectHasText(Obj) Then"):]
+    assert "Result := Obj.Text" in body[body.index("If SchObjectHasText(Obj) Then"):]
 
 
 def test_names_compare_without_case():

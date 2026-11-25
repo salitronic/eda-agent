@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""PcbLib primitive registration must not broadcast PCBM_BoardRegisteration on
-Footprint.I_ObjectAddress (issue #289).
+"""A footprint primitive is announced to the library's board, never to the
+footprint itself.
 
-On Altium Designer 26.1.1.7 and 26.10.1.5, calling
-``PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress, c_Broadcast,
-PCBM_BoardRegisteration, Prim.I_ObjectAddress)`` raises a null-read access
-violation modal inside ``ScriptingSystem.DLL``. Adding the primitive to both
-the footprint and backing board plus broadcasting ``PCBM_BoardRegisteration``
-on ``PcbLib.Board.I_ObjectAddress`` / ``Board.I_ObjectAddress`` persists
-cleanly across save/close/reopen without crashing.
+On AD 26.1 and 26.10 a PCBM_BoardRegisteration broadcast addressed to the
+footprint stopped Altium with an access violation on a blank PcbLib. The
+primitive is added to the footprint and to the library's board, and the board
+is told of it; that saves, closes and reopens with the primitive kept.
 """
 from __future__ import annotations
 
@@ -35,8 +32,7 @@ def test_no_footprint_board_registration_robot_call_remains():
     )
     assert not hits, (
         f"Found {len(hits)} Footprint.I_ObjectAddress PCBM_BoardRegisteration "
-        "broadcast(s) in Library.pas; these fault ScriptingSystem.DLL on "
-        "AD 26.1.1 / 26.10.1 (issue #289)"
+        "broadcast(s) in Library.pas; these stop Altium on AD 26.1 and 26.10"
     )
 
 

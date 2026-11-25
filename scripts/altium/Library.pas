@@ -1784,7 +1784,7 @@ Begin
           refusing to author land patterns at all. Lib_AddFootprintText had the
           full sequence and was the only authoring call that survived a save. }
         PcbLib.Board.AddPCBObject(Pad);
-        { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+        { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
         PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
 
@@ -2394,7 +2394,7 @@ Begin
     { Same registration as the pad path: the backing board must see the
       object too, or the save discards it. }
     PcbLib.Board.AddPCBObject(Via);
-    { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+    { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
     PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
         c_Broadcast, PCBM_BoardRegisteration, Via.I_ObjectAddress);
     Result := Via;
@@ -2929,7 +2929,7 @@ Begin
               refusing to author land patterns at all. Lib_AddFootprintText had the
               full sequence and was the only authoring call that survived a save. }
             PcbLib.Board.AddPCBObject(Pad);
-            { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+            { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
             PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
                 c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
             Inc(Added);
@@ -3021,7 +3021,7 @@ Begin
           refusing to author land patterns at all. Lib_AddFootprintText had the
           full sequence and was the only authoring call that survived a save. }
         PcbLib.Board.AddPCBObject(Track);
-        { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+        { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
         PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Track.I_ObjectAddress);
 
@@ -3291,7 +3291,7 @@ Begin
               refusing to author land patterns at all. Lib_AddFootprintText had the
               full sequence and was the only authoring call that survived a save. }
             PcbLib.Board.AddPCBObject(Track);
-            { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+            { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
             PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
                 c_Broadcast, PCBM_BoardRegisteration, Track.I_ObjectAddress);
             Inc(Added);
@@ -3820,7 +3820,7 @@ Begin
 
             Footprint.AddPCBObject(Region);
             PcbLib.Board.AddPCBObject(Region);
-            { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+            { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
             PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
                 c_Broadcast, PCBM_BoardRegisteration, Region.I_ObjectAddress);
             Inc(Added);
@@ -3980,7 +3980,7 @@ Begin
 
             Footprint.AddPCBObject(Fill);
             PcbLib.Board.AddPCBObject(Fill);
-            { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+            { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
             PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
                 c_Broadcast, PCBM_BoardRegisteration, Fill.I_ObjectAddress);
             Inc(Added);
@@ -4318,7 +4318,7 @@ Begin
           refusing to author land patterns at all. Lib_AddFootprintText had the
           full sequence and was the only authoring call that survived a save. }
         PcbLib.Board.AddPCBObject(Arc);
-        { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+        { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
         PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Arc.I_ObjectAddress);
 
@@ -4500,7 +4500,7 @@ Begin
         { primitive until a save+reload.                                    }
         Footprint.AddPCBObject(Text);
         Board.AddPCBObject(Text);
-        { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+        { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
     Finally
@@ -5897,7 +5897,7 @@ Begin
                             Desig.Width := MilsToCoordF(WidthMils);
                             Footprint.AddPCBObject(Desig);
                             Board.AddPCBObject(Desig);
-                            { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+                            { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
                             PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
                                 c_Broadcast, PCBM_BoardRegisteration, Desig.I_ObjectAddress);
                             Inc(CreatedCount);
@@ -6538,7 +6538,7 @@ Begin
                   name. Audit by the AddPCBObject call, not by what the
                   handler is called. }
                 PcbLib.Board.AddPCBObject(Body);
-                { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+                { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
                 PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
                     c_Broadcast, PCBM_BoardRegisteration, Body.I_ObjectAddress);
 
@@ -19737,7 +19737,7 @@ Procedure AttachToCurrentFootprint(PcbLib : IPCB_Library;
 Begin
     Footprint.AddPCBObject(Prim);
     PcbLib.Board.AddPCBObject(Prim);
-    { Skip Footprint.I_ObjectAddress: faults ScriptingSystem.DLL on AD 26.1.1 / 26.10.1 (#289); Board registration below suffices. }
+    { Only the board is told of it: told to the footprint, it stopped Altium on AD 26.1 and 26.10. }
     PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
         c_Broadcast, PCBM_BoardRegisteration, Prim.I_ObjectAddress);
 End;

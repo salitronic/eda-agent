@@ -1893,6 +1893,10 @@ Var
     { Set if btn_WakeClick fires while PumpInTick is True, so the active  }
     { tick re-checks the queue before leaving the guard.                  }
     PumpWakeMissed       : Boolean;
+    { True while btn_WakeClick runs the tick. A request found by the timer }
+    { alone came from a client that does not wake the loop (an older one), }
+    { so the loop goes back to polling at the active rate until a wake.   }
+    PumpWokenTick        : Boolean;
     PumpLastStatsTick    : Cardinal;
 
 
@@ -2625,7 +2629,7 @@ Begin
     If ProjPath <> '' Then
     Begin
         Proj := OpenProjectAt(Workspace, ProjPath);
-        Hit := MatchDocPathInProject(Proj, Name);
+        Hit := OnlyDistinctPath(DocPathsNamedIn(Proj, Name, ''));
         If Hit <> '' Then
         Begin
             Result := Hit;
@@ -2639,7 +2643,7 @@ Begin
         For I := 0 To N - 1 Do
         Begin
             Proj := OpenProjectAt(Workspace, EdPart(Holders, '|', I));
-            Result := EdAddPath(Result, MatchDocPathInProject(Proj, Name));
+            Result := EdAddPath(Result, OnlyDistinctPath(DocPathsNamedIn(Proj, Name, '')));
         End;
     End;
     If Result <> '' Then Exit;
@@ -3751,6 +3755,11 @@ Begin
             Begin
                 NowMs := GetTickCount;
                 PumpLastActivityMs := NowMs;
+                If PumpWakeSeen And (Not PumpWokenTick) Then
+                Begin
+                    PumpWakeSeen := False;
+                    HadNonPing := True;
+                End;
                 If PumpWakeSeen Then
                 Begin
                     PumpIdleCount := 0;
@@ -3847,7 +3856,12 @@ Begin
         PumpWakeMissed := True;
         Exit;
     End;
-    tmr_PollTimer(Sender);
+    PumpWokenTick := True;
+    Try
+        tmr_PollTimer(Sender);
+    Finally
+        PumpWokenTick := False;
+    End;
 End;
 
 
@@ -3920,6 +3934,7 @@ Begin
     PumpTicked := False;
     PumpWakeSeen := False;
     PumpWakeMissed := False;
+    PumpWokenTick := False;
     PumpLastStatsTick := GetTickCount;
 
     StatusStartTick := GetTickCount;

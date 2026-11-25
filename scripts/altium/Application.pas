@@ -999,6 +999,21 @@ Var
 Begin
     Doc := Trim(ExtractJsonValue(Params, 'file_path'));
     Prj := Trim(ExtractJsonValue(Params, 'project_path'));
+    { A bare file name still names a document when exactly one open       }
+    { document carries it; two files of that name are refused below.       }
+    If (Doc <> '') And (Pos('\', Doc) = 0) And (Pos('/', Doc) = 0) Then
+    Begin
+        Front := ResolveLoadedDocPath(Doc);
+        If Front = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_TARGET', 'file_path ' + Doc
+                + ': no open document, or more than one, has that file name. Name it by'
+                + ' its full absolute path (application.get_project_files lists a'
+                + ' project''s documents).');
+            Exit;
+        End;
+        Doc := Front;
+    End;
     Why := EnsurePathProblem(Doc, False);
     If Why <> '' Then
     Begin
