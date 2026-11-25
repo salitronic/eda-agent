@@ -400,8 +400,23 @@ def _mark_erc_page(result: Any) -> Any:
     return result
 
 
+#: What a sheet left unsaved and open can still get wrong.
+_STALE_UNTIL_REOPENED = (
+    "Until this sheet is saved, closed and opened again, a compile or ERC "
+    "can still judge it by what it held before.")
+
+#: The reply of a tool told not to save and reopen.
+_NOT_REOPENED = {"done": False, "saved": False, "reason": "reopen=False",
+                 "until_reopened": _STALE_UNTIL_REOPENED}
+
+
 async def _reopen_sheet(bridge) -> dict[str, Any]:
     """Save, close and reopen the active sheet, and bring it back to front.
+
+    A sheet that was not written is left open as it is: a save Altium
+    declined reads ``saved`` false, and closing then would lose the work.
+    (With the Saving switch off the save command is refused, which ends
+    here the same way.)
 
     MEASURED on AD 26.11: after a sheet size change the ERC still judged
     the sheet against its old frame ("Off sheet Net Label PROBE at
@@ -416,15 +431,19 @@ async def _reopen_sheet(bridge) -> dict[str, Any]:
         path = str((active or {}).get("file_path") or "") if isinstance(active, dict) else ""
         if not path.lower().endswith(".schdoc"):
             return {"done": False, "reason": "the active document is not a saved sheet"}
-        await bridge.send_command_async("application.save_document", {"file_path": path},
-                                        timeout=60)
+        saved = await bridge.send_command_async(
+            "application.save_document", {"file_path": path}, timeout=60)
+        if isinstance(saved, dict) and saved.get("saved") is False:
+            return {"done": False, "file_path": path, "saved": False,
+                    "reason": str(saved.get("reason") or "the sheet was not written"),
+                    "until_reopened": _STALE_UNTIL_REOPENED}
         await bridge.send_command_async("application.close_document", {"file_path": path},
                                         timeout=60)
         await bridge.send_command_async("application.run_process", {
             "process_name": "WorkspaceManager:OpenObject",
             "parameters": f"ObjectKind=Document|FileName={path}"})
         await bridge.send_command_async("application.set_active_document", {"file_path": path})
-        return {"done": True, "file_path": path,
+        return {"done": True, "file_path": path, "saved": True,
                 "why": "Altium's ERC keeps a sheet's old frame until it is reopened"}
     except AltiumError as exc:
         return {"done": False, "reason": str(exc)}
@@ -2595,6 +2614,7 @@ def register_generic_tools(mcp):
         custom_width: int = 0,
         custom_height: int = 0,
         orientation: str = "",
+        reopen: bool = True,
     ) -> dict[str, Any]:
         """Set the sheet size / template style of the active schematic.
 
@@ -2602,14 +2622,21 @@ def register_generic_tools(mcp):
         (A-E, A0-A4, Letter, Legal, Tabloid) or "Custom" with explicit
         width and height in mils. Give ``style``, ``orientation`` or both.
 
+        SAVES THE SHEET, closes it and opens it again: ERC keeps judging
+        a sheet by its old frame until then. ``reopen=False`` changes the
+        size and writes nothing. With the dashboard's Saving switch off
+        the save is refused and the sheet stays open as it is;
+        ``reopened`` says which happened.
+
         Args:
             style: Sheet size name, e.g. "A", "A3", "A4", "Letter", "Custom"
             custom_width: Custom sheet width in mils (only if style="Custom")
             custom_height: Custom sheet height in mils (only if style="Custom")
             orientation: "landscape" or "portrait"; empty leaves it as is
+            reopen: False leaves the sheet unsaved and open.
 
         Returns:
-            Dictionary confirming the style change
+            Dictionary confirming the style change, with ``reopened``.
         """
         orientation = orientation.strip().lower()
         if orientation not in ("", "landscape", "portrait"):
@@ -2627,7 +2654,8 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.set_sheet_size", params)
         if isinstance(result, dict) and result.get("success") is not False:
-            result["reopened"] = await _reopen_sheet(bridge)
+            result["reopened"] = (await _reopen_sheet(bridge) if reopen
+                                  else dict(_NOT_REOPENED))
         return result
 
     @mcp.tool()
@@ -2895,7 +2923,9 @@ def register_generic_tools(mcp):
         larger sheet size, then shifts if that is still needed. A sheet
         drawn from a template is not enlarged here: ``to_template`` names
         the same-family template to move it to. ``actions`` lists what was
-        done and the reply is the audit after it.
+        done and the reply is the audit after it. An enlarge SAVES the
+        sheet and reopens it, as sch_set_sheet_size does, unless the
+        dashboard's Saving switch is off.
         """
         from eda_agent.design.sheet_fit import Box, fit_report
 

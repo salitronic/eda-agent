@@ -332,6 +332,7 @@ def register_sch_template_tools(mcp):
         plan_json: str = "",
         sheet: str = "",
         template_path: str = "",
+        reopen: bool = True,
     ) -> dict[str, Any]:
         """Draw a schematic sheet from a hand template: THE way to draw
         or redraw a block. Same template as sch_preview_template; run that
@@ -343,8 +344,14 @@ def register_sch_template_tools(mcp):
         part already on the sheet), and only then are the wires, power
         ports, net labels and values (the Comment) drawn. Any error stops
         it before the first wire. A designator already on the sheet is
-        refused: redraw on a fresh sheet rather than patching. Does not
-        save.
+        refused: redraw on a fresh sheet rather than patching.
+
+        SAVES THE SHEET when the draw succeeded, then closes it and opens
+        it again: a sheet drawn over an earlier one otherwise compiles
+        with its old parts. ``reopen=False`` draws and writes nothing.
+        With the dashboard's Saving switch off the save is refused and
+        the sheet stays open as drawn. ``reopened`` in the reply says
+        which.
 
         A multi-part symbol is placed one part per entry (``"part"``), each
         set to its part and read back; a part the symbol does not have
@@ -361,11 +368,13 @@ def register_sch_template_tools(mcp):
             sheet: the plan sheet this template draws.
             template_path: a JSON file holding the template, instead of
                 passing it inline.
+            reopen: False leaves the sheet unsaved and open as drawn.
 
         Returns:
             The same report as sch_preview_template, plus ``placed``,
-            ``wires``, ``ports``, ``labels``, ``values`` counts and
-            ``stage`` (where it stopped, or "done").
+            ``wires``, ``ports``, ``labels``, ``values`` counts,
+            ``stage`` (where it stopped, or "done") and ``reopened``
+            (``done``, ``saved``, and a ``reason`` when it was not).
         """
         template, problem = _load_template(template, template_path)
         if problem or not document_path:
@@ -516,6 +525,7 @@ def register_sch_template_tools(mcp):
             # compiled with its old parts and wires, so ERC reported
             # duplicate designators that were not on it, until the sheet
             # was closed and opened again.
-            from .generic import _reopen_sheet
-            out["reopened"] = await _reopen_sheet(bridge)
+            from .generic import _NOT_REOPENED, _reopen_sheet
+            out["reopened"] = (await _reopen_sheet(bridge) if reopen
+                               else dict(_NOT_REOPENED))
         return out
