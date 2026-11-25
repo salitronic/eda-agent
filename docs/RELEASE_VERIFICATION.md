@@ -261,6 +261,7 @@ works elsewhere cannot be an undeclared identifier:
 | 91, clearance table, silk-to-mask choice, uncoupled run | `SetClearance`, `GetClearance` on a Clearance rule with two primitives made for the call and destroyed; `SetState_IsClearanceToExposedCopper` on a Silk To Solder Mask rule; `MaxUncoupledLength` on an existing pair rule | partly, `PCB_CreateDesignRule` (the uncoupled length on create) | low; rule values only, each read back; ran live on a scratch copy and closed without saving |
 | 92, grid look, impedance solve, custom pad spokes | `SetProperty_Color`, `SetProperty_ColorLarge` on the default grid inside `BeginUpdate` / `EndUpdate`; `ComputeImpedance` and `ApplyToPcb` on the Layer Stack Manager's document; `ImpedanceProfileId` on width and pair rules after a model load | only by `PCB.pas` (pcb_set_grids, pcb.compute_impedance), each new | low; display settings and the manager's own solve and apply, read back; ran live on a scratch copy |
 | 93, custom pad shape | `LinkCustomShape` with a region never added to the footprint, then `HasCustomShapes` | no, nowhere | medium, a new route; ran live, saved, closed and reopened with the shape kept |
+| 94, sensor electrodes | `LinkCustomShape` (step 93) and the top paste opening through lib_set_pad_properties | yes, `Library.pas` (steps 93 and the pad properties writer) | low; no new identifier, each pattern ran live on a scratch library with paste read back off |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -4553,6 +4554,23 @@ a library:
 3. A 100 mil square under a half circle of radius 50 mil: 100 x 150 mil.
    Altium keeps the arc as straight facets, about 1 mil from the true arc
    at that radius.
+
+## 94. Sensor electrodes as custom-shaped pads
+
+No new Altium identifier: lib_create_electrode makes the footprint, its
+custom pads (step 93) and, for a meander, its tracks, then turns paste off
+on each pad through lib_set_pad_properties.
+
+Verified live on AD 26.12.2.8, on a scratch copy of
+a library, each looked at in Altium:
+
+1. Interdigitated, 8 fingers a side, 0.2 mm fingers and gaps, 5 mm long:
+   two custom pads, combs interleaved, 0.2 mm measured, about 1.7 pF
+   estimated on FR-4.
+2. Slider, 5 segments with two teeth each side: five pads, 0.5 mm apart.
+3. Wheel, 3 sectors, 20 mm across with an 8 mm hole: three pads, straight
+   0.5 mm gaps.
+4. Meander, 6 runs of 10 mm: two pads and 11 tracks.
 
 ## Still open, and not blocking
 

@@ -525,6 +525,7 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "lib_create_electrode": "KiCad has custom pads; the electrode outlines are not sent to them yet",
     "pcb_drc_rules": "no tool keeps an approved copy of a KiCad board's rules or compares a DRC against it",
     "pcb_pad_relief": "a KiCad pad carries its own zone connection, spoke width, gap and spoke angle; no tool sets them yet",
     "app_screenshot": "no view capture in the API; would need OS window capture",

@@ -2987,6 +2987,145 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
+    async def lib_create_electrode(
+        name: str,
+        pattern: str = "interdigitated",
+        fingers: int = 5,
+        finger_width: Optional[float] = None,
+        gap: Optional[float] = None,
+        finger_length: Optional[float] = None,
+        bus_width: Optional[float] = None,
+        round_tips: bool = True,
+        segments: Optional[int] = None,
+        segment_width: Optional[float] = None,
+        height: Optional[float] = None,
+        teeth: int = 2,
+        outer_diameter: Optional[float] = None,
+        inner_diameter: Optional[float] = None,
+        turns: int = 6,
+        trace_width: Optional[float] = None,
+        run_length: Optional[float] = None,
+        pad_size: Optional[float] = None,
+        layer: str = "TopLayer",
+        dielectric_constant: float = 4.4,
+        description: str = "",
+        units: str = "",
+    ) -> dict[str, Any]:
+        """Make a sensor electrode footprint in the active PcbLib: each
+        electrode is ONE custom-shaped pad, so it carries a net and DRC
+        sees it as a pad. Paste is turned off on every pad.
+
+        Patterns (lengths in ``units``, default the session's; any left out
+        take the pattern's default, given here in mm):
+        - "interdigitated": two combs, pads 1 and 2, ``fingers`` each
+          interleaved; finger_width 0.2, gap 0.2, finger_length 4,
+          bus_width 0.5, round_tips. Reply adds ``capacitance_pf``,
+          estimated by conformal mapping for thin fingers on a substrate of
+          ``dielectric_constant`` under air (no field solve).
+        - "slider": ``segments`` (5) touch pads in a row, segment_width 8,
+          height 8, gap 0.5, neighbours interleaved with ``teeth``.
+        - "wheel": ``segments`` (3) sectors of a ring, outer_diameter 20,
+          inner_diameter 8, gap 0.5.
+        - "meander": a serpentine of ``turns`` runs between pads 1 and 2,
+          trace_width 0.3, gap 0.3, run_length 10, pad_size 1.5. Reply adds
+          ``squares`` (length / width of the trace).
+
+        The outlines are checked before anything is written: an outline
+        that crosses itself, or copper closer than ``gap``, is refused.
+        Arc edges are kept by Altium as short straight facets.
+
+        Returns:
+            ``footprint``, ``pattern``, ``pads`` (designators),
+            ``size`` [x, y], ``min_gap`` asked and ``measured_min_gap``,
+            ``custom_pads`` (Altium's read-back) and the pattern's figures.
+        """
+        from ..design import electrode as electrode_geom
+        from ..lengths import session_unit
+        unit = normalise_units(units) if units else session_unit()
+        refusal = _units_refusal(unit)
+        if refusal:
+            return refusal
+        if not name.strip():
+            return {"ok": False, "reason": "name is required"}
+        scale = 1.0 if unit == "mm" else MILS_PER_MM
+        given = {"fingers": fingers, "finger_width": finger_width, "gap": gap,
+                 "finger_length": finger_length, "bus_width": bus_width,
+                 "round_tips": round_tips, "segments": segments,
+                 "segment_width": segment_width, "height": height, "teeth": teeth,
+                 "outer_diameter": outer_diameter, "inner_diameter": inner_diameter,
+                 "turns": turns, "trace_width": trace_width,
+                 "run_length": run_length, "pad_size": pad_size}
+        # Defaults are mm; a length given in mils is taken to mm here and
+        # the geometry is built in mm, then sent in mm.
+        counts = ("fingers", "segments", "teeth", "turns", "round_tips")
+        params = {k: (v if k in counts else float(v) / scale)
+                  for k, v in given.items() if v is not None}
+        for k, v in params.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v <= 0:
+                return {"ok": False, "reason": f"{k} is more than 0"}
+        geom = electrode_geom.build(pattern, **params)
+        if "error" in geom:
+            return {"ok": False, "reason": geom["error"]}
+        checked = electrode_geom.check(geom)
+        if checked["self_crossing"]:
+            return {"ok": False, "reason": "these outlines cross themselves with "
+                    "these sizes: " + ", ".join(checked["self_crossing"])}
+        measured = checked["measured_min_gap"]
+        if geom["pattern"] != "meander" and measured is not None \
+                and measured < geom["min_gap"] * 0.999:
+            return {"ok": False, "reason": f"copper comes {measured} mm close, under "
+                    f"the gap of {geom['min_gap']} mm; make the parts larger"}
+        pads = [{"designator": e["designator"], "x": e["anchor"][0],
+                 "y": e["anchor"][1], "layer": layer, "outline": e["outline"]}
+                for e in geom["electrodes"]]
+        payload, problems = _custom_pads_payload(pads)
+        if problems:
+            return {"ok": False, "reason": "; ".join(problems)}
+        bridge = get_bridge()
+        made = await bridge.send_command_async(
+            "library.create_footprint", {"name": name.strip(),
+                                         "description": description or
+                                         f"{geom['pattern']} electrode"})
+        if not (isinstance(made, dict) and made.get("success")):
+            return {"ok": False, "stage": "create_footprint", "reply": made}
+        custom = await bridge.send_command_async(
+            "library.add_footprint_custom_pads",
+            _with_units({"pads": payload, "footprint_name": name.strip()}, "mm"))
+        tracks_reply = None
+        if geom["tracks"]:
+            tracks_payload, _ = _tracks_payload(
+                [{**t, "layer": layer} for t in geom["tracks"]], "mm")
+            tracks_reply = await bridge.send_command_async(
+                "library.add_footprint_tracks", _with_units(
+                    {"tracks": tracks_payload, "footprint_name": name.strip()}, "mm"))
+        paste_off = 0
+        for e in geom["electrodes"]:
+            pad_params: dict[str, Any] = {"footprint_name": name.strip(),
+                                          "pad_name": e["designator"]}
+            pad_params["paste_top_enabled"] = "false"
+            r = await bridge.send_command_async("library.set_pad_properties", pad_params)
+            if isinstance(r, dict) and not r.get("error"):
+                paste_off += 1
+        out: dict[str, Any] = {
+            "footprint": name.strip(), "pattern": geom["pattern"],
+            "pads": [e["designator"] for e in geom["electrodes"]],
+            "size": [round(v * scale, 4) for v in geom["size"]],
+            "min_gap": round(geom["min_gap"] * scale, 4),
+            "measured_min_gap": None if measured is None else round(measured * scale, 4),
+            "custom_pads": custom, "paste_off": paste_off,
+            "length_units": unit}
+        if tracks_reply is not None:
+            out["tracks"] = tracks_reply
+        if geom["pattern"] == "interdigitated":
+            out["capacitance_pf"] = round(electrode_geom.idc_capacitance(
+                geom["gaps_between_fingers"] + 1, geom["overlap"] * 1e-3,
+                params.get("finger_width", 0.2) * 1e-3, params.get("gap", 0.2) * 1e-3,
+                dielectric_constant) * 1e12, 4)
+        if "squares" in geom:
+            out["squares"] = round(geom["squares"], 2)
+        return out
+
+    @mcp.tool()
     async def lib_create_standard_footprint(
         name: str,
         family: str,

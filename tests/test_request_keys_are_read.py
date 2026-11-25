@@ -65,6 +65,10 @@ INTENTIONALLY_UNREAD: dict[tuple[str, str], str] = {
     # StatusForm.ProcessSingleRequest (OwnTarget), not by App_RunProcess.
     ("application.run_process", "file_path"):
         "names the document an open acts on, for the ownership check",
+    # Read by PadArg(Src, IsOp, 'paste_top_enabled') in Lib_SetPadProperties,
+    # a helper whose key is an argument the scan cannot follow.
+    ("library.set_pad_properties", "paste_top_enabled"):
+        "read through PadArg, which takes the key as an argument",
 }
 
 _CASE_FN = re.compile(r"'([a-z_0-9]+)'\s*:\s*Result\s*:=\s*(\w+)\(")

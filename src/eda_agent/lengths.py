@@ -231,6 +231,7 @@ CONDITIONAL: dict[str, Callable[[dict], frozenset[str]]] = {
 #: arguments are left alone.
 SELF_CONVERTING = frozenset({
     "lib_add_footprint_arc", "lib_add_footprint_bodies", "lib_add_footprint_fills",
+    "lib_create_electrode",
     "lib_add_footprint_pad", "lib_add_footprint_pads", "lib_add_footprint_regions",
     "lib_add_footprint_text", "lib_add_footprint_track", "lib_add_footprint_tracks",
     "lib_add_footprint_via", "lib_add_footprint_vias", "lib_redraw_assembly",
