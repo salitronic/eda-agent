@@ -83,6 +83,79 @@ _GROUND_NAMES = {"GND", "GROUND", "VSS", "AGND", "PGND", "DGND", "EPGND"}
 _PAD_ROW = re.compile(r"\b(exposed|thermal|e-?pad|power ?pad|die ?pad|slug)\b", re.I)
 
 
+#: A span of pin numbers, "36-53", standing clear of letters and decimals.
+_RANGE = re.compile(r"(?<![A-Za-z0-9.])(\d{1,3})\s*[-\u2013]\s*(\d{1,3})" + _AFTER_NUMBER)
+#: A line that is pin numbers, spans and commas and nothing else.
+_LIST_ONLY = re.compile(r"\s*(?:\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?\s*[,;]?\s*)+")
+_NUMBER_THEN_COMMA = re.compile(r"(?<![A-Za-z0-9.])\d{1,3}\s*[,;]\s*$")
+_COMMA_THEN_NUMBER = re.compile(r"\s*[,;]\s*\d{1,3}" + _AFTER_NUMBER)
+#: The widest span of pins read as a list; a wider one is something else.
+_RANGE_SPAN = 256
+
+
+def _is_number_list(line: str) -> bool:
+    """More than one pin number: a comma, or a span. A number alone on its
+    line is a drawing's label or a wrapped row, read elsewhere."""
+    return bool(_LIST_ONLY.fullmatch(line)) and ("," in line or ";" in line
+                                                 or _RANGE.search(line) is not None)
+
+
+def _span(match: "re.Match[str]") -> list[str]:
+    first, last = int(match.group(1)), int(match.group(2))
+    if not 0 < last - first <= _RANGE_SPAN:
+        return []
+    return [str(n) for n in range(first, last + 1)]
+
+
+def _listed_rows(lines: list[str]) -> dict[str, list[str]]:
+    """Pins a row lists instead of printing one number: by number, the rows
+    that list it.
+
+    One name given to many pins (ground, no-connect) is printed once, its
+    number cell a list: "1, 2, 11, 14, 36-53". Two things then hide a pin
+    from the plain check. A span prints only its ends, so 37 to 52 are on
+    no line. And a long list wraps in its cell, the page text giving each
+    piece its own line under the name ("NC" / "4, 7, 9, 10," / "32-35"),
+    so those numbers and the name share no line.
+
+    A span on a line of running text counts only as part of a list, a
+    number and a comma beside it ("14,36-53"): "2-4 V" or "5 V, 13-16 mA"
+    in a description is not a list of pins.
+    """
+    out: dict[str, list[str]] = {}
+
+    def add(number: str, row: str) -> None:
+        rows = out.setdefault(number, [])
+        if row not in rows:
+            rows.append(row)
+
+    i = 0
+    while i < len(lines):
+        if i and _is_number_list(lines[i]) and not _is_number_list(lines[i - 1]):
+            end = i
+            while end < len(lines) and _is_number_list(lines[end]):
+                end += 1
+            # The row's first line holds the name; its numbers follow.
+            row = " ".join(lines[i - 1:end])
+            for line in lines[i:end]:
+                for m in _RANGE.finditer(line):
+                    for n in _span(m):
+                        add(n, row)
+                for n in re.findall(r"\d{1,3}", _RANGE.sub(" ", line)):
+                    add(n, row)
+            i = end
+            continue
+        line = lines[i]
+        for m in _RANGE.finditer(line):
+            # Part of a list of numbers: a number, then a comma, on one side.
+            if (_NUMBER_THEN_COMMA.search(line[:m.start()])
+                    or _COMMA_THEN_NUMBER.match(line[m.end():])):
+                for n in _span(m):
+                    add(n, line)
+        i += 1
+    return out
+
+
 def _tokens(lines: list[str]) -> list[tuple[str, str, int]]:
     """Every word of the table, in reading order: (as printed, as compared,
     line index)."""
@@ -403,7 +476,9 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
     such column per package. A pin passes when one line, or two lines
     together, print both its number and its name; when its name runs
     wrapped over a few lines of its cell with the number touching it; when
-    it shares one row with another pin, the two numbers in one cell; or,
+    it shares one row with another pin, the two numbers in one cell; when
+    its row lists many pins and it is inside a span ("36-53") or on a
+    wrapped line of that list; or,
     for one pin, when it is the exposed pad the table lists without a
     number (``exposed_pad`` in its entry of ``found``).
     """
@@ -465,6 +540,7 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
                 merged.setdefault(n.strip().rstrip(".").strip().upper(), []).append(
                     f"{n.strip()} {row}")
     tokens = _tokens(lines)
+    listed = _listed_rows(lines)
     pad_rows = _exposed_pad_rows([*lines, *wrapped])
     found, missing = [], []
     for pin in pins:
@@ -477,6 +553,11 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
                     if number and _number_in(number, ln) and _name_in(name, ln)), None)
         if hit is None:
             hit = _wrapped_hit(number, name, tokens, lines)
+        if hit is None:
+            # One of many pins its row lists: inside a span, or on a
+            # wrapped line of the list.
+            hit = next((row for row in listed.get(number, [])
+                        if _name_in(name, row)), None)
         if hit:
             found.append({"pin": number, "name": name, "row": hit[:120]})
             continue
