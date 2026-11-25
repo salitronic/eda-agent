@@ -2362,6 +2362,9 @@ def register_library_tools(mcp):
         body: str = "auto",
         invert_on_top: bool = False,
         datasheet: Optional[dict[str, Any]] = None,
+        pin_length: int = 200,
+        fill_color: int = 8454143,
+        border_color: int = 0,
     ) -> dict[str, Any]:
         """Create a complete IC symbol (body plus every pin) in one call.
         It brings the open SchLib forward itself and fits the new symbol.
@@ -2398,6 +2401,15 @@ def register_library_tools(mcp):
                 A table with a pin-number column per package also takes
                 ``package_column``, the package as the table heads its
                 column ("LQFP48"): only that column's numbers are read.
+            pin_length: rectangle only; pin length in mils, a multiple
+                of 100. Give the length the library's own ICs use, so
+                the new symbol matches them.
+            fill_color, border_color: rectangle only; the body's fill
+                and outline as Altium colour numbers (blue*65536 +
+                green*256 + red). The defaults are Altium's pale yellow
+                with a black outline; read a symbol already in the
+                library (obj_query on eRectangle: AreaColor, Color) and
+                give its values to keep the house style.
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
@@ -2432,8 +2444,14 @@ def register_library_tools(mcp):
 
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
+        for label, colour in (("fill_color", fill_color),
+                              ("border_color", border_color)):
+            if not 0 <= int(colour) <= 0xFFFFFF:
+                return {"ok": False, "reason":
+                        f"{label} must be an Altium colour number, 0 to 16777215"}
         try:
-            geom = generate_ic_symbol(left_pins, right_pins)
+            geom = generate_ic_symbol(left_pins, right_pins,
+                                      pin_length=int(pin_length))
         except ValueError as e:
             return {"ok": False, "reason": str(e)}
 
@@ -2463,8 +2481,8 @@ def register_library_tools(mcp):
             {
                 "x1": body["x1"], "y1": body["y1"],
                 "x2": body["x2"], "y2": body["y2"],
-                "fill_color": 8454143,
-                "border_color": 0,
+                "fill_color": int(fill_color),
+                "border_color": int(border_color),
             },
         )
 
