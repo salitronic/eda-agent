@@ -2530,6 +2530,14 @@ Var
     XCoords    : TStringList;  { X, Altium's coordinate, as integer-string }
     YCoords    : TStringList;  { Y, Altium's coordinate, as integer-string }
     DocIndices : TStringList;
+    { Sub-parts of one device share a designator. PartKeys holds the
+      library reference and design item of a part with more than one
+      sub-part ('' for any other), PartIds its sub-part, OldDes the
+      designator it arrived with. Groups holds "key|designator|,ids,"
+      for each device numbered so far, OldMap "key|old=new". }
+    PartKeys, PartIds, OldDes, Groups, OldMap : TStringList;
+    GroupIdx, PartN : Integer;
+    PartKey, PartId, OldText, Hit : String;
 
     { Set of modified docs, PreProcess/PostProcess/Invalidate are scoped to these only }
     TouchedDocs : TStringList;
@@ -2568,6 +2576,11 @@ Begin
     XCoords        := TStringList.Create;
     YCoords        := TStringList.Create;
     DocIndices     := TStringList.Create;
+    PartKeys       := TStringList.Create;
+    PartIds        := TStringList.Create;
+    OldDes         := TStringList.Create;
+    Groups         := TStringList.Create;
+    OldMap         := TStringList.Create;
     TouchedDocs    := TStringList.Create;
     PrefixCounters := TStringList.Create;
 
@@ -2653,6 +2666,16 @@ Begin
                             XCoords.Add(IntToStr(Comp.Location.X));
                             YCoords.Add(IntToStr(Comp.Location.Y));
                             DocIndices.Add(IntToStr(I));
+                            PartN := 0;
+                            Try PartN := Comp.PartCount; Except PartN := 0; End;
+                            { PartCount counts the shared part zero too. }
+                            PartKey := '';
+                            If PartN > 2 Then PartKey := Comp.LibReference + '/' + Comp.DesignItemId;
+                            PartKeys.Add(PartKey);
+                            PartId := '';
+                            Try PartId := IntToStr(Comp.CurrentPartID); Except PartId := ''; End;
+                            PartIds.Add(PartId);
+                            OldDes.Add(Comp.Designator.Text);
                         End;
                     Except
                     End;
@@ -2701,6 +2724,9 @@ Begin
                     TmpStr    := XCoords[J];      XCoords[J]    := XCoords[J+1];    XCoords[J+1]    := TmpStr;
                     TmpStr    := YCoords[J];      YCoords[J]    := YCoords[J+1];    YCoords[J+1]    := TmpStr;
                     TmpStr    := DocIndices[J];   DocIndices[J] := DocIndices[J+1]; DocIndices[J+1] := TmpStr;
+                    TmpStr    := PartKeys[J];     PartKeys[J]   := PartKeys[J+1];   PartKeys[J+1]   := TmpStr;
+                    TmpStr    := PartIds[J];      PartIds[J]    := PartIds[J+1];    PartIds[J+1]    := TmpStr;
+                    TmpStr    := OldDes[J];       OldDes[J]     := OldDes[J+1];     OldDes[J+1]     := TmpStr;
                 End;
             End;
         End;
@@ -2716,6 +2742,71 @@ Begin
         For I := 0 To Total - 1 Do
         Begin
             TmpPrefix := Prefixes[I];
+            PartKey := PartKeys[I];
+            PartId := PartIds[I];
+            OldText := OldDes[I];
+            { A sub-part joins the device it belongs to: one that shared its
+              old designator, or, for one still at "<prefix>?", the first
+              device of its kind numbered so far that lacks its sub-part. }
+            Hit := '';
+            If PartKey <> '' Then
+            Begin
+                If Copy(OldText, Length(OldText), 1) <> '?' Then
+                Begin
+                    TmpStr := PartKey + '|' + OldText + '=';
+                    For J := 0 To OldMap.Count - 1 Do
+                        If Copy(OldMap[J], 1, Length(TmpStr)) = TmpStr Then
+                            Hit := Copy(OldMap[J], Length(TmpStr) + 1, Length(OldMap[J]));
+                    { The device's own group takes the sub-part, unless it
+                      holds that sub-part already: then it is a device of
+                      its own and gets a number below. }
+                    If Hit <> '' Then
+                    Begin
+                        TmpStr := PartKey + '|' + Hit + '|';
+                        For J := 0 To Groups.Count - 1 Do
+                            If Copy(Groups[J], 1, Length(TmpStr)) = TmpStr Then
+                            Begin
+                                If Pos(',' + PartId + ',', Groups[J]) > 0 Then
+                                    Hit := ''
+                                Else
+                                    Groups[J] := Groups[J] + PartId + ',';
+                            End;
+                    End;
+                End
+                Else
+                Begin
+                    For J := 0 To Groups.Count - 1 Do
+                    Begin
+                        TmpStr := Groups[J];
+                        If (Hit = '') And (Copy(TmpStr, 1, Length(PartKey) + 1) = PartKey + '|') Then
+                        Begin
+                            TmpStr := Copy(TmpStr, Length(PartKey) + 2, Length(TmpStr));
+                            N := Pos('|', TmpStr);
+                            If Pos(',' + PartId + ',', Copy(TmpStr, N, Length(TmpStr))) = 0 Then
+                            Begin
+                                Hit := Copy(TmpStr, 1, N - 1);
+                                Groups[J] := Groups[J] + PartId + ',';
+                            End;
+                        End;
+                    End;
+                End;
+            End;
+            If Hit <> '' Then
+            Begin
+                Try
+                    Comp := CompList.Items[I];
+                    If Comp <> Nil Then
+                    Begin
+                        SchBeginModify(Comp);
+                        Comp.Designator.Text := Hit;
+                        SchEndModify(Comp);
+                        Inc(RenameCount);
+                    End;
+                Except
+                    NoteWriteFailed('annotate: write a designator');
+                End;
+                Continue;
+            End;
             PrefixIdx := -1;
             For J := 0 To PrefixCounters.Count - 1 Do
             Begin
@@ -2742,6 +2833,12 @@ Begin
             End;
 
             NewDesText := TmpPrefix + IntToStr(CounterVal);
+            If PartKey <> '' Then
+            Begin
+                Groups.Add(PartKey + '|' + NewDesText + '|,' + PartId + ',');
+                If Copy(OldText, Length(OldText), 1) <> '?' Then
+                    OldMap.Add(PartKey + '|' + OldText + '=' + NewDesText);
+            End;
             Try
                 Comp := CompList.Items[I];
                 If Comp <> Nil Then
@@ -2782,6 +2879,11 @@ Begin
         DocIndices.Free;
         TouchedDocs.Free;
         PrefixCounters.Free;
+        PartKeys.Free;
+        PartIds.Free;
+        OldDes.Free;
+        Groups.Free;
+        OldMap.Free;
     End;
 
     Result := BuildSuccessResponse(RequestId,
