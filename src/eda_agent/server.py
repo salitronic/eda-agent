@@ -923,8 +923,12 @@ def _start_again(command: list[str]) -> int:
     if os.name != "nt":
         os.execv(command[0], command)
     import subprocess
+
+    from .noconsole import no_window
     try:
-        return subprocess.call(command)
+        # No stdin, stdout or stderr given: the child reads and writes the
+        # client's own pipes.
+        return subprocess.call(command, **no_window())
     except KeyboardInterrupt:
         return 130
 
