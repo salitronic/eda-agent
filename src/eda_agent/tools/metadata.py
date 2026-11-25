@@ -159,7 +159,8 @@ _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
 # the package checks compute over a package description and never reach an
 # editor, so they work with nothing running.
 _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
-                              "footprint_render_package"})
+                              "footprint_render_package",
+                              "footprint_compare_pinout"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
@@ -316,6 +317,7 @@ INTERACTION_OVERRIDES = {
     "altium365_get_component": READONLY, "altium365_read_object": READONLY,
     "altium365_describe_type": READONLY, "altium365_run_query": READONLY,
     "footprint_read_ipc_name": READONLY, "lib_verify_ipc_names": READONLY,
+    "footprint_compare_pinout": READONLY,
     "lib_check_naming": READONLY, "lib_make_name": READONLY,
     "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
     "design_read_rules_export": READONLY, "design_phase_gate": READONLY,

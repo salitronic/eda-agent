@@ -319,6 +319,63 @@ def register_footprint_tools(mcp):
         return result
 
     @mcp.tool()
+    async def footprint_compare_pinout(path: str, page: int,
+                                       pads: list[dict[str, Any]],
+                                       region: Optional[list[float]] = None,
+                                       view: str = "top",
+                                       dpi: int = 300) -> dict[str, Any]:
+        """Check that every pad NUMBER sits where the datasheet's
+        pin-layout figure puts that pin.
+
+        The pin table ties a number to a name and the land-pattern
+        drawing ties the lands to their sizes and gaps; neither ties a
+        pad's number to its position, and a land-pattern drawing often
+        labels pin 1 only. A footprint whose pins on one side are
+        numbered the other way round passes both. The pin-layout figure
+        prints every pin's number beside the pin: its labels are fitted
+        onto the pads and every pad's nearest label must be its own
+        number.
+
+        Args:
+            path: the datasheet PDF.
+            page: the page of the pin-layout figure (the package seen
+                from above or below with every pin numbered), not the
+                land-pattern drawing.
+            pads: the footprint as built, each ``{designator, x, y}``
+                seen from above with y up (lib_get_pad_geometry). Pads
+                sharing a number are checked as one.
+            region: ``[left, top, right, bottom]`` as fractions of the
+                page, the figure alone; leave out for the whole page.
+            view: "top" or "bottom", the side the figure is drawn from.
+                SAY WHICH: datasheets draw both, and a bottom view read
+                as a top view mirrors the whole footprint.
+            dpi: resolution of the picture written for you to look at.
+
+        Returns:
+            ``ok`` (every pad has its own number nearest to it and the
+            figure fits the footprint the right way round), ``checked``,
+            ``mismatches`` (``pad``, ``figure_has``), ``unlabelled`` (pads
+            with no number near them: NOT checked, and ``ok`` is false),
+            ``fit`` (how many labels placed the figure, how many were left
+            out as not following the rest, the largest distance from a pad
+            to its label in mm), ``png`` (the figure, to look at) and
+            ``reason``. A figure that is a picture with no text is
+            reported, not passed.
+        """
+        from eda_agent.config import get_config
+        from eda_agent.design.datasheet_render import render_region
+        from eda_agent.design.pinout_fit import check_pinout
+
+        out = get_config().workspace_dir / "renders" / f"{Path(path).stem}_p{int(page)}_pinout.png"
+        fig = await asyncio.to_thread(render_region, path, page, region, dpi, str(out))
+        if not fig.get("ok"):
+            return fig
+        result = check_pinout(pads, fig.get("labels", []), view)
+        result["png"] = fig.get("png")
+        result["page"] = int(page)
+        return result
+
+    @mcp.tool()
     async def footprint_check_package(package: Any) -> dict[str, Any]:
         """Check a package description for numbers that cannot be right.
 
