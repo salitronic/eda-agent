@@ -118,8 +118,11 @@ def test_security_md_names_variables_that_exist():
             f"{var} is enforced in code but SECURITY.md does not mention "
             f"it, so nobody knows the capability can be turned off")
 
+    source = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                       for p in (REPO_ROOT / "src" / "eda_agent").rglob("*.py"))
     for claimed in re.findall(r"`(EDA_AGENT_[A-Z_]+)", text):
-        assert claimed in {READONLY_ENV, UI_AUTOMATION_ENV}, (
+        read = re.search(r"environ(\.get)?[(\[]\s*[\"']" + claimed + r"[\"']", source)
+        assert claimed in {READONLY_ENV, UI_AUTOMATION_ENV} or read, (
             f"SECURITY.md documents {claimed}, which no code reads. A "
             f"reader setting it would believe something was off.")
 

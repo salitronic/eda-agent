@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import PureWindowsPath
 from typing import Any, Optional
 
 from . import altium_side, checks, footprints, hierarchy, importer, schematic, variants
@@ -24,9 +25,51 @@ from .tree import find, first, read, write
 _INSTALL_GLOB = r"C:\Program Files\KiCad\*\bin\kicad-cli.exe"
 
 
+#: The names a caller-given kicad-cli may have.
+_CLI_NAMES = ("kicad-cli.exe", "kicad-cli")
+
+
+def _on_network(path: str) -> bool:
+    """A UNC path, or a drive Windows reports as remote (a mapped share)."""
+    if path.startswith(("\\\\", "//")):
+        return True
+    drive = PureWindowsPath(path).drive
+    if sys.platform != "win32" or not drive or not drive.endswith(":"):
+        return False
+    import ctypes
+    return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4    # DRIVE_REMOTE
+
+
+def kicad_cli_refusal(path: str) -> str:
+    """Why a caller-given kicad-cli path may not run; empty when it may.
+
+    The file is run, and kicad.exe and python.exe beside it are run too, so
+    it must be a kicad-cli on a local drive, also after links are followed.
+    """
+    def refused(each: str) -> str:
+        if _on_network(each):
+            return "kicad_cli must be on a local drive, not a network path"
+        if os.path.basename(each).lower() not in _CLI_NAMES:
+            return f"kicad_cli must be a kicad-cli.exe, not {os.path.basename(each)!r}"
+        return ""
+
+    if not path:
+        return ""
+    if refused(path):              # before realpath, which would touch a share
+        return refused(path)
+    real = os.path.realpath(path)
+    if refused(real):
+        return refused(real)
+    if not os.path.isfile(real):
+        return f"kicad_cli {path} does not exist"
+    return ""
+
+
 def find_kicad_cli(explicit: str = "") -> str:
-    if explicit and os.path.isfile(explicit):
-        return explicit
+    """The caller's kicad-cli when it passes ``kicad_cli_refusal``, else the
+    newest KiCad installed; empty when there is neither."""
+    if explicit:
+        return "" if kicad_cli_refusal(explicit) else os.path.realpath(explicit)
 
     def version(path: str) -> tuple:
         m = re.search(r"KiCad\\([\d.]+)\\", path)
@@ -232,6 +275,9 @@ def convert(prjpcb: str, out_dir: str, altium: Optional[dict[str, Any]] = None,
     """
     report: dict[str, Any] = {"ok": False, "out_dir": out_dir, "steps": {}}
     steps = report["steps"]
+    if kicad_cli_refusal(kicad_cli):
+        report["reason"] = kicad_cli_refusal(kicad_cli)
+        return report
     cli = find_kicad_cli(kicad_cli)
     if not cli:
         report["reason"] = "kicad-cli was not found; pass kicad_cli"

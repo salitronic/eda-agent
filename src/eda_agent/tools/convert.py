@@ -256,21 +256,23 @@ def register_convert_tools(mcp):
             dry_run: Only plan (default): step counts, what is not
                 carried, and each sheet's template checked against KiCad's
                 own pin positions (``sheets``), with Altium untouched.
-            kicad_cli: kicad-cli.exe for the netlist check; empty = the
-                newest KiCad installed.
+            kicad_cli: kicad-cli.exe for the netlist check, on a local
+                drive; empty = the newest KiCad installed.
 
         Returns:
             ``ok``, ``project`` (the .PrjPcb), ``stages`` (each with
             ``done``/``of`` and the step that failed, if one did),
             ``sheets``, ``warnings`` and ``nets``.
         """
-        from ..convert.altium_kicad.pipeline import find_kicad_cli
+        from ..convert.altium_kicad.pipeline import find_kicad_cli, kicad_cli_refusal
         from ..convert.kicad_altium import plan as kplan
         from ..convert.kicad_altium.read import read_project
         from ..convert.kicad_altium.run import call, failed, run_steps
         from ..core.kicad_netlist import get_schematic_netlist
         from ..design import sch_template as st
 
+        if kicad_cli_refusal(kicad_cli):
+            return {"ok": False, "reason": kicad_cli_refusal(kicad_cli)}
         try:
             project = await asyncio.to_thread(read_project, kicad_project)
         except (ValueError, OSError) as exc:
@@ -419,7 +421,9 @@ def register_convert_tools(mcp):
             output_dir: An empty folder for the KiCad project.
             project_path: The .PrjPcb; empty = the focused project.
             board_path: Its .PcbDoc; empty = the project's only board.
-            kicad_cli: kicad-cli.exe; empty = the newest KiCad installed.
+            kicad_cli: kicad-cli.exe on a local drive (kicad.exe and
+                python.exe beside it are run too); empty = the newest
+                KiCad installed.
             remove_title_block: Take out what each sheet's Altium template
                 drew (border, title block, logo), found by the template
                 objects' own boxes, so what the user drew stays; KiCad
@@ -433,6 +437,8 @@ def register_convert_tools(mcp):
         """
         from ..convert.altium_kicad import altium_side, pipeline
 
+        if pipeline.kicad_cli_refusal(kicad_cli):
+            return {"ok": False, "reason": pipeline.kicad_cli_refusal(kicad_cli)}
         bridge = get_bridge()
         project_path, board_path = await _project_and_board(bridge, project_path, board_path)
         if not project_path or not os.path.isfile(project_path):

@@ -517,6 +517,12 @@ def register_sim_tools(mcp):
             return {"success": False, "error": "the deck has no analysis (.TRAN, .AC, .DC or .OP)"}
         if text.splitlines()[-1].strip().upper() != ".END":
             text += "\n.END"
+        from pathlib import Path
+
+        from ..sim.deck_runner import unsafe_control
+        refused = unsafe_control(text, Path(file_path).parent)
+        if refused:
+            return {"success": False, "error": "the deck was not run", "problems": refused}
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8", newline="\r\n") as fh:
             fh.write(text + "\n")

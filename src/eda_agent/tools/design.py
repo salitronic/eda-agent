@@ -1834,7 +1834,10 @@ def register_design_tools(mcp) -> None:
 
         The deck is screened first: .ferret is refused, and .include/.lib
         may only name a bare file or one in the workspace or
-        EDA_AGENT_SPICE_MODEL_DIRS. An IC needs its manufacturer's model
+        EDA_AGENT_SPICE_MODEL_DIRS, screened the same way. A .control
+        block may use simulation, vector and output commands only (no
+        shell, source or exec), writing files in the run folder only.
+        An IC needs its manufacturer's model
         (SPICE_MODEL_RULES); this simulates whatever it is given. LTspice
         refuses a .control block, which is ngspice's.
 

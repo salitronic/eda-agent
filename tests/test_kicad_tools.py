@@ -500,12 +500,23 @@ def test_kicad_run_spice_no_ngspice(monkeypatch, kicad_native_mcp):
 
 
 def test_kicad_run_spice_runs(monkeypatch, kicad_native_mcp, tmp_path):
-    import eda_agent.tools.kicad as k
+    import os
     import shutil
+
+    import eda_agent.tools.kicad as k
     calls = []
 
-    async def fake_run_cli(cli, args, timeout=600.0):
-        calls.append((cli, args))
+    async def fake_run_cli(cli, args, timeout=600.0, cwd=None):
+        calls.append((cli, args, cwd))
+        if cli.endswith("ngspice.exe"):
+            # ngspice starts in the folder that holds the netlist, and that
+            # folder holds nothing else, so no .spiceinit was waiting there.
+            assert cwd and os.path.dirname(args[-1]) == cwd
+            assert os.listdir(cwd) == ["deck.cir"]
+        else:
+            out = args[args.index("--output") + 1]
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write("t\nR1 1 0 1k\nV1 1 0 1\n.op\n.end\n")
         return {"returncode": 0, "stdout": "sim ok", "stderr": ""}
 
     class _SchBridge(_ReadBridge):
@@ -520,8 +531,12 @@ def test_kicad_run_spice_runs(monkeypatch, kicad_native_mcp, tmp_path):
     r = _call(kicad_native_mcp, "kicad_run_spice")
     assert r["ok"] is True and "sim ok" in r["output"]
     # Two runs: export the spice netlist, then ngspice batch.
-    assert any("spice" in a for _, a in calls)
-    assert any(c.endswith("ngspice.exe") for c, _ in calls)
+    assert any("spice" in a for _, a, _ in calls)
+    sim = [cwd for c, _, cwd in calls if c.endswith("ngspice.exe")]
+    assert sim and not os.path.exists(sim[0]), "the run folder outlived the run"
+    _call(kicad_native_mcp, "kicad_run_spice")
+    again = [cwd for c, _, cwd in calls if c.endswith("ngspice.exe")]
+    assert again[0] != again[1], "two runs shared a folder"
 
 
 def test_kicad_cli_escape_hatch(monkeypatch, kicad_native_mcp):

@@ -1148,22 +1148,34 @@ def register_kicad_tools(mcp) -> None:
             sch = br.sch_file_path()
         except (KiCadNotReachableError, KiCadApiError) as e:
             return {"ok": False, "reason": str(e)}
-        fd, cir = tempfile.mkstemp(suffix=".cir", prefix="eda_spice_")
-        os.close(fd)
+        # A folder of its own for each run, which ngspice also starts in: what
+        # the netlist writes stays in it, and a .spiceinit written there is
+        # never read, because nothing starts in this folder again.
+        run_folder = tempfile.mkdtemp(prefix="eda_spice_")
+        cir = os.path.join(run_folder, "deck.cir")
         try:
             exp = await run_cli(cli, ["sch", "export", "netlist", "--format",
                                      "spice", "--output", cir, sch])
             if exp["returncode"] != 0:
                 return {"ok": False, "reason": exp.get("stderr")
                         or "SPICE netlist export failed"}
-            result = await run_cli(ng, ["-b", cir])
+            # Text directives on the schematic land in the netlist, so it is
+            # screened like any deck before ngspice sees it.
+            from pathlib import Path
+
+            from ..sim.deck_runner import model_folders, unsafe_lines
+            with open(cir, encoding="utf-8", errors="replace") as fh:
+                deck = fh.read()
+            refused = unsafe_lines(deck, Path(run_folder),
+                                   model_folders(Path(sch).parent))
+            if refused:
+                return {"ok": False, "reason": "the netlist was not run",
+                        "problems": refused}
+            result = await run_cli(ng, ["-b", cir], cwd=run_folder)
         except Exception as e:
             return {"ok": False, "reason": str(e)}
         finally:
-            try:
-                os.remove(cir)
-            except OSError:
-                pass
+            shutil.rmtree(run_folder, ignore_errors=True)
         reply = {"ok": result["returncode"] == 0,
                  "output": result.get("stdout", "")[:6000],
                  "errors": result.get("stderr", "")[:2000]}

@@ -18,7 +18,11 @@ decoded by inspection.
 Decks may come from a model, so each is screened first: ``.ferret``
 (LTspice's downloader) is refused, and ``.include``/``.lib`` may name a
 bare file or one inside the run folder, the workspace, or a folder in
-EDA_AGENT_SPICE_MODEL_DIRS. Every run has its own folder and a time limit.
+EDA_AGENT_SPICE_MODEL_DIRS; those files are screened the same way. A
+``.control`` block may use only the commands in ``_CONTROL_COMMANDS``
+(ngspice runs ``shell`` in batch mode, so it and every command not listed
+are refused), and its files and redirects stay in the run folder. Every
+run has its own folder and a time limit.
 """
 from __future__ import annotations
 
@@ -26,7 +30,6 @@ import math
 import os
 import re
 import secrets
-import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -72,20 +75,20 @@ def model_folders(workspace: Path) -> list[Path]:
     return [workspace] + [Path(p) for p in listed.split(os.pathsep) if p.strip()]
 
 
+_WORD = re.compile(r"\"[^\"]*\"?|'[^']*'?|\S+")
+
+
 def _words(line: str) -> list[str]:
-    """The line's words, quotes taken off; backslashes kept (Windows paths)."""
-    try:
-        words = shlex.split(line, posix=False)
-    except ValueError:
-        words = line.split()
+    """The line's words, quotes taken off; every backslash kept (Windows and
+    UNC paths)."""
     return [w[1:-1] if len(w) > 1 and w[0] == w[-1] and w[0] in "\"'" else w
-            for w in words]
+            for w in _WORD.findall(line)]
 
 
 def _leaves_folder(name: str) -> bool:
-    """Absolute, on a drive, or climbing with '..'."""
+    """From a root or a drive, or climbing with '..'."""
     win = PureWindowsPath(name)
-    return Path(name).is_absolute() or win.is_absolute() or bool(win.drive) \
+    return bool(Path(name).anchor) or bool(win.anchor) \
         or ".." in Path(name).parts or ".." in win.parts
 
 
@@ -97,28 +100,146 @@ def _within(path: Path, folders: list[Path]) -> bool:
         return False
 
 
-def unsafe_lines(deck: str, run_folder: Path, folders: list[Path]) -> list[str]:
-    """Why the deck may not run here; empty when it may."""
-    found = ["the deck contains a NUL byte"] if "\x00" in deck else []
+#: ngspice control commands a deck's own .control block may use: analyses,
+#: vectors, variables, measurements, printing and flow. Anything else (shell,
+#: source, exec, codemodel, cd, edit, load, gnuplot, alias, circbyline ...)
+#: is refused, so a new or unknown command is refused too.
+_CONTROL_COMMANDS = frozenset("""
+    ac dc op tran noise pz sens tf disto pss sp run reset resume stop step
+    alter altermod remcirc save iplot delete trace status where
+    let unlet compose linearize setplot setscale settype deftype destroy cutout
+    fft fourier spec psd meas measure transpose interpolate
+    set unset option options setcs strcmp
+    print echo display show showmod listing rusage version inventory sysinfo
+    devhelp plot asciiplot write wrdata wrs2p hardcopy eprint eprvcd
+    if else end while repeat dowhile foreach break continue label goto
+    quit exit
+""".split())
+
+#: Control commands whose first argument is a file they write.
+_CONTROL_WRITES = frozenset({"write", "wrdata", "wrs2p", "hardcopy"})
+
+_COMMAND = re.compile(r"[A-Za-z_][\w.]*")
+_REDIRECT = re.compile(r"(>>?|<)\s*(\S+)")
+
+#: How deep .include files are followed when they are screened.
+_INCLUDE_DEPTH = 8
+
+
+def _bad_file_name(name: str) -> str:
+    """Why a file name in a control command may not be used; empty when it may."""
+    if "$" in name or "`" in name:
+        return "is built from a variable"
+    if _leaves_folder(name):
+        return "is outside the run folder"
+    return ""
+
+
+def _control_problems(line: str) -> list[str]:
+    """Why one .control line may not run; empty when it may."""
+    found = []
+    for part in line.split(";"):
+        part = part.strip()
+        if not part or part[0] in "*#":
+            continue
+        head = _COMMAND.match(part)
+        name = head.group(0).lower() if head else part.split()[0]
+        if name not in _CONTROL_COMMANDS:
+            found.append(f"{name} is not a simulation or output command and does not run here")
+            continue
+        for _, target in _REDIRECT.findall(part):
+            why = _bad_file_name(target.strip("\"'"))
+            if why:
+                found.append(f"the redirect to {target} {why}")
+        words = _words(part)
+        if name in _CONTROL_WRITES and len(words) > 1:
+            why = _bad_file_name(words[1])
+            if why:
+                found.append(f"{name} {words[1]} {why}")
+    return found
+
+
+def _on_share(name: str) -> bool:
+    return name.startswith(("\\\\", "//"))
+
+
+def _screen(deck: str, base: Path, allowed: Optional[list[Path]], label: str,
+            seen: set, depth: int) -> list[str]:
+    """``allowed`` None: any local include, screened all the same."""
+    found = [f"{label}contains a NUL byte"] if "\x00" in deck else []
+    in_control = False
     for number, line in enumerate(deck.splitlines(), 1):
-        words = _words(line.strip())
+        where_line = f"{label}line {number}"
+        text = line.strip()
+        words = _words(text)
         if not words:
             continue
         directive = words[0].lower()
+        if directive in (".control", ".exec"):
+            in_control = True
+            continue
+        if directive == ".endc":
+            in_control = False
+            continue
+        if in_control:
+            found += [f"{where_line}: {p}" for p in _control_problems(text)]
+            continue
         if directive == ".ferret":
-            found.append(f"line {number}: .ferret downloads files and does not run here")
+            found.append(f"{where_line}: .ferret downloads files and does not run here")
         elif directive in _READS_FILE and len(words) > 1:
             target = words[1]
-            if not _leaves_folder(target):
-                continue          # a plain name: the run folder or the simulator's library
-            where = Path(target) if Path(target).is_absolute() else run_folder / target
-            if not _within(where, [run_folder, *folders]):
-                found.append(f"line {number}: {directive} {target} is outside the workspace "
+            if _on_share(target):
+                found.append(f"{where_line}: {directive} {target} is on a network share")
+                continue
+            path = Path(target) if Path(target).is_absolute() else base / target
+            if allowed is not None and _leaves_folder(target) and not _within(path, allowed):
+                found.append(f"{where_line}: {directive} {target} is outside the workspace "
                              "and EDA_AGENT_SPICE_MODEL_DIRS")
+                continue
+            # A plain name that is not there is the simulator's own library.
+            found += _screen_file(path, allowed, seen, depth)
         elif directive in _WRITES_FILE:
             if any(_leaves_folder(w) for w in words[1:] if "." in w or "/" in w or "\\" in w):
-                found.append(f"line {number}: {directive} writes outside the run folder")
+                found.append(f"{where_line}: {directive} writes outside the run folder")
     return found
+
+
+def _screen_file(path: Path, allowed: Optional[list[Path]], seen: set,
+                 depth: int) -> list[str]:
+    """An included file, screened like the deck."""
+    try:
+        if not path.is_file() or (allowed is not None and not _within(path, allowed)):
+            return []
+        key = path.resolve()
+    except OSError:
+        return []
+    if key in seen:
+        return []
+    seen.add(key)
+    if depth >= _INCLUDE_DEPTH:
+        return [f"{path.name}: includes go deeper than {_INCLUDE_DEPTH} files"]
+    try:
+        text = key.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"{path.name}: cannot be read to screen it ({exc})"]
+    return _screen(text, key.parent, allowed, f"{path.name} ", seen, depth + 1)
+
+
+def unsafe_lines(deck: str, run_folder: Path, folders: list[Path]) -> list[str]:
+    """Why the deck may not run here; empty when it may.
+
+    Files it includes from the run folder, the workspace or a model folder
+    are screened the same way, and a .control block may use only the
+    commands in ``_CONTROL_COMMANDS``, writing only inside the run folder.
+    """
+    return _screen(deck, run_folder, [run_folder, *folders], "", set(), 0)
+
+
+def unsafe_control(deck: str, base: Path) -> list[str]:
+    """``unsafe_lines`` without confining includes to our folders: for decks
+    built here around models the caller names. Every .control block, in
+    the deck and in what it includes, is still screened."""
+    return _screen(deck, base, None, "", set(), 0)
 
 
 def _brings_control(deck: str) -> bool:

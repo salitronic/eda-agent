@@ -23,12 +23,16 @@ _CLI_TIMEOUT = 600.0
 
 
 async def run_cli(cli_path: str, args: list[str],
-                  timeout: float = _CLI_TIMEOUT) -> dict[str, Any]:
-    """Run ``kicad-cli <args>`` and return exit code, stdout and stderr."""
+                  timeout: float = _CLI_TIMEOUT,
+                  cwd: Optional[str] = None) -> dict[str, Any]:
+    """Run ``kicad-cli <args>`` and return exit code, stdout and stderr.
+
+    ``cwd`` is the folder the program starts in; None keeps this process's.
+    """
     if not os.path.exists(cli_path):
         raise RuntimeError(f"kicad-cli not found at {cli_path}")
     proc = await asyncio.create_subprocess_exec(
-        cli_path, *args,
+        cli_path, *args, cwd=cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         **no_window())
     try:

@@ -137,6 +137,10 @@ def run_deck(deck: str, outputs: tuple[str, ...] = (), timeout: float = 120,
     if not exe:
         return {"ok": False, "reason": "ngspice is not installed",
                 "install_offer": INSTALL_OFFERS["ngspice"]}
+    from .deck_runner import unsafe_control     # it imports this module
+    refused = unsafe_control(deck, Path(tempfile.gettempdir()))
+    if refused:
+        return {"ok": False, "reason": "the deck was not run", "problems": refused}
     with tempfile.TemporaryDirectory(prefix="eda_ngspice_") as tmp:
         (Path(tmp) / "deck.cir").write_text(deck, encoding="utf-8")
         try:

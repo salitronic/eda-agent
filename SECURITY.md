@@ -84,7 +84,20 @@ What that text can reach in turn is bounded deliberately:
   script code inside Altium, which would turn any text read out of a
   design file into executable input. Every other process still runs.
 - `kicad_cli` passes arguments only to `kicad-cli`; it cannot invoke
-  another program.
+  another program. `proj_import_from_kicad` and `proj_convert_to_kicad`
+  take a `kicad_cli` path and run it, and `kicad.exe` and `python.exe`
+  beside it, so they accept only a file named `kicad-cli.exe` on a local
+  drive, also after links are followed. A UNC path or a mapped network
+  drive is refused.
+- `design_simulate_deck` screens a deck before it runs: `.ferret` is
+  refused; `.include`/`.lib` must name a bare file or one inside the run
+  folder, the workspace or `EDA_AGENT_SPICE_MODEL_DIRS`, and such files
+  are screened the same way; files are written only inside the run
+  folder, which is new for every run and is where ngspice starts, so a
+  `.spiceinit` a deck writes there is never read. A deck's own
+  `.control` block may use only simulation, vector and output commands,
+  so `shell`, `source`, `exec`, `codemodel`, `cd`, `edit` and every
+  command not on that list are refused.
 
 **The real control is that a human is watching Altium while the agent
 drives it.** Nothing here makes an MCP server with write tools safe
