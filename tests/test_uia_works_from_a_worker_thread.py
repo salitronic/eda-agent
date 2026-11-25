@@ -39,4 +39,7 @@ def test_a_worker_thread_sees_what_the_main_thread_sees():
         worker = pool.submit(uia.text_of, hwnd).result()
     main = uia.text_of(hwnd)
     assert main, "the taskbar shows no UIA text even on the main thread"
-    assert worker == main
+    # The clock can turn over between the two reads.
+    def steady(texts):
+        return [t for t in texts if not str(t).startswith("Clock")]
+    assert steady(worker) == steady(main)
