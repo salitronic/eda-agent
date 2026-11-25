@@ -298,6 +298,21 @@ RULE_ARC_WIDTH = LineRule(
     description="IPCB_Arc has no Width; read Arc.LineWidth instead.",
 )
 
+# Location and Corner are records returned by value. A field write through the
+# property changes a temporary and is discarded: the call compiles, runs and
+# reports success, and the object stays at 0,0. Lib_AddPin did this (every pin
+# of a new symbol at the origin, seen on AD23 2026-11-25); Lib_AddSymbolLine had
+# been fixed for the same reason earlier.
+RULE_RECORD_FIELD_WRITE = LineRule(
+    name="record-property-field-write",
+    pattern=re.compile(r"\.(Location|Corner)\.(X|Y)\s*:=", re.IGNORECASE),
+    severity="error",
+    memory="delphiscript_interface_narrowing.md",
+    description=(
+        "Obj.Location.X := v writes to a by-value copy and is discarded; use "
+        "Loc := Obj.Location; Loc.X := v; Obj.Location := Loc."),
+)
+
 # Pascal binds Or, And and Xor tighter than =, <> and the other comparisons, so
 # `A = 'x' Or B = 'y'` reads as `A = ('x' Or B) = 'y'`, which is a type error
 # or a wrong test, never what was meant. Every comparison beside one has to be
@@ -570,6 +585,7 @@ LINE_RULES = [
     RULE_FOOTPRINT_NAME_WRITE,
     RULE_RULE_PRIORITY_WRITE,
     RULE_ARC_WIDTH,
+    RULE_RECORD_FIELD_WRITE,
     RULE_PROBE_TEXT_WRITE,
     RULE_KNOWN_WRONG_E_IDENT,
     RULE_KNOWN_WRONG_METHOD,
