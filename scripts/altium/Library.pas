@@ -1164,6 +1164,7 @@ Var
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Pin : ISch_Pin;
+    Loc : TLocation;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     Name := ExtractJsonValue(Params, 'name');
@@ -1193,8 +1194,13 @@ Begin
     Begin
         Pin.Designator := Designator;
         Pin.Name := Name;
-        Pin.Location.X := MilsToCoordF(X);
-        Pin.Location.Y := MilsToCoordF(Y);
+        { Read-modify-write, as Lib_AddSymbolLine does: Location is a   }
+        { record returned by value, so `Pin.Location.X := v` changes a  }
+        { copy and the pin stays at 0,0 while the call reports success. }
+        Loc := Pin.Location;
+        Loc.X := MilsToCoordF(X);
+        Loc.Y := MilsToCoordF(Y);
+        Pin.Location := Loc;
         Pin.PinLength := MilsToCoordF(Length);
         Pin.Orientation := Rotation Div 90;
         Pin.IsHidden := Hidden;
