@@ -146,6 +146,7 @@ NOT_LENGTHS: dict[str, frozenset[str]] = {
 
 #: Names outside LENGTH_KEYS that are lengths in one tool.
 ADDED: dict[str, frozenset[str]] = {
+    "footprint_check_3d_model": frozenset({"tolerance"}),
     "lib_add_footprint_text": frozenset({"size"}),
     "lib_add_footprint_via": frozenset({"size"}),
     "lib_add_footprint_vias": frozenset({"size"}),
