@@ -1106,6 +1106,255 @@ Begin
     End;
 End;
 
+{ A Clearance rule's minimum clearances by object kind: the grid under     }
+{ "Minimum Clearance" in the Rules editor. GetClearance and SetClearance   }
+{ take two primitives and answer for their kinds; given kind numbers they  }
+{ answer 0 and write nothing. So each cell is reached with a pair of       }
+{ primitives made for the purpose, never added to the board and destroyed  }
+{ afterwards. A bare hole has no primitive of its own, so the Hole row is  }
+{ not offered. Lengths are mils.                                           }
+Function ClearanceKindName(I : Integer) : String;
+Begin
+    Result := '';
+    If I = 0 Then Result := 'Track'
+    Else If I = 1 Then Result := 'Arc'
+    Else If I = 2 Then Result := 'SMDPad'
+    Else If I = 3 Then Result := 'THPad'
+    Else If I = 4 Then Result := 'Via'
+    Else If I = 5 Then Result := 'Fill'
+    Else If I = 6 Then Result := 'Poly'
+    Else If I = 7 Then Result := 'Region'
+    Else If I = 8 Then Result := 'Text';
+End;
+
+Function ClearanceKindByName(Name : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := -1;
+    For I := 0 To 8 Do
+        If LowerCase(ClearanceKindName(I)) = LowerCase(Name) Then Result := I;
+End;
+
+{ A primitive of kind I on the top layer (a through-hole pad on the multi }
+{ layer), on no board.                                                    }
+Function ClearanceProbe(I : Integer) : IPCB_Primitive;
+Var
+    Pad : IPCB_Pad;
+    P : IPCB_Primitive;
+Begin
+    P := Nil;
+    Try
+        If I = 0 Then P := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default)
+        Else If I = 1 Then P := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default)
+        Else If (I = 2) Or (I = 3) Then
+        Begin
+            Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+            If I = 2 Then
+            Begin
+                Pad.Layer := eTopLayer;
+                Pad.HoleSize := 0;
+            End
+            Else
+            Begin
+                Pad.Layer := eMultiLayer;
+                Pad.HoleSize := MilsToCoordF(30);
+            End;
+            P := Pad;
+        End
+        Else If I = 4 Then P := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default)
+        Else If I = 5 Then P := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default)
+        Else If I = 6 Then P := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default)
+        Else If I = 7 Then P := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default)
+        Else If I = 8 Then P := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+        If (P <> Nil) And (I <> 2) And (I <> 3) And (I <> 4) Then P.Layer := eTopLayer;
+    Except
+        P := Nil;
+    End;
+    Result := P;
+End;
+
+{ The cell for kinds A and B, written first (both ways round) when Want is }
+{ 0 or more. -1 when the cell could not be reached.                        }
+Function ClearanceCellAt(Rule : IPCB_ClearanceConstraint; A, B, Want : Integer) : Integer;
+Var
+    P1, P2 : IPCB_Primitive;
+    Got : Integer;
+Begin
+    Got := -1;
+    P1 := ClearanceProbe(A);
+    P2 := ClearanceProbe(B);
+    If (P1 <> Nil) And (P2 <> Nil) Then
+    Begin
+        Try
+            If Want >= 0 Then
+            Begin
+                Rule.SetClearance(P1, P2, Want);
+                Rule.SetClearance(P2, P1, Want);
+            End;
+            Got := Rule.GetClearance(P1, P2);
+        Except
+            Got := -1;
+        End;
+    End;
+    If P1 <> Nil Then
+    Begin
+        Try PCBServer.DestroyPCBObject(P1); Except End;
+    End;
+    If P2 <> Nil Then
+    Begin
+        Try PCBServer.DestroyPCBObject(P2); Except End;
+    End;
+    Result := Got;
+End;
+
+{ The table as "object_clearances", mils by pair of kinds, each pair once. }
+Function ClearanceCellsJson(Rule : IPCB_ClearanceConstraint) : String;
+Var
+    A, B, V : Integer;
+    S : String;
+Begin
+    S := '';
+    For A := 0 To 8 Do
+        For B := A To 8 Do
+        Begin
+            V := ClearanceCellAt(Rule, A, B, -1);
+            If S <> '' Then S := S + ',';
+            S := S + '"' + ClearanceKindName(A) + '-' + ClearanceKindName(B) + '":';
+            If V < 0 Then S := S + 'null'
+            Else S := S + FloatToJsonStr(CoordToMilsF(V));
+        End;
+    Result := '"object_clearances":{' + S + '}';
+End;
+
+{ Write the cells in Spec, "Track-SMDPad=4;Text-*=3.5" in mils ("*" is    }
+{ every kind; the server checks the names). Each cell is read back and   }
+{ one that reads otherwise goes into Missed. Answers the cells written.  }
+Function ClearanceCellsWrite(Rule : IPCB_ClearanceConstraint; Spec : String; Var Missed : String) : Integer;
+Var
+    Rest, One, NA, NB : String;
+    P, A, B, A0, A1, B0, B1, Count, Want : Integer;
+Begin
+    Count := 0;
+    Rest := Spec;
+    PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+    While Rest <> '' Do
+    Begin
+        P := Pos(';', Rest);
+        If P = 0 Then
+        Begin
+            One := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            One := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End;
+        P := Pos('=', One);
+        If P > 0 Then
+        Begin
+            Want := MilsToCoordF(StrToFloatDef(Copy(One, P + 1, Length(One)), 0));
+            One := Copy(One, 1, P - 1);
+            P := Pos('-', One);
+            NA := Copy(One, 1, P - 1);
+            NB := Copy(One, P + 1, Length(One));
+            A0 := ClearanceKindByName(NA);
+            A1 := A0;
+            If NA = '*' Then
+            Begin
+                A0 := 0;
+                A1 := 8;
+            End;
+            B0 := ClearanceKindByName(NB);
+            B1 := B0;
+            If NB = '*' Then
+            Begin
+                B0 := 0;
+                B1 := 8;
+            End;
+            If (P = 0) Or (A0 < 0) Or (B0 < 0) Then
+                Missed := Missed + '"' + EscapeJsonString(One) + '",'
+            Else
+                For A := A0 To A1 Do
+                    For B := B0 To B1 Do
+                    Begin
+                        Inc(Count);
+                        If ClearanceCellAt(Rule, A, B, Want) <> Want Then
+                            Missed := Missed + '"' + ClearanceKindName(A) + '-' + ClearanceKindName(B) + '",';
+                    End;
+        End;
+    End;
+    PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+    Result := Count;
+End;
+
+{ The Clearance rule named, as the board iterator hands it over: only a   }
+{ rule taken from the iterator into a typed variable answers the calls of }
+{ its kind. Spec empty reads the table, else writes it first.             }
+Function ClearanceTable(Board : IPCB_Board; RuleName, Spec : String; Var Written : Integer; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_ClearanceConstraint;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = eRule_Clearance) And (R.Name = RuleName) Then
+            Begin
+                If Spec <> '' Then Written := ClearanceCellsWrite(R, Spec, Missed);
+                Result := ClearanceCellsJson(R);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ A Silk To Solder Mask Clearance rule (kind 54) measures silk either to  }
+{ the exposed copper or to the solder mask openings. SetTo 'true' or      }
+{ 'false' writes the choice first. Answers what the rule holds, 'true' or }
+{ 'false', or '' when it could not be read.                               }
+Function SilkMaskToCopper(Board : IPCB_Board; RuleName, SetTo : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_SilkToSolderMaskClearanceRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 54) And (R.Name = RuleName) Then
+            Begin
+                If SetTo <> '' Then
+                Begin
+                    PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                    Try R.SetState_IsClearanceToExposedCopper(SetTo = 'true'); Except NoteWriteFailed('rule IsClearanceToExposedCopper'); End;
+                    PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                End;
+                Try Result := BoolToJsonStr(R.GetState_IsClearanceToExposedCopper); Except Result := ''; End;
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 {..............................................................................}
 { PCB_GetRuleProperties - Read properties of a design rule.                     }
 {                                                                               }
@@ -1128,6 +1377,7 @@ Var
     Board : IPCB_Board;
     Rule : IPCB_Rule;
     RuleName, GapField, MatchedField, MatchedMissed : String;
+    CellCount : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1152,6 +1402,25 @@ Begin
 
     GapField := ClearanceGapMM(Board, RuleName);
     If GapField <> '' Then GapField := ',"gap_mm":' + GapField;
+    If Rule.RuleKind = eRule_Clearance Then
+    Begin
+        MatchedMissed := '';
+        CellCount := 0;
+        MatchedField := ClearanceTable(Board, RuleName, '', CellCount, MatchedMissed);
+        If MatchedField <> '' Then GapField := GapField + ',' + MatchedField;
+    End;
+    If Rule.RuleKind = 54 Then
+    Begin
+        MatchedField := SilkMaskToCopper(Board, RuleName, '');
+        If MatchedField = '' Then MatchedField := 'null';
+        GapField := GapField + ',"clearance_to_exposed_copper":' + MatchedField;
+    End;
+    Try
+        GapField := GapField + ',"scope_1":"' + EscapeJsonString(Rule.Scope1Expression)
+            + '","scope_2":"' + EscapeJsonString(Rule.Scope2Expression)
+            + '","comment":"' + EscapeJsonString(Rule.Comment) + '"';
+    Except
+    End;
     If Rule.RuleKind = 4 Then
     Begin
         MatchedMissed := '';
@@ -1779,10 +2048,11 @@ Var
     RuleViaIter : IPCB_RoutingViaStyleRule;
     RulePolyConn : IPCB_PolygonConnectStyleRule;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
-    DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport : String;
+    DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport, DUncoupled : String;
     ImpDriven, ImpMin, ImpMax, ImpFav, ImpReport, ImpMissed : String;
     LimitsReport : String;
-    XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt : String;
+    XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt, XCells, XToCopper : String;
+    XCellCount : Integer;
     XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
     XWDrv, XWMin, XWMax, XWFav, XWCopper : String;
     DiffAsked : Integer;
@@ -1926,6 +2196,7 @@ Begin
     DGapMinMM := ExtractJsonValue(Params, 'dp_min_gap_mm');
     DGapMaxMM := ExtractJsonValue(Params, 'dp_max_gap_mm');
     DGapPrefMM := ExtractJsonValue(Params, 'dp_preferred_gap_mm');
+    DUncoupled := ExtractJsonValue(Params, 'dp_max_uncoupled_length_mils');
     ImpDriven := LowerCase(ExtractJsonValue(Params, 'dp_impedance_driven'));
     ImpMin := ExtractJsonValue(Params, 'dp_min_impedance');
     ImpMax := ExtractJsonValue(Params, 'dp_max_impedance');
@@ -1939,6 +2210,8 @@ Begin
     XCMin := ExtractJsonValue(Params, 'corner_min_setback_mils');
     XCMax := ExtractJsonValue(Params, 'corner_max_setback_mils');
     XAnt := ExtractJsonValue(Params, 'antenna_tolerance_mils');
+    XCells := ExtractJsonValue(Params, 'object_clearances');
+    XToCopper := LowerCase(ExtractJsonValue(Params, 'clearance_to_exposed_copper'));
     XFStyle := ExtractJsonValue(Params, 'fanout_style');
     XFDir := ExtractJsonValue(Params, 'fanout_direction');
     XFBgaDir := ExtractJsonValue(Params, 'bga_fanout_direction');
@@ -2281,7 +2554,8 @@ Begin
     If (Kind = 51) And ((MinWStr <> '') Or (MaxWStr <> '') Or (FavWStr <> '')
         Or (MinWMM <> '') Or (MaxWMM <> '') Or (FavWMM <> '')
         Or (DGapMin <> '') Or (DGapMax <> '') Or (DGapPref <> '')
-        Or (DGapMinMM <> '') Or (DGapMaxMM <> '') Or (DGapPrefMM <> '')) Then
+        Or (DGapMinMM <> '') Or (DGapMaxMM <> '') Or (DGapPrefMM <> '')
+        Or (DUncoupled <> '')) Then
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
@@ -2355,6 +2629,17 @@ Begin
                         Except NoteWriteFailed('diff pair rule PreferedGap'); End;
                         Inc(DiffAsked);
                     End;
+                    If DUncoupled <> '' Then
+                    Begin
+                        Try
+                            RuleDiff.MaxUncoupledLength := MilsToCoordF(StrToFloatDef(DUncoupled, 0));
+                        Except NoteWriteFailed('diff pair rule MaxUncoupledLength'); End;
+                        If Not RuleMilsTook(RuleDiff.MaxUncoupledLength, DUncoupled) Then
+                            NoteWriteFailed('diff pair rule MaxUncoupledLength');
+                        Inc(DiffAsked);
+                    End;
+                    DiffReport := ',"dp_max_uncoupled_length_mils":'
+                        + FloatToJsonStr(CoordToMilsF(RuleDiff.MaxUncoupledLength));
                 End;
                 If Not Found Then RuleDiff := Iter.NextPCBObject;
             End;
@@ -2364,7 +2649,7 @@ Begin
         Desc := '';
         Try Desc := Rule.Descriptor; Except End;
         UpdatedCount := UpdatedCount + DiffAsked;
-        DiffReport := ',"diff_pair_written":' + IntToStr(DiffAsked)
+        DiffReport := DiffReport + ',"diff_pair_written":' + IntToStr(DiffAsked)
             + ',"diff_pair_descriptor":"' + EscapeJsonString(Desc) + '"';
     End;
 
@@ -2377,6 +2662,9 @@ Begin
     If ((XVGap <> '') Or (XShow <> '') Or (XMode <> '')) And (Kind <> 24) Then XBad := 'vertical_gap_mils, show_distances and collision_check_mode are for a Component Clearance rule';
     If ((XCMin <> '') Or (XCMax <> '')) And (Kind <> 10) Then XBad := 'corner_*_setback_mils is for a Routing Corners rule';
     If (XAnt <> '') And (Kind <> 56) Then XBad := 'antenna_tolerance_mils is for a Net Antennae rule';
+    If (XCells <> '') And (Kind <> eRule_Clearance) Then XBad := 'object_clearances_mils is for a Clearance rule';
+    If (XToCopper <> '') And (Kind <> 54) Then XBad := 'clearance_to_exposed_copper is for a Silk To Solder Mask Clearance rule';
+    If (DUncoupled <> '') And (Kind <> 51) Then XBad := 'dp_max_uncoupled_length_mils is for a Differential Pairs Routing rule';
     If ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> ''))
         And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
     If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
@@ -2402,6 +2690,30 @@ Begin
         XReport := RuleExtrasWidth(Board, RuleName, XWDrv, XWMin, XWMax, XWFav, XWCopper, XMissed);
     If (Kind = 56) And (XAnt <> '') Then
         XReport := RuleExtrasAntennae(Board, RuleName, XAnt, XMissed);
+    If (Kind = eRule_Clearance) And (XCells <> '') Then
+    Begin
+        XCellCount := 0;
+        PcbBeginEdit(0);
+        Try
+            V := ClearanceTable(Board, RuleName, XCells, XCellCount, XMissed);
+        Finally
+            PcbEndEdit(0);
+        End;
+        XReport := '"object_clearances_written":' + IntToStr(XCellCount);
+        If V <> '' Then XReport := XReport + ',' + V;
+    End;
+    If (Kind = 54) And (XToCopper <> '') Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            V := SilkMaskToCopper(Board, RuleName, XToCopper);
+        Finally
+            PcbEndEdit(0);
+        End;
+        If V <> XToCopper Then XMissed := XMissed + '"clearance_to_exposed_copper",';
+        If V = '' Then V := 'null';
+        XReport := '"clearance_to_exposed_copper":' + V;
+    End;
     If (Kind = 49) And ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> '')) Then
         XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
     If IsTestpointStyleKind(Kind) And TestpointAsked(Params) Then

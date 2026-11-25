@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The lint catches a field write through a by-value record property.
 
 ``Pin.Location.X := v`` compiles, runs and reports success, and the pin

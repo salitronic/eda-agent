@@ -750,6 +750,36 @@ MATCH_MODES = ("group", "within_pair")
 #: them as two enum values (45 is 0, 90 is 1).
 RELIEF_ANGLES = (45, 90)
 
+#: The object kinds of a Clearance rule's table, by the names the table
+#: takes ("Track-SMDPad"). A bare hole has no primitive a script can hand
+#: to Altium's GetClearance, so the Hole row is not reachable.
+CLEARANCE_KINDS = ("Track", "Arc", "SMDPad", "THPad", "Via", "Fill", "Poly",
+                   "Region", "Text")
+
+
+def clearance_table_spec(cells: dict[str, Any]) -> tuple[str, str]:
+    """``{"Track-SMDPad": 4, "Text-*": 3.5}`` as the bridge's
+    ``"Track-SMDPad=4;Text-*=3.5"``, and the reason when a cell is wrong."""
+    if not isinstance(cells, dict) or not cells:
+        return "", "object_clearances_mils is a dict such as {\"Track-SMDPad\": 4}"
+    by_name = {k.lower(): k for k in CLEARANCE_KINDS}
+    parts = []
+    for pair, value in cells.items():
+        kinds = str(pair).split("-")
+        if len(kinds) != 2:
+            return "", f"object_clearances_mils key {pair!r} is two kinds, as 'Track-SMDPad'"
+        names = []
+        for kind in kinds:
+            kind = kind.strip()
+            if kind != "*" and kind.lower() not in by_name:
+                return "", (f"object_clearances_mils kind {kind!r} is one of "
+                            + ", ".join(CLEARANCE_KINDS) + " or '*'")
+            names.append("*" if kind == "*" else by_name[kind.lower()])
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return "", f"object_clearances_mils {pair!r} is a length in mils, 0 or more"
+        parts.append(f"{names[0]}-{names[1]}={float(value):g}")
+    return ";".join(parts), ""
+
 
 def create_rule_params(name: str, rule_type: str = "clearance", value: float = 10,
                        max_value: Optional[float] = None,
@@ -11381,8 +11411,12 @@ def register_pcb_tools(mcp):
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
 
         Returns:
-            Dict with name, rule_kind, enabled, priority, descriptor, and
-            gap_mm for a clearance-family rule.
+            Dict with name, rule_kind, enabled, priority, descriptor,
+            scope_1, scope_2 and comment; gap_mm for a clearance-family
+            rule; ``object_clearances`` (mils by pair of object kinds,
+            such as ``"Track-SMDPad"``) for a Clearance rule; and
+            ``clearance_to_exposed_copper`` for a Silk To Solder Mask
+            Clearance rule.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -11418,6 +11452,7 @@ def register_pcb_tools(mcp):
         dp_preferred_gap_mils: float | None = None,
         dp_min_gap_mm: float | None = None,
         dp_max_gap_mm: float | None = None,
+        dp_max_uncoupled_length_mils: float | None = None,
         dp_preferred_gap_mm: float | None = None,
         dp_impedance_driven: bool | None = None,
         dp_min_impedance: float | None = None,
@@ -11432,6 +11467,8 @@ def register_pcb_tools(mcp):
         corner_min_setback_mils: float | None = None,
         corner_max_setback_mils: float | None = None,
         antenna_tolerance_mils: float | None = None,
+        object_clearances_mils: dict[str, float] | None = None,
+        clearance_to_exposed_copper: bool | None = None,
         fanout_style: int | None = None,
         fanout_direction: int | None = None,
         bga_fanout_direction: int | None = None,
@@ -11489,19 +11526,22 @@ def register_pcb_tools(mcp):
             dp_min_gap_mils / dp_max_gap_mils / dp_preferred_gap_mils and
                 the *_mm forms: a Differential Pairs Routing rule's gaps,
                 every layer. Read back in ``diff_pair_descriptor``.
-            dp_impedance_driven, dp_min_impedance / dp_max_impedance /
-                dp_preferred_impedance: a Differential Pairs Routing
-                rule's width and gap follow an impedance profile, and its
-                limits in ohms. Read back in ``impedance``; any that did not
-                take is in ``impedance_not_applied``.
+            dp_max_uncoupled_length_mils: a pair rule's longest uncoupled run.
+            dp_impedance_driven, dp_min/max/preferred_impedance (ohms):
+                a pair rule follows an impedance profile. Read back in
+                ``impedance`` / ``impedance_not_applied``.
             height_min_mils / height_max_mils / height_preferred_mils: a
                 Height rule's part height limits.
-            vertical_gap_mils, show_distances, collision_check_mode: a
-                Component Clearance rule's vertical gap, whether it shows
-                the distances, and its check mode (Altium's number).
+            vertical_gap_mils, show_distances, collision_check_mode
+                (Altium's number): a Component Clearance rule.
             corner_min_setback_mils / corner_max_setback_mils: a Routing
                 Corners rule's setbacks.
             antenna_tolerance_mils: a Net Antennae rule's tolerance.
+            object_clearances_mils: a Clearance rule's table by object
+                kind, ``{"Track-SMDPad": 4, "Text-*": 3.5}``; kinds Track,
+                Arc, SMDPad, THPad, Via, Fill, Poly, Region, Text, ``*``.
+            clearance_to_exposed_copper: a Silk To Solder Mask rule
+                measures to exposed copper (True) or mask openings (False).
             fanout_style, fanout_direction, bga_fanout_direction,
                 bga_via_mode (Altium's numbers) and fanout_via_grid_mils:
                 a Fanout Control rule.
@@ -11519,22 +11559,16 @@ def register_pcb_tools(mcp):
             relief_width_mils / relief_width_mm, air_gap_mils / air_gap_mm,
                 entries (2 or 4), relief_angle (45 or 90 degrees, polygon only),
                 relief_expansion_mils (plane only): the relief's settings.
-            min_hole_size_mils / max_hole_size_mils: HoleSize
-                constraint limits.
-            min_length_mils / max_length_mils: a Length rule's limits.
-            min_signal_impedance_ohms / max_signal_impedance_ohms: a
-                Signal Integrity Impedance rule's limits.
-            max_flight_time_ns: a Flight Time (rising or falling edge)
-                rule's limit. These three are read back in limits; one
-                that did not hold, or that belongs to another kind of rule,
-                is named in limits_note.
-            testpoint: a Testpoint Style rule's settings, by name:
-                min_size_mils, max_size_mils, preferred_size_mils,
-                min_hole_mils, max_hole_mils, preferred_hole_mils,
+            min_hole_size_mils / max_hole_size_mils: HoleSize limits.
+            min_length_mils / max_length_mils, min_signal_impedance_ohms /
+                max_signal_impedance_ohms, max_flight_time_ns: Length,
+                Impedance and Flight Time limits, read back in limits;
+                one that did not hold is named in limits_note.
+            testpoint: a Testpoint Style rule's settings by name:
+                min/max/preferred_size_mils, min/max/preferred_hole_mils,
                 grid_mils, grid_tolerance_mils, min_spacing_mils,
-                body_clearance_mils, edge_clearance_mils (0 or more) and
-                under_component, use_grid (True / False). Read back in
-                ``settings``.
+                body_clearance_mils, edge_clearance_mils, under_component,
+                use_grid. Read back in ``settings``.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
@@ -11575,6 +11609,7 @@ def register_pcb_tools(mcp):
             ("dp_min_gap_mm", dp_min_gap_mm),
             ("dp_max_gap_mm", dp_max_gap_mm),
             ("dp_preferred_gap_mm", dp_preferred_gap_mm),
+            ("dp_max_uncoupled_length_mils", dp_max_uncoupled_length_mils),
             ("min_hole_size_mils", min_hole_size_mils),
             ("max_hole_size_mils", max_hole_size_mils),
             ("min_via_size_mils", min_via_size_mils),
@@ -11625,7 +11660,8 @@ def register_pcb_tools(mcp):
                     "corner_max_setback_mils", "antenna_tolerance_mils",
                     "fanout_via_grid_mils", "collision_check_mode", "fanout_style",
                     "fanout_direction", "bga_fanout_direction", "bga_via_mode",
-                    "min_length_mils", "max_length_mils"):
+                    "min_length_mils", "max_length_mils",
+                    "dp_max_uncoupled_length_mils"):
             if key in params and float(params[key]) < 0:
                 return {"ok": False, "reason": f"{key} is 0 or more"}
         if "matched_tolerance_mils" in params and float(params["matched_tolerance_mils"]) <= 0:
@@ -11636,13 +11672,19 @@ def register_pcb_tools(mcp):
             if isinstance(relief_angle, bool) or relief_angle not in RELIEF_ANGLES:
                 return {"ok": False, "reason": "relief_angle is 45 or 90 (degrees)"}
             params["relief_angle"] = str(int(relief_angle))
+        if object_clearances_mils is not None:
+            spec, problem = clearance_table_spec(object_clearances_mils)
+            if problem:
+                return {"ok": False, "reason": problem}
+            params["object_clearances"] = spec
         if matched_mode is not None:
             if matched_mode not in MATCH_MODES:
                 return {"ok": False, "reason": "matched_mode is "
                         + " or ".join(repr(m) for m in MATCH_MODES)}
             params["matched_mode"] = matched_mode
         for key, value in (("width_impedance_driven", width_impedance_driven),
-                           ("check_connected_copper", check_connected_copper)):
+                           ("check_connected_copper", check_connected_copper),
+                           ("clearance_to_exposed_copper", clearance_to_exposed_copper)):
             if value is not None:
                 params[key] = "true" if value else "false"
         if show_distances is not None:

@@ -1,4 +1,4 @@
-# Release verification: 2026.11.23.1
+# Release verification: 2026.11.25.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -83,7 +83,7 @@ works elsewhere cannot be an undeclared identifier:
 | 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
 | 34, arc mirror | `StartAngle`, `EndAngle` written on a placed arc | yes, `Lib_AddSymbolArc` | low |
 | 35, footprint switch | `SetState_CurrentComponent` on the library, away from the target and back | yes, `Lib_Link3DModel` | low |
-| 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | no, nowhere | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
+| 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | only by `PCB.pas` (step 91), on a primitive never added to a board | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
 | 35, temporary holder | `GetUniqueCompName`, `DestroyPCBLibComp` on a footprint made for the delete | no, nowhere | low, ran live in a single-footprint library |
 | 36, body layer | `Layer` written on a library 3D body | yes, `PCB_Place3DBody` | low |
 | 36, mechanical check | `IsMechanicalLayer` on LayerUtils | no, nowhere | high, a wrong member stops the loop; ran live, and used by scripts in reference/ |
@@ -258,6 +258,7 @@ works elsewhere cannot be an undeclared identifier:
 | 88, text visibility and a batch move | `NameOn`, `CommentOn` through obj_modify on a placed part | yes, `PCB.pas` (pcb_set_text_visibility, copy placement) | low, display only; ran live, the designator then read hidden |
 | 89, grids, references, layer copper, title block | `SetProperty_QuadrantSizeX`, `SetState_RefTopLayer`, `CopperThickness`, `SetState_TitleBlockOn` on a grid, an impedance line, a new layer and a sheet | partly, `PCB_ModifyLayer` writes the copper thickness | low; grid size and references change no copper, ran live on scratch copies and read back |
 | 90, DbLib quote, parts removed from the middle | `CurrentPartID` before a library Remove Part | yes, `Library.pas` (Lib_SetSymbolParts removes the last part the same way) | low; each removal is checked against every other part's pins and objects, ran live on a scratch library |
+| 91, clearance table, silk-to-mask choice, uncoupled run | `SetClearance`, `GetClearance` on a Clearance rule with two primitives made for the call and destroyed; `SetState_IsClearanceToExposedCopper` on a Silk To Solder Mask rule; `MaxUncoupledLength` on an existing pair rule | partly, `PCB_CreateDesignRule` (the uncoupled length on create) | low; rule values only, each read back; ran live on a scratch copy and closed without saving |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -432,7 +433,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.23.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.25.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.
@@ -4450,7 +4451,7 @@ No new Altium identifier: `IDatabaseLibDocument.GetCommandString`,
 `ISch_Lib.SetState_CurrentSchComponentRemovePart` and
 `ISch_Component.CurrentPartID` were already in use.
 
-Verified live on AD 26.12.2.8, script 2026.11.23.1, on scratch files:
+Verified live on AD 26.12.2.8 on scratch files:
 
 1. A SQLite DbLib (MSDASQL, SQLite3 ODBC Driver) with a table named
    `Amp-Parts` and key column `Part Number`, in three copies: quotes
@@ -4469,6 +4470,30 @@ Verified live on AD 26.12.2.8, script 2026.11.23.1, on scratch files:
    reads part 2's pins. `part=1` reached; `part=9` `PART_NOT_REACHED`.
 5. `obj_count ePin Designator=7` with `lib_component:NAME@1`, `@3`, `@2`:
    0, 1, 0 (all 0 before the fix).
+
+## 91. A Clearance rule's table by object kind, the silk-to-mask choice, a pair's uncoupled run, a single new pin
+
+New Altium identifiers: `IPCB_ClearanceConstraint.GetClearance` /
+`SetClearance` (two primitives made for the call, never on the board) and
+`IPCB_SilkToSolderMaskClearanceRule.GetState_IsClearanceToExposedCopper` /
+`SetState_IsClearanceToExposedCopper`. `MaxUncoupledLength` was already
+written on create.
+
+Verified live on AD 26.12.2.8, script 2026.11.25.1, on a scratch copy of
+a board and of a library, closed without saving:
+
+1. `pcb_get_rule_properties Clearance`: 45 cells, all 3.937 mil (the
+   0.1 mm gap), and `scope_1`, `scope_2`, `comment`.
+2. `object_clearances_mils={"Track-SMDPad": 4, "Text-*": 3.5}`: 10 cells
+   written, Track-SMDPad 4 and every Text cell 3.5 read back, the rest
+   unchanged. `{"Arc-Arc": 6}` changed Arc-Arc alone, so arcs are a kind
+   of their own. On the Width rule: `WRONG_RULE_KIND`.
+3. `clearance_to_exposed_copper=false` on a Silk To Solder Mask rule:
+   `false` read back, and `pcb_get_rule_properties` reads `false`.
+4. `dp_max_uncoupled_length_mils=250` on a Differential Pairs Routing
+   rule: 250 read back.
+5. `library.add_pin` at 500, -300 on a symbol: `lib_get_pin_list` reads
+   the pin at 500, -300 (0, 0 before the fix).
 
 ## Still open, and not blocking
 
