@@ -319,6 +319,67 @@ def register_footprint_tools(mcp):
         return result
 
     @mcp.tool()
+    async def footprint_check_3d_model(step_path: str, pads: list[dict[str, Any]],
+                                       rotation: float = 0.0,
+                                       offset_x: float = 0.0,
+                                       offset_y: float = 0.0,
+                                       courtyard: Optional[list[float]] = None,
+                                       tolerance: float = 0.1,
+                                       png_path: str = "") -> dict[str, Any]:
+        """Check which way round a STEP model sits on a footprint, without
+        opening the 3D view: its terminals against the pads, its body
+        against the courtyard, and a picture from above.
+
+        A linked model reports its box and height, which centres it but
+        does not say that pin 1 is over pad 1 or that a module's antenna
+        end is where the footprint has it. The model's terminals are the
+        flat faces of its underside; placed as the 3D body is placed, each
+        lies over a pad or does not. Lengths are given and returned in
+        the session's unit, in the footprint's own coordinates.
+
+        Args:
+            step_path: the STEP file (the one lib_link_3d_model was given).
+            pads: the footprint's pads, each ``{designator, x, y, x_size,
+                y_size, rotation?}`` (lib_get_pad_geometry gives them).
+            rotation: the body's turn about Z in degrees, as linked.
+            offset_x, offset_y: the body's move after the turn, as linked.
+                A model's own origin is often a corner of the part, so a
+                body linked with no offsets sits off its pads.
+            courtyard: ``[x0, y0, x1, y1]``, the footprint's courtyard or
+                body outline. Give it whenever the body reaches past the
+                pads on one side only (an antenna, a connector's shell):
+                that side is what tells two turns apart when the pads
+                read the same both ways.
+            tolerance: how far a terminal's centre may lie outside its pad.
+            png_path: where to write the picture; default the workspace's
+                renders folder.
+
+        Returns:
+            ``ok`` (every pad has a terminal over it, no terminal lies off
+            the pads, and the body stays inside the courtyard), ``pads``,
+            ``terminals``, ``pads_without_terminal``, ``terminals_off_pads``,
+            the body's box and how far it reaches past the pads on each
+            side, how far it is outside the courtyard when it is, ``rotations`` (for each right-angle turn centred on
+            the pads: how many pads are covered and the offsets that centre
+            it), ``reason`` naming the turn and offsets that fit when this
+            placement does not, ``note`` when the pads cannot tell two turns
+            apart, and ``png``. READ THE PICTURE: pads outlined, terminals
+            filled, pad 1 marked, the body dashed. A model drawn as one
+            block has no terminals to read and is reported so.
+
+        Needs FreeCAD (freecadcmd) to read the STEP file; it does not
+        reach Altium.
+        """
+        from eda_agent.config import get_config
+        from eda_agent.design.model_fit import fit_report
+
+        out = png_path or str(get_config().workspace_dir / "renders"
+                              / f"{Path(step_path).stem}_fit.png")
+        return await asyncio.to_thread(
+            fit_report, step_path, pads, rotation=rotation, offset_x=offset_x,
+            offset_y=offset_y, tolerance=tolerance, courtyard=courtyard, png_path=out)
+
+    @mcp.tool()
     async def footprint_check_package(package: Any) -> dict[str, Any]:
         """Check a package description for numbers that cannot be right.
 
