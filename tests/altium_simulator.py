@@ -1318,6 +1318,31 @@ class AltiumSimulator:
             return _build_success_response(
                 rid, '{"added":%d,"failed":0,"total":%d}' % (added, total))
 
+        elif action == "add_footprint_custom_pads":
+            # Mirrors Lib_AddFootprintCustomPads: one SMD pad per operation,
+            # its copper the outline linked as the pad's custom shape.
+            if not params.get("pads"):
+                return _build_error_response(rid, "MISSING_PARAM",
+                                             "pads is required")
+            if not self.lib_has_pcblib:
+                return _build_error_response(rid, "NO_PCBLIB",
+                                             "No PCB library is active")
+            made = []
+            for op in _iter_batch_ops(params.get("pads", "")):
+                des = _get_batch_field(op, "designator")
+                self.lib_pads.append({
+                    "designator": des,
+                    "x": _get_batch_field(op, "x"),
+                    "y": _get_batch_field(op, "y"),
+                    "shape": "custom",
+                    "layer": _get_batch_field(op, "layer"),
+                    "layer_requested": _get_batch_field(op, "layer"),
+                })
+                made.append('{"designator":"%s","custom":true,"top_shape":10}' % des)
+            return _build_success_response(
+                rid, '{"added":%d,"failed":0,"custom":%d,"pads":[%s]}' % (
+                    len(made), len(made), ",".join(made)))
+
         elif action == "add_footprint_tracks":
             # Mirrors Lib_AddFootprintTracks. Note the per-track layer
             # default: an EMPTY layer means silkscreen (eTopOverlay), not

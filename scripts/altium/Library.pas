@@ -3842,6 +3842,189 @@ Begin
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
+{ A region on Layer from a points / arcs payload as Lib_AddFootprintRegions }
+{ reads it, relative to the footprint origin. Nil when it cannot be made.  }
+Function LibOutlineRegion(Layer : TLayer; PointsStr, ArcsStr, UnitsStr : String;
+    OrgX, OrgY : TCoord) : IPCB_Region;
+Var
+    Region : IPCB_Region;
+    Contour : IPCB_Contour;
+    Seg : TPolySegment;
+    Xs, Ys : TStringList;
+    I, NPts : Integer;
+Begin
+    Result := Nil;
+    Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+    If Region = Nil Then Exit;
+    Region.Layer := Layer;
+    Xs := TStringList.Create;
+    Ys := TStringList.Create;
+    Try
+        RegionPointsSplit(PointsStr, Xs, Ys);
+        NPts := Xs.Count;
+        If NPts >= 3 Then
+        Begin
+            If ArcsStr = '' Then
+            Begin
+                Contour := Region.MainContour.Replicate;
+                Contour.Count := NPts;
+                For I := 1 To NPts Do
+                Begin
+                    Contour.X[I] := OrgX + CoordFromUnits(StrToFloatDef(Xs[I - 1], 0), UnitsStr);
+                    Contour.Y[I] := OrgY + CoordFromUnits(StrToFloatDef(Ys[I - 1], 0), UnitsStr);
+                End;
+                Region.SetOutlineContour(Contour);
+            End
+            Else
+            Begin
+                For I := 1 To NPts Do
+                Begin
+                    Seg := TPolySegment;
+                    Seg.vx := OrgX + CoordFromUnits(StrToFloatDef(Xs[I - 1], 0), UnitsStr);
+                    Seg.vy := OrgY + CoordFromUnits(StrToFloatDef(Ys[I - 1], 0), UnitsStr);
+                    If RegionArcField(ArcsStr, I, 0) <> '' Then
+                    Begin
+                        Seg.Kind := ePolySegmentArc;
+                        Seg.cx := OrgX + CoordFromUnits(StrToFloatDef(RegionArcField(ArcsStr, I, 0), 0), UnitsStr);
+                        Seg.cy := OrgY + CoordFromUnits(StrToFloatDef(RegionArcField(ArcsStr, I, 1), 0), UnitsStr);
+                        Seg.Radius := CoordFromUnits(StrToFloatDef(RegionArcField(ArcsStr, I, 2), 0), UnitsStr);
+                        Seg.Angle1 := StrToFloatDef(RegionArcField(ArcsStr, I, 3), 0);
+                        Seg.Angle2 := StrToFloatDef(RegionArcField(ArcsStr, I, 4), 0);
+                    End
+                    Else
+                        Seg.Kind := ePolySegmentLine;
+                    Region.ShapeSegmentCount := I;
+                    Region.ShapeSegments[I - 1] := Seg;
+                End;
+                Region.UpdateContourFromShape(True);
+            End;
+            Result := Region;
+        End;
+    Finally
+        Xs.Free;
+        Ys.Free;
+    End;
+End;
+
+{ Pads whose copper is an outline: Altium's custom pad shape. Each pad is  }
+{ an SMD pad on its layer at x, y, and the region drawn from its points    }
+{ becomes its shape through LinkCustomShape. Each is read back: whether    }
+{ the pad holds a custom shape, and what its top shape reads.              }
+Function Lib_AddFootprintCustomPads(Params : String; RequestId : String) : String;
+Var
+    PadsStr, Remaining, Op, LayerStr, UnitsStr, TargetProblem, Rows, Note : String;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Pad : IPCB_Pad;
+    Region : IPCB_Region;
+    Layer : TLayer;
+    OrgX, OrgY : TCoord;
+    Rect : TCoordRect;
+    Added, Failed, Custom : Integer;
+    HasCustom : Boolean;
+Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    PadsStr := ExtractJsonValue(Params, 'pads');
+    If PadsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pads is required');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
+        Exit;
+    End;
+    OrgX := FootprintOriginX(Footprint);
+    OrgY := FootprintOriginY(Footprint);
+    Added := 0;
+    Failed := 0;
+    Custom := 0;
+    Rows := '';
+    Remaining := PadsStr;
+    PcbBeginEdit(0);
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            LayerStr := GetBatchField(Op, 'layer');
+            If LayerStr = '' Then Layer := eTopLayer
+            Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+            If Layer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Region := LibOutlineRegion(Layer, GetBatchField(Op, 'points'),
+                GetBatchField(Op, 'arcs'), UnitsStr, OrgX, OrgY);
+            If Region = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+            If Pad = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Pad.Name := GetBatchField(Op, 'designator');
+            Pad.X := OrgX + CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'x'), 0), UnitsStr);
+            Pad.Y := OrgY + CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'y'), 0), UnitsStr);
+            Pad.HoleSize := 0;
+            Pad.Layer := Layer;
+            Rect := Region.BoundingRectangle;
+            Pad.TopXSize := Rect.Right - Rect.Left;
+            Pad.TopYSize := Rect.Top - Rect.Bottom;
+            Pad.TopShape := eRectangular;
+            Footprint.AddPCBObject(Pad);
+            PcbLib.Board.AddPCBObject(Pad);
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
+            Note := '';
+            PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+            Try
+                Pad.LinkCustomShape(Region);
+            Except
+                Note := 'LinkCustomShape raised';
+            End;
+            PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+            HasCustom := False;
+            Try
+                HasCustom := Pad.HasCustomShapes;
+            Except
+                Note := Note + ' HasCustomShapes raised';
+            End;
+            If HasCustom Then Inc(Custom);
+            Inc(Added);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '{"designator":"' + EscapeJsonString(Pad.Name) + '"'
+                + ',"custom":' + BoolToJsonStr(HasCustom)
+                + ',"top_shape":' + IntToStr(Pad.TopShape)
+                + ',"note":"' + EscapeJsonString(Trim(Note)) + '"}';
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"custom":' + IntToStr(Custom) + ',"pads":[' + Rows + ']}');
+End;
+
 { Lib_AddFootprintFills - rectangular fills in a PcbLib footprint, in one     }
 { call: a grid of paste windows over an exposed pad, a keep-clear block on a  }
 { mechanical layer, anything that is a plain rectangle.                       }
@@ -22743,6 +22926,7 @@ Begin
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')
            Or (Action = 'add_footprint_regions')
+           Or (Action = 'add_footprint_custom_pads')
            Or (Action = 'add_footprint_fills')
            Or (Action = 'add_footprint_arc')
            Or (Action = 'add_footprint_text')
@@ -22928,6 +23112,7 @@ Begin
         'add_footprint_track':  Result := Lib_AddFootprintTrack(Params, RequestId);
         'add_footprint_tracks': Result := Lib_AddFootprintTracks(Params, RequestId);
         'add_footprint_regions': Result := Lib_AddFootprintRegions(Params, RequestId);
+        'add_footprint_custom_pads': Result := Lib_AddFootprintCustomPads(Params, RequestId);
         'add_footprint_fills':  Result := Lib_AddFootprintFills(Params, RequestId);
         'add_footprint_vias':   Result := Lib_AddFootprintVias(Params, RequestId);
         'add_footprint_bodies': Result := Lib_AddFootprintBodies(Params, RequestId);

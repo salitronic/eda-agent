@@ -1,4 +1,4 @@
-# Release verification: 2026.11.25.2
+# Release verification: 2026.11.25.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -260,6 +260,7 @@ works elsewhere cannot be an undeclared identifier:
 | 90, DbLib quote, parts removed from the middle | `CurrentPartID` before a library Remove Part | yes, `Library.pas` (Lib_SetSymbolParts removes the last part the same way) | low; each removal is checked against every other part's pins and objects, ran live on a scratch library |
 | 91, clearance table, silk-to-mask choice, uncoupled run | `SetClearance`, `GetClearance` on a Clearance rule with two primitives made for the call and destroyed; `SetState_IsClearanceToExposedCopper` on a Silk To Solder Mask rule; `MaxUncoupledLength` on an existing pair rule | partly, `PCB_CreateDesignRule` (the uncoupled length on create) | low; rule values only, each read back; ran live on a scratch copy and closed without saving |
 | 92, grid look, impedance solve, custom pad spokes | `SetProperty_Color`, `SetProperty_ColorLarge` on the default grid inside `BeginUpdate` / `EndUpdate`; `ComputeImpedance` and `ApplyToPcb` on the Layer Stack Manager's document; `ImpedanceProfileId` on width and pair rules after a model load | only by `PCB.pas` (pcb_set_grids, pcb.compute_impedance), each new | low; display settings and the manager's own solve and apply, read back; ran live on a scratch copy |
+| 93, custom pad shape | `LinkCustomShape` with a region never added to the footprint, then `HasCustomShapes` | no, nowhere | medium, a new route; ran live, saved, closed and reopened with the shape kept |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -434,7 +435,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.25.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.25.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.3`.
 
 Those are two different versions and they fail differently.
@@ -4500,7 +4501,7 @@ a board and of a library, closed without saving:
 
 Each defect was run first on the code before the change, then on the
 change, on AD 26.12.2.8 with scratch copies of a project and two
-libraries, script 2026.11.25.2:
+libraries:
 
 1. Instructions: 4,843 characters before (Altium, minimal tools), cut at
    4,096 by the client; 4,083 after.
@@ -4534,6 +4535,24 @@ the change too (reported on AD 26.1); the pad crash on a blank PcbLib
 impedance profile across a stack load (no tool links a rule to a
 profile), and spokes aimed at a concave corner (no tool makes a custom
 pad).
+
+## 93. A footprint pad whose copper is an outline
+
+New Altium identifiers: `IPCB_Pad4.LinkCustomShape` and
+`HasCustomShapes`. The outline is drawn as a region the way
+lib_add_footprint_regions draws one, never added to the footprint, and
+linked to the pad as its custom shape.
+
+Verified live on AD 26.12.2.8, on a scratch copy of
+a library:
+
+1. An L outline (80 x 60 mil, a 20 mil leg): the pad reads `custom`,
+   Altium draws the L, and after save, close and reopen the pad still
+   reads `custom` with no region left in the footprint.
+2. A comb outline with three fingers: one custom pad.
+3. A 100 mil square under a half circle of radius 50 mil: 100 x 150 mil.
+   Altium keeps the arc as straight facets, about 1 mil from the true arc
+   at that radius.
 
 ## Still open, and not blocking
 

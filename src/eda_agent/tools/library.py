@@ -929,6 +929,69 @@ def _unread_footprint(name: str, reason: str, code: str) -> dict[str, Any]:
 _OPTIONAL_PAD_LENGTHS = ("hole_length", "paste_expansion", "mask_expansion")
 
 
+def _outline_fields(pts: Any) -> tuple[str, str]:
+    """``points=...`` and, with arc edges, ``;arcs=...`` for one outline of
+    ``[x, y]`` / ``[x, y, sweep]`` points, as the bridge reads a region;
+    or ``("", problem)``. A closing point equal to the first is dropped."""
+    try:
+        verts = [(float(p[0]), float(p[1]),
+                  float(p[2]) if len(p) > 2 else 0.0) for p in pts]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return "", "points must be [x, y] or [x, y, sweep] numbers"
+    if len(verts) > 3 and verts[0][:2] == verts[-1][:2]:
+        verts = verts[:-1]
+    if len(verts) < 3:
+        return "", "needs at least three points"
+    arcs: list[str] = []
+    for k, (x, y, sweep) in enumerate(verts):
+        if not sweep:
+            continue
+        nx, ny, _ = verts[(k + 1) % len(verts)]
+        arc = _edge_arc(x, y, nx, ny, sweep)
+        if isinstance(arc, str):
+            return "", f"point {k}: {arc}"
+        cx, cy, r, a1, a2 = arc
+        arcs.append(f"{k + 1},{format_length(cx)},{format_length(cy)},"
+                    f"{format_length(r)},{_angle_text(a1)},{_angle_text(a2)}")
+    fields = "points=" + "/".join(f"{format_length(x)},{format_length(y)}"
+                                  for x, y, _ in verts)
+    if arcs:
+        fields += ";arcs=" + "/".join(arcs)
+    return fields, ""
+
+
+def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """The ``pads`` payload for library.add_footprint_custom_pads: each pad's
+    designator, layer, anchor x, y (default: the middle of its outline's
+    box) and outline. Returns ``(payload, problems)``."""
+    ops: list[str] = []
+    problems: list[str] = []
+    for i, pad in enumerate(pads):
+        name = str(pad.get("designator") or "").strip()
+        if not name:
+            problems.append(f"custom pad {i} has no designator")
+            continue
+        fields, problem = _outline_fields(pad.get("outline"))
+        if problem:
+            problems.append(f"custom pad {name}: outline {problem}")
+            continue
+        try:
+            xs = [float(p[0]) for p in pad["outline"]]
+            ys = [float(p[1]) for p in pad["outline"]]
+            x = float(pad["x"]) if pad.get("x") is not None else (min(xs) + max(xs)) / 2
+            y = float(pad["y"]) if pad.get("y") is not None else (min(ys) + max(ys)) / 2
+        except (TypeError, ValueError):
+            problems.append(f"custom pad {name}: x and y are numbers")
+            continue
+        if pad.get("hole_size"):
+            problems.append(f"custom pad {name}: a custom pad is an SMD pad (no hole_size)")
+            continue
+        layer = str(pad.get("layer") or "TopLayer").strip()
+        ops.append(f"designator={_payload_safe(name)};layer={_payload_safe(layer)};"
+                   f"x={format_length(x)};y={format_length(y)};{fields}")
+    return "~~".join(ops), problems
+
+
 def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
     """The ``regions`` batch payload for library.add_footprint_regions.
 
@@ -953,40 +1016,11 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
         if not layer:
             problems.append(f"region {i} has no layer")
             continue
-        pts = region.get("points")
-        try:
-            verts = [(float(p[0]), float(p[1]),
-                      float(p[2]) if len(p) > 2 else 0.0) for p in pts]
-        except (TypeError, ValueError, IndexError, KeyError):
-            problems.append(f"region {i} points must be [x, y] or "
-                            "[x, y, sweep] numbers")
+        fields, problem = _outline_fields(region.get("points"))
+        if problem:
+            problems.append(f"region {i} {problem}")
             continue
-        if len(verts) > 3 and verts[0][:2] == verts[-1][:2]:
-            verts = verts[:-1]
-        if len(verts) < 3:
-            problems.append(f"region {i} needs at least three points")
-            continue
-        arcs: list[str] = []
-        bad_arc = ""
-        for k, (x, y, sweep) in enumerate(verts):
-            if not sweep:
-                continue
-            nx, ny, _ = verts[(k + 1) % len(verts)]
-            arc = _edge_arc(x, y, nx, ny, sweep)
-            if isinstance(arc, str):
-                bad_arc = f"region {i} point {k}: {arc}"
-                break
-            cx, cy, r, a1, a2 = arc
-            arcs.append(f"{k + 1},{format_length(cx)},{format_length(cy)},"
-                        f"{format_length(r)},{_angle_text(a1)},{_angle_text(a2)}")
-        if bad_arc:
-            problems.append(bad_arc)
-            continue
-        points = "/".join(f"{format_length(x)},{format_length(y)}"
-                          for x, y, _ in verts)
-        op = f"layer={_payload_safe(layer)};points={points}"
-        if arcs:
-            op += ";arcs=" + "/".join(arcs)
+        op = f"layer={_payload_safe(layer)};{fields}"
         keep = _keepout_op(region)
         if keep.startswith("!"):
             problems.append(f"region {i}: {keep[1:]}")
@@ -4022,7 +4056,12 @@ def register_library_tools(mcp):
                 - hole_size (default 0 = SMD; drilled pads are MultiLayer)
                 - shape: round, rectangular (default), octagonal or
                   roundrect; oval is round with unequal sizes. Another
-                  word refuses the whole call, no pad added
+                  word refuses the whole call, no pad added.
+                  "custom": an SMD pad whose copper is ``outline``,
+                  points as in lib_add_footprint_regions ([x, y] or
+                  [x, y, sweep] for an arc edge); x, y is the pad's
+                  anchor (default the middle of the outline's box).
+                  Read back per pad in ``custom_pads``
                 - corner_radius: roundrect corner in % (default 25), or
                   corner_radius_length as a length
                 - rotation: degrees
@@ -4053,7 +4092,23 @@ def register_library_tools(mcp):
         if unchecked:
             return {**unchecked, "total": len(pads)}
         skipped = _lands_skipped(footprint_name)
-        payload, skipped_invalid = _pads_payload(pads, units)
+        custom = [p for p in pads if isinstance(p, dict)
+                  and str(p.get("shape") or "").strip().lower() == "custom"]
+        plain = [p for p in pads if p not in custom]
+        custom_result: dict[str, Any] = {}
+        if custom:
+            custom_payload, problems = _custom_pads_payload(custom)
+            if problems:
+                return {"ok": False, "reason": "; ".join(problems), "added": 0,
+                        "total": len(pads)}
+            params_c: dict[str, Any] = {"pads": custom_payload}
+            if footprint_name:
+                params_c["footprint_name"] = footprint_name
+            custom_result = await get_bridge().send_command_async(
+                "library.add_footprint_custom_pads", _with_units(params_c, units))
+            if not plain:
+                return custom_result
+        payload, skipped_invalid = _pads_payload(plain, units)
 
         if not payload:
             return {
@@ -4073,6 +4128,8 @@ def register_library_tools(mcp):
             result["skipped_invalid"] = skipped_invalid
         if skipped and isinstance(result, dict):
             result["unchecked"] = skipped
+        if custom_result and isinstance(result, dict):
+            result["custom_pads"] = custom_result
         return result
 
     @mcp.tool()
