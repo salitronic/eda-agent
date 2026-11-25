@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """A server that stops on an error says so and exits non-zero.
 
 serve_mcp leaves through os._exit, which skips the traceback. An error in
