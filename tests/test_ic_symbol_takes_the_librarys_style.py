@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """An IC symbol can be drawn in the style of the library it goes into.
 
 lib_create_ic_symbol drew every rectangle symbol with 200 mil pins, a pale
