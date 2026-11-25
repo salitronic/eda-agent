@@ -885,8 +885,9 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     else:
         dash = _spawn_dashboard_background(host="127.0.0.1", port=8766)
 
+    code = 0
     try:
-        mcp.run(transport="stdio")
+        code = _run_stdio(lambda: mcp.run(transport="stdio"))
     finally:
         # Shut down the in-process Werkzeug server so the process can
         # actually exit. Werkzeug's request-handler threads aren't
@@ -904,7 +905,29 @@ def serve_mcp(no_dashboard: bool = False) -> int:
         # removed by the next server that reads the folder.
         server_registry.unregister(config.workspace_dir)
         import os as _os
-        _os._exit(0)
+        _os._exit(code)
+    return code
+
+
+def _run_stdio(run) -> int:
+    """Run the MCP loop and say what ended it: 0 when the client closed the
+    connection, 1 with the error on stderr and in the server log when the
+    loop raised.
+
+    serve_mcp leaves through os._exit, which prints no traceback. An error
+    in the loop therefore ended the server with exit code 0 and not a
+    word, and to the client a server that had died looked like one that
+    was slow to start.
+    """
+    try:
+        run()
+    except Exception:
+        logger.exception("The MCP server stopped on an error")
+        try:
+            sys.stderr.flush()
+        except Exception:  # stderr closed with the client: nothing to flush
+            pass
+        return 1
     return 0
 
 
