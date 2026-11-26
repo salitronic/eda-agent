@@ -179,6 +179,26 @@ def _script_location(loaded: Any) -> tuple[Optional[bool], list[str]]:
 RELOAD_STEP = ("close the script project in Altium's Projects panel (right-click Altium_API.PrjScr, Close Project), reopen it and run StartMCPServer")
 
 
+#: What helps when the script Altium runs is the newer side: this server was
+#: started from an older install than the scripts Altium has open.
+SERVER_STEP = ("Start this server from the install those scripts came from, "
+               "or update this one, then restart the MCP client (in an "
+               "editor: reload the window)")
+
+
+def _newer(running: str, bundled: str) -> bool:
+    """Whether the running SCRIPT_VERSION is later than the bundled one.
+
+    Versions are dotted numbers (2026.11.26.1). One that is not reads as
+    not newer, and the caller keeps the stale-cache message.
+    """
+    try:
+        return ([int(x) for x in running.split(".")]
+                > [int(x) for x in bundled.split(".")])
+    except ValueError:
+        return False
+
+
 def _unit_stamp_check(bridge: Any, loaded: Any) -> tuple[dict, list[str]]:
     """Compare each unit's running stamp with the files Altium loaded.
 
@@ -1093,7 +1113,8 @@ def register_application_tools(mcp):
         """Check that Altium and its bridge script answer, and that the
         running script is the version on disk. A mismatch or a non-empty
         ``stale_units`` means Altium runs an old compile: close and reopen
-        the script project to recompile.
+        the script project to recompile. Altium NEWER than the bundle is
+        this server being the old side; ``message`` says which.
 
         Returns:
             ``success``, ``mcp_server_version``, ``altium_script_version``,
@@ -1158,6 +1179,14 @@ def register_application_tools(mcp):
         elif altium_ver == bundled:
             match = True
             msg = f"Altium script is responding (version {altium_ver})."
+        elif _newer(altium_ver, bundled):
+            match = False
+            msg = (
+                f"SERVER OLDER THAN THE SCRIPT: Altium is running version "
+                f"{altium_ver}, and this server's bundle is {bundled} "
+                f"({script_path}). Reopening the script project changes "
+                f"nothing. {SERVER_STEP}."
+            )
         else:
             match = False
             msg = (
