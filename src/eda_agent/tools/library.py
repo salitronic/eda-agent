@@ -3442,8 +3442,11 @@ def register_library_tools(mcp):
                 on the land drawing, and ``drawing_dims`` placing each:
                 {from, to, mm, axis, between centres|outer|gap, or
                 from_edge/to_edge centre|near|far}, {pad, mm, axis} (a
-                land's size); ORIGIN is the centre lines; ``outline``
-                [[x, y], ...] for a land that is not a rectangle; and
+                land's size); ORIGIN is the centre lines, BODY the body;
+                ``outline`` [[x, y], ...] for a land that is not a
+                rectangle, {pad, edge, mm, axis} measuring its edge
+                (1 = first point to second); a number measuring nothing
+                built is {mm, not_built: what it measures}; and
                 ``compared``, the id footprint_compare_drawing returns
                 once the lands are set beside the figure.
             name: default the package's, else generated.
@@ -3480,7 +3483,8 @@ def register_library_tools(mcp):
             return {"ok": False, "created": False,
                     "reason": "model_3d is auto, step, extruded or none"}
         from ..design.landpattern.drawing_dims import (
-            check_dims, drawing_refusal, pop_drawing, read_dims, read_numbers)
+            body_box, check_dims, drawing_refusal, outlines_of, pop_drawing,
+            read_dims, read_not_built, read_numbers)
         if isinstance(package, str):
             try:
                 package = json.loads(package)
@@ -3496,6 +3500,7 @@ def register_library_tools(mcp):
             spec = package_spec(package)
             dims = read_dims(raw_dims)
             numbers = read_numbers(raw_numbers)
+            not_built = read_not_built(raw_numbers)
         except SpecError as e:
             return {"ok": False, "reason": str(e), "created": False}
         from ..preferences import check_on, check_skipped
@@ -3511,7 +3516,8 @@ def register_library_tools(mcp):
         if why:
             return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
                     "reason": why}
-        dim_rows = check_dims(dims, model.pads) if dims else []
+        dim_rows = (check_dims(dims, model.pads, body_box(spec, model),
+                               outlines_of(spec)) if dims else [])
         if checking and any(not r["ok"] for r in dim_rows):
             return {"ok": False, "created": False, "drawing_dims": dim_rows,
                     "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
@@ -3746,6 +3752,7 @@ def register_library_tools(mcp):
             "ok": bool(verdict.get("ok")),
             "footprint": fp_name,
             "drawing_dims": dim_rows,
+            **({"numbers_not_built": not_built} if not_built else {}),
             "library_path": lib_path,
             "family": model.family,
             "density": model.density,
