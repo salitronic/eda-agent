@@ -30,6 +30,13 @@ of them placeable the whole check had to be switched off for that part, so:
   slanted edge, no axis its length;
 * a printed number that measures nothing built is listed in ``numbers`` as
   ``{mm, not_built: "what it measures"}`` and is reported back, not dropped.
+
+A through-hole connector's layout prints the drill of each hole and often
+no copper diameter at all (0.89 x10, 1.02 x4, 1.63 x2, 3.25 x2). A drill
+is built, so it is not a ``not_built`` number, and no pad box measures it:
+
+* ``{pad, mm, hole: true}``: that pad's drill diameter (a slot's width);
+  ``hole: "length"`` a slot's length.
 """
 from __future__ import annotations
 
@@ -69,10 +76,11 @@ class DrawingDim:
     axis: str = ""          # "x", "y" or "" for the straight line
     tol: float = DEFAULT_TOL_MM
     cite: str = ""
-    kind: str = "centres"   # centres | outer | gap | size | edges | outline
+    kind: str = "centres"   # centres | outer | gap | size | edges | outline | hole
     start_edge: str = "centre"
     end_edge: str = "centre"
     edge: int = 0           # outline: which edge, 1 = first point to second
+    part: str = ""          # hole: diameter or length (of a slot)
 
     @classmethod
     def from_any(cls, value: Any) -> "DrawingDim":
@@ -99,6 +107,14 @@ class DrawingDim:
                                 f"edges from 1, not {d['edge']!r}")
             pad = str(d["pad"]).strip().upper()
             return cls(pad, pad, float(mm), axis, tol, cite, "outline", edge=edge)
+        if "pad" in d and d.get("hole") not in (None, False, ""):
+            part = "diameter" if d["hole"] is True else str(d["hole"]).strip().lower()
+            if part not in ("diameter", "length"):
+                raise SpecError("a hole {pad, mm, hole} is hole: true for the "
+                                "drill diameter (a slot's width) or hole: "
+                                f"\"length\" for a slot's length, not {d['hole']!r}")
+            pad = str(d["pad"]).strip().upper()
+            return cls(pad, pad, float(mm), "", tol, cite, "hole", part=part)
         if "pad" in d and not (d.get("between") or d.get("kind")):
             if not axis:
                 raise SpecError("a land size {pad, mm, axis} needs axis x or y")
@@ -291,6 +307,8 @@ def check_dims(dims: Iterable[DrawingDim], pads: Iterable[Any],
             row["edges"] = f"{d.start_edge}-{d.end_edge}"
         if d.kind == "outline":
             row["edge"] = d.edge
+        if d.kind == "hole":
+            row["hole"] = d.part
         if d.cite:
             row["cite"] = d.cite
         twice = sorted({n for n in (d.start, d.end) if n in repeated})
@@ -332,6 +350,26 @@ def check_dims(dims: Iterable[DrawingDim], pads: Iterable[Any],
                     + f", the drawing prints {d.mm:g} mm")
             rows.append(row)
             continue
+        if d.kind == "hole":
+            pad = at[d.start]
+            drill = float(getattr(pad, "hole", 0.0) or 0.0)
+            built = drill if d.part == "diameter" else float(
+                getattr(pad, "hole_length", 0.0) or 0.0)
+            if built <= 0:
+                row.update(ok=False, built_mm=None, why=(
+                    f"pad {d.start} has no hole: {{pad, mm, axis}} measures "
+                    f"a land's size" if drill <= 0 else
+                    f"the hole of pad {d.start} is round, {drill:g} mm, not "
+                    f"a slot: hole: true measures its diameter"))
+                rows.append(row)
+                continue
+            row.update(built_mm=round(built, 4), ok=abs(built - d.mm) <= d.tol)
+            if not row["ok"]:
+                row["why"] = (f"the hole of pad {d.start} is {built:.3f} mm"
+                              + (" long" if d.part == "length" else "")
+                              + f", the drawing prints {d.mm:g} mm")
+            rows.append(row)
+            continue
         built = _measure(d, at[d.start], at[d.end])
         row.update(built_mm=round(built, 4), ok=abs(built - d.mm) <= d.tol)
         if not row["ok"]:
@@ -366,6 +404,7 @@ def drawing_refusal(custom: bool, dims: tuple[DrawingDim, ...],
                 "centres|outer|gap} or from_edge/to_edge centre|near|far for "
                 "unlike edges, {pad, mm, axis} for a land's length or width, "
                 "{pad, edge, mm, axis} for an edge of its outline, "
+                "{pad, mm, hole: true} for its drill, "
                 "ORIGIN for the drawing's centre lines, BODY for the body")
     left = unplaced_numbers(numbers, dims)
     if left:
@@ -373,7 +412,8 @@ def drawing_refusal(custom: bool, dims: tuple[DrawingDim, ...],
                 f" printed on the drawing: work out what each spans on the "
                 f"drawing (a land's length, a span, a gap, an edge to a centre "
                 f"line; BODY is the body, {{pad, edge}} an edge of a land's "
-                f"outline) and add it; lands built without it are not checked. "
+                f"outline, {{pad, hole: true}} its drill) and add it; lands "
+                f"built without it are not checked. "
                 f"A number that measures nothing built (a keep-out line) goes "
                 f"in drawing_numbers as {{mm, not_built: what it measures}}")
     return None
