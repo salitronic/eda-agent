@@ -18,6 +18,18 @@ must be placed by a dimension measured on the pads actually built:
 * ``{pad, axis}``: one land's length or width;
 * ``ORIGIN`` as a pad: the drawing's centre lines;
 * ``D#2``: the second land numbered D (a pin with several lands).
+
+A module's land drawing also prints numbers no pad box carries: the body
+(13.2 x 16.6), the two legs of a cut corner on a land given as an
+``outline`` (0.6 x 0.6), the distance to a keep-out line (11.2). With none
+of them placeable the whole check had to be switched off for that part, so:
+
+* ``BODY`` as a pad: the package body, ``body_x`` by ``body_y`` (nominal);
+* ``{pad, edge, mm, axis}``: one edge of that land's ``outline``, edge 1
+  running from its first point to its second; ``axis`` gives one leg of a
+  slanted edge, no axis its length;
+* a printed number that measures nothing built is listed in ``numbers`` as
+  ``{mm, not_built: "what it measures"}`` and is reported back, not dropped.
 """
 from __future__ import annotations
 
@@ -32,6 +44,12 @@ DEFAULT_TOL_MM = 0.01
 
 #: The centre lines of the drawing (the footprint origin).
 ORIGIN = "ORIGIN"
+
+#: The package body as given in the spec (body_x by body_y, nominal).
+BODY = "BODY"
+
+#: A reason shorter than this says nothing about what the number measures.
+_MIN_REASON = 8
 
 _BETWEEN = {"centres": ("centre", "centre"), "outer": ("far", "far"),
             "gap": ("near", "near")}
@@ -51,9 +69,10 @@ class DrawingDim:
     axis: str = ""          # "x", "y" or "" for the straight line
     tol: float = DEFAULT_TOL_MM
     cite: str = ""
-    kind: str = "centres"   # centres | outer | gap | size | edges
+    kind: str = "centres"   # centres | outer | gap | size | edges | outline
     start_edge: str = "centre"
     end_edge: str = "centre"
+    edge: int = 0           # outline: which edge, 1 = first point to second
 
     @classmethod
     def from_any(cls, value: Any) -> "DrawingDim":
@@ -70,6 +89,16 @@ class DrawingDim:
         if mm is None:
             raise SpecError(f"a drawing dimension needs mm; got {sorted(d)}")
         cite = str(d.get("cite") or "")
+        if "pad" in d and d.get("edge") is not None:
+            try:
+                edge = int(d["edge"])
+            except (TypeError, ValueError):
+                edge = 0
+            if edge < 1 or isinstance(d["edge"], bool):
+                raise SpecError("an outline edge {pad, edge, mm, axis} counts "
+                                f"edges from 1, not {d['edge']!r}")
+            pad = str(d["pad"]).strip().upper()
+            return cls(pad, pad, float(mm), axis, tol, cite, "outline", edge=edge)
         if "pad" in d and not (d.get("between") or d.get("kind")):
             if not axis:
                 raise SpecError("a land size {pad, mm, axis} needs axis x or y")
@@ -100,9 +129,36 @@ def read_dims(values: Iterable[Any] | None) -> tuple[DrawingDim, ...]:
     return tuple(DrawingDim.from_any(v) for v in (values or ()))
 
 
+def _not_built(value: Any) -> dict[str, Any] | None:
+    """``{mm, what}`` for a number given as measuring nothing built."""
+    if not isinstance(value, Mapping):
+        return None
+    what = str(value.get("not_built") or "").strip()
+    try:
+        mm = float(value.get("mm"))
+    except (TypeError, ValueError):
+        mm = None
+    if mm is None or len(what) < _MIN_REASON:
+        raise SpecError(
+            "a drawing number that measures nothing built is {mm, not_built: "
+            "what it measures on the drawing (a keep-out line to the body "
+            f"edge, a view scale)}}; got {dict(value)!r}")
+    return {"mm": mm, "what": what}
+
+
+def read_not_built(values: Iterable[Any] | None) -> list[dict[str, Any]]:
+    """The printed numbers given as measuring nothing that is built, each
+    with what it measures: reported with the result so a land's own number
+    cannot leave the check unseen."""
+    return [n for n in (_not_built(v) for v in (values or ())) if n]
+
+
 def read_numbers(values: Iterable[Any] | None) -> tuple[float, ...]:
+    """The printed numbers a dimension has to place."""
     out = []
     for v in values or ():
+        if _not_built(v):
+            continue
         try:
             out.append(float(v))
         except (TypeError, ValueError):
@@ -131,6 +187,55 @@ class _Origin:
     number, x, y, width, height, rotation = ORIGIN, 0.0, 0.0, 0.0, 0.0, 0.0
 
 
+@dataclass(frozen=True)
+class _Box:
+    """The body, measured like a land."""
+
+    number: str
+    x: float
+    y: float
+    width: float
+    height: float
+    rotation: float = 0.0
+
+
+def body_box(spec: Any, model: Any) -> tuple[float, float, float, float] | None:
+    """The body a drawing prints: the spec's nominal ``body_x`` by
+    ``body_y`` about the built body's centre, or None when the spec gives
+    none (the built model then only has the box round its pads)."""
+    bx, by = getattr(spec, "body_x", None), getattr(spec, "body_y", None)
+    b = getattr(model, "body", None)
+    if bx is None or by is None or b is None:
+        return None
+    cx, cy = (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2
+    return (cx - bx.nom / 2, cy - by.nom / 2, cx + bx.nom / 2, cy + by.nom / 2)
+
+
+def outlines_of(spec: Any) -> dict[str, tuple]:
+    """The ``outline`` of each custom land that has one, under the names
+    ``check_dims`` gives the lands: ``D#1``, ``D#2`` in the order given,
+    and ``D`` for the first."""
+    out: dict[str, tuple] = {}
+    count: dict[str, int] = {}
+    for cp in getattr(spec, "custom_pads", ()) or ():
+        n = str(cp.number).strip().upper()
+        count[n] = count.get(n, 0) + 1
+        pts = tuple(cp.outline or ())
+        if pts:
+            out[f"{n}#{count[n]}"] = pts
+            if count[n] == 1:
+                out[n] = pts
+    return out
+
+
+def _edge(d: DrawingDim, pts: tuple) -> tuple[float, str]:
+    """The built length of outline edge ``d.edge`` and where it runs."""
+    (x1, y1), (x2, y2) = pts[d.edge - 1], pts[d.edge % len(pts)]
+    built = {"x": abs(x2 - x1), "y": abs(y2 - y1)}.get(
+        d.axis, math.hypot(x2 - x1, y2 - y1))
+    return built, f"({x1:g}, {y1:g}) to ({x2:g}, {y2:g})"
+
+
 def _measure(d: DrawingDim, p1: Any, p2: Any) -> float:
     (x1, y1), (x2, y2) = (float(p1.x), float(p1.y)), (float(p2.x), float(p2.y))
     if not d.axis:
@@ -156,11 +261,21 @@ def _describe(d: DrawingDim) -> str:
             "gap": "the facing edges are"}[d.kind]
 
 
-def check_dims(dims: Iterable[DrawingDim],
-               pads: Iterable[Any]) -> list[dict[str, Any]]:
+def check_dims(dims: Iterable[DrawingDim], pads: Iterable[Any],
+               body: tuple[float, float, float, float] | None = None,
+               outlines: Mapping[str, tuple] | None = None
+               ) -> list[dict[str, Any]]:
     """One row per dimension: printed, built, ok. A pad named in a
-    dimension and missing from the footprint is a failure, not a skip."""
+    dimension and missing from the footprint is a failure, not a skip.
+
+    ``body`` is the package body (``body_box``) that ``BODY`` names;
+    ``outlines`` the lands' outlines (``outlines_of``) that ``edge``
+    measures."""
     at: dict[str, Any] = {ORIGIN: _Origin()}
+    if body is not None:
+        x0, y0, x1, y1 = body
+        at[BODY] = _Box(BODY, (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0)
+    outlines = outlines or {}
     count: dict[str, int] = {}
     for p in pads:
         n = str(p.number).strip().upper()
@@ -174,6 +289,8 @@ def check_dims(dims: Iterable[DrawingDim],
                                "axis": d.axis or "line", "drawing_mm": d.mm}
         if d.kind == "edges":
             row["edges"] = f"{d.start_edge}-{d.end_edge}"
+        if d.kind == "outline":
+            row["edge"] = d.edge
         if d.cite:
             row["cite"] = d.cite
         twice = sorted({n for n in (d.start, d.end) if n in repeated})
@@ -185,9 +302,34 @@ def check_dims(dims: Iterable[DrawingDim],
             rows.append(row)
             continue
         missing = sorted({n for n in (d.start, d.end) if n not in at})
+        if missing == [BODY]:
+            row.update(ok=False, built_mm=None, why=(
+                "the package gives no body_x and body_y, so BODY has "
+                "nothing to measure: give the body as the drawing prints it"))
+            rows.append(row)
+            continue
         if missing:
             row.update(ok=False, built_mm=None,
                        why=f"no pad named {', '.join(missing)} in the footprint")
+            rows.append(row)
+            continue
+        if d.kind == "outline":
+            pts = outlines.get(d.start)
+            if not pts or d.edge > len(pts):
+                row.update(ok=False, built_mm=None, why=(
+                    f"the outline of pad {d.start} has {len(pts)} edges, no "
+                    f"edge {d.edge}" if pts else
+                    f"pad {d.start} is given without an outline, so it has "
+                    f"no edge {d.edge}: {{pad, mm, axis}} measures its box"))
+                rows.append(row)
+                continue
+            built, where = _edge(d, pts)
+            row.update(built_mm=round(built, 4), ok=abs(built - d.mm) <= d.tol)
+            if not row["ok"]:
+                row["why"] = (
+                    f"edge {d.edge} of pad {d.start}'s outline runs {where}: "
+                    f"{built:.3f} mm" + (f" along {d.axis}" if d.axis else "")
+                    + f", the drawing prints {d.mm:g} mm")
             rows.append(row)
             continue
         built = _measure(d, at[d.start], at[d.end])
@@ -223,11 +365,15 @@ def drawing_refusal(custom: bool, dims: tuple[DrawingDim, ...],
                 "drawing_dims placing each one: {from, to, mm, axis, between "
                 "centres|outer|gap} or from_edge/to_edge centre|near|far for "
                 "unlike edges, {pad, mm, axis} for a land's length or width, "
-                "ORIGIN for the drawing's centre lines")
+                "{pad, edge, mm, axis} for an edge of its outline, "
+                "ORIGIN for the drawing's centre lines, BODY for the body")
     left = unplaced_numbers(numbers, dims)
     if left:
         return (f"no drawing_dims entry measures {', '.join(f'{n:g}' for n in left)}"
                 f" printed on the drawing: work out what each spans on the "
                 f"drawing (a land's length, a span, a gap, an edge to a centre "
-                f"line) and add it; lands built without it are not checked")
+                f"line; BODY is the body, {{pad, edge}} an edge of a land's "
+                f"outline) and add it; lands built without it are not checked. "
+                f"A number that measures nothing built (a keep-out line) goes "
+                f"in drawing_numbers as {{mm, not_built: what it measures}}")
     return None

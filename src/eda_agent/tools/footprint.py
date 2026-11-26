@@ -509,14 +509,22 @@ def register_footprint_tools(mcp):
         if (raw_dims or raw_numbers) and not report["errors"]:
             from ..design.landpattern.builder import build_footprint
             from ..design.landpattern.drawing_dims import (
-                check_dims, read_dims, read_numbers, unplaced_numbers)
+                body_box, check_dims, outlines_of, read_dims, read_not_built,
+                read_numbers, unplaced_numbers)
+            not_built: list[dict[str, Any]] = []
             try:
                 dims = read_dims(raw_dims)
-                rows = check_dims(dims, build_footprint(read_package(package)).pads)
+                spec = read_package(package)
+                model = build_footprint(spec)
+                rows = check_dims(dims, model.pads, body_box(spec, model),
+                                  outlines_of(spec))
                 left = unplaced_numbers(read_numbers(raw_numbers), dims)
+                not_built = read_not_built(raw_numbers)
             except SpecError as exc:
                 rows, left = [{"ok": False, "why": str(exc)}], []
             out["drawing_dims"] = rows
+            if not_built:
+                out["numbers_not_built"] = not_built
             if left:
                 out["unplaced_numbers"] = left
             if left or any(not r["ok"] for r in rows):
