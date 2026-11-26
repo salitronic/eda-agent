@@ -112,8 +112,9 @@ _READS = {
     "project": "query($id: ID!) { desProjectById(id: $id) { id name description } }",
     "folders": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
                 "{ folders { id name path } } }"),
-    "components": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
-                   "{ components { nodes { id name%s } } } }"),
+    "components": ("query($ws: String!, $after: String) { desLibrary(workspaceUrl: $ws) "
+                   "{ components(after: $after) { pageInfo { hasNextPage endCursor } "
+                   "nodes { id name%s } } } }"),
     "component": ("query($id: ID!) { desComponentById(id: $id) { id name details "
                   "{ parameters { type name value } } } }"),
     "type": ("query($n: String!) { __type(name: $n) { name kind description fields "
@@ -143,8 +144,30 @@ def refuse_changes(query: str) -> None:
                              "tools make changes")
 
 
+class GqlEnum(str):
+    """A GraphQL enum value, written bare (TEXT, not "TEXT")."""
+
+
+#: The input fields whose value is a GraphQL enum, by the field holding them.
+_ENUM_FIELDS = {"parameters": frozenset({"type"})}
+
+
+def _enums(value: Any, fields: frozenset = frozenset()) -> Any:
+    """``value`` with the enum fields' strings marked as enums."""
+    if isinstance(value, list):
+        return [_enums(v, fields) for v in value]
+    if isinstance(value, dict):
+        return {k: GqlEnum(v) if k in fields and isinstance(v, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v)
+                else _enums(v, _ENUM_FIELDS.get(k, frozenset()))
+                for k, v in value.items()}
+    return value
+
+
 def gql_value(value: Any) -> str:
     """A Python value written as a GraphQL input value."""
+    if isinstance(value, GqlEnum):
+        return str(value)
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, (str, int, float)):
@@ -159,18 +182,25 @@ def gql_value(value: Any) -> str:
     raise Altium365Error(f"a {type(value).__name__} cannot be sent")
 
 
-def publish_operation(kind: str) -> tuple[str, str]:
-    """(schema field, operation) creating a symbol or footprint from a file."""
-    name = {"symbol": "desCreateSymbol", "footprint": "desCreateFootprint"}[kind]
-    return name, (
+#: Per kind: the mutation, and the field of its payload that holds the new
+#: item's id (DesCreateFootprintPayload has footprintId, not id).
+PUBLISH = {"symbol": ("desCreateSymbol", "id"),
+           "footprint": ("desCreateFootprint", "footprintId")}
+
+
+def publish_operation(kind: str) -> tuple[str, str, str]:
+    """(schema field, id field, operation) creating a symbol or footprint
+    from a file."""
+    name, id_field = PUBLISH[kind]
+    return name, id_field, (
         "mutation($fileId: String!, $relativePath: String!, $folderId: ID!, "
         "$ws: String!, $name: String!) { " + name + "(input: { files: { fileId: "
         "$fileId, relativePath: $relativePath }, folderId: $folderId, name: $name, "
-        "workspaceUrl: $ws }) { errors { message } id } }")
+        "workspaceUrl: $ws }) { errors { message } " + id_field + " } }")
 
 
 def release_operation(spec: dict) -> str:
-    return ("mutation { desReleaseComponent(input: " + gql_value(spec)
+    return ("mutation { desReleaseComponent(input: " + gql_value(_enums(spec))
             + ") { errors { message } } }")
 
 
@@ -477,10 +507,22 @@ class Altium365Session:
     def list_components(self, workspace_url: str, name_contains: str = "",
                         with_parameters: bool = False) -> list[dict]:
         query = _READS["components"] % (_PARAMETERS if with_parameters else "")
-        library = self.read(query, {"ws": self.permitted(workspace_url)}).get("desLibrary")
-        nodes = ((library or {}).get("components") or {}).get("nodes") or []
+        ws = self.permitted(workspace_url)
         needle = name_contains.lower()
-        return [n for n in nodes if needle in (n.get("name") or "").lower()]
+        kept: list[dict] = []
+        cursor = None
+        # The server answers a page at a time (10 parts unless asked);
+        # every page is read, as list_projects does.
+        for _page in range(1000):
+            library = self.read(query, {"ws": ws, "after": cursor}).get("desLibrary")
+            page = (library or {}).get("components") or {}
+            kept.extend(n for n in page.get("nodes") or []
+                        if needle in (n.get("name") or "").lower())
+            more = page.get("pageInfo") or {}
+            if not more.get("hasNextPage") or not more.get("endCursor"):
+                break
+            cursor = more["endCursor"]
+        return kept
 
     def get_component(self, component_id: str) -> dict:
         part = self.read(_READS["component"], {"id": component_id}).get("desComponentById")

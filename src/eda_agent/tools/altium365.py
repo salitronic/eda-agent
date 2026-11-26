@@ -129,7 +129,7 @@ def register_altium365_tools(mcp) -> None:
         source = Path(file_path)
         if not source.is_file() or source.suffix.lower() not in (".schlib", ".pcblib"):
             return {"ok": False, "reason": "file_path names an existing .SchLib or .PcbLib"}
-        field_name, operation = publish_operation(kind)
+        field_name, id_field, operation = publish_operation(kind)
         values = {"fileId": "<the uploaded file>", "relativePath": f"Released/{source.name}",
                   "folderId": folder_id, "ws": workspace_url, "name": name}
         if not confirm:
@@ -141,7 +141,7 @@ def register_altium365_tools(mcp) -> None:
             values["ws"] = session.permitted(workspace_url)
             values["fileId"] = session.upload_file(source)
             data = session.run_change(operation, values)
-            made = (data.get(field_name) or {}).get("id")
+            made = (data.get(field_name) or {}).get(id_field)
             problems = reported_errors(data, field_name)
             if problems or not made:
                 raise Altium365Error(f"{field_name} created nothing: "

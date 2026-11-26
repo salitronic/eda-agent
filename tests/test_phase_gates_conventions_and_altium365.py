@@ -408,6 +408,38 @@ def test_reading_queries_refuse_changes_and_changes_are_built_safely():
     assert altium365.gql_value([True, 1.5, "a\"b"]) == '[true, 1.5, "a\\"b"]'
 
 
+def test_publishing_asks_each_payload_for_the_id_field_it_has():
+    """DesCreateFootprintPayload has footprintId and no id; asking it for
+    id was refused with HTTP 400 and nothing was created."""
+    name, id_field, text = altium365.publish_operation("footprint")
+    assert (name, id_field) == ("desCreateFootprint", "footprintId")
+    assert "{ errors { message } footprintId }" in text
+    name, id_field, text = altium365.publish_operation("symbol")
+    assert (name, id_field) == ("desCreateSymbol", "id")
+    assert "{ errors { message } id }" in text
+
+
+def test_a_release_sends_a_parameter_type_as_a_bare_enum():
+    text = altium365.release_operation({
+        "workspaceUrl": "https://w/", "componentItemName": "CMP-1",
+        "parameters": [{"name": "Value", "value": "TEXT", "type": "TEXT"}]})
+    assert "type: TEXT" in text and 'value: "TEXT"' in text
+    assert 'componentItemName: "CMP-1"' in text
+
+
+def test_listing_components_reads_every_page():
+    pages = {None: (["A", "B"], "c1"), "c1": (["C"], None)}
+
+    def answer(body):
+        names, cursor = pages[body["variables"]["after"]]
+        return {"data": {"desLibrary": {"components": {
+            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+            "nodes": [{"id": n, "name": n} for n in names]}}}}
+    session, requests = _session(answer)
+    assert [c["name"] for c in session.list_components("https://w/")] == ["A", "B", "C"]
+    assert len(requests) == 2
+
+
 def test_an_unconfigured_route_and_a_refused_token_are_said_plainly():
     session, _ = _session(lambda b: {}, altium365.Altium365Config())
     with pytest.raises(altium365.Altium365Error, match="not set up"):

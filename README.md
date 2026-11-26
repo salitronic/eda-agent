@@ -287,7 +287,10 @@ managed library, and can publish, release and change parameters (only with
 `EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
 `EDA_AGENT_NEXAR_APP_ID`, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET` (a
 Nexar portal app refuses a sign-in without it) and `eda-agent altium365-login`
-once (`eda-agent altium365-logout` forgets it).
+once (`eda-agent altium365-logout` forgets it). When your AI client runs in
+WSL, Windows variables set with `setx` reach it only through `WSLENV`
+(`EDA_AGENT_NEXAR_APP_ID:EDA_AGENT_NEXAR_CLIENT_SECRET`, then
+`wsl --shutdown`).
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
