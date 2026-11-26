@@ -1295,15 +1295,25 @@ async def _teardrops(action: str, scope: str,
     steps += [Check("Generate report", False), Press("OK", closes=True)]
     bridge = get_bridge()
     before = await _teardrop_count(bridge)
+    # Altium does not run the Teardrops command while the board is in 3D
+    # view: no dialog came up and the call returned as if it had worked.
+    view = await bridge.send_command_async("generic.switch_view", {"mode": "2d"})
+    if isinstance(view, dict) and view.get("success") is False:
+        return view
     result, driven = await send_answering(
         bridge, "pcb.teardrops", {}, "Teardrops", steps)
     if not isinstance(result, dict):
         return result
     result["teardrops_before"] = before
     result["teardrops_after"] = await _teardrop_count(bridge)
+    result["view"] = "2d"
     if driven is not None:
         result["dialog"] = driven
         result.pop("note", None)
+        if not driven.get("appeared", True):
+            result["ok"] = False
+            result["reason"] = ("the Teardrops dialog did not come up, so nothing "
+                                "was " + ("added" if action == "Add" else "removed"))
     return result
 
 
@@ -4313,15 +4323,19 @@ def register_pcb_tools(mcp):
         With Dialogs Automatic (Config tab) the tool sets Add, the scope
         and the options given, then OK; None keeps the dialog's value.
         Otherwise the dialog waits for the user. A repour can delete them.
+        The board is put in 2D view first: Altium runs no Teardrops in 3D.
 
         Args:
             scope: "all" or "selected".
             via_th_pads, smd_pads, tracks, t_junctions: Objects to treat.
+                Altium's dialog starts with T-junctions off: pass
+                ``t_junctions=True`` for teardrops where tracks meet.
             force: Place even where a rule is broken.
             adjust_size: Shrink one that would not fit.
 
         Returns:
-            ``teardrops_before``, ``teardrops_after``, ``dialog``.
+            ``teardrops_before``, ``teardrops_after``, ``view``, ``dialog``;
+            ``ok`` false with a ``reason`` when the dialog did not come up.
         """
         return await _teardrops("Add", scope, {
             "Via/TH Pad": via_th_pads, "SMD Pad": smd_pads, "Tracks": tracks,

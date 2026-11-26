@@ -93,7 +93,7 @@ async def test_teardrops_both_hit_one_handler(monkeypatch):
     await tools["pcb_add_teardrops"]()
     await tools["pcb_remove_teardrops"]()
     assert [c[0] for c in b.calls if c[0] != "generic.get_object_count"] == [
-        "pcb.teardrops", "pcb.teardrops"]
+        "generic.switch_view", "pcb.teardrops", "generic.switch_view", "pcb.teardrops"]
 
 
 @pytest.mark.asyncio
