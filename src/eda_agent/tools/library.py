@@ -3442,11 +3442,8 @@ def register_library_tools(mcp):
                 on the land drawing, and ``drawing_dims`` placing each:
                 {from, to, mm, axis, between centres|outer|gap, or
                 from_edge/to_edge centre|near|far}, {pad, mm, axis} (a
-                land's size); ORIGIN is the centre lines, BODY the body;
-                ``outline`` [[x, y], ...] for a land that is not a
-                rectangle, {pad, edge, mm, axis} measuring its edge
-                (1 = first point to second); a number measuring nothing
-                built is {mm, not_built: what it measures}; and
+                land's size); ORIGIN is the centre lines; ``outline``
+                [[x, y], ...] for a land that is not a rectangle; and
                 ``compared``, the id footprint_compare_drawing returns
                 once the lands are set beside the figure.
             name: default the package's, else generated.
