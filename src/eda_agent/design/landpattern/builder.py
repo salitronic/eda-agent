@@ -59,6 +59,22 @@ _FAMILY_TITLES = {
 }
 
 
+#: Two edges closer than this meet (mm): a drawing's own rounding.
+_MEET = 1e-6
+
+
+def _one_land(a: Pad, b: Pad) -> bool:
+    """Whether two hand-placed lands meet along an edge without either
+    reaching into the other: one copper land given as two pads."""
+    if not (a.group == b.group == "custom"):
+        return False
+    ax0, ay0, ax1, ay1 = a.bbox()
+    bx0, by0, bx1, by1 = b.bbox()
+    dx = max(bx0 - ax1, ax0 - bx1)      # > 0 apart, < 0 sharing that much
+    dy = max(by0 - ay1, ay0 - by1)
+    return (abs(dx) <= _MEET and dy < -_MEET) or (abs(dy) <= _MEET and dx < -_MEET)
+
+
 class Builder:
     """Collects what a family function decides, then finishes the model."""
 
@@ -303,10 +319,24 @@ class Builder:
             for b in self.pads[i + 1:]:
                 if a.number == b.number:
                     continue
+                if _one_land(a, b):
+                    # A centre land a datasheet draws once for two pins
+                    # (a DFN's ground land under pins 3 and 8), given as
+                    # two lands that meet: the drawing's copper, and a pad
+                    # for each number.
+                    self.warnings.append(
+                        f"lands {a.number} and {b.number} touch along an "
+                        "edge: one copper land carrying both numbers, so "
+                        "both pins must be on one net")
+                    continue
                 if box_gap(a.bbox(), b.bbox()) <= 0:
                     raise SpecError(
                         f"lands {a.number} and {b.number} overlap; the package "
-                        "dimensions leave no room between them")
+                        "dimensions leave no room between them"
+                        + (". One land that serves two pins is given as two "
+                           "lands that meet along an edge, neither reaching "
+                           "into the other"
+                           if a.group == b.group == "custom" else ""))
 
     def _pin1(self) -> tuple[float, float]:
         for p in self.pads:
