@@ -464,6 +464,52 @@ def _whole_params(server, name: str) -> set:
     return whole
 
 
+def _text_as_values(server, name: str, args):
+    """``args`` with a list, an object or a number that was given as its
+    JSON text read into the value, where ``name`` takes one.
+
+    The server's own argument check reads such text (a client often sends
+    a list as its JSON text, and "5" becomes 5.0 for a float), but only
+    after the lengths were converted. A pad list given as text in a mil
+    session reached a millimetre tool as it was, and the reply was
+    converted back: every number 39.37 times too large, and a 3D model
+    reported as "of another package". Text an argument takes as text (a
+    ``str``) is left alone.
+    """
+    import inspect
+    import json
+    import re
+    fn = _tool_fn(server, name)
+    if fn is None or not isinstance(args, dict):
+        return args
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return args
+    out = None
+    for key, value in args.items():
+        p = params.get(key)
+        if p is None or not isinstance(value, str):
+            continue
+        hint = p.annotation if isinstance(p.annotation, str) else repr(p.annotation)
+        holds = re.search(r"list|dict|tuple|Sequence|Mapping|Any", hint)
+        if re.search(r"\bstr\b", hint) and not holds:
+            continue
+        try:
+            read = json.loads(value)
+        except ValueError:
+            continue
+        if isinstance(read, bool) or read is None or isinstance(read, str):
+            continue
+        if isinstance(read, (int, float)) and (
+                holds or not re.search(r"\b(float|int)\b", hint)):
+            continue
+        if out is None:
+            out = dict(args)
+        out[key] = read
+    return args if out is None else out
+
+
 def _lengths_in(server, name: str, arguments: dict):
     """The call's arguments as the tool takes them, and how to read its
     reply: ``(arguments, plan)``. A tool run through another (tool_invoke,
@@ -471,11 +517,14 @@ def _lengths_in(server, name: str, arguments: dict):
     from . import lengths
     from .tools.folds import FOLDS, _BUILT
     arguments, unit = lengths.call_unit(arguments)
+    # tool_invoke's arguments, a family tool's args, a list of items.
+    arguments = _text_as_values(server, name, arguments)
 
     def one(tool: str, args: dict) -> dict:
         params = _tool_params(server, tool)
         if params is None or not isinstance(args, dict):
             return args
+        args = _text_as_values(server, tool, args)
         bad = lengths.unknown_unit_names(args, params)
         if bad:
             raise ValueError(f"{tool} takes no {', '.join(bad)}")
