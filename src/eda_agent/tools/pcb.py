@@ -10734,7 +10734,8 @@ def register_pcb_tools(mcp):
         their geometry, a page at a time. Pours carry their outline in
         ``pts`` (``[x, y]`` per vertex, ``[x, y, cx, cy, r, a1, a2]`` where
         the edge is an arc). Unlike the other tools, lengths here are in
-        Altium's internal units: divide by ``coord_per_mil`` in the reply.
+        Altium's internal units: divide by ``coord_per_mil`` in the reply
+        (``coord_per_mm`` in a mm session).
         ``v`` is, per kind: track ``[x1, y1, x2, y2, width]``; arc ``[cx,
         cy, r, a1, a2, width]``; via ``[x, y, size, hole]`` with ``low``,
         ``high``, ``sizes`` per layer and its mask; fill ``[x1, y1, x2,

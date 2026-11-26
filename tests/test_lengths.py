@@ -109,6 +109,18 @@ def test_a_name_with_a_unit_always_means_it(workspace):
     assert seen["track"]["clearance_mils"] == 10
 
 
+def test_a_count_per_unit_length_converts_the_other_way():
+    """coord_per_mil is a rate, not a length: 10000 per mil is 393700.787
+    per mm, where treating it as a length gave 254 and put every point a
+    client scaled by it about 1550 times too far out."""
+    out = lengths.reply_in("pcb_get_copper", {"coord_per_mil": 10000}, "mm")
+    assert out["coord_per_mm"] == pytest.approx(393700.787, abs=1e-3)
+    back = lengths.reply_in("pcb_get_copper", {"coord_per_mm": 393700.787402}, "mil")
+    assert back["coord_per_mils"] == pytest.approx(10000, abs=1e-3)
+    assert lengths.reply_in("pcb_get_copper", {"coord_per_mil": 10000},
+                            "mil")["coord_per_mil"] == 10000
+
+
 def test_a_name_with_a_unit_the_tool_does_not_take_is_refused(workspace):
     server, _ = _server()
     with pytest.raises(Exception, match="takes no gap_mm"):

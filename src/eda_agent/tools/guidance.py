@@ -2084,7 +2084,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "pcb_get_copper(kinds=..., layer=..., selected=...) reads one "
             "layer of one kind in a second or two; every kind of a busy "
             "board takes minutes, and each page walks the board again. "
-            "Lengths are internal units (coord_per_mil in the reply), "
+            "Lengths are internal units (coord_per_mil in the reply, "
+            "coord_per_mm in a mm session), "
             "positions absolute."),
     },
     {

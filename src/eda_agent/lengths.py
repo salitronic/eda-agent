@@ -104,6 +104,10 @@ _SUFFIX = re.compile(r"^(?P<stem>.+)_(?P<unit>mils|mil|mm)$")
 #: area scales with the square, and is left as its name says.
 _NOT_LINEAR = re.compile(r"area|_sq|square|per_")
 
+#: A name that is a count per unit length (``coord_per_mil``): converted
+#: with the inverse of a length's factor.
+_PER_UNIT = re.compile(r"(^|_)per$")
+
 #: Inside a container of lengths (a point list, a box, a package), the
 #: numbers that are not lengths, by their names.
 _NOT_IN_LENGTHS = re.compile(
@@ -456,6 +460,10 @@ def _walk(obj: Any, keys: frozenset[str], k: float, name_for: Callable[[str, "re
             new = name_for(key, m)
             if new != key and new not in obj and _all_numbers(value):
                 f = _factor(_unit_of(m.group("unit")), _unit_of(new.rsplit("_", 1)[1]))
+                if _PER_UNIT.search(m.group("stem")):
+                    # A count per unit length (coord_per_mil) scales the
+                    # other way: 10000 per mil is 393700.787 per mm.
+                    f = 1.0 / f
                 renamed[new] = _vertices(value, f, vertex) \
                     if m.group("stem") in arcs else _scale(value, f)
                 continue
