@@ -4121,8 +4121,8 @@ def register_pcb_tools(mcp):
         Args:
             moves: List of move dicts. Each dict supports:
                 designator (required) , target component
-                x        (optional)   , new X in mils
-                y        (optional)   , new Y in mils
+                x        (optional)   , new X in the session's unit
+                y        (optional)   , new Y in the session's unit
                 rotation (optional)   , new rotation in degrees
 
             Example:
@@ -9135,9 +9135,10 @@ def register_pcb_tools(mcp):
 
         Args:
             tracks: List of track dicts. Each dict supports:
-                x1, y1, x2, y2 (required, mils; decimals are kept)
-                width (default 10, mils; decimals are kept, so a 0.1 mm
-                rule stays 3.937), layer (default "TopLayer"; "current" =
+                x1, y1, x2, y2 (required, in the session's unit,
+                length_units; decimals are kept)
+                width (the session's unit, default 10 mil; decimals are
+                kept, so a 0.1 mm rule stays 0.1 mm), layer (default "TopLayer"; "current" =
                 the editor's current layer, see pcb_layer_view),
                 net_name (optional, empty = no net; a net the board does
                 not have skips the track), stub (true marks a track
@@ -9498,16 +9499,17 @@ def register_pcb_tools(mcp):
 
         Args:
             text: Text content to place
-            x: Text X position in mils. With a justification, the point
+            x: Text X position in the session's unit (length_units),
+                as every length here. With a justification, the point
                 the justification names (the centre for "center").
-            y: Text Y position in mils, as x.
+            y: Text Y position, as x.
             layer: PCB layer name (default "TopOverlay"). Common choices:
                 "TopOverlay", "BottomOverlay", "TopLayer", "BottomLayer",
                 "Mechanical1" and up, or the board's own layer name
-            height: Text height in mils (default 60), decimals allowed
+            height: Text height (default 60 mil), decimals allowed
             rotation: Rotation angle in degrees (default 0); a justified
                 text turns about its justification point.
-            stroke: Stroke width in mils; 0 keeps Altium's default.
+            stroke: Stroke width; 0 keeps Altium's default.
                 To resize existing designators use ``pcb_set_text_style``.
             kind: "stroke" or "truetype"; empty keeps Altium's default.
                 font_name, bold, italic or inverted alone ask for truetype.
@@ -9519,16 +9521,16 @@ def register_pcb_tools(mcp):
                 center, center_right, bottom_left, bottom_center or
                 bottom_right. Makes the text multiline: Altium justifies a
                 text only inside its frame, a single-line text ignores it.
-            frame_width: Frame width in mils; 0 = as wide as the text's
+            frame_width: Frame width; 0 = as wide as the text's
                 longest line, measured on the placed text. A frame narrower
                 than a line wraps it at its spaces: Altium grows a frame
                 only to the longest word (plus margin).
-            frame_height: Frame height in mils; 0 = fitted to the text (all
+            frame_height: Frame height; 0 = fitted to the text (all
                 its lines).
             inverted: TrueType text cut out of a filled box (silkscreen
                 labels). On a justified text the filled box is the frame,
                 so frame_width / frame_height make the label larger.
-            margin: Inverted margin in mils, the minimum fill round the text.
+            margin: Inverted margin, the minimum fill round the text.
             mirror: None mirrors a text on a bottom layer (BottomOverlay,
                 BottomLayer, BottomSolder, BottomPaste), as Altium's Place
                 String does, so it reads right from below. True / False
@@ -9663,19 +9665,21 @@ def register_pcb_tools(mcp):
                 "solder_mask_expansion" / "paste_mask_expansion" (value =
                 SIGNED radial expansion; negative with scope "IsVia" tents
                 vias), "vias_under_smd" (set ``allowed``, not value),
-                "length" (value = min length in mils, max_value = max),
+                "length" (value = min length, max_value = max),
                 "signal_impedance" (value = min ohms, max_value = max),
                 "flight_time_rising" / "flight_time_falling" (value =
                 max flight time in ns). These four read their limits back
                 in ``limits``; change them later with
                 pcb_set_rule_properties. "matched_lengths" (value =
-                tolerance in mils; scope a net / pair / xSignal class)
+                tolerance; scope a net / pair / xSignal class)
                 reads its settings back in ``settings``.
-            value: Primary value in mils (the MIN for ranged kinds).
+            value: Primary value, a length in the session's unit
+                (length_units) for the length kinds (the MIN for ranged
+                kinds).
             max_value: MAX for ranged kinds (default 5x value).
             favored_value: Preferred value (default value).
-            max_uncoupled_length: differential_pairs only, mils
-                (default 1000).
+            max_uncoupled_length: differential_pairs only, the session's
+                unit (default 1000 mil).
             scope: Query for Scope1, matching the kind: "InNet('GND')",
                 "InNetClass('Power')" or "All" for net rules;
                 "InDifferentialPair('USB')" or "IsDifferentialPair" for
@@ -9962,7 +9966,8 @@ def register_pcb_tools(mcp):
         PcbLib.
 
         Args:
-            points: ``[{x, y}]`` in mils; each picks the via whose pad
+            points: ``[{x, y}]`` in the session's unit (length_units);
+                each picks the via whose pad
                 covers that point (nearest centre wins).
             net: Without points, every free via on this net; with points,
                 only vias on this net are considered.
@@ -9984,7 +9989,7 @@ def register_pcb_tools(mcp):
                 params["points"] = ";".join(
                     f"{float(p['x'])},{float(p['y'])}" for p in points)
             except (KeyError, TypeError, ValueError):
-                return {"ok": False, "reason": "each point is {x, y} in mils"}
+                return {"ok": False, "reason": "each point is {x, y}"}
         if net.strip():
             params["net"] = net.strip()
         if top is not None:
