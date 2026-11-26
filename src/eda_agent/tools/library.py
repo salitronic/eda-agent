@@ -1593,6 +1593,30 @@ def _spill_pin_list(result, pins, comp, output_path):
     return out
 
 
+#: What lib_get_footprint_primitives reads, as its ``kinds`` names them.
+_PRIMITIVE_KINDS = ("track", "arc", "region", "fill", "text", "via", "body")
+
+
+def _primitive_kinds(kinds: str) -> tuple[str, list[str]]:
+    """``kinds`` as the script reads it (``a|b``), and the words it would
+    not know. The script matches whole singular words between ``|``; any
+    other word matched nothing, so ``"regions,texts"`` read no region and
+    no text and the reply looked like a footprint that has none."""
+    words = [w.strip().lower() for w in
+             str(kinds or "").replace(",", "|").replace(";", "|").split("|")]
+    known, unknown = [], []
+    for w in (w for w in words if w):
+        one = {"bodies": "body"}.get(w, w[:-1] if w.endswith("s") else w)
+        if w in _PRIMITIVE_KINDS:
+            one = w
+        if one in _PRIMITIVE_KINDS:
+            if one not in known:
+                known.append(one)
+        else:
+            unknown.append(w)
+    return "|".join(known), unknown
+
+
 #: Installed library kinds lib_search cannot read, and why, as
 #: library.get_installed_libraries names them.
 _UNSEARCHED_KINDS = {
@@ -9021,7 +9045,8 @@ def register_library_tools(mcp):
                 library.
             kinds: Optional ``|`` list of what to read, from track, arc,
                 region, fill, text, via and body (``"via|body"``); empty
-                reads all. Each kind is its own filtered walk.
+                reads all. Each kind is its own filtered walk. A comma
+                and a plural are read as meant; any other word is refused.
 
         Every primitive carries ``selected``. Each via also carries its
         mask (top, bottom, separate, ``mask_expansion_source`` manual or
@@ -9054,8 +9079,17 @@ def register_library_tools(mcp):
         """
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "library_path": library_path}
-        if kinds:
-            params["kinds"] = kinds
+        if kinds and str(kinds).strip():
+            wanted, unknown = _primitive_kinds(kinds)
+            if unknown or not wanted:
+                return {"ok": False, "reason": (
+                    f"kinds {kinds!r} names "
+                    + (", ".join(repr(w) for w in unknown) or "nothing")
+                    + ", which this read does not know; it reads "
+                    + ", ".join(_PRIMITIVE_KINDS) + " (a | list, or empty "
+                    "for all). Nothing was read: an unknown kind would have "
+                    "come back as an empty list")}
+            params["kinds"] = wanted
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.get_footprint_primitives", params)
