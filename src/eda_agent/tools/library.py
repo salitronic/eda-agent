@@ -2401,9 +2401,10 @@ def register_library_tools(mcp):
                 A table with a pin-number column per package also takes
                 ``package_column``, the package as the table heads its
                 column ("LQFP48"): only that column's numbers are read.
-            pin_length: rectangle only; pin length in mils, a multiple
-                of 100. Give the length the library's own ICs use, so
-                the new symbol matches them.
+            pin_length: rectangle only; pin length in the session's
+                unit, a multiple of 100 mil (2.54 mm; default 200 mil).
+                Give the length the library's own ICs use, so the new
+                symbol matches them.
             fill_color, border_color: rectangle only; the body's fill
                 and outline as Altium colour numbers (blue*65536 +
                 green*256 + red). The defaults are Altium's pale yellow
