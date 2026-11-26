@@ -960,10 +960,113 @@ def _outline_fields(pts: Any) -> tuple[str, str]:
     return fields, ""
 
 
+def _outline_polygon(pts: list) -> list[tuple[float, float]]:
+    """The outline as a polygon: arc edges ([x, y, sweep]) walked in
+    short steps, so a point can be tested against the copper they bound."""
+    verts = [(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0)
+             for p in pts]
+    if len(verts) > 3 and verts[0][:2] == verts[-1][:2]:
+        verts = verts[:-1]
+    poly: list[tuple[float, float]] = []
+    for k, (x, y, sweep) in enumerate(verts):
+        poly.append((x, y))
+        if not sweep:
+            continue
+        nx, ny, _ = verts[(k + 1) % len(verts)]
+        arc = _edge_arc(x, y, nx, ny, sweep)
+        if isinstance(arc, str):
+            continue
+        cx, cy = arc[0], arc[1]
+        steps = max(2, int(abs(sweep) // 10))
+        for s in range(1, steps):
+            a = math.radians(sweep * s / steps)
+            dx, dy = x - cx, y - cy
+            poly.append((cx + dx * math.cos(a) - dy * math.sin(a),
+                         cy + dx * math.sin(a) + dy * math.cos(a)))
+    return poly
+
+
+def _inside(poly: list[tuple[float, float]], x: float, y: float) -> bool:
+    """Whether (x, y) lies inside the polygon (even-odd rule)."""
+    hit = False
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            hit = not hit
+    return hit
+
+
+def _edge_distance(poly: list[tuple[float, float]], x: float, y: float) -> float:
+    """Distance from (x, y) to the nearest edge of the polygon."""
+    best = math.inf
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        dx, dy = x2 - x1, y2 - y1
+        t = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy)
+                                                 / (dx * dx + dy * dy)))
+        best = min(best, math.hypot(x - x1 - t * dx, y - y1 - t * dy))
+    return best
+
+
+def _depth(poly: list[tuple[float, float]], x: float, y: float) -> float:
+    """How deep (x, y) lies in the copper: its distance to the outline,
+    negative outside it."""
+    d = _edge_distance(poly, x, y)
+    return d if _inside(poly, x, y) else -d
+
+
+def _deepest_point(poly: list[tuple[float, float]]) -> tuple[float, float]:
+    """The point of the polygon farthest from its outline (the pole of
+    inaccessibility), by a grid search narrowed round the best cell."""
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    best = ((x0 + x1) / 2, (y0 + y1) / 2)
+    best_d = _depth(poly, *best)
+    for _ in range(12):
+        for i in range(25):
+            for j in range(25):
+                x = x0 + (x1 - x0) * (i + 0.5) / 25
+                y = y0 + (y1 - y0) * (j + 0.5) / 25
+                d = _depth(poly, x, y)
+                if d > best_d:
+                    best, best_d = (x, y), d
+        wx, wy = (x1 - x0) / 5, (y1 - y0) / 5
+        x0, x1, y0, y1 = best[0] - wx, best[0] + wx, best[1] - wy, best[1] + wy
+    return best
+
+
+def _area_centroid(poly: list[tuple[float, float]]) -> Optional[tuple[float, float]]:
+    area = cx = cy = 0.0
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        cross = x1 * y2 - x2 * y1
+        area += cross
+        cx += (x1 + x2) * cross
+        cy += (y1 + y2) * cross
+    if abs(area) < 1e-12:
+        return None
+    return cx / (3 * area), cy / (3 * area)
+
+
+def _custom_anchor(poly: list[tuple[float, float]]) -> tuple[float, float]:
+    """Where a custom pad's anchor goes when none is given: inside the
+    copper, since a track is routed to it. The middle of the outline's
+    box when it is well inside, else the area centroid when that is,
+    else the point deepest in the copper: a U, C or L has its box middle
+    in the notch."""
+    deepest = _deepest_point(poly)
+    enough = 0.5 * _depth(poly, *deepest)
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    for point in (((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2),
+                  _area_centroid(poly)):
+        if point is not None and _depth(poly, *point) >= enough:
+            return point
+    return deepest
+
+
 def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
     """The ``pads`` payload for library.add_footprint_custom_pads: each pad's
-    designator, layer, anchor x, y (default: the middle of its outline's
-    box) and outline. Returns ``(payload, problems)``."""
+    designator, layer, anchor x, y (default: inside the copper, see
+    _custom_anchor) and outline. Returns ``(payload, problems)``."""
     ops: list[str] = []
     problems: list[str] = []
     for i, pad in enumerate(pads):
@@ -975,20 +1078,37 @@ def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
         if problem:
             problems.append(f"custom pad {name}: outline {problem}")
             continue
+        poly = _outline_polygon(pad["outline"])
         try:
-            xs = [float(p[0]) for p in pad["outline"]]
-            ys = [float(p[1]) for p in pad["outline"]]
-            x = float(pad["x"]) if pad.get("x") is not None else (min(xs) + max(xs)) / 2
-            y = float(pad["y"]) if pad.get("y") is not None else (min(ys) + max(ys)) / 2
-        except (TypeError, ValueError):
-            problems.append(f"custom pad {name}: x and y are numbers")
+            given = pad.get("x") is not None or pad.get("y") is not None
+            if given:
+                x, y = float(pad["x"]), float(pad["y"])
+            else:
+                x, y = _custom_anchor(poly)
+        except (TypeError, ValueError, KeyError):
+            problems.append(f"custom pad {name}: x and y are numbers, both given")
             continue
+        if given and not _inside(poly, x, y):
+            problems.append(f"custom pad {name}: the anchor ({format_length(x)}, "
+                            f"{format_length(y)}) is outside the outline; a track "
+                            "is routed to it, so it goes inside the copper (leave "
+                            "x and y out to have it put there)")
+            continue
+        hole = ""
         if pad.get("hole_size"):
-            problems.append(f"custom pad {name}: a custom pad is an SMD pad (no hole_size)")
-            continue
+            try:
+                size = float(pad["hole_size"])
+            except (TypeError, ValueError):
+                problems.append(f"custom pad {name}: hole_size is a number")
+                continue
+            if size <= 0 or _depth(poly, x, y) < size / 2:
+                problems.append(f"custom pad {name}: the hole ({format_length(size)} "
+                                "across at the anchor) does not lie inside the copper")
+                continue
+            hole = f";hole_size={format_length(size)}"
         layer = str(pad.get("layer") or "TopLayer").strip()
         ops.append(f"designator={_payload_safe(name)};layer={_payload_safe(layer)};"
-                   f"x={format_length(x)};y={format_length(y)};{fields}")
+                   f"x={format_length(x)};y={format_length(y)}{hole};{fields}")
     return "~~".join(ops), problems
 
 
@@ -4196,10 +4316,12 @@ def register_library_tools(mcp):
                 - shape: round, rectangular (default), octagonal or
                   roundrect; oval is round with unequal sizes. Another
                   word refuses the whole call, no pad added.
-                  "custom": an SMD pad whose copper is ``outline``,
+                  "custom": a pad whose copper is ``outline`` (SMD, or
+                  thru-hole with hole_size, the hole inside the copper),
                   points as in lib_add_footprint_regions ([x, y] or
                   [x, y, sweep] for an arc edge); x, y is the pad's
-                  anchor (default the middle of the outline's box).
+                  anchor, inside the copper (default: a point well
+                  inside it, also for a U or L whose box middle is not).
                   Read back per pad in ``custom_pads``
                 - corner_radius: roundrect corner in % (default 25), or
                   corner_radius_length as a length

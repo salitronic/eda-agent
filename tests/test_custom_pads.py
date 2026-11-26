@@ -28,14 +28,46 @@ def _fields(op: str) -> dict[str, str]:
     return dict(f.split("=", 1) for f in op.split(";"))
 
 
-def test_the_anchor_defaults_to_the_middle_of_the_outline():
+def test_the_anchor_defaults_to_a_point_inside_the_copper():
+    """The L's box middle (40, 30) is in its notch, off the copper; the
+    anchor, where a track is routed to, goes deep inside instead."""
     payload, problems = lib_mod._custom_pads_payload(
         [{"designator": "1", "shape": "custom", "outline": _L}])
     assert problems == []
     f = _fields(payload)
-    assert (f["designator"], f["layer"], f["x"], f["y"]) == ("1", "TopLayer", "40", "30")
+    assert (f["designator"], f["layer"]) == ("1", "TopLayer")
+    poly = lib_mod._outline_polygon(_L)
+    assert lib_mod._depth(poly, float(f["x"]), float(f["y"])) > 9.5   # legs are 20 wide
     assert f["points"] == "0,0/80,0/80,20/20,20/20,60/0,60"
     assert "arcs" not in f
+
+
+def test_a_u_gets_its_anchor_in_a_leg_and_a_square_keeps_its_middle():
+    u = [[0, 0], [6, 0], [6, 6], [4, 6], [4, 2], [2, 2], [2, 6], [0, 6]]
+    f = _fields(lib_mod._custom_pads_payload([{"designator": "1", "outline": u}])[0])
+    assert lib_mod._depth(lib_mod._outline_polygon(u), float(f["x"]), float(f["y"])) > 0.9
+    square = [[0, 0], [10, 0], [10, 10], [0, 10]]
+    f = _fields(lib_mod._custom_pads_payload([{"designator": "2", "outline": square}])[0])
+    assert (f["x"], f["y"]) == ("5", "5")
+
+
+def test_a_thru_hole_custom_pad_sends_its_hole():
+    hexagon = [[1.5, 0], [0.75, 1.3], [-0.75, 1.3], [-1.5, 0], [-0.75, -1.3], [0.75, -1.3]]
+    payload, problems = lib_mod._custom_pads_payload(
+        [{"designator": "1", "outline": hexagon, "x": 0, "y": 0, "hole_size": 1.0}])
+    assert problems == [] and _fields(payload)["hole_size"] == "1"
+
+
+def test_the_script_puts_a_holed_custom_pad_on_the_multi_layer(fns):
+    body = fns["Lib_AddFootprintCustomPads"]
+    assert "GetBatchField(Op, 'hole_size')" in body
+    assert "Pad.Layer := eMultiLayer" in body and "Pad.HoleSize := CoordFromUnits" in body
+
+
+def test_an_anchor_given_outside_the_copper_is_refused():
+    payload, problems = lib_mod._custom_pads_payload(
+        [{"designator": "1", "outline": _L, "x": 40, "y": 30}])
+    assert payload == "" and "outside the outline" in problems[0]
 
 
 def test_an_arc_edge_goes_out_as_a_region_arc():
@@ -49,7 +81,7 @@ def test_an_arc_edge_goes_out_as_a_region_arc():
     ({"outline": _L}, "no designator"),
     ({"designator": "1", "outline": [[0, 0], [1, 1]]}, "three points"),
     ({"designator": "1", "outline": [[0, "a"], [1, 1], [2, 0]]}, "numbers"),
-    ({"designator": "1", "outline": _L, "hole_size": 20}, "SMD"),
+    ({"designator": "1", "outline": _L, "hole_size": 30}, "inside the copper"),
 ])
 def test_a_wrong_pad_is_named(pad, says):
     payload, problems = lib_mod._custom_pads_payload([pad])

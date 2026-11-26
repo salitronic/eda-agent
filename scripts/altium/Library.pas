@@ -3907,9 +3907,10 @@ Begin
 End;
 
 { Pads whose copper is an outline: Altium's custom pad shape. Each pad is  }
-{ an SMD pad on its layer at x, y, and the region drawn from its points    }
-{ becomes its shape through LinkCustomShape. Each is read back: whether    }
-{ the pad holds a custom shape, and what its top shape reads.              }
+{ an SMD pad on its layer at x, y, or with hole_size a thru-hole pad on    }
+{ the multi-layer, and the region drawn from its points becomes its shape  }
+{ through LinkCustomShape. Each is read back: whether the pad holds a      }
+{ custom shape, what its top shape reads, its layer and its hole.          }
 Function Lib_AddFootprintCustomPads(Params : String; RequestId : String) : String;
 Var
     PadsStr, Remaining, Op, LayerStr, UnitsStr, TargetProblem, Rows, Note : String;
@@ -3922,6 +3923,7 @@ Var
     Rect : TCoordRect;
     Added, Failed, Custom : Integer;
     HasCustom : Boolean;
+    HoleSize : Double;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -3984,12 +3986,25 @@ Begin
             Pad.Name := GetBatchField(Op, 'designator');
             Pad.X := OrgX + CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'x'), 0), UnitsStr);
             Pad.Y := OrgY + CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'y'), 0), UnitsStr);
-            Pad.HoleSize := 0;
-            Pad.Layer := Layer;
+            HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
             Rect := Region.BoundingRectangle;
             Pad.TopXSize := Rect.Right - Rect.Left;
             Pad.TopYSize := Rect.Top - Rect.Bottom;
             Pad.TopShape := eRectangular;
+            If HoleSize > 0 Then
+            Begin
+                Pad.Layer := eMultiLayer;
+                Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
+                Pad.MidXSize := Pad.TopXSize;
+                Pad.MidYSize := Pad.TopYSize;
+                Pad.BotXSize := Pad.TopXSize;
+                Pad.BotYSize := Pad.TopYSize;
+            End
+            Else
+            Begin
+                Pad.HoleSize := 0;
+                Pad.Layer := Layer;
+            End;
             Footprint.AddPCBObject(Pad);
             PcbLib.Board.AddPCBObject(Pad);
             PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
@@ -4014,6 +4029,8 @@ Begin
             Rows := Rows + '{"designator":"' + EscapeJsonString(Pad.Name) + '"'
                 + ',"custom":' + BoolToJsonStr(HasCustom)
                 + ',"top_shape":' + IntToStr(Pad.TopShape)
+                + ',"layer":"' + EscapeJsonString(Layer2String(Pad.Layer)) + '"'
+                + ',"hole":' + FloatToJsonStr(CoordToUnits(Pad.HoleSize, UnitsStr))
                 + ',"note":"' + EscapeJsonString(Trim(Note)) + '"}';
         End;
     Finally

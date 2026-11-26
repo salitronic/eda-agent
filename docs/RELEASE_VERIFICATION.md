@@ -1,4 +1,4 @@
-# Release verification: 2026.11.25.3
+# Release verification: 2026.11.26.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -436,7 +436,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.25.3`, `version_match` =
+Expect `altium_script_version` = `2026.11.26.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.3`.
 
 Those are two different versions and they fail differently.
@@ -4554,6 +4554,12 @@ a library:
 3. A 100 mil square under a half circle of radius 50 mil: 100 x 150 mil.
    Altium keeps the arc as straight facets, about 1 mil from the true arc
    at that radius.
+4. A thru-hole custom pad: a hexagon 3.0 x 2.6 mm with `hole_size`
+   1.0 mm reads `custom`, Multi Layer, hole 1.0 mm; seen from below in
+   3D the hexagon is copper on the bottom side too, and after save,
+   close and reopen it still reads `custom` with its hole (AD 26.12).
+5. An L outline with no x, y: the anchor lands inside the copper, not
+   in the notch where the outline's box has its middle.
 
 ## 94. Sensor electrodes as custom-shaped pads
 

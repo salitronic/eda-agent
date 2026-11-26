@@ -1319,7 +1319,8 @@ class AltiumSimulator:
                 rid, '{"added":%d,"failed":0,"total":%d}' % (added, total))
 
         elif action == "add_footprint_custom_pads":
-            # Mirrors Lib_AddFootprintCustomPads: one SMD pad per operation,
+            # Mirrors Lib_AddFootprintCustomPads: one pad per operation, SMD
+            # on its layer or with hole_size thru-hole on the multi-layer,
             # its copper the outline linked as the pad's custom shape.
             if not params.get("pads"):
                 return _build_error_response(rid, "MISSING_PARAM",
@@ -1330,15 +1331,21 @@ class AltiumSimulator:
             made = []
             for op in _iter_batch_ops(params.get("pads", "")):
                 des = _get_batch_field(op, "designator")
+                hole = float(_get_batch_field(op, "hole_size") or 0)
+                layer = "MultiLayer" if hole > 0 else _get_batch_field(op, "layer")
                 self.lib_pads.append({
                     "designator": des,
                     "x": _get_batch_field(op, "x"),
                     "y": _get_batch_field(op, "y"),
                     "shape": "custom",
-                    "layer": _get_batch_field(op, "layer"),
+                    "hole_size": hole,
+                    "layer": layer,
                     "layer_requested": _get_batch_field(op, "layer"),
                 })
-                made.append('{"designator":"%s","custom":true,"top_shape":10}' % des)
+                made.append('{"designator":"%s","custom":true,"top_shape":10,'
+                            '"layer":"%s","hole":%s}' % (
+                                des, "Multi Layer" if hole > 0 else "Top Layer",
+                                format(hole, "g")))
             return _build_success_response(
                 rid, '{"added":%d,"failed":0,"custom":%d,"pads":[%s]}' % (
                     len(made), len(made), ",".join(made)))
