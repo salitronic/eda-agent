@@ -234,6 +234,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "repeats its number in custom_pads, so the silkscreen and "
             "courtyard clear every land; lands added afterwards do not; in "
             "drawing_dims D#1, D#2 name the first and second land numbered D. "
+            "One land that serves two pins (a DFN's centre ground land) is "
+            "two lands that meet along an edge, one per number. "
             "A land that is not a rectangle (a stepped corner land, a cut "
             "corner) keeps its real shape: overlapping rectangles of one "
             "number, or the pad plus outline [[x, y], ...]. READ DRAWINGS "
