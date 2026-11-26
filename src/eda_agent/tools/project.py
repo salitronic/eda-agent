@@ -5,6 +5,7 @@
 import re
 from typing import Any, Optional
 from ..bridge import get_bridge
+from ..bridge.exceptions import AltiumError
 from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
@@ -723,6 +724,14 @@ def register_project_tools(mcp):
         Altium saves the project back onto no file, which writes only its
         documents. No dialog. A list of items rewrites the file once.
 
+        AN ENTRY WHOSE FILE IS MISSING CLOSES THE PROJECT. Altium holds
+        no document for it that a call can remove and writes it back on
+        every save. With project_path given and no unsaved document in
+        the project, the project is closed, the entry taken out of the
+        project file, and the project opened and saved again
+        (``missing_file``, ``project_reopened``). Its document windows
+        close with it.
+
         Args:
             document_path: Full path to the document to remove
             project_path: Optional project path. If None, uses active project.
@@ -744,7 +753,19 @@ def register_project_tools(mcp):
             params["project_path"] = project_path
         if not save_project:
             params["save_project"] = "false"
-        result = await bridge.send_command_async("project.remove_document", params)
+        from ..prjpcb_missing import is_missing_entry, remove_missing_entry
+        try:
+            result = await bridge.send_command_async("project.remove_document", params)
+        except AltiumError:
+            if not is_missing_entry(project_path, document_path):
+                raise
+            if not save_project:
+                return {"success": False, "removed": False, "missing_file": True,
+                        "document_path": document_path,
+                        "reason": "an entry whose file is missing is removed "
+                                  "by rewriting the project file, which "
+                                  "save_project=False rules out"}
+            return await remove_missing_entry(bridge, project_path, document_path)
         if save_project:
             from ..prjpcb import finish_removal
             result = await finish_removal(bridge, result)

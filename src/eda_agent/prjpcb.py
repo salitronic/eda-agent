@@ -25,6 +25,8 @@ was the last, else a second copy of the last member. That copy loads as
 the one member, so the loaded file cannot show it, and the file is
 rewritten after every removal that was saved.
 Altium does every write and every read; nothing here opens the file.
+The one case Altium cannot reach, an entry whose file is missing, is in
+``prjpcb_missing``.
 """
 from __future__ import annotations
 
@@ -102,7 +104,12 @@ def removals_together(command: str, params_of):
             try:
                 replies.append(await bridge.send_command_async(command, p))
             except Exception as exc:                      # noqa: BLE001
-                replies.append({"success": False, "error": str(exc)})
+                from .prjpcb_missing import is_missing_entry, remove_missing_entry
+                if is_missing_entry(p.get("project_path"), p["document_path"]):
+                    replies.append(await remove_missing_entry(
+                        bridge, p["project_path"], p["document_path"]))
+                else:
+                    replies.append({"success": False, "error": str(exc)})
         out = [_item_result(r) for r in await finish_removals(bridge, replies)]
         failed = sum(1 for r in out if _failed(r))
         return {"bulk": True, "count": len(items), "succeeded": len(items) - failed,
