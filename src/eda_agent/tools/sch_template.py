@@ -233,6 +233,30 @@ def _render(d: st.Drawing, png_path: str, title: str) -> dict[str, Any]:
         return {"preview_error": f"{type(exc).__name__}: {exc}"}
 
 
+def _footprint_errors(issues: Any, parts: list[dict]) -> list[str]:
+    """One line per part whose template footprint was not chosen, from the
+    placement's ``footprint_issues``: the name asked for, the model the
+    part stayed on, and the models its symbol has."""
+    asked = {str(p.get("designator", "")): str(p.get("footprint", "") or "")
+             for p in parts}
+    out = []
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict):
+            continue
+        ref = str(issue.get("designator", ""))
+        kept = str(issue.get("kept", "")) or "no model"
+        want = asked.get(ref, "")
+        if issue.get("issue") == "FOOTPRINT_NOT_ON_SYMBOL":
+            out.append(f"{ref}: its symbol has no footprint model {want!r} "
+                       f"(it has: {issue.get('models') or 'none'}); the part "
+                       f"stayed on {kept}")
+        else:
+            out.append(f"{ref}: footprint {want!r} did not become the current "
+                       f"model ({issue.get('issue', 'unknown')}); the part "
+                       f"stayed on {kept}")
+    return out
+
+
 def register_sch_template_tools(mcp):
     """Register the hand-template schematic tools."""
 
@@ -355,7 +379,8 @@ def register_sch_template_tools(mcp):
 
         A multi-part symbol is placed one part per entry (``"part"``), each
         set to its part and read back; a part the symbol does not have
-        stops the call before any wire.
+        stops the call before any wire, and so does a ``footprint`` that
+        is not one of the symbol's models.
 
         Args:
             template: parts, wires, ports, labels and optional nets.
@@ -435,6 +460,16 @@ def register_sch_template_tools(mcp):
             return {"ok": False, "stage": "placement", "placed": placed, "errors": [
                 f"not every part was placed ({placed.get('failed_refdes', '')}); "
                 "nothing was wired. Check the parts on the sheet."]}
+        unchosen = _footprint_errors(placed.get("footprint_issues"), parts)
+        if unchosen:
+            # The placement keeps such a part on its library's model and
+            # says so beside placed: N. A draw that went on answered ok
+            # and saved a sheet whose part carried another footprint.
+            return {"ok": False, "stage": "placement", "placed": placed,
+                    "errors": unchosen + [
+                        "nothing was wired or saved. Give the symbol that model "
+                        "(lib_link_footprint) or name one it has, then draw "
+                        "again on a fresh sheet."]}
         # Every mirror in one request (one edit), each part's reply its own.
         to_mirror = [str(p["designator"]) for p in parts if p.get("mirror")]
         if to_mirror:
