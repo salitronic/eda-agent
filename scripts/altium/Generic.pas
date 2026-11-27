@@ -1822,11 +1822,14 @@ End;
 
 { The text label an owner carries: a placed part's Designator or Comment, a  }
 { sheet symbol's name ('Designator', its SheetName) or file name            }
-{ ('Filename', its SheetFileName). Nil for any other pairing.               }
+{ ('Filename', its SheetFileName), a harness connector's type label         }
+{ ('HarnessType', its HarnessConnectorType, the same interfaces as a        }
+{ SheetName). Nil for any other pairing.                                    }
 Function SchLabelOf(Obj : ISch_GraphicalObject; Which : String) : ISch_GraphicalObject;
 Var
     C : ISch_Component;
     SS : ISch_SheetSymbol;
+    HC : ISch_HarnessConnector;
 Begin
     Result := Nil;
     If Obj = Nil Then Exit;
@@ -1842,11 +1845,17 @@ Begin
         If Which = 'Designator' Then Result := SS.SheetName;
         If Which = 'Filename' Then Result := SS.SheetFileName;
     End;
+    If (Obj.ObjectId = eHarnessConnector) And (Which = 'HarnessType') Then
+    Begin
+        HC := Obj;
+        Result := HC.HarnessConnectorType;
+    End;
 End;
 
 { A label property name split: 'Designator.Location.X' is the Designator's }
 { Location.X. SheetName. and SheetFileName. are a sheet symbol's spellings  }
-{ of Designator. and Filename.. '' when PropName is not one.               }
+{ of Designator. and Filename.; HarnessConnectorType. is a harness          }
+{ connector's type label. '' when PropName is not one.                      }
 Function SchLabelPropWhich(PropName : String) : String;
 Var
     Prefix, Field : String;
@@ -1862,6 +1871,7 @@ Begin
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
+    If Prefix = 'HarnessConnectorType' Then Result := 'HarnessType';
 End;
 
 Function SchLabelPropField(PropName : String) : String;
@@ -2765,6 +2775,7 @@ Var
     RR : ISch_RoundRectangle;
     ImgObj : ISch_Image;
     SymObj : ISch_SheetSymbol;
+    ConnObj : ISch_HarnessConnector;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -3212,6 +3223,12 @@ Begin
                 Else
                     Result := EntryObj.HarnessType;
             End
+            { A harness connector's type: the name its type label shows. }
+            Else If (Obj.ObjectId = eHarnessConnector) And (PropName = 'HarnessType') Then
+            Begin
+                ConnObj := Obj;
+                Result := ConnObj.HarnessType;
+            End
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
@@ -3493,6 +3510,7 @@ Var
     RR : ISch_RoundRectangle;
     ImgObj : ISch_Image;
     SymObj : ISch_SheetSymbol;
+    ConnObj : ISch_HarnessConnector;
     EnumVal : Integer;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
@@ -3905,6 +3923,11 @@ Begin
                 If PropName = 'TextStyle' Then EntryObj.TextStyle := EnumVal
                 Else If PropName = 'ArrowKind' Then EntryObj.ArrowKind := EnumVal
                 Else EntryObj.HarnessType := Value;
+            End
+            Else If (Obj.ObjectId = eHarnessConnector) And (PropName = 'HarnessType') Then
+            Begin
+                ConnObj := Obj;
+                ConnObj.HarnessType := Value;
             End
             Else
                 Matched := False;
@@ -6809,7 +6832,7 @@ Begin
             If OpStr = '' Then Break;
             Scope := GetBatchField(OpStr, 'scope');
             ObjTypeStr := GetBatchField(OpStr, 'object_type');
-            FilterStr := GetBatchField(OpStr, 'filter');
+            FilterStr := GetBatchUntil(OpStr, 'filter', 'set');
             SetStr := GetBatchTail(OpStr, 'set');
         End
         Else
@@ -8571,7 +8594,13 @@ End;
 {..............................................................................}
 { Get unconnected/floating pins via DM API                                    }
 { Compiles the project first, then iterates DM components to check            }
-{ pin connection status. Returns designator + pin pairs with no net.          }
+{ pin connection status. A pin is floating when it has no net, a '?' net,     }
+{ or a net of its own that nothing names (one pin, no label, port, power      }
+{ port, sheet entry or off-sheet connector): Altium gives such a pin an       }
+{ automatic NetR1_1 name unless the project numbers lone pins '?'.            }
+{ project_path picks the project; without it the focused one, refused when    }
+{ it holds no schematic, as the free documents do when a library is in        }
+{ front: a 0 there read as everything connected.                              }
 {..............................................................................}
 
 Function Gen_GetUnconnectedPins(Params : String; RequestId : String) : String;
@@ -8583,8 +8612,12 @@ Var
     Pin : IPin;
     I, J, K, PinCount, CompCount, Total, DocCount : Integer;
     UsePhysical : Boolean;
-    NetName, Designator, PinNumber, PinName, JsonItems : String;
+    NetName, Designator, PinNumber, PinName, JsonItems, ProjectPath : String;
     First : Boolean;
+    FlatDoc : IDocument;
+    Net : INet;
+    Bare : TStringList;
+    Sheets, Named : Integer;
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -8593,15 +8626,63 @@ Begin
         Exit;
     End;
 
-    Project := Workspace.DM_FocusedProject;
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    If ProjectPath <> '' Then
+    Begin
+        Project := FindProjectByPath(Workspace, ProjectPath);
+        If Project = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_OPEN',
+                'Project is not open: ' + ProjectPath);
+            Exit;
+        End;
+    End
+    Else
+        Project := Workspace.DM_FocusedProject;
     If Project = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
         Exit;
     End;
 
+    Sheets := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc <> Nil Then
+            If UpperCase(Doc.DM_DocumentKind) = 'SCH' Then Inc(Sheets);
+    End;
+    If Sheets = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT_SHEETS',
+            'The project ' + Project.DM_ProjectFullPath + ' has no schematic sheets, so no pin '
+            + 'was examined. The focused document belongs to no design project; give '
+            + 'project_path or bring one of the project''s sheets forward.');
+        Exit;
+    End;
+
     // Compile the project (required for DM pin connectivity data)
     SmartCompile(Project);
+
+    { Nets of one pin that nothing names, by their flattened name. }
+    Bare := TStringList.Create;
+    Bare.Sorted := True;
+    Bare.Duplicates := dupIgnore;
+    FlatDoc := Nil;
+    Try FlatDoc := Project.DM_DocumentFlattened; Except FlatDoc := Nil; End;
+    If FlatDoc <> Nil Then
+        For I := 0 To FlatDoc.DM_NetCount - 1 Do
+        Begin
+            Net := Nil;
+            Try Net := FlatDoc.DM_Nets(I); Except Net := Nil; End;
+            If Net = Nil Then Continue;
+            Try
+                Named := Net.DM_NetLabelCount + Net.DM_PortCount + Net.DM_PowerObjectCount
+                    + Net.DM_SheetEntryCount + Net.DM_CrossSheetConnectorCount;
+                If (Net.DM_PinCount = 1) And (Named = 0) Then Bare.Add(Net.DM_NetName);
+            Except End;
+        End;
 
     Total := 0;
     JsonItems := '';
@@ -8631,8 +8712,8 @@ Begin
                 PinNumber := Pin.DM_PinNumber;
                 PinName := Pin.DM_PinName;
 
-                // A pin with no net or with '?' net is unconnected
-                If (NetName = '') Or (NetName = '?') Then
+                // No net, a '?' net, or a net of its own nothing names
+                If (NetName = '') Or (NetName = '?') Or (Bare.IndexOf(NetName) >= 0) Then
                 Begin
                     If Not First Then JsonItems := JsonItems + ',';
                     First := False;
@@ -8646,8 +8727,129 @@ Begin
         End;
     End;
 
+    Bare.Free;
     Result := BuildSuccessResponse(RequestId,
-        '{"count":' + IntToStr(Total) + ',"unconnected_pins":[' + JsonItems + ']}');
+        '{"count":' + IntToStr(Total) + ',"project":"' + EscapeJsonString(Project.DM_ProjectFullPath)
+        + '","sheets_examined":' + IntToStr(Sheets)
+        + ',"unconnected_pins":[' + JsonItems + ']}');
+End;
+
+{..............................................................................}
+{ Gen_SchSaveCopyAs - write an open schematic sheet to another path, as File  }
+{ > Save Copy As: the copy holds the sheet as it is in Altium, unsaved edits  }
+{ included, and the open sheet keeps its path and modified state. The sheet  }
+{ is pointed at the target for the one save and back in Finally, as         }
+{ PCB_SaveCopyAs does for a board. A target open in Altium, a folder that    }
+{ does not exist, or an existing target without overwrite is refused.       }
+{ Params: target_path; source_path (else the focused schematic); overwrite. }
+{..............................................................................}
+Function Gen_SchSaveCopyAs(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    ServerDoc, TargetDoc : IServerDocument;
+    TargetPath, SourcePath, Kind : String;
+    WasModified, TargetExisted, Written : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    TargetPath := ExtractJsonValue(Params, 'target_path');
+    SourcePath := ExtractJsonValue(Params, 'source_path');
+    If TargetPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'target_path is required');
+        Exit;
+    End;
+    If SourcePath = '' Then
+    Begin
+        SchDoc := SchServer.GetCurrentSchDocument;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+                'No schematic is in front; give source_path');
+            Exit;
+        End;
+        SourcePath := SchDoc.DocumentName;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(SourcePath); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            SourcePath + ' is not open in Altium; a copy is saved from the open sheet');
+        Exit;
+    End;
+    Kind := '';
+    Try Kind := UpperCase(ServerDoc.Kind); Except End;
+    If Kind <> 'SCH' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_SCHEMATIC',
+            SourcePath + ' is a ' + Kind + ' document, not a schematic sheet');
+        Exit;
+    End;
+    If UpperCase(SourcePath) = UpperCase(TargetPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAME_PATH',
+            'target_path is the open sheet itself; use app_save_document to save it');
+        Exit;
+    End;
+    TargetDoc := Nil;
+    Try TargetDoc := Client.GetDocumentByPath(TargetPath); Except TargetDoc := Nil; End;
+    If TargetDoc <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_OPEN',
+            TargetPath + ' is open in Altium. Close it first: writing under an '
+            + 'open document is how its edits get lost.');
+        Exit;
+    End;
+    If Not DirectoryExists(ExtractFilePath(TargetPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOLDER',
+            'The folder of ' + TargetPath + ' does not exist; nothing was written');
+        Exit;
+    End;
+    TargetExisted := FileExists(TargetPath);
+    If TargetExisted And (LowerCase(ExtractJsonValue(Params, 'overwrite')) <> 'true') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_EXISTS',
+            TargetPath + ' exists; pass overwrite=True to replace it. Nothing was written.');
+        Exit;
+    End;
+    If SaveHeldBack(TargetPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+            'Saving is switched off in the dashboard; nothing was written');
+        Exit;
+    End;
+
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except End;
+    AgeBefore := -1;
+    If TargetExisted Then
+    Begin
+        Try AgeBefore := FileAge(TargetPath); Except AgeBefore := -1; End;
+    End;
+    { The rename lasts for the one save. Put back in Finally, so a failed  }
+    { save cannot leave the open sheet pointing at the copy.               }
+    Try
+        ServerDoc.SetFileName(TargetPath);
+        ServerDoc.SetModified(True);
+        ServerDoc.DoFileSave('');
+    Finally
+        Try ServerDoc.SetFileName(SourcePath); Except NoteWriteFailed('point the sheet back at its own file'); End;
+        Try ServerDoc.SetModified(WasModified); Except NoteWriteFailed('restore the sheet modified flag'); End;
+    End;
+    AgeAfter := -1;
+    If FileExists(TargetPath) Then
+    Begin
+        Try AgeAfter := FileAge(TargetPath); Except AgeAfter := -1; End;
+    End;
+    Written := (AgeAfter >= 0) And (AgeAfter <> AgeBefore);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"source":"' + EscapeJsonString(SourcePath) + '"'
+        + ',"target":"' + EscapeJsonString(TargetPath) + '"'
+        + ',"target_existed":' + BoolToJsonStr(TargetExisted)
+        + ',"written":' + BoolToJsonStr(Written)
+        + ',"source_modified":' + BoolToJsonStr(WasModified) + '}');
 End;
 
 {..............................................................................}
@@ -17722,7 +17924,7 @@ Begin
         Scope := GetBatchField(Op, 'scope');
         If Scope = '' Then Scope := 'active_doc';
         ObjTypeStr := GetBatchField(Op, 'object_type');
-        FilterStr := GetBatchField(Op, 'filter');
+        FilterStr := GetBatchTail(Op, 'filter');
         Note := '';
         OpMatched := 0;
         ResetPropertyDiag(0);
@@ -22035,6 +22237,7 @@ Begin
         'mirror_component': Result := Gen_MirrorSchComponent(Params, RequestId);
         'refresh_document': Result := Gen_RefreshDocument(RequestId);
         'get_unconnected_pins': Result := Gen_GetUnconnectedPins(Params, RequestId);
+        'sch_save_copy_as':     Result := Gen_SchSaveCopyAs(Params, RequestId);
         'place_wire':       Result := Gen_PlaceWire(Params, RequestId);
         'place_bus':        Result := Gen_PlaceBus(Params, RequestId);
         'place_directive':  Result := Gen_PlaceDirective(Params, RequestId);

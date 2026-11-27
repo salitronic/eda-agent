@@ -135,7 +135,8 @@ async def test_a_set_string_keeps_its_semicolon(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field,value", [("filter", "Text=a;b"),
+@pytest.mark.parametrize("field,value", [("filter", "Text=a;set=b"),
+                                         ("filter", "Text=a~~b"),
                                          ("scope", "doc:a;b.SchDoc"),
                                          ("set", "Text=a~~b")])
 async def test_a_delimiter_the_wire_cannot_carry_is_refused(monkeypatch, field, value):

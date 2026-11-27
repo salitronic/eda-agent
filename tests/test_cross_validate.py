@@ -1074,6 +1074,9 @@ def run_python(fn_name: str, args: list[str]) -> str:
     elif fn_name == 'GetBatchTail':
         return get_batch_tail(args[0], args[1])
 
+    elif fn_name == 'GetBatchUntil':
+        return get_batch_until(args[0], args[1], args[2])
+
     elif fn_name == 'PickSession':
         return pick_session(args[0], args[1], int(args[2]), int(args[3]))
     elif fn_name == 'NextTurn':
@@ -1358,6 +1361,13 @@ def get_batch_tail(op: str, key: str) -> str:
     return ""
 
 
+def get_batch_until(op: str, key: str, next_key: str) -> str:
+    """Main.pas GetBatchUntil: GetBatchTail cut at the first ';<next>='."""
+    value = get_batch_tail(op, key)
+    q = value.lower().find(";" + next_key.lower() + "=")
+    return value[:q] if q >= 0 else value
+
+
 def batch_field_sweep(payload: str, key: str) -> str:
     """Every operation's value for one key, joined with '|'."""
     out = []
@@ -1423,6 +1433,16 @@ def generate_batch_field_cases():
         ("GetBatchTail", ["scope=a;filter=b", "set"]),
         ("GetBatchTail", ["scope=a;set=", "set"]),
         ("GetBatchTail", ["scope=a;set=Text=x;set=y", "set"]),
+        # A filter may hold ';' (a harness's Vertices=x1,y1;x2,y2): read
+        # to the end in a delete, up to ';set=' in a modify.
+        ("GetBatchTail", ["scope=active_doc;object_type=eSignalHarness;"
+                          "filter=Vertices=1,1;2,2", "filter"]),
+        ("GetBatchUntil", ["scope=active_doc;object_type=eSignalHarness;"
+                           "filter=Vertices=1,1;2,2;set=LineWidth=1", "filter", "set"]),
+        ("GetBatchUntil", ["scope=a;object_type=b;filter=Name=X;SET=Text=y", "filter", "set"]),
+        ("GetBatchUntil", ["scope=a;object_type=b;filter=Name=X", "filter", "set"]),
+        ("GetBatchUntil", ["scope=a;object_type=b;set=Text=y", "filter", "set"]),
+        ("GetBatchUntil", ["scope=a;filter=;set=Text=y", "filter", "set"]),
         # A session alone is never slotted, however long it has run.
         ("PickSession", ["aaaa1111", "aaaa1111", "999999", "30000"]),
         ("PickSession", ["bbbb2222", "aaaa1111", "0", "30000"]),

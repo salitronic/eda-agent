@@ -489,6 +489,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_generate_toc": "Altium table of contents",
     "sch_reference_zones": "Altium reference zones",
     "sch_draw_template": "Altium sheet templates engine",
+    "sch_save_copy_as": "KiCad's schematic API has no save-copy call",
     "sch_preview_template": "Altium sheet templates engine",
     # Altium-only library features
     "lib_set_current_component": "Altium editor focus",

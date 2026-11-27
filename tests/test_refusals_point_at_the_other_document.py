@@ -69,6 +69,9 @@ _NO_HINT_NEEDED = {
                       "and the document that stayed in front",
     "WRONG_PROJECT": "the named project was found; the message names it, "
                      "the projects listing the file and what is in front",
+    "NOT_A_SCHEMATIC": "sch_save_copy_as was given an open document of another "
+                       "kind by path; the message names its kind, and "
+                       "pcb_save_copy_as is the board's own",
 }
 
 

@@ -530,6 +530,18 @@ begin
     Result := Copy(Op, Length(Key) + 2, Length(Op));
 end;
 
+{ GetBatchUntil -- copied VERBATIM from Main.pas. }
+Function GetBatchUntil(Op : String; Key : String; NextKey : String) : String;
+Var
+    NextMarker : String;
+    Q : Integer;
+Begin
+    Result := GetBatchTail(Op, Key);
+    NextMarker := ';' + LowerCase(NextKey) + '=';
+    Q := Pos(NextMarker, LowerCase(Result));
+    If Q > 0 Then Result := Copy(Result, 1, Q - 1);
+End;
+
 { PickSession -- copied VERBATIM from Main.pas (test_session_slots checks it). }
 Function PickSession(Tags : String; Current : String; ElapsedMs : Integer;
     SlotMs : Integer) : String;
@@ -1185,6 +1197,13 @@ begin
     else if FnName = 'GetBatchTail' then
     begin
       ResultStr := GetBatchTail(B64Decode(Parts[1]), B64Decode(Parts[2]));
+    end
+
+    { --- GetBatchUntil: args = op, key, next key --- }
+    else if FnName = 'GetBatchUntil' then
+    begin
+      ResultStr := GetBatchUntil(B64Decode(Parts[1]), B64Decode(Parts[2]),
+        B64Decode(Parts[3]));
     end
 
     { --- BatchFieldSweep: args = payload, key --- }

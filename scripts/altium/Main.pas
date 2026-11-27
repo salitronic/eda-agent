@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.26.1';
+    SCRIPT_VERSION = '2026.11.28.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -451,6 +451,21 @@ Begin
         Result := Copy(Op, P + Length(Marker), Length(Op))
     Else If Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 Then
         Result := Copy(Op, Length(Key) + 2, Length(Op));
+End;
+
+{ The value of a field that may hold ';', from ';<key>=' up to the next     }
+{ ';<next>=' (to the end when there is none). A signal harness's Vertices   }
+{ read x1,y1;x2,y2, so a filter on them holds ';'. Python refuses a        }
+{ ';<next>=' inside the value, so the first one after the key ends it.    }
+Function GetBatchUntil(Op : String; Key : String; NextKey : String) : String;
+Var
+    NextMarker : String;
+    Q : Integer;
+Begin
+    Result := GetBatchTail(Op, Key);
+    NextMarker := ';' + LowerCase(NextKey) + '=';
+    Q := Pos(NextMarker, LowerCase(Result));
+    If Q > 0 Then Result := Copy(Result, 1, Q - 1);
 End;
 
 {..............................................................................}

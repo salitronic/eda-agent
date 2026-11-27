@@ -1822,7 +1822,8 @@ def register_generic_tools(mcp):
                 - object_type: e.g. "ePin", "eParameter", "eSchComponent",
                   or a PCB type such as "eTrackObject" (active board,
                   scope "active_doc" only).
-                - filter: Pipe-separated conditions, e.g. "Name=VDD".
+                - filter: Pipe-separated conditions, e.g. "Name=VDD". A
+                  value may contain ';' (Vertices=1,1;2,2).
                 - set: Pipe-separated assignments, e.g.
                   "Location.X=300|Location.Y=-100|Orientation=2". A value
                   may contain ';' but not '|'. Board lengths as in
@@ -1845,8 +1846,10 @@ def register_generic_tools(mcp):
         # followed by 8 eNetLabel ops reported operations_processed=4).
         # '~~' cannot occur in an Altium name, filter, or property string.
         # set goes LAST and the script reads everything after ';set=', so a
-        # value may hold ';' (Text=first;second). The fields before it
-        # cannot, and nothing can hold '~~'; same refusal as obj_batch_delete.
+        # value may hold ';' (Text=first;second). filter is read from
+        # ';filter=' up to ';set=', so it may hold ';' too (Vertices=
+        # x1,y1;x2,y2) but not ';set='. scope and object_type cannot, and
+        # nothing can hold '~~'; same refusal as obj_batch_delete.
         op_strings = []
         for i, op in enumerate(operations):
             try:
@@ -1858,9 +1861,9 @@ def register_generic_tools(mcp):
             set_str = op.get("set", "")
             for field, value, delims in (("scope", scope, (";", "~~")),
                                          ("object_type", obj_type, (";", "~~")),
-                                         ("filter", filt, (";", "~~")),
+                                         ("filter", filt, (";set=", "~~")),
                                          ("set", set_str, ("~~",))):
-                hit = [d for d in delims if d in str(value)]
+                hit = [d for d in delims if d in str(value).lower()]
                 if hit:
                     return {"ok": False, "reason":
                             f"operations[{i}].{field} contains '{hit[0]}', a "
@@ -2303,19 +2306,73 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def proj_get_unconnected_pins() -> dict[str, Any]:
-        """Find unconnected/floating pins in the focused project.
+    async def proj_get_unconnected_pins(project_path: str = "") -> dict[str, Any]:
+        """Find unconnected/floating pins in a project.
 
-        Compiles the project first.
+        Compiles the project first. A pin is floating when it has no net,
+        a '?' net, or a net of its own that nothing names (no label, port,
+        power port, sheet entry or off-sheet connector). Refused
+        (NO_PROJECT_SHEETS) when the project has no schematic sheets, as
+        happens when a library is in front and no project_path is given.
+
+        Args:
+            project_path: The .PrjPcb. Default: the focused project.
 
         Returns:
-            Dictionary with "count" and "unconnected_pins" array, each entry
-            having designator, pin_number, pin_name, and sheet path
+            "count", "project", "sheets_examined" and "unconnected_pins",
+            each with designator, pin_number, pin_name and sheet path.
         """
+        params = {"project_path": project_path} if project_path else {}
         bridge = get_bridge()
         result = await bridge.send_command_async(
-            "generic.get_unconnected_pins", {}, timeout=60.0
+            "generic.get_unconnected_pins", params, timeout=60.0
         )
+        return result
+
+    @mcp.tool()
+    async def sch_save_copy_as(
+        target_path: str,
+        source_path: str = "",
+        overwrite: bool = False,
+        add_to_project: str = "",
+    ) -> dict[str, Any]:
+        """Write an open schematic sheet to another path, as File > Save
+        Copy As.
+
+        The copy holds the sheet as it is in Altium, unsaved edits
+        included; the open sheet keeps its path, project and modified
+        state. Altium writes the file. Refused: a target open in Altium,
+        a folder that does not exist, an existing target unless
+        ``overwrite``.
+
+        Args:
+            target_path: Full path of the .SchDoc to write.
+            source_path: The open sheet to copy. Default: the schematic
+                in front.
+            overwrite: Replace a target that exists.
+            add_to_project: A .PrjPcb to add the copy to. Empty adds it
+                to none.
+
+        Returns:
+            {"source", "target", "target_existed", "written",
+            "source_modified"}, with ``added_to_project`` when asked.
+            ``written`` is read from the target's file time.
+        """
+        if not target_path.lower().endswith(".schdoc"):
+            return {"ok": False, "written": False,
+                    "reason": "target_path is a .SchDoc; nothing was written"}
+        params: dict[str, Any] = {"target_path": target_path}
+        if source_path:
+            params["source_path"] = source_path
+        if overwrite:
+            params["overwrite"] = "true"
+        bridge = get_bridge()
+        result = await bridge.send_command_async("generic.sch_save_copy_as", params)
+        if add_to_project and isinstance(result, dict) and result.get("written"):
+            added = await bridge.send_command_async(
+                "project.add_document",
+                {"document_path": target_path, "project_path": add_to_project})
+            result["added_to_project"] = added
         return result
 
     @mcp.tool()
@@ -5105,7 +5162,8 @@ def register_generic_tools(mcp):
                   and takes only scope "active_doc").
                 - filter: pipe-separated ``PropName=Value`` filter
                   conditions (AND logic), same format as
-                  ``obj_delete``. An EMPTY filter deletes every object
+                  ``obj_delete``; a value may contain ';'
+                  (Vertices=1,1;2,2). An EMPTY filter deletes every object
                   of that type in that scope.
             confirm_delete_all: required when any operation has an empty
                 filter; otherwise nothing is sent.
@@ -5135,15 +5193,17 @@ def register_generic_tools(mcp):
             # confirm_delete_all guard below never saw, and an
             # unfiltered delete rides in unconfirmed. Refuse rather than
             # strip: stripping can produce a different valid value.
-            for field, value in (("scope", scope),
-                                 ("object_type", obj_type),
-                                 ("filter", filt)):
-                if ";" in str(value) or "~~" in str(value):
+            # filter goes last and is read to the end of its op, so it
+            # may hold ';' (a signal harness's Vertices=x1,y1;x2,y2).
+            for field, value, delims in (("scope", scope, (";", "~~")),
+                                         ("object_type", obj_type, (";", "~~")),
+                                         ("filter", filt, ("~~",))):
+                if any(d in str(value) for d in delims):
                     return {"ok": False, "reason":
-                            f"operations[{i}].{field} contains ';' or "
-                            "'~~', which are the batch delimiters; the "
-                            "wire format cannot carry them, so this "
-                            "batch is refused rather than reshaped",
+                            f"operations[{i}].{field} contains "
+                            f"{' or '.join(repr(d) for d in delims)}, the "
+                            "batch delimiter; the wire format cannot carry "
+                            "it, so this batch is refused rather than reshaped",
                             "operations_processed": 0}
             if not obj_type:
                 return {"ok": False, "reason": f"operations[{i}] needs "
