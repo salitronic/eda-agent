@@ -110,7 +110,7 @@ def test_the_tool_adds_problems_to_the_reply(monkeypatch):
              "sheets": _sheets([_e("VIN"), _e("X")], [_e("VIN")])}
     out, sent = _call(project, "register_project_tools", monkeypatch,
                       "proj_get_hierarchy", reply=reply)
-    assert sent == [("project.get_hierarchy", {})]
+    assert sent[0] == ("project.get_hierarchy", {})
     assert [p["kind"] for p in out["problems"]] == ["entry_without_port"]
 
 

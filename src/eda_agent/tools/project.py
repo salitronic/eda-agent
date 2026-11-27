@@ -3,6 +3,7 @@
 """Project management tools for Altium Designer MCP Server."""
 
 import re
+from pathlib import PureWindowsPath
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..units import MM_PER_MIL
@@ -124,6 +125,81 @@ def _harness_member_of(sig: str, other: dict) -> bool:
     if "." in sig and sig.split(".", 1)[0] in other:
         return True
     return any(k.startswith(sig + ".") for k in other)
+
+
+def _place_key(path: str, x: Any, y: Any) -> Optional[tuple]:
+    """A sheet entry's place: its sheet's file name and x / y in mils."""
+    try:
+        return (PureWindowsPath(str(path)).name.lower(),
+                round(float(x), 1), round(float(y), 1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _own_names(placed: list, field: str) -> dict:
+    """Schematic objects read with obj_query (``_doc``, ``field``,
+    Location.X, Location.Y) by place."""
+    names = {}
+    for row in placed:
+        if isinstance(row, dict) and row.get(field):
+            key = _place_key(row.get("_doc", ""), row.get("Location.X"), row.get("Location.Y"))
+            if key:
+                names[key] = str(row[field])
+    return names
+
+
+def name_entries(sheets: list, placed: list) -> int:
+    """Give each compiled sheet entry its own name from the sheet.
+
+    A compiled entry carries no name of its own: Altium hands it the
+    name of the net at it, so an entry SYS wired to V_SYS read as V_SYS
+    and was matched against the child's ports by that. ``placed`` are
+    the schematic entries (``_doc``, Name, Location.X, Location.Y); an
+    entry at the same place on the same sheet takes that Name, and its
+    ``net`` keeps the net's. Returns how many entries were named.
+    """
+    names = _own_names(placed, "Name")
+    named = 0
+    for sheet in sheets:
+        if not isinstance(sheet, dict):
+            continue
+        for sym in sheet.get("sheet_symbols") or []:
+            for entry in (sym.get("entries") or []) if isinstance(sym, dict) else []:
+                key = _place_key(sheet.get("file", ""), entry.get("x"), entry.get("y"))
+                own = names.get(key) if key else None
+                if own:
+                    entry["name"] = own
+                    named += 1
+    return named
+
+
+# The net items whose compiled text is the net's name rather than the
+# object's own: the schematic type and the member holding its text.
+OWN_TEXT = {"power_objects": ("ePowerObject", "Text"),
+            "sheet_entries": ("eSheetEntry", "Name")}
+
+
+def own_texts(nets: list, key: str, placed: list) -> int:
+    """Put each net item's own text from the sheet in its ``text``.
+
+    The compiled power object and sheet entry carry the net's name, so
+    a +3V3_AON power port on a net a 3V3_UF label names read 3V3_UF, and
+    a port that disagrees with its net could not be seen. An item at the
+    same place on the same sheet as one of ``placed`` takes its text;
+    the net's name stays in the net's ``net``. Returns how many changed.
+    """
+    names = _own_names(placed, OWN_TEXT[key][1])
+    changed = 0
+    for net in nets:
+        for item in (net.get(key) or []) if isinstance(net, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            place = _place_key(item.get("sheet", ""), item.get("x"), item.get("y"))
+            own = names.get(place) if place else None
+            if own is not None and own != item.get("text"):
+                item["text"] = own
+                changed += 1
+    return changed
 
 
 def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
@@ -3535,8 +3611,25 @@ def register_project_tools(mcp):
             params["structure"] = "true"
         if project_path:
             params["project_path"] = project_path
-        return await get_bridge().send_command_async(
+        from ..scope import to_wire
+        bridge = get_bridge()
+        out = await bridge.send_command_async(
             "project.get_net_items", params, timeout=120.0)
+        nets = _rows(out, "nets")
+        scope = to_wire(f"project:{project_path}" if project_path else "project")
+        for key, (kind, field) in OWN_TEXT.items():
+            if not any(isinstance(n, dict) and n.get(key) for n in nets):
+                continue
+            placed = await bridge.send_command_async("generic.query_objects", {
+                "scope": scope, "object_type": kind, "filter": "",
+                "properties": f"{field},Location.X,Location.Y"}, timeout=120.0)
+            rows = placed.get("objects") if isinstance(placed, dict) else None
+            if isinstance(rows, list):
+                own_texts(nets, key, rows)
+            else:
+                out.setdefault("notes", []).append(
+                    f"{key}: their own text could not be read, so text is the net's name")
+        return out
 
     @mcp.tool()
     async def proj_step_export_options(options: Optional[dict] = None) -> dict[str, Any]:
@@ -3596,19 +3689,32 @@ def register_project_tools(mcp):
         and ``physical``: per copy of the sheet (one per channel), the
         ``instance`` and the ``net`` it joins across the project. They
         differ when a name from another sheet wins. ``x`` / ``y`` (mils)
-        tell apart items of one name.
+        tell apart items of one name. An entry's ``name`` is its own name
+        on the sheet, which is what it is matched to the child's ports by.
 
         Args:
             project_path: The .PrjPcb. Default: the focused project.
         """
+        from ..scope import to_wire
         params = {"project_path": project_path} if project_path else {}
-        out = await get_bridge().send_command_async(
+        bridge = get_bridge()
+        out = await bridge.send_command_async(
             "project.get_hierarchy", params, timeout=180.0)
         sheets = _rows(out, "sheets")
         if sheets:
             for s in sheets:
                 if isinstance(s, dict) and isinstance(s.get("parents"), list):
                     s["parents"] = list(dict.fromkeys(s["parents"]))
+            placed = await bridge.send_command_async("generic.query_objects", {
+                "scope": to_wire(f"project:{project_path}" if project_path else "project"),
+                "object_type": "eSheetEntry", "filter": "",
+                "properties": "Name,Location.X,Location.Y"}, timeout=180.0)
+            rows = placed.get("objects") if isinstance(placed, dict) else None
+            if isinstance(rows, list):
+                name_entries(sheets, rows)
+            else:
+                out["note"] = ("the sheet entries' own names could not be read, so "
+                               "entries carry the name of the net at them")
             body = out.get("result", out) if isinstance(out.get("result"), dict) else out
             out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
         return out
