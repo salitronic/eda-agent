@@ -144,3 +144,45 @@ def test_the_region_is_built_as_a_footprint_region_is(fns):
     assert "RegionPointsSplit(PointsStr, Xs, Ys);" in body
     assert "Seg.Kind := ePolySegmentArc;" in body
     assert "Region.SetOutlineContour(Contour);" in body
+
+
+def test_an_outline_is_rounded_by_kind_of_corner():
+    """An L walked counterclockwise: five convex corners take corner_radius
+    and turn left (+90), the one inside corner takes inside_radius and
+    turns right (-90)."""
+    out, problem = lib_mod.round_outline([[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]],
+                                         0.1, 0.2)
+    assert problem == ""
+    sweeps = [round(p[2], 6) for p in out if len(p) > 2]
+    assert sweeps == [90, 90, 90, -90, 90, 90]
+    # The inside corner at (1, 1): tangent points 0.2 along each edge.
+    k = next(i for i, p in enumerate(out) if len(p) > 2 and p[2] < 0)
+    assert [round(v, 9) for v in out[k][:2]] == [1.2, 1.0]
+    assert [round(v, 9) for v in out[k + 1]] == [1.0, 1.2]
+
+
+def test_a_clockwise_outline_rounds_the_same_corners():
+    ccw = [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]]
+    out, _ = lib_mod.round_outline(list(reversed(ccw)), 0.1, 0.2)
+    sweeps = sorted(round(p[2]) for p in out if len(p) > 2)
+    assert sweeps == [-90, -90, -90, -90, -90, 90]
+
+
+def test_an_edge_too_short_for_its_fillets_names_what_fits():
+    _, problem = lib_mod.round_outline([[0, 0], [0.15, 0], [0.15, 1], [0, 1]], 0.1)
+    assert "edge 0" in problem and "corner_radius 0.075 at most" in problem
+
+
+def test_a_rounded_custom_pad_goes_out_with_its_fillet_arcs():
+    f = _fields(lib_mod._custom_pads_payload([{
+        "designator": "1", "shape": "custom", "outline": _L,
+        "corner_radius_length": 4, "inside_radius": 6}])[0])
+    assert len(f["arcs"].split("/")) == 6
+    assert len(f["points"].split("/")) == 12
+
+
+def test_rounding_an_outline_that_already_has_arcs_is_refused():
+    _, problems = lib_mod._custom_pads_payload([{
+        "designator": "1", "outline": [[0, 0], [10, 0, 90], [10, 10], [0, 10]],
+        "inside_radius": 1}])
+    assert problems and "plain corners" in problems[0]

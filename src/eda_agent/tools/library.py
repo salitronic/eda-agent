@@ -1063,6 +1063,84 @@ def _custom_anchor(poly: list[tuple[float, float]]) -> tuple[float, float]:
     return deepest
 
 
+def round_outline(pts: Any, corner_radius: float = 0.0,
+                  inside_radius: float = 0.0) -> tuple[list, str]:
+    """An outline of plain corners with every convex corner rounded to
+    ``corner_radius`` and every concave one to ``inside_radius``.
+
+    A corner becomes the two points where the fillet meets its edges, the
+    first carrying the fillet's sweep: the turn at that corner, positive
+    for a left turn. Convex and concave are judged against the outline's
+    own direction, either way round. Returns ``(points, problem)``; an
+    edge too short for the fillets at its two ends is refused, naming the
+    edge and the largest radii of each kind that fit there.
+    """
+    try:
+        verts = [(float(p[0]), float(p[1])) for p in pts]
+        if any(len(p) > 2 and float(p[2]) for p in pts):
+            return [], "corner rounding takes an outline of plain corners, no sweeps"
+    except (TypeError, ValueError, IndexError, KeyError):
+        return [], "points must be [x, y] numbers"
+    if len(verts) > 3 and verts[0] == verts[-1]:
+        verts = verts[:-1]
+    n = len(verts)
+    if n < 3:
+        return [], "needs at least three points"
+    if corner_radius < 0 or inside_radius < 0:
+        return [], "corner_radius and inside_radius are 0 or more"
+    area = sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(verts, verts[1:] + verts[:1]))
+    if abs(area) < 1e-12:
+        return [], "the outline encloses no area"
+    corners = []          # per vertex: (tangent distance, sweep, kind, radius)
+    for k, (x, y) in enumerate(verts):
+        px, py = verts[k - 1]
+        nx, ny = verts[(k + 1) % n]
+        ax, ay, bx, by = px - x, py - y, nx - x, ny - y
+        la, lb = math.hypot(ax, ay), math.hypot(bx, by)
+        if la == 0 or lb == 0:
+            return [], f"point {k} repeats its neighbour"
+        cross = (x - px) * (ny - y) - (y - py) * (nx - x)
+        cos_t = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+        theta = math.acos(cos_t)                      # angle inside the corner
+        convex = cross * area > 0
+        r = corner_radius if convex else inside_radius
+        if abs(cross) < 1e-12 or r == 0:
+            corners.append((0.0, 0.0, "convex" if convex else "concave", r))
+            continue
+        turn = 180.0 - math.degrees(theta)
+        corners.append((r / math.tan(theta / 2), math.copysign(turn, cross),
+                        "convex" if convex else "concave", r))
+    for k in range(n):
+        x1, y1 = verts[k]
+        x2, y2 = verts[(k + 1) % n]
+        length = math.hypot(x2 - x1, y2 - y1)
+        need = corners[k][0] + corners[(k + 1) % n][0]
+        if need > length + 1e-9:
+            f = length / need
+            kinds = {corners[k][2], corners[(k + 1) % n][2]}
+            parts = []
+            if "convex" in kinds and corner_radius:
+                parts.append(f"corner_radius {format_length(corner_radius * f)}")
+            if "concave" in kinds and inside_radius:
+                parts.append(f"inside_radius {format_length(inside_radius * f)}")
+            fit = " and ".join(parts)
+            return [], (f"edge {k} (point {k} to point {(k + 1) % n}) is "
+                        f"{format_length(length)} long, too short for the fillets "
+                        f"at its ends; it takes {fit} at most")
+    out: list = []
+    for k, (x, y) in enumerate(verts):
+        t, sweep = corners[k][0], corners[k][1]
+        if t == 0:
+            out.append([x, y])
+            continue
+        px, py = verts[k - 1]
+        nx, ny = verts[(k + 1) % n]
+        la, lb = math.hypot(px - x, py - y), math.hypot(nx - x, ny - y)
+        out.append([x + (px - x) / la * t, y + (py - y) / la * t, sweep])
+        out.append([x + (nx - x) / lb * t, y + (ny - y) / lb * t])
+    return out, ""
+
+
 def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
     """The ``pads`` payload for library.add_footprint_custom_pads: each pad's
     designator, layer, anchor x, y (default: inside the copper, see
@@ -1074,11 +1152,24 @@ def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
         if not name:
             problems.append(f"custom pad {i} has no designator")
             continue
-        fields, problem = _outline_fields(pad.get("outline"))
+        outline = pad.get("outline")
+        if pad.get("corner_radius_length") or pad.get("inside_radius"):
+            try:
+                radii = (float(pad.get("corner_radius_length") or 0),
+                         float(pad.get("inside_radius") or 0))
+            except (TypeError, ValueError):
+                problems.append(f"custom pad {name}: corner_radius_length and "
+                                "inside_radius are numbers")
+                continue
+            outline, problem = round_outline(outline, *radii)
+            if problem:
+                problems.append(f"custom pad {name}: {problem}")
+                continue
+        fields, problem = _outline_fields(outline)
         if problem:
             problems.append(f"custom pad {name}: outline {problem}")
             continue
-        poly = _outline_polygon(pad["outline"])
+        poly = _outline_polygon(outline)
         try:
             given = pad.get("x") is not None or pad.get("y") is not None
             if given:
@@ -4369,6 +4460,9 @@ def register_library_tools(mcp):
                   [x, y, sweep] for an arc edge); x, y is the pad's
                   anchor, inside the copper (default: a point well
                   inside it, also for a U or L whose box middle is not).
+                  An outline of plain corners is rounded with
+                  corner_radius_length (every convex corner) and
+                  inside_radius (every concave one), both lengths.
                   Read back per pad in ``custom_pads``
                 - corner_radius: roundrect corner in % (default 25), or
                   corner_radius_length as a length
