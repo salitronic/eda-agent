@@ -470,6 +470,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_trim_extend_track": "Altium interactive track trim",
     "pcb_place_pad": "free pads: KiCad 10.0's API creates pads only inside footprints",
     "pcb_place_pads": "free pads: KiCad 10.0's API creates pads only inside footprints",
+    "pcb_place_custom_pads": "free pads: KiCad 10.0's API creates pads only inside footprints",
     "pcb_place_thieving_pads": "free pads: KiCad 10.0's API creates pads only inside footprints",
     "pcb_make_paste_grid": "free pads: KiCad 10.0's API creates pads only inside footprints",
     # Altium-only schematic objects

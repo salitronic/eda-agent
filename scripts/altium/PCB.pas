@@ -10790,6 +10790,165 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_PlaceCustomPads - free pads on a board whose copper is an outline, the  }
+{ way Lib_AddFootprintCustomPads makes them in a footprint: each pad is an    }
+{ SMD pad on its layer at x, y, or with hole_size a thru-hole pad on the      }
+{ multi-layer, and the region drawn from its points (board coordinates)       }
+{ becomes its shape through LinkCustomShape. 'pads' is '~~' separated ops     }
+{ of designator, layer, x, y, hole_size, net, points, arcs. An unknown layer  }
+{ or net skips that pad and is named. Each pad is read back: whether it holds }
+{ a custom shape, its layer, its hole and its net.                            }
+{..............................................................................}
+
+Function PCB_PlaceCustomPads(Params : String; RequestId : String) : String;
+Var
+    BoardRefusal, PadsStr, Remaining, Op, LayerStr, NetStr, UnitsStr : String;
+    Rows, Note, BadLayers, BadNets, NetName : String;
+    Board : IPCB_Board;
+    Pad : IPCB_Pad;
+    Region : IPCB_Region;
+    FoundNet : IPCB_Net;
+    Layer : TLayer;
+    Rect : TCoordRect;
+    Added, Failed, Custom : Integer;
+    HasCustom : Boolean;
+    HoleSize : Double;
+Begin
+    Board := StackBoard(Params, RequestId, BoardRefusal);
+    If Board = Nil Then
+    Begin
+        Result := BoardRefusal;
+        Exit;
+    End;
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    PadsStr := ExtractJsonValue(Params, 'pads');
+    If PadsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pads is required');
+        Exit;
+    End;
+    Added := 0;
+    Failed := 0;
+    Custom := 0;
+    Rows := '';
+    BadLayers := '';
+    BadNets := '';
+    Remaining := PadsStr;
+    PcbBeginEdit(0);
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
+            LayerStr := GetBatchField(Op, 'layer');
+            If LayerStr = '' Then LayerStr := 'TopLayer';
+            Layer := ResolveLayerId(Board, LayerStr);
+            If Layer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+            NetStr := GetBatchField(Op, 'net');
+            FoundNet := Nil;
+            If NetStr <> '' Then
+            Begin
+                FoundNet := FindNetByName(Board, NetStr);
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := NetStr
+                    Else If Pos(NetStr, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + NetStr;
+                    Continue;
+                End;
+            End;
+            Region := LibOutlineRegion(Layer, GetBatchField(Op, 'points'),
+                GetBatchField(Op, 'arcs'), UnitsStr, 0, 0);
+            If Region = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+            If Pad = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Pad.Name := GetBatchField(Op, 'designator');
+            Pad.X := CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'x'), 0), UnitsStr);
+            Pad.Y := CoordFromUnits(StrToFloatDef(GetBatchField(Op, 'y'), 0), UnitsStr);
+            Rect := Region.BoundingRectangle;
+            Pad.TopXSize := Rect.Right - Rect.Left;
+            Pad.TopYSize := Rect.Top - Rect.Bottom;
+            Pad.TopShape := eRectangular;
+            If HoleSize > 0 Then
+            Begin
+                Pad.Layer := eMultiLayer;
+                Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
+                Pad.MidXSize := Pad.TopXSize;
+                Pad.MidYSize := Pad.TopYSize;
+                Pad.BotXSize := Pad.TopXSize;
+                Pad.BotYSize := Pad.TopYSize;
+            End
+            Else
+            Begin
+                Pad.HoleSize := 0;
+                Pad.Layer := Layer;
+            End;
+            If FoundNet <> Nil Then
+                BindPrimitiveToNet(FoundNet, Pad);
+            Board.AddPCBObject(Pad);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
+            Note := '';
+            PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+            Try
+                Pad.LinkCustomShape(Region);
+            Except
+                Note := 'LinkCustomShape raised';
+            End;
+            PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+            HasCustom := False;
+            Try
+                HasCustom := Pad.HasCustomShapes;
+            Except
+                Note := Note + ' HasCustomShapes raised';
+            End;
+            If HasCustom Then Inc(Custom);
+            NetName := '';
+            If Pad.Net <> Nil Then NetName := Pad.Net.Name;
+            Inc(Added);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '{"designator":"' + EscapeJsonString(Pad.Name) + '"'
+                + ',"custom":' + BoolToJsonStr(HasCustom)
+                + ',"layer":"' + EscapeJsonString(Layer2String(Pad.Layer)) + '"'
+                + ',"hole":' + FloatToJsonStr(CoordToUnits(Pad.HoleSize, UnitsStr))
+                + ',"net":"' + EscapeJsonString(NetName) + '"'
+                + ',"note":"' + EscapeJsonString(Trim(Note)) + '"}';
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+    If Added > 0 Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"custom":' + IntToStr(Custom)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
+        + ',"unknown_nets":"' + EscapeJsonString(BadNets) + '"'
+        + ',"pads":[' + Rows + ']}');
+End;
+
+{..............................................................................}
 { PCB_PlaceArc - Place an arc on the PCB                                      }
 { Params: x_center, y_center, radius, start_angle, end_angle, width, layer   }
 {..............................................................................}
@@ -34173,6 +34332,7 @@ Begin
         'place_arc':               Result := PCB_PlaceArc(Params, RequestId);
         'place_arcs':              Result := PCB_PlaceArcs(Params, RequestId);
         'place_pads':              Result := PCB_PlacePads(Params, RequestId);
+        'place_custom_pads':       Result := PCB_PlaceCustomPads(Params, RequestId);
         'place_text':              Result := PCB_PlaceText(Params, RequestId);
         'place_fill':              Result := PCB_PlaceFill(Params, RequestId);
         'start_polygon_placement': Result := PCB_StartPolygonPlacement(Params, RequestId);

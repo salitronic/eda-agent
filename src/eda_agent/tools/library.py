@@ -1141,17 +1141,24 @@ def round_outline(pts: Any, corner_radius: float = 0.0,
     return out, ""
 
 
-def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
-    """The ``pads`` payload for library.add_footprint_custom_pads: each pad's
-    designator, layer, anchor x, y (default: inside the copper, see
-    _custom_anchor) and outline. Returns ``(payload, problems)``."""
+def _custom_pads_payload(pads: list[dict[str, Any]],
+                         board: bool = False) -> tuple[str, list[str]]:
+    """The ``pads`` payload for library.add_footprint_custom_pads, or with
+    ``board`` for pcb.place_custom_pads: each pad's designator, layer,
+    anchor x, y (default: inside the copper, see _custom_anchor) and
+    outline, and on a board its net. A footprint pad needs a designator; a
+    board pad may have none. Returns ``(payload, problems)``."""
     ops: list[str] = []
     problems: list[str] = []
     for i, pad in enumerate(pads):
-        name = str(pad.get("designator") or "").strip()
-        if not name:
+        if not isinstance(pad, dict):
+            problems.append(f"custom pad {i} is not an object")
+            continue
+        given_name = str(pad.get("designator") or pad.get("name") or "").strip()
+        if not given_name and not board:
             problems.append(f"custom pad {i} has no designator")
             continue
+        name = given_name or str(i)
         outline = pad.get("outline")
         if pad.get("corner_radius_length") or pad.get("inside_radius"):
             try:
@@ -1198,8 +1205,11 @@ def _custom_pads_payload(pads: list[dict[str, Any]]) -> tuple[str, list[str]]:
                 continue
             hole = f";hole_size={format_length(size)}"
         layer = str(pad.get("layer") or "TopLayer").strip()
-        ops.append(f"designator={_payload_safe(name)};layer={_payload_safe(layer)};"
-                   f"x={format_length(x)};y={format_length(y)}{hole};{fields}")
+        net = ""
+        if board and str(pad.get("net") or "").strip():
+            net = f";net={_payload_safe(str(pad['net']).strip())}"
+        ops.append(f"designator={_payload_safe(given_name)};layer={_payload_safe(layer)};"
+                   f"x={format_length(x)};y={format_length(y)}{hole}{net};{fields}")
     return "~~".join(ops), problems
 
 

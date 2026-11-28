@@ -39,7 +39,7 @@ from .datasheet_hints import tag_response
 from .editor_options import run_options
 from ..layout import pad_relief
 from ..layout import dimensions
-from .library import _angle_text, _edge_arc, _mils
+from .library import _angle_text, _custom_pads_payload, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
@@ -9473,6 +9473,56 @@ def register_pcb_tools(mcp):
             params["board_path"] = board_path
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.place_pads", params)
+
+    @mcp.tool()
+    async def pcb_place_custom_pads(
+        pads: list[dict[str, Any]],
+        units: str = "mil",
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Place free pads on a board whose copper is an outline (Altium's
+        custom pad shape), in ONE call and one Altium edit. The same pads
+        lib_add_footprint_pads makes with shape "custom", on a board.
+
+        Args:
+            pads: List of dicts, each with:
+                - outline (required): board points as in
+                  lib_add_footprint_regions, [x, y] or [x, y, sweep] for
+                  an arc edge. An outline of plain corners is rounded
+                  with corner_radius_length (every convex corner) and
+                  inside_radius (every concave one), both lengths.
+                - x, y: the pad's anchor, where a track is routed to; it
+                  must lie inside the copper (default: a point well
+                  inside it, also for a U or L whose box middle is not)
+                - name (or designator), net (one the board does not have
+                  skips the pad and is named in ``unknown_nets``)
+                - layer: SMD side, "TopLayer" (default) or "BottomLayer"
+                - hole_size: a thru-hole pad on the multi-layer, the hole
+                  at the anchor and inside the copper
+            units: "mil" (default) or "mm" for every length, kept exact.
+            board_path: The board to place on, taken by its path and
+                refused when it is not open; empty acts on the board in
+                front, which another session can change between calls.
+
+        Returns:
+            "added", "failed", "custom" (pads read back holding the
+            shape), "unknown_layers", "unknown_nets", and per pad in
+            ``pads`` its designator, custom, layer, hole and net.
+        """
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        if not pads:
+            return {"ok": False, "reason": "pads is empty", "added": 0}
+        payload, problems = _custom_pads_payload(pads, board=True)
+        if problems:
+            return {"ok": False, "reason": "; ".join(problems), "added": 0,
+                    "total": len(pads)}
+        params: dict[str, Any] = {"pads": payload}
+        if normalise_units(units) == "mm":
+            params["units"] = "mm"
+        if board_path:
+            params["board_path"] = board_path
+        return await get_bridge().send_command_async("pcb.place_custom_pads", params)
 
     @mcp.tool()
     async def pcb_place_text(

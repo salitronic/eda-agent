@@ -242,6 +242,7 @@ SELF_CONVERTING = frozenset({
     "lib_add_footprint_via", "lib_add_footprint_vias", "lib_redraw_assembly",
     "lib_set_3d_body", "lib_set_pad_geometry", "lib_set_pad_properties",
     "lib_set_via_properties", "pcb_place_pad", "pcb_place_pads",
+    "pcb_place_custom_pads",
 })
 
 #: Altium's board properties whose value is a length in mils, as the

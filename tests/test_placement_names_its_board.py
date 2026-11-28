@@ -14,7 +14,8 @@ import pytest
 from eda_agent.tools import pcb
 
 _PCB = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "PCB.pas"
-_HANDLERS = ("PCB_PlaceTracks", "PCB_PlaceVias", "PCB_PlaceArcs", "PCB_PlacePads")
+_HANDLERS = ("PCB_PlaceTracks", "PCB_PlaceVias", "PCB_PlaceArcs", "PCB_PlacePads",
+             "PCB_PlaceCustomPads")
 
 
 class _Bridge:
@@ -51,6 +52,7 @@ CALLS = {
     "pcb_place_vias": {"vias": [{"x": 0, "y": 0}]},
     "pcb_place_arcs": {"arcs": [{"x_center": 0, "y_center": 0, "radius": 10}]},
     "pcb_place_pads": {"pads": [{"x": 0, "y": 0}], "x_size": 20, "y_size": 20},
+    "pcb_place_custom_pads": {"pads": [{"outline": [[0, 0], [10, 0], [10, 10], [0, 10]]}]},
 }
 
 

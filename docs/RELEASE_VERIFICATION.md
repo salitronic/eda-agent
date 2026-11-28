@@ -1,4 +1,4 @@
-# Release verification: 2026.11.28.2
+# Release verification: 2026.11.28.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -260,7 +260,8 @@ works elsewhere cannot be an undeclared identifier:
 | 90, DbLib quote, parts removed from the middle | `CurrentPartID` before a library Remove Part | yes, `Library.pas` (Lib_SetSymbolParts removes the last part the same way) | low; each removal is checked against every other part's pins and objects, ran live on a scratch library |
 | 91, clearance table, silk-to-mask choice, uncoupled run | `SetClearance`, `GetClearance` on a Clearance rule with two primitives made for the call and destroyed; `SetState_IsClearanceToExposedCopper` on a Silk To Solder Mask rule; `MaxUncoupledLength` on an existing pair rule | partly, `PCB_CreateDesignRule` (the uncoupled length on create) | low; rule values only, each read back; ran live on a scratch copy and closed without saving |
 | 92, grid look, impedance solve, custom pad spokes | `SetProperty_Color`, `SetProperty_ColorLarge` on the default grid inside `BeginUpdate` / `EndUpdate`; `ComputeImpedance` and `ApplyToPcb` on the Layer Stack Manager's document; `ImpedanceProfileId` on width and pair rules after a model load | only by `PCB.pas` (pcb_set_grids, pcb.compute_impedance), each new | low; display settings and the manager's own solve and apply, read back; ran live on a scratch copy |
-| 93, custom pad shape | `LinkCustomShape` with a region never added to the footprint, then `HasCustomShapes` | no, nowhere | medium, a new route; ran live, saved, closed and reopened with the shape kept |
+| 93, custom pad shape | `LinkCustomShape` with a region never added to the footprint, then `HasCustomShapes` | only by `Library.pas` and `PCB.pas` (the footprint and the board route), both new | medium, a new route; ran live, saved, closed and reopened with the shape kept |
+| 93, board custom pads | `LinkCustomShape` and `HasCustomShapes` on a free pad on a board, its region never added to the board | yes, `Library.pas` (the footprint route, step 93) | low; the footprint's call on a board pad, ran live on a scratch board, saved and read back |
 | 94, sensor electrodes | `LinkCustomShape` (step 93) and the top paste opening through lib_set_pad_properties | yes, `Library.pas` (steps 93 and the pad properties writer) | low; no new identifier, each pattern ran live on a scratch library with paste read back off |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
@@ -436,7 +437,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.28.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.28.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.3`.
 
 Those are two different versions and they fail differently.
@@ -4560,6 +4561,15 @@ a library:
    close and reopen it still reads `custom` with its hole (AD 26.12).
 5. An L outline with no x, y: the anchor lands inside the copper, not
    in the notch where the outline's box has its middle.
+6. Free pads on a board through pcb_place_custom_pads (AD 26.12.2.8,
+   a scratch board): an L 2 x 1.5 mm with 0.1 mm outside and 0.2 mm
+   inside corners on GND, the same L on the bottom layer with no name,
+   and a hexagon with a 1.0 mm hole. All three read `custom` (the
+   hexagon Multi Layer with its hole, the L on GND), Altium draws the
+   rounded L and the hexagon, and after a save with the tab closed and
+   opened again all three still read `custom` with no region left on
+   the board. A pad on a net
+   the board does not have is skipped and named.
 
 ## 94. Sensor electrodes as custom-shaped pads
 

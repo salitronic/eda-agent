@@ -44,7 +44,7 @@ NO_BULK = frozenset({
 #: spelling of the same call.
 LIST_NATIVE = frozenset({
     "pcb_place_vias", "pcb_place_tracks", "pcb_place_arcs", "pcb_place_pads",
-    "lib_add_footprint_pads",
+    "pcb_place_custom_pads", "lib_add_footprint_pads",
     "lib_add_footprint_tracks", "lib_add_footprint_vias",
     "proj_get_component_info_many", "proj_get_connectivity_many",
     "lib_batch_set_params",
