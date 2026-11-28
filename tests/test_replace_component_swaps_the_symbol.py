@@ -39,8 +39,14 @@ def test_the_relink_says_the_symbol_stayed():
 
 
 def test_the_swap_compares_pins_before_removing_the_old_part():
-    body = _fns()["SwapSchSymbol"]
-    load_at = body.index("SchServer.LoadComponentFromLibrary(")
+    fns = _fns()
+    body = fns["SwapLoadedSymbol"]
+    # Each loader loads before it hands the part to the swap, whose edit
+    # opens there: the load never nests inside the sheet's transaction.
+    for loader, load in (("SwapSchSymbol", "SchServer.LoadComponentFromLibrary("),
+                         ("SwapVaultSymbol", "SchServer.LoadComponent(")):
+        assert fns[loader].index(load) < fns[loader].index("Result := SwapLoadedSymbol(")
+        assert "SchBeginEdit" not in fns[loader]
     pre = body.index("SchBeginEdit(SchDoc")
     old_map = body.index("OldMap := SchPinMap(OldComp);")
     new_map = body.index("NewMap := SchPinMap(NewComp);")
@@ -49,7 +55,6 @@ def test_the_swap_compares_pins_before_removing_the_old_part():
     stamp = body.index("NewComp.UniqueId := OldId;")
     # Loaded outside the edit; old pins read before; refusal before the
     # old part goes; UniqueId stamped once its old owner is gone.
-    assert load_at < pre
     assert old_map < pre < new_map < refuse < remove_old < stamp
 
 
@@ -57,7 +62,7 @@ def test_the_id_is_checked_again_after_the_commit():
     """Measured live: the in-transaction stamp held on one swap and was
     reminted at PostProcess on another, unlinking the part from the
     board."""
-    body = _fns()["SwapSchSymbol"]
+    body = _fns()["SwapLoadedSymbol"]
     # Committed even inside a bulk call, which holds a plain SchEndEdit.
     post = body.index("SchCommitEdit(SchDoc, 'Edit');")
     again = body.index("If (OldId <> '') And (NewId <> OldId) Then", post)
@@ -66,7 +71,7 @@ def test_the_id_is_checked_again_after_the_commit():
 
 
 def test_a_refused_swap_takes_the_new_symbol_back_off():
-    body = _fns()["SwapSchSymbol"]
+    body = _fns()["SwapLoadedSymbol"]
     refuse_block = body[body.index("If ((Missing <> ';') Or (Moved <> ';'))"):
                         body.index("'PIN_MISMATCH'")]
     assert "SchDoc.RemoveSchObject(NewComp);" in refuse_block
@@ -82,8 +87,17 @@ def test_pins_are_compared_at_their_connection_point():
 
 def test_the_swap_is_defined_before_its_caller():
     text = _GENERIC.read_text(encoding="utf-8")
-    assert text.index("Function SwapSchSymbol(") < text.index(
-        "Function Gen_ReplaceComponent(")
+    assert (text.index("Function SwapLoadedSymbol(")
+            < text.index("Function SwapSchSymbol(")
+            < text.index("Function SwapVaultSymbol(")
+            < text.index("Function Gen_ReplaceComponent("))
+
+
+def test_a_design_item_id_goes_to_the_workspace_swap():
+    body = _fns()["Gen_ReplaceComponent"]
+    assert "ExtractJsonValue(Params, 'design_item_id')" in body
+    assert body.index("SchDoc.SchIterator_Destroy(Iterator);") < body.index(
+        "Result := SwapVaultSymbol(")
 
 
 def test_replicate_reports_success_when_the_id_was_kept():

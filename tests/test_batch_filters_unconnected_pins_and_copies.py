@@ -116,3 +116,29 @@ def test_save_copy_as_takes_a_schematic_path_only(monkeypatch):
     out, sent = _run(generic, "register_generic_tools", monkeypatch, "sch_save_copy_as",
                      {}, target_path=r"C:\d\Copy.PcbDoc")
     assert sent == [] and out["ok"] is False
+
+
+def test_a_part_is_swapped_for_a_workspace_item_by_its_id(monkeypatch):
+    _, sent = _run(generic, "register_generic_tools", monkeypatch, "proj_replace_component",
+                   {"generic.replace_component": {"success": True}},
+                   designator="C12", design_item_id="CMP-001-00107-2", vault="Acme")
+    assert sent == [("generic.replace_component",
+                     {"designator": "C12", "design_item_id": "CMP-001-00107-2",
+                      "allow_pin_changes": "false", "vault": "Acme"})]
+
+
+def test_a_swap_names_one_source(monkeypatch):
+    out, sent = _run(generic, "register_generic_tools", monkeypatch, "proj_replace_component",
+                     {}, designator="C12")
+    assert sent == [] and out["ok"] is False
+    out, sent = _run(generic, "register_generic_tools", monkeypatch, "proj_replace_component",
+                     {}, designator="C12", design_item_id="CMP-1", library_path=r"C:\d\A.SchLib")
+    assert sent == [] and out["ok"] is False
+
+
+def test_a_library_swap_still_sends_what_it_did(monkeypatch):
+    _, sent = _run(generic, "register_generic_tools", monkeypatch, "proj_replace_component",
+                   {"generic.replace_component": {"success": True}},
+                   designator="R1", new_lib_ref="R_0402", library_path=r"C:\d\A.SchLib")
+    assert sent[0][1] == {"designator": "R1", "new_lib_ref": "R_0402",
+                          "library_path": r"C:\d\A.SchLib", "allow_pin_changes": "false"}

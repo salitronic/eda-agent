@@ -4281,10 +4281,13 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def proj_replace_component(
         designator: str,
-        new_lib_ref: str,
+        new_lib_ref: str = "",
         new_library: str = "",
         library_path: str = "",
         allow_pin_changes: bool = False,
+        design_item_id: str = "",
+        vault: str = "",
+        lib_identifier_kind: Optional[int] = None,
     ) -> dict[str, Any]:
         """Replace a part on the active sheet with another library part.
 
@@ -4294,6 +4297,11 @@ def register_generic_tools(mcp):
         and UniqueId carry over, so the board keeps its link. A pin that
         would move or disappear refuses the swap with nothing changed
         (``PIN_MISMATCH``), unless ``allow_pin_changes``.
+
+        Given a Design Item ID the part is swapped the same way for that
+        Workspace (managed) item, loaded as sch_place_vault_components
+        loads one, with its own parameters and revision; ``linked`` says
+        it reads back its Workspace link.
 
         Without ``library_path`` only the library link changes
         (LibReference, DesignItemId, library name); the symbol, pins and
@@ -4308,20 +4316,38 @@ def register_generic_tools(mcp):
             library_path: .SchLib holding ``new_lib_ref``; swaps the symbol.
             allow_pin_changes: Swap even when pins move or disappear; the
                 wires on those pins are then left unconnected.
+            design_item_id: A Workspace item to swap the part for.
+            vault: The Workspace name; usually read off managed parts on
+                an open sheet. If refused, ask the user, don't invent it.
+            lib_identifier_kind: Load kind, default 4 (VaultName).
 
         Returns:
             ``symbol_replaced``. After a swap: ``pins_kept``,
             ``pins_missing``, ``pins_moved``, ``pins_added``,
             ``parameters_not_on_new_symbol`` (old parameters the new
-            symbol lacks, not copied) and ``unique_id_kept``.
+            symbol lacks, not copied), ``unique_id_kept``, and the new
+            part's Design Item ID, ``vault_guid``, ``item_guid``,
+            ``revision_guid`` and ``linked``.
         """
+        if not new_lib_ref and not design_item_id:
+            return {"ok": False, "reason": "give new_lib_ref, or design_item_id "
+                    "for a Workspace item; nothing was changed"}
+        if design_item_id and library_path:
+            return {"ok": False, "reason": "give library_path or design_item_id, "
+                    "not both; nothing was changed"}
         bridge = get_bridge()
-        params = {
-            "designator": designator,
-            "new_lib_ref": new_lib_ref,
-        }
+        params: dict[str, Any] = {"designator": designator}
+        if new_lib_ref:
+            params["new_lib_ref"] = new_lib_ref
         if new_library:
             params["new_library"] = new_library
+        if design_item_id:
+            params["design_item_id"] = design_item_id
+            params["allow_pin_changes"] = "true" if allow_pin_changes else "false"
+            if vault:
+                params["vault"] = vault
+            if lib_identifier_kind is not None:
+                params["lib_identifier_kind"] = str(int(lib_identifier_kind))
         if library_path:
             params["library_path"] = library_path
             params["allow_pin_changes"] = "true" if allow_pin_changes else "false"

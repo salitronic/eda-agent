@@ -15179,57 +15179,35 @@ End;
 { The designator and UniqueId carry over, so the board keeps its link.        }
 {..............................................................................}
 
-Function SwapSchSymbol(SchDoc : ISch_Document; OldComp : ISch_Component;
+{ A placed part's Workspace link as JSON fields, each '' on a part from a  }
+{ library file: the Design Item ID, and the VaultGUID and ItemGUID the     }
+{ file saves for a linked part (see Gen_PlaceSchVaultComponents).         }
+Function WorkspaceLinkJson(Comp : ISch_Component) : String;
+Var
+    ItemId, VaultGuid, ItemGuid, RevGuid : String;
+Begin
+    ItemId := ''; VaultGuid := ''; ItemGuid := ''; RevGuid := '';
+    Try ItemId := Comp.DesignItemId; Except End;
+    Try VaultGuid := Comp.VaultGUID; Except End;
+    Try ItemGuid := Comp.ItemGUID; Except End;
+    Try RevGuid := Comp.RevisionGUID; Except End;
+    Result := ',"design_item_id":"' + EscapeJsonString(ItemId) + '"'
+        + ',"vault_guid":"' + EscapeJsonString(VaultGuid) + '"'
+        + ',"item_guid":"' + EscapeJsonString(ItemGuid) + '"'
+        + ',"revision_guid":"' + EscapeJsonString(RevGuid) + '"'
+        + ',"linked":' + BoolToJsonStr((VaultGuid <> '') And (ItemGuid <> ''));
+End;
+
+Function SwapLoadedSymbol(SchDoc : ISch_Document; OldComp, NewComp : ISch_Component;
     Designator, LibPath, LibRef : String; AllowPinChanges : Boolean;
     RequestId : String) : String;
 Var
-    NewComp : ISch_Component;
-    SrvDoc : IServerDocument;
-    ResolvedLib, Reason, AvailHint : String;
     OldMap, NewMap, Rest, Entry, D, V, NV : String;
     Missing, Moved, Added, OldParams, NewParams, Dropped : String;
     OldId, NewId, OldLibRef : String;
     OldX, OldY, Orient, PartId, P, Kept : Integer;
     Mirrored : Boolean;
 Begin
-    ResolvedLib := ResolveSchLibForLoad(LibPath, Reason);
-    If ResolvedLib = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_LOADABLE', Reason);
-        Exit;
-    End;
-    LibPath := ResolvedLib;
-    If Not ResolveLibRef(LibPath, LibRef, AvailHint) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
-            'lib_reference "' + LibRef + '" not found in ' + LibPath +
-            '. Sample of available names: ' + AvailHint + '. Nothing was changed.');
-        Exit;
-    End;
-
-    { Load before the sheet's transaction, as placement does: the retry can
-      open the library document, which must not nest inside the edit. }
-    NewComp := Nil;
-    Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
-    If NewComp = Nil Then
-    Begin
-        If FocusSchLib(LibPath) <> Nil Then
-        Begin
-            Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
-        End;
-        Try
-            SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
-            If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
-        Except End;
-    End;
-    If NewComp = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'LOAD_FAILED',
-            'LoadComponentFromLibrary returned nil for ' + LibRef + ' from ' +
-            LibPath + '. Nothing was changed.');
-        Exit;
-    End;
-
     OldX := 0; OldY := 0; Orient := 0; PartId := 1; Mirrored := False;
     OldId := ''; OldLibRef := '';
     Try OldX := OldComp.Location.X; Except End;
@@ -15360,21 +15338,114 @@ Begin
         + '],"pins_added":[' + NameListJson(Added)
         + '],"parameters_not_on_new_symbol":[' + NameListJson(Dropped)
         + '],"unique_id_kept":' + BoolToJsonStr((OldId <> '') And (NewId = OldId))
-        + ',"unique_id":"' + EscapeJsonString(NewId) + '"}');
+        + ',"unique_id":"' + EscapeJsonString(NewId) + '"'
+        + WorkspaceLinkJson(NewComp) + '}');
+End;
+
+{ Swap a placed part's symbol for one from a .SchLib (SwapLoadedSymbol). }
+Function SwapSchSymbol(SchDoc : ISch_Document; OldComp : ISch_Component;
+    Designator, LibPath, LibRef : String; AllowPinChanges : Boolean;
+    RequestId : String) : String;
+Var
+    NewComp : ISch_Component;
+    SrvDoc : IServerDocument;
+    ResolvedLib, Reason, AvailHint : String;
+Begin
+    ResolvedLib := ResolveSchLibForLoad(LibPath, Reason);
+    If ResolvedLib = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_LOADABLE', Reason);
+        Exit;
+    End;
+    LibPath := ResolvedLib;
+    If Not ResolveLibRef(LibPath, LibRef, AvailHint) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'lib_reference "' + LibRef + '" not found in ' + LibPath +
+            '. Sample of available names: ' + AvailHint + '. Nothing was changed.');
+        Exit;
+    End;
+
+    { Load before the sheet's transaction, as placement does: the retry can
+      open the library document, which must not nest inside the edit. }
+    NewComp := Nil;
+    Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
+    If NewComp = Nil Then
+    Begin
+        If FocusSchLib(LibPath) <> Nil Then
+        Begin
+            Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
+        End;
+        Try
+            SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
+            If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
+        Except End;
+    End;
+    If NewComp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LOAD_FAILED',
+            'LoadComponentFromLibrary returned nil for ' + LibRef + ' from ' +
+            LibPath + '. Nothing was changed.');
+        Exit;
+    End;
+    Result := SwapLoadedSymbol(SchDoc, OldComp, NewComp, Designator, LibPath, LibRef,
+        AllowPinChanges, RequestId);
+End;
+
+{ Swap a placed part for a Workspace item, loaded by Design Item ID as   }
+{ Gen_PlaceSchVaultComponents loads one (SwapLoadedSymbol).             }
+Function SwapVaultSymbol(SchDoc : ISch_Document; OldComp : ISch_Component;
+    Designator, Vault, DesignItemId : String; Kind : Integer;
+    AllowPinChanges : Boolean; RequestId : String) : String;
+Var
+    NewComp : ISch_Component;
+    VaultName, Note : String;
+    Raised : Boolean;
+Begin
+    If Not ResolveVaultName(Vault, VaultName, Note) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'VAULT_NOT_RESOLVED',
+            VaultNotResolvedMessage(0));
+        Exit;
+    End;
+    NewComp := Nil;
+    Raised := False;
+    Try
+        NewComp := SchServer.LoadComponent(Kind, VaultName, DesignItemId);
+    Except
+        Raised := True;
+    End;
+    If Raised Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LOAD_RAISED',
+            'SchServer.LoadComponent raised, so this host cannot load managed '
+            + 'parts. Nothing was changed.');
+        Exit;
+    End;
+    If NewComp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND_IN_VAULT',
+            DesignItemId + ' did not load from ' + VaultName + '. Nothing was changed.');
+        Exit;
+    End;
+    Result := SwapLoadedSymbol(SchDoc, OldComp, NewComp, Designator, VaultName,
+        DesignItemId, AllowPinChanges, RequestId);
 End;
 
 {..............................................................................}
 { Replace a component with a different library part                           }
-{ With library_path: swaps the symbol on the sheet (SwapSchSymbol).           }
-{ Without: relinks the part to another library item, leaving its symbol.      }
-{ Params: designator, new_lib_ref, new_library, library_path,                 }
-{         allow_pin_changes                                                   }
+{ With library_path: swaps the symbol on the sheet (SwapSchSymbol); with     }
+{ design_item_id, for that Workspace item (SwapVaultSymbol).                  }
+{ Without either: relinks the part to another library item, leaving its      }
+{ symbol.                                                                     }
+{ Params: designator, new_lib_ref, new_library, library_path, design_item_id, }
+{         vault, lib_identifier_kind, allow_pin_changes                       }
 {..............................................................................}
 
 Function Gen_ReplaceComponent(Params : String; RequestId : String) : String;
 Var
     AmbigTotal : Integer;
-    Designator, NewLibRef, NewLibrary, LibPath : String;
+    Designator, NewLibRef, NewLibrary, LibPath, ItemId : String;
     SchDoc : ISch_Document;
     Iterator : ISch_Iterator;
     Obj : ISch_GraphicalObject;
@@ -15385,15 +15456,17 @@ Begin
     NewLibRef := ExtractJsonValue(Params, 'new_lib_ref');
     NewLibrary := ExtractJsonValue(Params, 'new_library');
     LibPath := ExtractJsonValue(Params, 'library_path');
+    ItemId := ExtractJsonValue(Params, 'design_item_id');
 
     If Designator = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'designator is required');
         Exit;
     End;
-    If NewLibRef = '' Then
+    If (NewLibRef = '') And (ItemId = '') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'new_lib_ref is required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'new_lib_ref, or design_item_id for a Workspace item, is required');
         Exit;
     End;
 
@@ -15424,7 +15497,7 @@ Begin
         Try
             Comp := Obj;   // cast through the strongly-typed local so
                            // Comp.Designator.Text resolves correctly
-            If (Comp.Designator.Text = Designator) And (LibPath <> '') Then
+            If (Comp.Designator.Text = Designator) And ((LibPath <> '') Or (ItemId <> '')) Then
             Begin
                 Target := Comp;
                 Found := True;
@@ -15453,6 +15526,14 @@ Begin
     End;
     SchDoc.SchIterator_Destroy(Iterator);
 
+    If Found And (ItemId <> '') Then
+    Begin
+        Result := SwapVaultSymbol(SchDoc, Target, Designator,
+            ExtractJsonValue(Params, 'vault'), ItemId,
+            StrToIntDef(ExtractJsonValue(Params, 'lib_identifier_kind'), LIB_IDENT_KIND_VAULT_NAME),
+            ExtractJsonValue(Params, 'allow_pin_changes') = 'true', RequestId);
+        Exit;
+    End;
     If Found And (LibPath <> '') Then
     Begin
         { After the iterator is gone: the swap adds and removes parts. }
