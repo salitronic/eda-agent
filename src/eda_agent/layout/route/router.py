@@ -1059,6 +1059,20 @@ class Router:
             self._fixed[li] = (items, boxes)
         return self._fixed[li]
 
+    def _barrel_layers(self, x: float, y: float) -> list[int]:
+        """The routing layers a via or plated hole at (x, y) spans: a via
+        from its low to its high layer, a hole all of them."""
+        g = self.grid
+        order = {l.name: l.order for l in self.board.layers}
+        for v in self.board.vias:
+            if abs(v.x - x) < 1e-6 and abs(v.y - y) < 1e-6:
+                lo = order.get(v.low_layer, min(order.values(), default=0))
+                hi = order.get(v.high_layer, max(order.values(), default=0))
+                lo, hi = min(lo, hi), max(lo, hi)
+                return [li for name, li in g.layer_index.items()
+                        if lo <= order.get(name, -1) <= hi]
+        return list(g.layer_index.values())
+
     def _terminal(self, idx: int, pad: Pad, nid: int, width: float) -> Terminal:
         g = self.grid
         cells = []
@@ -1100,6 +1114,18 @@ class Router:
             for y, x in zip(ys, xs):
                 cells.append((li, int(y + j0), int(x + i0)))
                 deep.append(bool(is_deep[y, x]))
+        # A pad its own copper already takes to a via or plated hole (a
+        # hand fanout) is reached at that barrel too, on every layer it
+        # spans: a brief that keeps the net to an inner layer routes
+        # between the fanouts instead of failing at the surface pad.
+        for bx, by in self.pad_barrels.get(idx, ()):
+            ci, cj = g.spec.cell(bx, by)
+            if not (0 <= ci < g.spec.nx and 0 <= cj < g.spec.ny):
+                continue
+            for li in self._barrel_layers(bx, by):
+                if (li, cj, ci) not in cells:
+                    cells.append((li, cj, ci))
+                    deep.append(False)
         neck = self._neck_width(nid, pad, width)
         if neck is not None:
             # Reached only along an axis, by a stub at the pad's width; with

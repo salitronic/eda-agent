@@ -808,6 +808,7 @@ def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None
     copper = set(board.signal_layers()) | set(board.copper_layers())
     errors: list[str] = []
     seen: dict[str, int] = {}
+    fanned: Optional[set] = None
     for k, e in enumerate(brief.entries):
         tag = f"entry {k + 1} ({', '.join(e.nets[:3])}{'...' if len(e.nets) > 3 else ''})"
         if not e.nets:
@@ -824,7 +825,14 @@ def check(board: LayoutBoard, brief: Brief, nets: Optional[Iterable[str]] = None
             if bad:
                 errors.append(f"{tag}: no copper layer {bad}; the board has {board.copper_layers()}")
             for n in e.nets:
-                need = {c.layer for p in pads_of.get(n, []) if p.is_smd for c in p.copper}
+                # A surface pad already joined by copper to a via or plated
+                # hole of its net (a hand fanout) is reached through that
+                # barrel, so its own layer need not be among layers.
+                if fanned is None:
+                    from ..drc import pad_barrels
+                    fanned = {id(board.pads[i]) for i in pad_barrels(board)}
+                need = {c.layer for p in pads_of.get(n, [])
+                        if p.is_smd and id(p) not in fanned for c in p.copper}
                 if need - set(e.layers):
                     errors.append(f"{tag}: {n} has surface pads on {sorted(need - set(e.layers))}, "
                                   f"which layers leaves out")

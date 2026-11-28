@@ -230,3 +230,35 @@ def test_a_layer_that_is_not_there_is_refused_once_not_as_a_gap_in_the_stack():
     text = " ".join(got["errors"])
     assert "no copper layer ['L3-SIG']" in text
     assert "dielectric next to ['L3-SIG']" not in text
+
+
+def _fanned_board(fanned: bool) -> LayoutBoard:
+    """Two surface pads of net A on Top, each with a stub to a through via
+    when ``fanned``, on a four-layer board."""
+    from eda_agent.layout.model import Via
+    b = _board()
+    b.layers = [Layer("TopLayer", "signal", 0), Layer("MidLayer1", "signal", 1),
+                Layer("MidLayer2", "signal", 2), Layer("BottomLayer", "signal", 3)]
+    smd = [PadCopper("TopLayer", "rect", 20, 20)]
+    b.pads = [Pad("U1", "1", 100, 200, net="A", copper=list(smd)),
+              Pad("U2", "1", 500, 200, net="A", copper=list(smd))]
+    if fanned:
+        b.tracks = [Track("TopLayer", 100, 200, 100, 260, 6, net="A"),
+                    Track("TopLayer", 500, 200, 500, 260, 6, net="A")]
+        b.vias = [Via(100, 260, 20, 10, "TopLayer", "BottomLayer", net="A"),
+                  Via(500, 260, 20, 10, "TopLayer", "BottomLayer", net="A")]
+    return b
+
+
+def test_a_net_fanned_out_by_hand_routes_on_an_inner_layer_between_its_vias():
+    entry = {"nets": ["A"], "layers": ["MidLayer2"], "source": "test"}
+    assert B.check(_fanned_board(True), B.Brief.from_list([entry]))["errors"] == []
+    res = route_job({"board": _fanned_board(True), "brief": [entry]})
+    assert res["summary"]["completion"] == 1.0 and not res["vias"]
+    assert {t["layer"] for t in _tracks(res)} == {"MidLayer2"}
+
+
+def test_a_surface_pad_with_no_fanout_still_needs_its_layer():
+    got = B.check(_fanned_board(False), B.Brief.from_list(
+        [{"nets": ["A"], "layers": ["MidLayer2"], "source": "test"}]))
+    assert any("surface pads on ['TopLayer']" in e for e in got["errors"])
