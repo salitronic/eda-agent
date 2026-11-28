@@ -37,7 +37,15 @@ from ..preferences import checks_guide
 
 #: Document kinds a recipe can apply to. ``any`` means it does not turn
 #: on which document is in front.
-DOCUMENT_KINDS = ("library", "board", "schematic", "project", "any")
+DOCUMENT_KINDS = ("library", "pcblib", "schlib", "board", "schematic", "project",
+                  "outjob", "any")
+
+#: The recipe kinds a question about one kind is answered from: a recipe
+#: for either library answers ``library``, and one for ``library`` answers
+#: a question about either.
+_RECIPE_KINDS = {"library": ("library", "pcblib", "schlib"),
+                 "pcblib": ("library", "pcblib"),
+                 "schlib": ("library", "schlib")}
 
 
 #: Each recipe: what you are trying to do, the tools that do it, and the
@@ -2475,7 +2483,8 @@ def _score(recipe: dict, task: str, document_kind: str) -> int:
     this module exists to prevent. The subject words have to outweigh
     the verb, so a keyword hit counts for more than a tool-name hit.
     """
-    if document_kind and recipe["document_kind"] not in (document_kind, "any"):
+    if document_kind and recipe["document_kind"] not in (
+            *_RECIPE_KINDS.get(document_kind, (document_kind,)), "any"):
         return 0
     if not task:
         return 1
@@ -2638,8 +2647,13 @@ def derived_recipes(task: str, docs: dict[str, str],
 
 def guidance_for(task: str = "", document_kind: str = "",
                  backend: str = "",
-                 docs: Optional[dict[str, str]] = None) -> dict[str, Any]:
-    """The recipes and dead ends matching one question. Pure, testable."""
+                 docs: Optional[dict[str, str]] = None,
+                 server_backend: str = "altium", brief: bool = True) -> dict[str, Any]:
+    """The recipes and dead ends matching one question. Pure, testable.
+
+    A document_kind with no task is a request for what to know about that
+    kind: the reply is its ``briefing`` (briefings.py, for ``backend`` or
+    else ``server_backend``) and the titles of its recipes."""
     task = (task or "").strip()
     document_kind = (document_kind or "").strip().lower()
     backend = (backend or "").strip().lower()
@@ -2647,6 +2661,15 @@ def guidance_for(task: str = "", document_kind: str = "",
     if document_kind and document_kind not in DOCUMENT_KINDS:
         return {"ok": False, "reason": (
             f"document_kind must be one of {', '.join(DOCUMENT_KINDS)}")}
+    if brief and document_kind and document_kind != "any" and not task:
+        from ..briefings import briefing
+        result = guidance_for("", document_kind, backend, None, server_backend, brief=False)
+        result.pop("note", None)
+        return {"ok": True, "document_kind": document_kind,
+                "briefing": briefing(document_kind, backend or server_backend),
+                "recipe_titles": [r["task"] for r in result["recipes"]],
+                "not_possible": [d["capability"] for d in result["not_possible"]],
+                "note": "Give a task for a recipe in full."}
 
     def on_backend(entry) -> bool:
         return not backend or backend in entry["backends"]
@@ -2763,8 +2786,11 @@ def register_guidance_tools(mcp):
             task: What you are trying to do, in your own words, e.g.
                 "delete silkscreen from a footprint". Matched on
                 keywords, so a rough phrase is fine.
-            document_kind: Narrow to one of library, board, schematic,
-                project, any. Optional.
+            document_kind: Narrow to one of board, schematic, pcblib,
+                schlib, library (both libraries), project, outjob, any.
+                Given with no task, the reply is what to know before
+                working on that kind (``briefing``) and the titles of its
+                recipes.
             backend: altium, kicad or easyeda. Optional; omit to see
                 every backend's answer.
 
@@ -2785,5 +2811,8 @@ def register_guidance_tools(mcp):
                 docs[spec.name] = getattr(spec, "description", "") or ""
         except Exception:            # noqa: BLE001
             docs = {}
-        result = guidance_for(task, document_kind, backend, docs)
+        # The server is named for its backend (eda-agent-altium), and a
+        # briefing is the server's own unless another backend is asked.
+        own = str(getattr(mcp, "name", "") or "").rsplit("-", 1)[-1] or "altium"
+        result = guidance_for(task, document_kind, backend, docs, server_backend=own)
         return with_reach(result, reach_of)

@@ -24,6 +24,10 @@ import pytest
 
 from eda_agent.server import SERVER_INSTRUCTIONS, build_server_instructions
 
+#: The preamble's working budget, below the client's limit: what does not
+#: fit goes to a document kind's briefing.
+PREAMBLE_BUDGET = 3200
+
 _BACKENDS = ("altium", "kicad", "easyeda")
 
 
@@ -109,12 +113,13 @@ def test_every_tool_the_preamble_names_exists(backend):
 @pytest.mark.parametrize("backend", _BACKENDS)
 def test_a_backend_says_how_it_draws_a_schematic(backend):
     """The template route where the template tools exist, nothing
-    where they do not."""
-    text = build_server_instructions("full", backend)
+    where they do not. It is the schematic briefing, from tool_guide."""
+    from eda_agent.briefings import briefing
+    text = briefing("schematic", backend)
     has_template = bool({"sch_draw_template", "easyeda_emit_template"}
                         & set(_SURFACES[backend]))
     assert ("A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE" in text) is has_template, (
-        f"{backend}: the preamble's schematic paragraph does not match "
+        f"{backend}: the schematic briefing does not match "
         f"its tools")
     assert "DO NOT DRAW A SCHEMATIC BY HAND" not in text
 
@@ -134,9 +139,10 @@ def test_every_namespace_it_teaches_is_real(namespace):
 
 
 def test_it_names_the_tools_that_draw_a_schematic():
-    """The preamble's whole point is sending a schematic down the
-    template route, checked before it is drawn."""
-    named = _tools_named(SERVER_INSTRUCTIONS)
+    """The schematic briefing sends a schematic down the template route,
+    checked before it is drawn."""
+    from eda_agent.briefings import briefing
+    named = _tools_named(briefing("schematic", "altium"))
     assert {"sch_preview_template", "sch_draw_template",
             "lib_get_pin_list"} <= named
 
@@ -248,13 +254,15 @@ def test_every_wording_arrives_whole(toolset, backend):
     mid-word in the length rule, so the sentence that overrides the mils
     in the tool descriptions never arrived, and an mm session placed
     tracks 25.4 times too large from a description saying mils (#448).
-    What follows the limit is not shortened, it is gone."""
+    What follows the limit is not shortened, it is gone. The preamble
+    keeps a working budget under it, so growth fails here while there is
+    still room to choose what moves to a briefing."""
     from eda_agent.server import CLIENT_INSTRUCTIONS_LIMIT
 
     assert CLIENT_INSTRUCTIONS_LIMIT == 4096, (
         "the limit is the client's, measured, not ours to raise")
     text = build_server_instructions(toolset, backend)
-    assert len(text) <= CLIENT_INSTRUCTIONS_LIMIT, (
+    assert len(text) <= PREAMBLE_BUDGET < CLIENT_INSTRUCTIONS_LIMIT, (
         f"the {toolset} {backend} preamble is {len(text)} characters; a "
         f"client keeps {CLIENT_INSTRUCTIONS_LIMIT} and drops the rest: "
         f"{text[CLIENT_INSTRUCTIONS_LIMIT:][:60]!r}...")
@@ -271,16 +279,19 @@ def test_the_length_rule_outranks_descriptions_that_say_mils(backend):
 def test_filter_and_set_text_is_said_to_stay_in_mil():
     """A filter or set string goes to Altium as written, so an mm session
     that writes Y1=12 in a filter matches nothing at 12 mm (#448). The
-    preamble says so; this holds it to the converter."""
+    board and schematic briefings say so; this holds them to the
+    converter."""
     from eda_agent import lengths
+    from eda_agent.briefings import briefing
     from eda_agent.tools.generic import _mm_properties
 
     for backend in ("altium", "both"):
-        text = " ".join(build_server_instructions("full", backend).split())
-        assert "filter and set text goes to Altium as written" in text
-        assert "mil in any session" in text
+        for kind in ("board", "schematic"):
+            text = " ".join(briefing(kind, backend).split())
+            assert "filter and set text goes to Altium as written" in text
+            assert "mil in any session" in text
     for backend in ("kicad", "easyeda"):
-        assert "filter and set text" not in build_server_instructions("full", backend)
+        assert "filter and set text" not in briefing("board", backend)
 
     for tool, args in (
             ("obj_query", {"object_type": "eTrackObject", "filter": "Y1=472.4409",

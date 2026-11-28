@@ -146,53 +146,6 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 # reached a client reading descriptions that say mils (#448).
 CLIENT_INSTRUCTIONS_LIMIT = 4096
 
-#: The schematic-engine paragraph, per backend, because the tools it
-#: names are not the same on each. The Altium surface carries the whole
-#: family; EasyEDA carries the plan-building half and emits through its
-#: own tool; KiCad carries neither, so it gets no paragraph rather than
-#: a paragraph naming tools that are not there. A preamble that names a
-#: missing tool is read first and trusted most, which is the worst place
-#: for a dead end.
-#: Altium draws from a hand template (decided 2026-10-20: the automatic
-#: layout is being retired; a planned template came out clean first time
-#: where the engine did not after many rounds).
-_ENGINE_ALTIUM = (
-    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE, as an engineer draws,\n"
-    "on the 100 mil grid: the IC in the middle, rails as straight wires\n"
-    "with capacitors hanging straight down to ground, a divider as a\n"
-    "vertical stack whose midpoint runs across to its pin, net labels only\n"
-    "where a signal leaves the block. Read the pins (lib_get_pin_list),\n"
-    "write the template (parts, wires through pin anchors like U1.EN,\n"
-    "power ports, labels, expected nets), check it with\n"
-    "sch_preview_template and look at its PNG, then draw it with\n"
-    "sch_draw_template, which refuses a short or a misplaced part before\n"
-    "the first wire. To CHANGE a block, redraw it from a template on a\n"
-    "fresh sheet; the sch_ and obj_ tools are for small repairs.\n"
-    "\n"
-)
-
-_ENGINE_EASYEDA = (
-    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Build the DesignPlan,\n"
-    "then plan the sheet the way an engineer draws it, every coordinate\n"
-    "on the 100 mil grid: the IC in the middle, rails as straight wires\n"
-    "with their capacitors hanging straight down to ground, a divider\n"
-    "whose midpoint runs straight across to its pin, net labels only\n"
-    "where a signal leaves the block. easyeda_emit_template returns the\n"
-    "calls that place the parts there; run them, read the pins back with\n"
-    "easyeda_get_schematic_pins, and easyeda_emit_template_connections\n"
-    "checks the template's wiring against those pins and the plan's\n"
-    "nets and returns the calls that draw it.\n"
-    "\n"
-)
-
-_ENGINE_PARAGRAPHS = {
-    "altium": _ENGINE_ALTIUM,
-    "both": _ENGINE_ALTIUM,
-    "easyeda": _ENGINE_EASYEDA,
-    "kicad": "",
-}
-
-
 # Altium only: it is the backend with tools that drive the interface. The
 # week of 2026-09-19 produced three separate sessions that fell back to
 # them after an API tool seemed to fail or be missing. Placement ended in
@@ -241,14 +194,6 @@ _UNITS = (
     "arguments sets the unit for that call alone.\n"
 )
 
-#: Altium only: a filter or set string goes to Altium as written, so its
-#: numbers are Altium's own, mils, whatever the session's unit (#448).
-_UNITS_IN_TEXT_ALTIUM = (
-    "obj_ filter and set text goes to Altium as written: its lengths are\n"
-    "mil in any session; obj_query and obj_modify take X_mm as mm.\n"
-)
-
-
 def build_server_instructions(
     toolset: str = DEFAULT_TOOLSET, backend: str = DEFAULT_BACKEND
 ) -> str:
@@ -260,16 +205,19 @@ def build_server_instructions(
     saying which applies is the difference between guidance and a dead
     end for the clients that most need the guidance.
 
-    The backend does the same job for the schematic paragraph: the
-    template tools differ per backend, so naming Altium's to a KiCad
-    client would send it looking for a tool that backend never registers.
+    What applies to one kind of document is not here: tool_guide gives
+    it for a document_kind (briefings.py), and the line pointing there is
+    left out for a backend that has no briefing.
     """
+    from .briefings import KINDS, briefing
     if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
         reach = 'reach tool_guide through tool_invoke'
     else:
         reach = "call tool_guide"
-    engine = _ENGINE_PARAGRAPHS.get(
-        (backend or DEFAULT_BACKEND).strip().lower(), _ENGINE_ALTIUM)
+    kinds = [k for k in KINDS if briefing(k, backend or DEFAULT_BACKEND)]
+    briefed = (f"Before working on a document, {reach} with its\n"
+               f"document_kind and no task ({', '.join(kinds)}):\n"
+               "it gives what to know for that kind first.\n\n") if kinds else ""
     ui = _UI_AUTOMATION_PARAGRAPHS.get(
         (backend or DEFAULT_BACKEND).strip().lower(), _UI_AUTOMATION_ALTIUM)
     ui = ui.replace("{reach}", reach)
@@ -290,25 +238,14 @@ def build_server_instructions(
         "NO SERVER OF YOUR OWN. Call these tools through this connection.\n"
         "A script that starts eda-agent as its own MCP server is refused;\n"
         "many objects go in one call's items.\n"
-        "\n"
-        + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
-           "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
-           "goes straight to its objects; any other condition (X=, Y=, Name)\n"
-           "checks every object of the type, seconds on a busy board.\n"
-           "pcb_get_copper reads a layer's copper in bulk; tool_guide names\n"
-           "the quick route for a task.\n"
-           "\n" if altium else ""))
+        "\n")
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error: lib_ acts on a .PcbLib or .SchLib, pcb_\n"
         "on an open .PcbDoc, sch_ on an open .SchDoc, obj_ on either by the\n"
         "object type it is given (eTrackObject: the active board). A board\n"
         "tool aimed at a library can resolve another open board and report\n"
-        "success for work you never asked for."
-        + (" (pcb_layer_view, pcb_pad_relief,\n"
-           "pcb_renumber_pads and pcb_set_grids also act on a .PcbLib in front.)"
-           if altium else "")
-        + "\n"
+        "success for work you never asked for.\n"
         "\n"
         f"Before concluding that this server cannot do something, {reach}\n"
         "with what you are trying to do"
@@ -319,10 +256,10 @@ def build_server_instructions(
         "with the reason. tool_catalog searches the surface by name or\n"
         "category.\n"
         "\n"
+        + briefed
         + ui
-        + engine + items
+        + items
         + _UNITS
-        + (_UNITS_IN_TEXT_ALTIUM if altium else "")
         + "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
         "the user what is new and ask; call server_update(apply=True) only\n"
